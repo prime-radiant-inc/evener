@@ -145,18 +145,20 @@ export function KeybindingPreferencesScreen({
 	const scrollRef = useErrorInView(errorReport);
 	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+		<SafeAreaView edges={["bottom"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
 			{!editor && domain?.draft && !domain.conflict && (
-				<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
-					<HeaderButton
-						strong
-						label="Save changes"
-						disabled={busy}
-						onPress={() => {
-							if (model) run(() => model.saveKeybindings());
-						}}
-					/>
-				</View>
+				<SafeAreaView edges={["left", "right"]}>
+					<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
+						<HeaderButton
+							strong
+							label="Save changes"
+							disabled={busy}
+							onPress={() => {
+								if (model) run(() => model.saveKeybindings());
+							}}
+						/>
+					</View>
+				</SafeAreaView>
 			)}
 			<GroupedPage scrollRef={scrollRef}>
 				<View style={{ paddingHorizontal: space.labelInset }}>

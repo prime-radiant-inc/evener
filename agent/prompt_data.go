@@ -78,8 +78,16 @@ type promptData struct {
 	// GitStatusUnknown is true when the session-start status read was truncated
 	// or failed, so the two counts above are not a claim about the working tree;
 	// the template omits them rather than render a clean-repo number.
-	GitStatusUnknown      bool
+	GitStatusUnknown bool
+	// GitSnapshotFailed is true when a git probe could not run or was cut short,
+	// so the repository fields are incomplete. The template must not turn that
+	// into "Not a git repository." — that is a positive claim empty data cannot
+	// support (#4517).
+	GitSnapshotFailed     bool
 	GitRecentCommitTitles []string
+	// CommitTrailer is the exact Co-authored-by line the model is told to end
+	// commit messages with. Empty when provenance is off or cannot be built.
+	CommitTrailer string
 
 	// Workspace
 	WorkspaceTree string
@@ -114,6 +122,9 @@ type promptData struct {
 	// jobs sections and the stated allowance.
 	CanDelegate         bool
 	DelegationAllowance int
+	ManagerEnabled      bool
+	ManagerDiscovery    bool
+	ManagerStatus       bool
 
 	// Available agents (for delegate)
 	AvailableAgents []agentEntry
@@ -129,6 +140,11 @@ type promptData struct {
 
 	// CLI appends (--system-prompt-append, applied after everything)
 	CLIAppends []string
+
+	// unreadableAppends lists SystemPromptAppend paths whose read failed, so
+	// renderSystemPrompt can disclose that the requested file was left out. It
+	// is not a template input.
+	unreadableAppends []string
 }
 
 // skillEntry is a skill for template rendering.

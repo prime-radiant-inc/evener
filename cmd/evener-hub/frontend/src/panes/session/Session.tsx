@@ -11,7 +11,7 @@
 // registration, the session menu, and the deleted/loading scaffold faces
 // with their pane-only affordances (the Close button, force-stop recovery).
 import type { ThreadModel } from "@evener/appwire-client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { attentionEntryOwnsReader } from "../../shell/attentionHistory";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -20,11 +20,10 @@ import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
-import { workspaceStore } from "../../shell/workspace";
+import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
 import styles from "./session.module.css";
@@ -36,6 +35,35 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_THREADS = new Map<string, ThreadModel>();
+export const RECOVERY_HINT_DELAY_MS = import.meta.env.MODE === "test" ? 50 : 8_000;
+
+function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
+  const [showRecovery, setShowRecovery] = useState(false);
+  const local = sessionRef.startsWith("local:");
+  useEffect(() => {
+    if (!local) return;
+    const timer = setTimeout(() => setShowRecovery(true), RECOVERY_HINT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [local]);
+  return (
+    <div className={styles.loading}>
+      <Loader label={repairing ? "Repairing session history" : "Loading transcript"} />
+      <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
+        <Skeleton lines={4} />
+      </div>
+      <div aria-live="polite">
+        {showRecovery && local && (
+          <div data-testid="session-loading-recovery">
+            <p className={styles.loadingHint}>
+              If the session is unresponsive, you can stop its process to recover it.
+            </p>
+            <SessionForceStopRecovery sessionRef={sessionRef} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   const [open, setOpen] = useState(false);
@@ -68,7 +96,6 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
   const isMobile = useIsMobile();
-  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
   );
@@ -110,6 +137,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
+    // The phone layout keeps one bottom surface, the composer's own control
+    // row: the strip's activity chips ride inside that row instead, and its
+    // working-directory line stays a desktop-line concern (a phone reads
+    // the working directory and branch through the session menu's
+    // Overview), so a landscape phone spends its height on content rather
+    // than chrome strips.
     if (isMobile) return undefined;
     const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
@@ -134,6 +167,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       onResumedIdentity: (resumedRef) => {
         const url = paneToURL("session", { ref: resumedRef });
         if (url === null) return false;
+        // Seat-carry: the retargeted rows keep this pane's seat as their
+        // composition owner, so the resumed pane's placement takes it. The
+        // superseded pane closes in the same transition - a main pane is
+        // removed by its own replacement - so the carried seat is never held
+        // live by two panes, and this pane's retained state closing early is
+        // the approved cost of the shape.
+        const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+        if (pane) {
+          carryComposerSeatForPlacement(resumedRef, pane.composerSeatId ?? pane.id);
+          if (pane.slot !== "main") workspaceStore.getState().closePane(paneId);
+        }
         navigate(url, { replace: true });
         return true;
       },
@@ -181,20 +225,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
-              footer={footer}
               edgeFooter={edgeFooter}
             >
-              <div className={styles.loading}>
-                <Loader label={repairingRef ? "Repairing session history" : "Loading transcript"} />
-                {ref.startsWith("local:") && (
-                  <>
-                    <p className={styles.loadingHint}>
-                      If the session is unresponsive, you can stop its process to recover it.
-                    </p>
-                    <SessionForceStopRecovery sessionRef={ref} />
-                  </>
-                )}
-              </div>
+              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }
@@ -202,10 +235,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           <PaneScaffold
             paneId={paneId}
             focused={paneFocused}
-            focusSelector='[data-composer] [role="textbox"], [data-comic-composer] [role="textbox"]'
+            focusSelector='[data-composer] [role="textbox"]'
             scaffoldMarker={`session:${ref}`}
             title={title}
-            bodyScroll={presentation !== "comic"}
             cadence={cadence}
             footer={footer}
             edgeFooter={edgeFooter}

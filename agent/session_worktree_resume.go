@@ -305,7 +305,19 @@ func (s *Session) applyInitInsideWorktreeLock() {
 		activeRoot = resolved
 	}
 	project, err := identifier.ResolveProjectWith(activeRoot, execenv.NewProjectResolver(local))
-	if err != nil || !projectIsGitCheckout(project) {
+	if err != nil {
+		// A resolution failure is a genuine silent give-up: the session cannot
+		// even decide repo-ness, so it neither applies nor reports the §5
+		// occupancy lock. Buffer it like the other init-time failures in this
+		// function.
+		// The ordinary non-repo case below stays silent: warning there would
+		// fire on every session launched outside a repository (#4511).
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+			Message: fmt.Sprintf("could not resolve the session's project; managed worktree occupancy was not checked: %v", err),
+		})
+		return
+	}
+	if !projectIsGitCheckout(project) {
 		return
 	}
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)

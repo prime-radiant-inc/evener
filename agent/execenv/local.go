@@ -133,6 +133,11 @@ type LocalExecutionEnvironment struct {
 	// in its own worktree or a switched managed worktree must not silently
 	// revert to the launchd/GUI PATH this override exists to replace.
 	LoginPATH string
+	// LoginPATHProbeError says why LoginPATH is empty when the login-shell probe
+	// could not run (start failure or timeout), so the capability preamble can
+	// say the inherited PATH is a fallback rather than a resolved fact. Empty
+	// when the probe never ran or answered with no usable PATH.
+	LoginPATHProbeError string
 
 	// scratchMu guards both per-session scratch fields, ownedSessionTmp above
 	// and unsandboxedScratch below: a session's environment swap moves them
@@ -347,19 +352,20 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 // and ownership moves only explicitly (AdoptSessionScratch).
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
 	child := &LocalExecutionEnvironment{
-		RootDir:          dir,
-		EnvPolicy:        e.EnvPolicy,
-		runningPIDs:      e.runningPIDs,
-		gitRoots:         &gitRootCache{m: map[string]string{}},
-		mainRoots:        &gitRootCache{m: map[string]string{}},
-		fs:               e.fs,
-		commandFactory:   e.commandFactory,
-		inheritedEnv:     e.inheritedEnv,
-		lookPath:         e.lookPath,
-		sandboxTmpBase:   e.sandboxTmpBase,
-		terminationGrace: e.terminationGrace,
-		outputCaptureCap: e.outputCaptureCap,
-		LoginPATH:        e.LoginPATH,
+		RootDir:             dir,
+		EnvPolicy:           e.EnvPolicy,
+		runningPIDs:         e.runningPIDs,
+		gitRoots:            &gitRootCache{m: map[string]string{}},
+		mainRoots:           &gitRootCache{m: map[string]string{}},
+		fs:                  e.fs,
+		commandFactory:      e.commandFactory,
+		inheritedEnv:        e.inheritedEnv,
+		lookPath:            e.lookPath,
+		sandboxTmpBase:      e.sandboxTmpBase,
+		terminationGrace:    e.terminationGrace,
+		outputCaptureCap:    e.outputCaptureCap,
+		LoginPATH:           e.LoginPATH,
+		LoginPATHProbeError: e.LoginPATHProbeError,
 	}
 	if e.Sandbox != nil {
 		if rerooted, err := e.Sandbox.ReRoot(dir); err != nil {

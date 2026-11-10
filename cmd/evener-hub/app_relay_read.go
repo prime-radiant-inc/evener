@@ -10,12 +10,32 @@ import (
 )
 
 func (r *hubRelay) readThread(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
+	return r.readThreadWithSubscription(ctx, source, params, true)
+}
+
+// readThreadWithSubscription reads through the atomic relay path, holding a
+// daemon-side subscription only when feed reports a downstream consumer. An
+// internal snapshot read (a Manager status read without a watch) passes false:
+// while it counted as a subscriber, a curable sandbox denial in that window
+// raised an approval card nobody received, and the blocked waiter outlived
+// relay cleanup.
+func (r *hubRelay) readThreadWithSubscription(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, feed bool) (*hubThreadReadResult, error) {
 	if r.cfg.RelayHooks.BeforeReadThread != nil {
 		r.cfg.RelayHooks.BeforeReadThread()
 	}
-	needsRelay := params.Subscribe || relayOnThreadRead(source)
+	if r.cfg.RelayHooks.ReadThreadFailure != nil {
+		if err := r.cfg.RelayHooks.ReadThreadFailure(ctx, params); err != nil {
+			return nil, err
+		}
+	}
+	needsRelay := params.AnswerContinuation == nil && (params.Subscribe || relayOnThreadRead(source))
 	relaySource, atomic := source.(appsource.RelaySessionSource)
 	if !atomic || !needsRelay {
+		if !feed {
+			// A snapshot read never subscribes, whatever the caller's own
+			// params said.
+			params.Subscribe = false
+		}
 		response, err := source.ReadThread(ctx, params)
 		return &hubThreadReadResult{response: response}, err
 	}
@@ -56,7 +76,11 @@ func (r *hubRelay) readThread(ctx context.Context, source appsource.Source, para
 		}
 	}()
 	readParams := params
-	readParams.Subscribe = true
+	// The relay lease holds a daemon-side subscription only when a
+	// downstream consumer exists: a captured read hands its caller a live
+	// feed even when the client's own Subscribe flag is false, while a
+	// snapshot read (feed=false) must not count a subscriber nobody feeds.
+	readParams.Subscribe = feed
 	result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
 	if result.Handoff != nil {
 		read = &hubThreadReadResult{
@@ -149,7 +173,6 @@ func (r *hubRelay) prepareRelayOnce(ctx context.Context, source appsource.Source
 		}
 		return response, nil
 	}
-	params.Subscribe = true
 	read, err := r.readThread(ctx, source, params)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err

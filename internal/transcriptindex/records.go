@@ -56,6 +56,11 @@ type itemRecord struct {
 	Completer contributor // Length 0 until a later entry contributes
 	Middle    strRef      // contributors between opener and completer, encoded
 	Flags     uint32
+	// ItemIndex is the item's ordinal among its logical turn's items. A turn
+	// that a later entry reopens keeps its summary slot, so its fragments are
+	// not physically adjacent; the ordinal, not the neighbouring record, says
+	// whether items of the same turn come before or after this one.
+	ItemIndex uint32
 	// Context is the entries whose ToolCallRegistry state (Names/CommRawArgs/
 	// LastAssistantText/LastAssistantTurnID) the projection needs before
 	// Opener projects the visible item, encoded as a []contextEntry, oldest
@@ -152,6 +157,8 @@ type turnRecord struct {
 	AwaitingLength  uint32 // 0: none
 	AwaitingOrdinal uint64
 	Version         uint64 // highest accounted entry ordinal + 1
+	// ItemCount is how many items the turn has recorded, across every fragment.
+	ItemCount uint32
 }
 
 // Update-log record kinds.
@@ -264,6 +271,7 @@ func encodeItemInto(dst []byte, r itemRecord) []byte {
 	c.putContributor(r.Completer)
 	c.putRef(r.Middle)
 	c.putU32(r.Flags)
+	c.putU32(r.ItemIndex)
 	c.putRef(r.Context)
 	return c.buf
 }
@@ -280,6 +288,7 @@ func decodeItem(buf []byte) itemRecord {
 	c.contributor(&r.Completer)
 	c.ref(&r.Middle)
 	c.u32(&r.Flags)
+	c.u32(&r.ItemIndex)
 	c.ref(&r.Context)
 	return r
 }
@@ -338,6 +347,7 @@ func encodeTurnInto(dst []byte, r turnRecord) []byte {
 	c.putU32(r.AwaitingLength)
 	c.putU64(r.AwaitingOrdinal)
 	c.putU64(r.Version)
+	c.putU32(r.ItemCount)
 	return c.buf
 }
 
@@ -366,6 +376,7 @@ func decodeTurn(buf []byte) turnRecord {
 	c.u32(&r.AwaitingLength)
 	c.u64(&r.AwaitingOrdinal)
 	c.u64(&r.Version)
+	c.u32(&r.ItemCount)
 	return r
 }
 
@@ -478,7 +489,7 @@ func (t *table) buffer(slot uint64) error {
 	if end <= int64(len(t.buf)) {
 		return nil
 	}
-	if end > recordBufferLimit {
+	if end > recordBufferLimit && t.file != nil {
 		if t.onWriteThrough != nil {
 			if err := t.onWriteThrough(); err != nil {
 				return err
@@ -559,7 +570,7 @@ func (b *blob) putString(s string) (strRef, error) {
 // reserve makes room for one more string of n bytes, flushing and giving up
 // on buffering when it would carry the file past the limit.
 func (b *blob) reserve(n int) error {
-	if b.buf == nil || b.n+uint64(n) <= uint64(recordBufferLimit) {
+	if b.buf == nil || b.file == nil || b.n+uint64(n) <= uint64(recordBufferLimit) {
 		return nil
 	}
 	if err := b.flush(); err != nil {

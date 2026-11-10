@@ -161,10 +161,18 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   the capture rides the click's own first storage observation: the ref is
   unknown before the row is read, so the capture cannot precede that read —
   it joins it, the row and the epoch read in ONE transaction requested in the
-  click's synchronous prefix (`getOutboxWithStopEpoch`). The release's own
-  write transaction compares the stored epoch against that capture and
-  refuses when it advanced, leaving the row canceled: a newer Stop outranks
-  an earlier Retry, the same commit-order rule the enqueue barrier carries.
+  click's synchronous prefix (`getOutboxWithStopEpoch`). The mint that carries
+  the work compares the stored row against that capture and REFUSES only
+  when the row's durable target or instance moved since the capture read - an
+  identity change means the pressed row is not the one the capture vouched
+  for, and it stays exactly as it was, retryable again. A newer Stop crossing
+  the capture-to-mint window is not a refusal: the old row settles terminal
+  (a canceled row is deleted, a `blockedUnknown` row settles `superseded`
+  keeping its id and attempt evidence) and the mint returns a FRESH row born
+  `canceled` - fenced at birth rather than refused, because the Stop's own
+  cancel scan owns canceled rows and the fresh row joins them. Either way a
+  newer Stop outranks an earlier Retry, the same commit-order rule the
+  enqueue barrier carries.
   The "deliberate post-Stop send" exemption is therefore bounded for Retry
   exactly as for enqueue — a Stop whose durable write commits before the
   capture read's transaction can exist is invisible to it (the capture reads
@@ -197,12 +205,35 @@ barrier compares against — so the scan and the fence commit as one durable fac
 
 ## 6. Lifecycle of a `canceled` row
 
-- **Release:** only an explicit user Retry transitions `canceled` to `submitting`
-  (new transition in `retryBlockedMutation`, replacing the current delete-from-set
-  release at `threads.ts:1001`), fenced by §4's release barrier: the Retry's
-  click-time capture refuses the release when a newer Stop's epoch bump
-  intervened. "Cleared only on explicit retry" per RoboRev's
-  High 1.
+- **Release:** only an explicit user Retry re-enables a canceled row's work —
+  and it never reopens the row. `retryBlockedMutation` mints a FRESH row
+  through the single enqueue path (`mintRetryFromRow`, one write transaction):
+  the old row settles terminal — a canceled row is deleted (§6's removal), a
+  `blockedUnknown` row settles terminal `superseded`, keeping its id and
+  attempt evidence so its real in-flight attempt's late receipt or refusal
+  still settles it — and the fresh row is fenced at birth by the same
+  press-time capture pair every send carries (`getOutboxWithStopEpoch`: the
+  row and the ref's stop epoch read in ONE transaction requested in the
+  click's synchronous prefix). The mint REFUSES when the row's durable
+  targetRef or instance moved since the capture read — a peer retarget
+  intervening leaves the row exactly as it was, retryable again. A newer
+  Stop's epoch bump is a different verdict with the same rank: the mint does
+  not refuse, the old row settles terminal (a canceled row is deleted, a
+  `blockedUnknown` row settles `superseded` keeping its evidence), and the
+  fresh row is born `canceled` — the Stop outranks the Retry by fencing the
+  new row at birth, the same way the scan claims every unattempted row of
+  the ref. The fresh row takes a NEW
+  intentSequence at the ref's tail (Retry visibly re-queues at the tail; the
+  old chip leaves the canceled strip), and a predecessor whose lineage is
+  delivery-uncertain has its wire identity INHERITED into the fresh row's
+  payload (fresh storage key, inherited `clientMutationId`) so the daemon's
+  journal replays the re-submission instead of applying the composition
+  twice; a canceled predecessor provably never left any tab, so its mint
+  takes a fresh wire id. The capture pair also fences the still-displayed ref
+  of a retargeted row (`displayedStopEpochAtEnqueue`), so a Stop on the pane
+  the user is looking at cancels the re-queued work even when its durable
+  destination is another session. "Cleared only on explicit retry" per
+  RoboRev's High 1.
 - **Removal:** `canceled` rows are deleted when the thread is cleared or deleted
   (existing `clearThread`/deletion paths), and on explicit Retry. No TTL, no GC
   pass. Growth is bounded by the number of sends a user cancels and never retries,
@@ -284,12 +315,16 @@ and the BroadcastChannel (payload unchanged; correctness never depends on it).
   threadId). The phone's Stop/UX flows do not call the combined write yet —
   adopting it there is a follow-up, so nothing native issues a Stop's durable
   write today.
-  The Retry release fence (2026-09-19) changed no port signature:
-  `releaseCanceled` is a web-store method the `MutationOutboxStorage` port has
-  never declared — native has no canceled row to release while nothing native
-  issues a Stop's durable write — so the comparison rides the web store's own
-  release method, and the eventual native adoption of the canceled lifecycle
-  takes the release with the same click-time capture.
+  The Retry mint (the 2026-09-19 release fence, rebuilt as
+  `mintRetryFromRow`) changed no port signature: the mint is a web-store
+  method the `MutationOutboxStorage` port has never declared — native has no
+  canceled row to re-enable while nothing native issues a Stop's durable
+  write — so the identity-and-epoch comparison rides the web store's own mint
+  transaction, and the eventual native adoption of the canceled lifecycle
+  takes the mint with the same click-time capture. The wire-inheritance rule
+  travels in the port's `transferToRecovery` marker (the optional
+  `wireDeliveryUncertain` option), so a host that never sets it keeps today's
+  fresh-id resends.
 
 ## 9. Test plan
 
@@ -309,8 +344,10 @@ Real store, real flows, no mocks of the mechanism under test:
 6. An `attempted` row in flight at click time is reported in-flight/uncertain, not
    canceled; a `submitting` row caught before `markAttempted` is canceled and the
    dispatcher's re-read aborts its send.
-7. Explicit Retry transitions `canceled` to `submitting` and dispatches; background
-   (non-user) retry modes do not.
+7. Explicit Retry mints a fresh fenced row for the canceled work and
+   dispatches it; the old row never reopens (a canceled row is deleted, a
+   blockedUnknown row settles terminal `superseded`, keeping its evidence),
+   and background (non-user) retry modes do not re-enable canceled rows.
 8. Canceled rows are removed on thread clear/delete.
 9. Every wait-helper in the new tests fails loudly when its condition is never
    reached (the Low-8 lesson).

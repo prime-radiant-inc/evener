@@ -26,17 +26,15 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 			"type":    "invalid_request_error",
 		},
 	}, nil)
-	adapter := &phase9RetryAdapter{
-		provider: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, continuationErr
-			},
-			func(req llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("phase 9 retry recovered"), nil
-			},
+	adapter := &phase9RetryAdapter{provider: "openai"}
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, continuationErr
 		},
-	}
+		func(req llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("phase 9 retry recovered"), nil
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -228,17 +226,15 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 			"type":    "invalid_request_error",
 		},
 	}, nil)
-	adapter := &phase9RetryAdapter{
-		provider: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, continuationErr
-			},
-			func(req llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
-			},
+	adapter := &phase9RetryAdapter{provider: "openai"}
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, continuationErr
 		},
-	}
+		func(req llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -328,17 +324,15 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 			"type":    "invalid_request_error",
 		},
 	}, nil)
-	firstAdapter := &phase9RetryAdapter{
-		provider: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, continuationErr
-			},
-			func(req llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
-			},
+	firstAdapter := &phase9RetryAdapter{provider: "openai"}
+	firstAdapter.setSteps([]func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, continuationErr
 		},
-	}
+		func(req llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
+		},
+	})
 	firstClient := llm.NewClient()
 	firstClient.Register(firstAdapter)
 	firstSess := newPhase9ContinuationSession(t, dir, firstClient)
@@ -352,14 +346,12 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 		t.Fatalf("first ProcessInput: %v", err)
 	}
 
-	nextAdapter := &phase9RetryAdapter{
-		provider: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("phase 9 new session delta"), nil
-			},
+	nextAdapter := &phase9RetryAdapter{provider: "openai"}
+	nextAdapter.setSteps([]func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("phase 9 new session delta"), nil
 		},
-	}
+	})
 	nextClient := llm.NewClient()
 	nextClient.Register(nextAdapter)
 	nextSess := newPhase9ContinuationSession(t, dir, nextClient)
@@ -403,26 +395,35 @@ type phase9RetryAdapter struct {
 	provider                string
 	storageScopeFingerprint string
 	storagePolicyLabel      string
-	steps                   []func(req llm.Request) (llm.Response, error)
+
+	// The scripted steps live in the shared engine: the step is read under
+	// its mutex and run outside it, so a blocked step never holds the script
+	// and no fixture can assign the slice beside a drive.
+	script agenttest.Script[func(req llm.Request) (llm.Response, error)]
 
 	mu       sync.Mutex
 	requests []llm.Request
-	i        int
 }
 
 func (a *phase9RetryAdapter) Name() string { return a.provider }
+
+// setSteps scripts the adapter's response sequence; a concurrent drive reads
+// the script through the engine's mutex, so scripting the next turn beside a
+// running one cannot race.
+func (a *phase9RetryAdapter) setSteps(steps []func(req llm.Request) (llm.Response, error)) {
+	a.script.Replace(steps)
+}
 
 func (a *phase9RetryAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
-	i := a.i
-	a.i++
 	a.mu.Unlock()
-	if i >= len(a.steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return agenttest.FinalResponse("done"), nil
 	}
-	resp, err := a.steps[i](req)
+	resp, err := step(req)
 	if err != nil {
 		return resp, err
 	}
@@ -518,12 +519,12 @@ func runPhase9GateSession(t *testing.T, history []schema.Turn) llm.Request {
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("phase 9 full history gate")
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return agenttest.FinalResponse("phase 9 full history gate")
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 

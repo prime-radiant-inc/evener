@@ -27,10 +27,10 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 6
+	formatVersion = 8
 	// Dedicated COMMUNICATE records consume inherited call reconstruction.
 	// Older sidecars can contain duplicate messages from ordinary forks.
-	projectionID = "transcript-read-model-v10"
+	projectionID = "transcript-read-model-v11"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -182,7 +182,10 @@ type meta struct {
 	HeaderLength int64  `json:"header_length"` // 0: no header yet
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
-	Updates      uint64 `json:"updates"`
+	// LatestExecutionTurnSlot is the one-based turn-table slot of the latest
+	// execution summary; zero means the covered transcript has no execution.
+	LatestExecutionTurnSlot uint64 `json:"latest_execution_turn_slot,omitempty"`
+	Updates                 uint64 `json:"updates"`
 	// UpdatesFile names the update log's file in the build ("" is the
 	// first, updatesFile); a cut writes the kept records to a new file.
 	// UpdatesFrom is the offset from which the log holds every update: those
@@ -297,6 +300,13 @@ type Index struct {
 	// refusing marks a handle opened by OpenRefusing: it runs no full
 	// rebuild and never blocks on the sidecar's lock, in any operation.
 	refusing bool
+	// readView borrows the parent's shared lock and transcript handle. Its
+	// derived records are private when reconstruction at an older cut is needed.
+	readView bool
+	// cutView retains only the last exceptional reconstruction, never one per
+	// entry or reader. The ordinary current-boundary path releases it.
+	cutView   *Index
+	cutLength int64
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
@@ -384,6 +394,14 @@ func (x *Index) Rebuild(length int64) error {
 	return x.locked(true, func() error { return x.rebuild(length, "") })
 }
 
+// RebuildAtLeast repairs a shared sidecar without discarding bytes another
+// handle already indexed. Readers still apply their own publication cut.
+func (x *Index) RebuildAtLeast(length int64) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error { return x.rebuild(max(length, x.meta.Length), "") })
+}
+
 // RebuildIfStillRefused rebuilds the sidecar only while the live build is
 // still the one the caller's refusal named — the repair path's revalidation.
 // A registration can land after another repair already committed a fresh
@@ -415,10 +433,17 @@ func (x *Index) RebuildIfStillRefused(length int64, refused string) error {
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
 // up whatever other handles wrote.
 func (x *Index) locked(exclusive bool, fn func() error) error {
+	return x.lockedMode(exclusive, false, fn)
+}
+
+func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
+	if x.readView {
+		return fn()
+	}
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
-	if x.refusing {
+	if x.refusing || nonblocking {
 		if err := lockFileTry(x.lock, exclusive); err != nil {
 			// Only contention is busy: a fault on the lock itself — a dead
 			// fd, an exhausted lock table — must surface as itself, or the
@@ -623,6 +648,9 @@ func (x *Index) adopt(m meta) error {
 			return err
 		}
 	}
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("%w: invalid latest execution locator: %w", errCorrupt, err)
+	}
 	return x.readHeader()
 }
 
@@ -675,7 +703,7 @@ func (x *Index) extend(length int64) error {
 	// already be on disk from an entry this scan does not reach. Collect
 	// such rows' offsets before truncating them away, so they can be
 	// checked against where the scan below actually lands.
-	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
+	unsafeOffsets, turnAdvanced, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
 		return x.fail(err)
 	}
@@ -693,6 +721,22 @@ func (x *Index) extend(length int64) error {
 		// everything until refresh adopts the repair's committed build.
 		x.stale = true
 		return x.refuseRebuild()
+	}
+	if turnAdvanced {
+		// A committed turn summary rewritten in place carries the item count
+		// the interrupted extension reached. Replaying those entries would
+		// start their ordinals from that advanced count, and stampTurn skips
+		// the already-accounted versions, so the replayed items would keep
+		// wrong ordinals. Recover the per-turn count from the committed item
+		// records instead, which the replay extends from the same place the
+		// interrupted extension did.
+		counts, err := x.committedItemCountsByTurn()
+		if err != nil {
+			return x.fail(err)
+		}
+		x.builder.replayOrdinals = counts
+	} else {
+		x.builder.replayOrdinals = nil
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -732,6 +776,7 @@ func (x *Index) extend(length int64) error {
 	// call for the handle's whole life. A later extension then resolves only
 	// what it sees itself and marks a turn inexact when a name it needs is gone.
 	x.builder.failures.Reset()
+	x.builder.replayOrdinals = nil
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
@@ -776,16 +821,22 @@ func (x *Index) repairBuilder(length int64) error {
 // updatedTurn) count: garbage bytes written straight to the file (as a test
 // fault-injects to simulate leftovers, bypassing logUpdate) decode to
 // neither and name no slot at all.
-func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
+//
+// The boolean reports whether any of those rows rewrote a turn summary. Such a
+// summary already counts the items the interrupted entries appended, and replay
+// cannot recompute their ordinals from the entry alone, so the caller recovers
+// each touched turn's committed count from the item records the replay extends.
+func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 	available, err := x.updates.available()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var offsets []int64
+	turnAdvanced := false
 	for slot := x.updates.n; slot < available; slot++ {
 		buf := make([]byte, x.updates.size)
 		if _, err := x.updates.file.ReadAt(buf, int64(slot)*x.updates.size); err != nil {
-			return nil, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
+			return nil, false, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
 		}
 		row := decodeUpdate(buf)
 		var committed uint64
@@ -799,9 +850,31 @@ func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
 		}
 		if row.Slot < committed {
 			offsets = append(offsets, row.Offset)
+			turnAdvanced = turnAdvanced || row.Kind == updatedTurn
 		}
 	}
-	return offsets, nil
+	return offsets, turnAdvanced, nil
+}
+
+// committedItemCountsByTurn counts the committed item records per turn slot,
+// zero for a committed turn with no items. A replayed entry's ordinal therefore
+// starts where the committed items end, not where an interrupted extension's
+// rewritten summary says they end.
+func (x *Index) committedItemCountsByTurn() (map[uint32]uint32, error) {
+	counts := make(map[uint32]uint32, int(x.turns.n))
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		counts[uint32(slot)] = 0
+	}
+	if x.items.n > 0 {
+		buf, err := x.items.read(0, int(x.items.n))
+		if err != nil {
+			return nil, err
+		}
+		for slot := uint64(0); slot < x.items.n; slot++ {
+			counts[decodeItem(buf[slot*itemRecordSize:]).Turn]++
+		}
+	}
+	return counts, nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the
@@ -1254,6 +1327,9 @@ func (x *Index) stopBufferingStrings() error {
 
 // publishMeta writes the covered state.
 func (x *Index) publishMeta() error {
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("publish invalid latest execution locator: %w", err)
+	}
 	sum, err := x.tailSum(x.meta.Length)
 	if err != nil {
 		return err

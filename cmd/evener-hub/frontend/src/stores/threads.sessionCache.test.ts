@@ -21,6 +21,7 @@ import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
+import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { resetConnectionStoreForTests } from "./connection";
 import {
@@ -29,7 +30,7 @@ import {
   setProductionEntryCacheForTests,
 } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "./projectionWork";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
@@ -105,17 +106,6 @@ function connectFakeClient(): FakeClient {
   const fake = connectReadyFakeClient();
   connectedFakeClient = fake;
   return fake;
-}
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
 }
 
 // echoingReadHandler answers a thread/read with the file's fixture, echoing

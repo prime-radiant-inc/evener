@@ -33,6 +33,7 @@ export type CurrentTranscriptFields = Pick<
   ThreadModel,
   | "ref"
   | "parentRef"
+  | "kind"
   | "threadId"
   | "imageSessionId"
   | "name"
@@ -54,6 +55,7 @@ export type CurrentTranscriptFields = Pick<
   | "jobsUpdatedAt"
   | "jobsTreeRevision"
   | "olderCursor"
+  | "olderFrontier"
   | "lastFrameAt"
   | "modelRetry"
   | "goal"
@@ -108,6 +110,15 @@ function validPosition(value: unknown): value is ThreadItemPosition {
   );
 }
 
+function validSessionActor(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "managerRef"]) &&
+    (value.kind === "human" || value.kind === "manager") &&
+    (value.managerRef === undefined || typeof value.managerRef === "string")
+  );
+}
+
 const ITEM_MODEL_KEYS = new Set([
   "authorship",
   "id",
@@ -116,6 +127,7 @@ const ITEM_MODEL_KEYS = new Set([
   "position",
   "transcriptEntryIndex",
   "clientMutationId",
+  "actor",
   "type",
   "text",
   "pendingText",
@@ -158,6 +170,7 @@ export function validItem(value: unknown): value is CachedSessionItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptKey",
     "clientMutationId",
@@ -313,6 +326,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptEntryIndex",
     "startedAt",
@@ -324,6 +338,10 @@ function validWireItem(value: unknown): value is ThreadItem {
   ]) {
     if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
   }
+  if (value.truncated !== undefined && typeof value.truncated !== "boolean") return false;
+  if (value.truncatedBytes !== undefined && !isNonNegativeInteger(value.truncatedBytes)) return false;
+  if (value.inFlight !== undefined && typeof value.inFlight !== "boolean") return false;
+  if (value.fetchCursor !== undefined && typeof value.fetchCursor !== "string") return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   const validInputImage = (image: unknown): boolean => {
     if (!isRecord(image) || !hasOnlyKeys(image, WIRE_FIELD_KEYS.InputItem)) return false;
@@ -648,6 +666,7 @@ function validDeferredPage(value: unknown): boolean {
   if (value.bootGeneration !== undefined && typeof value.bootGeneration !== "string") return false;
   if (value.epoch !== undefined && !isNonNegativeInteger(value.epoch)) return false;
   if (value.authoritative !== undefined && typeof value.authoritative !== "boolean") return false;
+  if (value.window !== undefined && !validThreadWindowResult(value.window)) return false;
   return (
     value.snapshot === undefined ||
     (isRecord(value.snapshot) &&
@@ -657,11 +676,79 @@ function validDeferredPage(value: unknown): boolean {
   );
 }
 
+const THREAD_TURN_ELISION_KEYS = [
+  "excludedByType",
+  "capWithheld",
+  "truncatedBeyondCursorLimit",
+  "elidedBeyondCursorLimit",
+  "continuationCursor",
+  "typeExcludedRecovery",
+  "capWithheldRecovery",
+  "truncatedBeyondCursorLimitRecovery",
+  "elidedBeyondCursorLimitRecovery",
+] as const;
+
+function validThreadTurnElision(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, THREAD_TURN_ELISION_KEYS)) return false;
+  if (
+    value.excludedByType !== undefined &&
+    (!isRecord(value.excludedByType) || !Object.values(value.excludedByType).every(isNonNegativeInteger))
+  )
+    return false;
+  for (const key of ["capWithheld", "truncatedBeyondCursorLimit", "elidedBeyondCursorLimit"]) {
+    if (value[key] !== undefined && !isNonNegativeInteger(value[key])) return false;
+  }
+  for (const key of [
+    "continuationCursor",
+    "typeExcludedRecovery",
+    "capWithheldRecovery",
+    "truncatedBeyondCursorLimitRecovery",
+    "elidedBeyondCursorLimitRecovery",
+  ]) {
+    if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  }
+  return true;
+}
+
+const THREAD_WINDOW_RESULT_KEYS = [
+  "effectiveBudgetBytes",
+  "appliedBy",
+  "servedTurns",
+  "withheldTurns",
+  "firstServedTurnId",
+  "lastServedTurnId",
+  "firstWithheldTurnId",
+  "lastWithheldTurnId",
+  "trimmedEnd",
+  "continuationCursor",
+] as const;
+
+function validThreadWindowResult(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, THREAD_WINDOW_RESULT_KEYS) ||
+    !isNonNegativeInteger(value.effectiveBudgetBytes) ||
+    typeof value.appliedBy !== "string" ||
+    !isNonNegativeInteger(value.servedTurns) ||
+    !isNonNegativeInteger(value.withheldTurns)
+  )
+    return false;
+  return [
+    "firstServedTurnId",
+    "lastServedTurnId",
+    "firstWithheldTurnId",
+    "lastWithheldTurnId",
+    "trimmedEnd",
+    "continuationCursor",
+  ].every((key) => value[key] === undefined || typeof value[key] === "string");
+}
+
 function validWireTurn(value: unknown): boolean {
   if (!isRecord(value) || !hasOnlyKeys(value, WIRE_FIELD_KEYS.Turn)) return false;
   if (typeof value.id !== "string" || typeof value.itemsView !== "string" || typeof value.status !== "string")
     return false;
   if (value.items !== undefined && (!Array.isArray(value.items) || !value.items.every(validWireItem))) return false;
+  if (value.elision !== undefined && !validThreadTurnElision(value.elision)) return false;
   if (value.error !== undefined && !validTurnError(value.error)) return false;
   if (value.version !== undefined && !isNonNegativeInteger(value.version)) return false;
   if (value.hasEarlierItems !== undefined && typeof value.hasEarlierItems !== "boolean") return false;
@@ -722,8 +809,10 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.jobsUpdatedAt !== null && !isFiniteNumber(value.jobsUpdatedAt)) return false;
   if (value.jobsTreeRevision !== null && !isFiniteNumber(value.jobsTreeRevision)) return false;
   if (value.parentRef !== undefined && typeof value.parentRef !== "string") return false;
+  if (value.kind !== undefined && typeof value.kind !== "string") return false;
   if (value.imageSessionId !== undefined && typeof value.imageSessionId !== "string") return false;
   if (value.olderCursor !== undefined && typeof value.olderCursor !== "string") return false;
+  if (value.olderFrontier !== undefined && typeof value.olderFrontier !== "string") return false;
   if (value.cost !== undefined && value.cost !== null && typeof value.cost !== "string") return false;
   if (value.failedToolCalls !== undefined && !isFiniteNumber(value.failedToolCalls)) return false;
   if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;

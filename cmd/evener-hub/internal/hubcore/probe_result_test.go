@@ -15,20 +15,23 @@ import (
 // used to drop: its ProbeResult literal set a different subset.
 func TestRosterReadSpawnedThreadCarriesTheThreadRowsFields(t *testing.T) {
 	ended := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	turnStarted := ended.Add(time.Hour).UnixMilli()
 	tally := appwire.SubagentTally{Running: 1, Failed: 1, Done: 2}
 	activity := &appwire.ThreadActivity{Minutes: []int{1, 2, 3}, LastActivityAt: ended.UnixMilli()}
 	tasks := taskProgress(3, 1, 0, &appwire.TaskSummary{ID: 2, Description: "Resume the migration"})
 	thread := appwire.Thread{
 		ID: "01SPAWNED", SessionID: "01SPAWNED", ModelProvider: "gpt-5.6",
-		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive, ActiveFlags: []string{"resumeRequired"}},
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Evener: appwire.EvenerThread{
-			AskPending:      true,
-			Profile:         "codex-jesse-fsck.com",
-			LastMessage:     "the opening line",
-			Tasks:           tasks,
-			Activity:        activity,
-			Subagents:       &tally,
-			LastTurnEndedAt: ended.UnixMilli(),
+			AskPending:          true,
+			Profile:             "codex-jesse-fsck.com",
+			LastMessage:         "the opening line",
+			Tasks:               tasks,
+			Activity:            activity,
+			Subagents:           &tally,
+			LastTurnEndedAt:     ended.UnixMilli(),
+			ActiveTurnID:        "turn-running",
+			ActiveTurnStartedAt: turnStarted,
 		},
 	}
 	r, entry := newSpawnedRoster(t)
@@ -50,11 +53,13 @@ func TestRosterReadSpawnedThreadCarriesTheThreadRowsFields(t *testing.T) {
 	if !live.LastTurnEndedAt.Equal(ended) {
 		t.Errorf("published last turn ended = %v, want the read's %v", live.LastTurnEndedAt, ended)
 	}
+	if live.ActiveTurnID != "turn-running" || live.ActiveTurnStartedAt != turnStarted {
+		t.Errorf("published entry did not carry the read's running turn: %+v", live)
+	}
 	// The fields the read path already carried must keep surviving it too.
 	if !reflect.DeepEqual(live.Tasks, tasks) || live.Profile != "codex-jesse-fsck.com" ||
 		live.LastMessage != "the opening line" || live.CurrentModel != "gpt-5.6" ||
-		live.Status != appwire.ThreadStatusActive || !live.PendingAsk ||
-		!reflect.DeepEqual(live.ActiveFlags, []string{"resumeRequired"}) {
+		live.Status != appwire.ThreadStatusActive || !live.PendingAsk {
 		t.Fatalf("published entry = %+v, want every field the read's thread row carried", live)
 	}
 	// The full probe builds its ProbeResult with this same constructor, so the

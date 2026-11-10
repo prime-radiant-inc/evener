@@ -112,7 +112,11 @@ type delegateTreeController struct {
 	runStarts         map[delegateLease]delegatestore.RunTrigger
 	owedAdmission     bool
 	emitUpdate        func(delegateUpdatePlan)
-	attentionOpen     delegateAttentionWriterOpener
+	// appendFault, when set, fails appendLocked's durable append before it
+	// reaches the store. Tests inject a chosen append error; nil in
+	// production.
+	appendFault   func([]delegatestore.Event) error
+	attentionOpen delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -191,6 +195,103 @@ type delegateFinalizingError struct {
 func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
 func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
+// delegateBusyReason says why a send was refused as target_busy.
+type delegateBusyReason string
+
+const (
+	// delegateBusyFinalizing: the delegate's finished generation has not
+	// released its finalization within the send's wait ceiling. Clears when
+	// the finalize tail releases, which no notification is guaranteed to
+	// announce.
+	delegateBusyFinalizing delegateBusyReason = "finalizing"
+	// delegateBusyStopping: a stop is pending or in progress on the delegate;
+	// it ends idle (retry succeeds) or closed (not_resumable).
+	delegateBusyStopping delegateBusyReason = "stopping"
+	// delegateBusyConcurrentSend: another send, drive or run holds the
+	// delegate's next generation.
+	delegateBusyConcurrentSend delegateBusyReason = "concurrent_send"
+	// delegateBusyReclaiming: the delegate's idle runtime is being released.
+	delegateBusyReclaiming delegateBusyReason = "reclaiming"
+	// delegateBusyLaneHandoff: a lane handoff covers the delegate.
+	delegateBusyLaneHandoff delegateBusyReason = "lane_handoff"
+	// delegateBusyClosing: the controller is closing, so this session takes no
+	// further sends. Permanent for this session.
+	delegateBusyClosing delegateBusyReason = "closing"
+	// delegateBusyNotResumable: the delegate was closed or lost its
+	// resumability (turn budget exhausted, worktree disposed). Permanent.
+	delegateBusyNotResumable delegateBusyReason = "not_resumable"
+)
+
+// delegateFinalizationRetryAfter is the retry hint for a send that outwaited a
+// finalization: the delegate's finalize tail is slow, so an immediate retry
+// fails the same way.
+const delegateFinalizationRetryAfter = 5 * time.Second
+
+// delegateBusyRetryAfter is the retry hint for refusals whose cause clears
+// within moments.
+const delegateBusyRetryAfter = 2 * time.Second
+
+// delegateBusyGuidance is what the caller should do next, matching what the
+// system does after the refusal. Guidance never depends on a notification:
+// none is guaranteed to announce that a refusal cleared.
+type delegateBusyGuidance int
+
+const (
+	// delegateBusyRetryShortly: the cause clears on its own; retry after
+	// retryAfter.
+	delegateBusyRetryShortly delegateBusyGuidance = iota
+	// delegateBusyDoNotRetry: the cause is permanent; retrying cannot succeed.
+	delegateBusyDoNotRetry
+)
+
+// delegateBusyError is errDelegateTargetBusy with the reason the model needs
+// to act on it. retryAfter is set exactly when guidance is
+// delegateBusyRetryShortly.
+type delegateBusyError struct {
+	reason     delegateBusyReason
+	retryAfter time.Duration
+}
+
+// busyBecause is the refusal for reason with its default retry hint.
+func busyBecause(reason delegateBusyReason) error {
+	e := delegateBusyError{reason: reason}
+	switch {
+	case e.guidance() == delegateBusyDoNotRetry:
+	case reason == delegateBusyFinalizing:
+		e.retryAfter = delegateFinalizationRetryAfter
+	default:
+		e.retryAfter = delegateBusyRetryAfter
+	}
+	return e
+}
+
+func (e delegateBusyError) guidance() delegateBusyGuidance {
+	switch e.reason {
+	case delegateBusyClosing, delegateBusyNotResumable:
+		return delegateBusyDoNotRetry
+	default:
+		return delegateBusyRetryShortly
+	}
+}
+
+func (e delegateBusyError) Is(target error) bool { return target == errDelegateTargetBusy }
+
+func (e delegateBusyError) Error() string {
+	msg := fmt.Sprintf("%s: reason=%s", errDelegateTargetBusy.Error(), e.reason)
+	switch e.reason {
+	case delegateBusyNotResumable:
+		return msg + ". Nothing was sent. This delegate can take no more input; start a new delegate or report what you have."
+	case delegateBusyClosing:
+		return msg + ". Nothing was sent. This session is shutting down and takes no further sends; do not retry."
+	case delegateBusyFinalizing:
+		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
+		return msg + ". Nothing was sent. Retry after the retry_after_ms delay; a report from the delegate may also arrive, but do not rely on one."
+	default:
+		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
+		return msg + ". Nothing was sent. Retry after the retry_after_ms delay; nothing will announce that it cleared."
+	}
+}
+
 type delegateLiveState struct {
 	runtime       *Session
 	binding       *delegateRuntimeBinding
@@ -215,7 +316,10 @@ type delegateLiveState struct {
 	// encountered a finalization failure has completed all retained-runtime writes.
 	recoveryRunnerPending bool
 	activityAt            time.Time
-	productiveActivityAt  time.Time
+	// activityReports counts the activity reports that advanced activityAt, so a
+	// reader can tell new progress from the passing of time.
+	activityReports      uint64
+	productiveActivityAt time.Time
 	// activityPublishedAt is the activity time ReportActivityPhase last
 	// published a snapshot for; the one-second activity coalescer measures it.
 	// The intent channel keeps its own publication clock (intentPublishedAt),
@@ -260,6 +364,9 @@ type delegateSnapshot struct {
 	// Provider retry/backoff remains ordinary activity everywhere else, but it
 	// does not move this clock.
 	latestProductiveActivityAt time.Time
+	// activityReports is the live activity-report count; zero for a snapshot with
+	// no live line.
+	activityReports uint64
 	// pendingStopSeq is the sequence of a subtree stop admitted against this
 	// delegate and not yet completed; 0 when no stop is outstanding. It is what
 	// distinguishes a delegate that was ASKED to stop from one that has.
@@ -397,6 +504,11 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			return nil, errDelegateTargetBusy
 		}
 	}
+	if c.appendFault != nil {
+		if err := c.appendFault(events); err != nil {
+			return nil, err
+		}
+	}
 	appended, next, err := c.store.AppendBatch(c.durable, events)
 	if err != nil {
 		return nil, err
@@ -479,10 +591,56 @@ func (c *delegateTreeController) stableWorktreeSnapshots() []delegateWorktreeSna
 	return rows
 }
 
-// ownedStableWorktreeSnapshots returns only direct worktree children of owner.
-// ParentDelegateID is the direct-owner relation; OwnerSessionID authenticates
-// root-owned rows against this controller's root session.
-func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []delegateWorktreeSnapshot {
+// isolatedLaneForDelegate resolves the isolation lane a delegate's turn runs
+// in: the delegate's own lane when it is worktree-isolated, and otherwise the
+// nearest isolated ancestor's — the checkout a non-isolated descendant
+// shares. The lane's marker names the session that spawned the lane-owning
+// delegate, the parent whose disposal lifecycle the orphan reclaim consults.
+// ok=false: the delegate runs in no lane this tree holds.
+func (c *delegateTreeController) isolatedLaneForDelegate(delegateID string) (isolationLane, bool) {
+	if c == nil || delegateID == "" {
+		return isolationLane{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id := delegateID
+	for {
+		aggregate := c.durable[id]
+		if aggregate == nil {
+			return isolationLane{}, false
+		}
+		if aggregate.Descriptor.Isolation == "worktree" && aggregate.Descriptor.WorkingDir != "" {
+			return isolationLane{
+				delegateID:      id,
+				path:            aggregate.Descriptor.WorkingDir,
+				markerSessionID: c.markerSessionIDLocked(aggregate),
+			}, true
+		}
+		if parent := aggregate.Descriptor.ParentDelegateID; parent != "" {
+			id = parent
+			continue
+		}
+		return isolationLane{}, false
+	}
+}
+
+// markerSessionIDLocked names the session the lane-owning delegate's marker
+// carries: the one that spawned it. A root-owned lane names the root session
+// on its descriptor; a delegate-owned lane names the parent delegate's own
+// session, whose spawn wrote the marker. Callers hold c.mu.
+func (c *delegateTreeController) markerSessionIDLocked(aggregate *delegatestore.Aggregate) string {
+	if parent := aggregate.Descriptor.ParentDelegateID; parent != "" {
+		if parentAggregate := c.durable[parent]; parentAggregate != nil && parentAggregate.Descriptor.ChildSessionID != "" {
+			return parentAggregate.Descriptor.ChildSessionID
+		}
+	}
+	return aggregate.Descriptor.OwnerSessionID
+}
+
+// ownedStableSnapshots returns every direct child delegate of owner, whatever
+// its isolation. ParentDelegateID is the direct-owner relation; OwnerSessionID
+// authenticates root-owned rows against this controller's root session.
+func (c *delegateTreeController) ownedStableSnapshots(owner *Session) []delegateWorktreeSnapshot {
 	if c == nil || owner == nil {
 		return nil
 	}
@@ -490,13 +648,25 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 	defer c.mu.Unlock()
 	rows := make([]delegateWorktreeSnapshot, 0)
 	for id, aggregate := range c.durable {
-		if aggregate == nil || aggregate.Descriptor.Isolation != "worktree" || !c.delegateOwnedBySessionLocked(owner, aggregate) {
+		if aggregate == nil || !c.delegateOwnedBySessionLocked(owner, aggregate) {
 			continue
 		}
 		rows = append(rows, c.stableWorktreeSnapshotLocked(id, aggregate))
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].delegateID < rows[j].delegateID })
 	return rows
+}
+
+// ownedStableWorktreeSnapshots returns only direct worktree children of owner.
+func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []delegateWorktreeSnapshot {
+	rows := c.ownedStableSnapshots(owner)
+	worktreeRows := make([]delegateWorktreeSnapshot, 0, len(rows))
+	for _, row := range rows {
+		if row.descriptor.Isolation == "worktree" {
+			worktreeRows = append(worktreeRows, row)
+		}
+	}
+	return worktreeRows
 }
 
 // delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
@@ -812,6 +982,46 @@ func (c *delegateTreeController) delegateOwnedBySessionLocked(owner *Session, ag
 	return parentID == owner.owningDelegateID
 }
 
+// delegateOwnerCanInstructTool resolves the direct parent that will receive a
+// delegate's report. Terminal reports are assembled by the root runtime, so
+// the reporter's own tool registry is not necessarily the recipient's.
+func (c *delegateTreeController) delegateOwnerCanInstructTool(reporter *Session, desc delegatestore.Descriptor, toolName string) bool {
+	if c == nil || reporter == nil || reporter.delegateController != c || desc.OwnerSessionID != c.rootSessionID {
+		return false
+	}
+	if desc.ParentDelegateID == "" {
+		return reporter.id == c.rootSessionID && reporter.owningDelegateID == "" && reporter.canInstructTool(toolName)
+	}
+
+	c.mu.Lock()
+	parent := c.durable[desc.ParentDelegateID]
+	if parent == nil || parent.Descriptor.OwnerSessionID != c.rootSessionID {
+		c.mu.Unlock()
+		return false
+	}
+	parentSessionID := parent.Descriptor.ChildSessionID
+	toolCeiling := append([]string(nil), parent.Descriptor.ToolNameCeiling...)
+	var ownerRuntime *Session
+	if live := c.live[desc.ParentDelegateID]; live != nil {
+		ownerRuntime = live.runtime
+		if ownerRuntime == nil && live.binding != nil {
+			ownerRuntime = live.binding.runtime
+		}
+	}
+	c.mu.Unlock()
+
+	if reporter.id == parentSessionID && reporter.owningDelegateID == desc.ParentDelegateID {
+		return reporter.canInstructTool(toolName)
+	}
+	if ownerRuntime != nil {
+		if ownerRuntime.id != parentSessionID || ownerRuntime.owningDelegateID != desc.ParentDelegateID || ownerRuntime.delegateController != c {
+			return false
+		}
+		return ownerRuntime.canInstructTool(toolName)
+	}
+	return slices.Contains(toolCeiling, toolName)
+}
+
 // hasWakePendingDelegateFor reports whether owner has any direct delegate in a
 // non-terminal phase (running/settling/stopping — a report or terminal
 // notification is guaranteed). It is the goal gate's early-exit existence
@@ -857,11 +1067,20 @@ func delegateRowVisibleTo(s *Session, parentID, ownerSessionID, visibleSessionID
 	if parentID != "" {
 		return true
 	}
-	creator := visibleSessionID
-	if creator == "" {
-		creator = ownerSessionID
-	}
+	creator := delegateCreatorSessionID(visibleSessionID, ownerSessionID)
 	return ownerSessionID == "" || creator == s.id || ownerSessionID == s.id
+}
+
+// delegateCreatorSessionID is the session that ran a delegate's create — the
+// identity a session's own delegate listings must key on. ReserveCreate
+// records the physical root that admitted the runtime as OwnerSessionID and
+// the creating session as VisibleSessionID (issue #4904); only descriptors
+// written before that split fall back to the owner.
+func delegateCreatorSessionID(visibleSessionID, ownerSessionID string) string {
+	if visibleSessionID != "" {
+		return visibleSessionID
+	}
+	return ownerSessionID
 }
 
 // closeStableWorktreeResumability atomically revalidates that a direct-owned
@@ -915,6 +1134,68 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 	}
 	row := c.stableWorktreeSnapshotLocked(delegateID, c.durable[delegateID])
 	return row, false, delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+}
+
+// sharedWorkspaceLaneRemovalReason is the durable resumability-closure reason
+// for a non-worktree delegate whose shared workspace lane is removed. The
+// delegate ran in the lane itself; once the lane is gone there is no working
+// directory to resume it into.
+const sharedWorkspaceLaneRemovalReason = "workspace_lane_removed"
+
+// closeSharedDelegateResumability permanently closes a direct-owned,
+// non-worktree delegate's resumability. It is the shared-workspace sibling of
+// closeStableWorktreeResumability: no lane is torn down here, but the record
+// must stop looking resumable at a working directory this operation is about to
+// remove (#1610). Quiescence is revalidated under the controller lock, so a
+// child that became active after the caller's scan refuses with
+// errDelegateTargetBusy.
+func (c *delegateTreeController) closeSharedDelegateResumability(owner *Session, delegateID, reason string) (delegateMutationPlans, error) {
+	if c == nil || owner == nil {
+		return delegateMutationPlans{}, errDelegateNotControllable
+	}
+	c.mu.Lock()
+	for {
+		if c.closing {
+			c.mu.Unlock()
+			return delegateMutationPlans{}, errDelegateTargetBusy
+		}
+		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+			c.mu.Unlock()
+			<-blocker
+			c.mu.Lock()
+			continue
+		}
+		break
+	}
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || !c.delegateOwnedBySessionLocked(owner, aggregate) {
+		return delegateMutationPlans{}, errDelegateNotControllable
+	}
+	if aggregate.Descriptor.Isolation == "worktree" {
+		return delegateMutationPlans{}, fmt.Errorf("delegate %s is worktree-isolated", delegateID)
+	}
+	members := c.subtreeMembersLocked(delegateID)
+	if c.stableWorktreeSubtreeActiveLocked(members) || c.runtimeReclamationIntersectsProcessWorkLocked(members) {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if strings.TrimSpace(reason) == "" {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if !aggregate.Resumable {
+		return delegateMutationPlans{}, nil
+	}
+	plan, err := c.appendResumabilityClosureLocked(delegateID, delegatestore.Event{
+		Kind:       delegatestore.EventDelegateResumabilityClosed,
+		DelegateID: delegateID,
+		ResumabilityClosed: &delegatestore.ResumabilityClosed{
+			Reason: reason,
+		},
+	})
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
 }
 
 func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegatestore.Aggregate, *delegateLiveState, error) {
@@ -1150,6 +1431,7 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.activityAt.After(snapshot.latestActivityAt) {
 			snapshot.latestActivityAt = live.activityAt
 		}
+		snapshot.activityReports = live.activityReports
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}

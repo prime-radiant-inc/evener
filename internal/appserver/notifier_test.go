@@ -34,3 +34,11 @@ func TestNotifierReplaysAfterCursor(t *testing.T) {
 		t.Fatalf("all=%+v", all)
 	}
 }
+
+func TestNewNotifierDefaultsANonPositiveLimit(t *testing.T) {
+	for _, limit := range []int{0, -5} {
+		if n := NewNotifier(limit); n.limit != 1000 {
+			t.Fatalf("NewNotifier(%d).limit = %d, want the default 1000", limit, n.limit)
+		}
+	}
+}

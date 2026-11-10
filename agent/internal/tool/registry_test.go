@@ -1345,7 +1345,7 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 	}
 	full := strings.Join(lines, "\n")
 
-	got := truncateHeadCount(full, 10, 0)
+	got, _ := truncateHeadCountReason(full, 10, 0)
 
 	// No front-truncation: the first 10 entries must all be present, in order.
 	for i := range 10 {
@@ -1369,7 +1369,7 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 
 func TestTruncateHeadCount_UnderLimitReturnsUnchanged(t *testing.T) {
 	full := "a\nb\nc"
-	got := truncateHeadCount(full, 10, 0)
+	got, _ := truncateHeadCountReason(full, 10, 0)
 	if got != full {
 		t.Fatalf("expected unchanged output under the cap, got:\n%s", got)
 	}
@@ -1385,7 +1385,7 @@ func TestTruncateHeadCount_AppliesCharCapAfterLineCap(t *testing.T) {
 	lines := []string{longLine, longLine, longLine, longLine, longLine} // 5 lines, well under maxEntries
 	full := strings.Join(lines, "\n")
 
-	got := truncateHeadCount(full, 100, 8_000)
+	got, _ := truncateHeadCountReason(full, 100, 8_000)
 
 	if len([]rune(got)) > 8_000 {
 		t.Fatalf("expected char cap to hold, got %d chars", len([]rune(got)))
@@ -1403,7 +1403,7 @@ func TestTruncateHeadCount_AppliesCharCapAfterLineCap(t *testing.T) {
 // lines that's already within maxEntries can still be too many characters.
 func TestTruncateHeadCount_CharCapAppliesEvenUnderLineCap(t *testing.T) {
 	full := strings.Repeat("y", 50_000)
-	got := truncateHeadCount(full, 500, 20_000)
+	got, _ := truncateHeadCountReason(full, 500, 20_000)
 	if len([]rune(got)) > 20_000 {
 		t.Fatalf("expected char cap to hold even though line count never exceeded maxEntries, got %d chars", len([]rune(got)))
 	}
@@ -1547,4 +1547,179 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 	if res.IsError || res.Truncated || res.Output != body {
 		t.Fatalf("default use_skill dispatch truncated complete content: error=%v truncated=%v", res.IsError, res.Truncated)
 	}
+}
+
+// TestRegistry_MarksPreExecutionRejections proves Rejected names exactly the
+// calls a pre-execution gate refused: the breaker park, unknown tool,
+// ValidateRawArguments, invalid arguments JSON, the ask_user shorthand
+// normalization, NormalizeArgs, PreValidate, schema validation, and a
+// middleware refusal — the nine gates ExecResult.Rejected's doc names. A tool
+// that RAN and returned an error is not a rejection, so the hook partition can
+// tell a refusal from a failure.
+//
+// This is the only test asserting Rejected at the unknown-tool gate;
+// TestToolRegistry_UnknownTool_ReturnsErrorResult covers that gate's error
+// result, but not the flag. From a real session execTool, an unknown name is
+// refused one layer earlier by prepareToolCall, so it arrives as PrevalOnly and
+// ExecuteCall never sees it — which is why the session-level partition test
+// (TestPostToolUseFailure_FiresForExecutedFailureOnly) exercises the breaker
+// park as its Rejected case instead, and does not claim unknown-tool coverage.
+func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
+	// registerProbe registers a tool that counts its own executions, so a
+	type probeOpts struct {
+		preValidate   func(map[string]any) error
+		normalizeArgs func(map[string]any) (map[string]any, error)
+	}
+	registerProbe := func(t *testing.T, r *Registry, name string, opts probeOpts) *int {
+		t.Helper()
+		calls := 0
+		if err := r.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        name,
+				Description: "rejection probe",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"path": map[string]any{"type": "string"}},
+					"required":   []string{"path"},
+				},
+			},
+			PreValidate:   opts.preValidate,
+			NormalizeArgs: opts.normalizeArgs,
+			// Arguments are dropped on purpose: the run must be counted even
+			// when the call reaches only the schema gate.
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				calls++
+				return "ran", nil
+			},
+		}); err != nil {
+			t.Fatalf("Register(%s): %v", name, err)
+		}
+		return &calls
+	}
+	// assertRejectedRefusal checks the refusal named its flag and that the tool
+	// never executed.
+	assertRejectedRefusal := func(t *testing.T, res ExecResult, calls *int) {
+		t.Helper()
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+		if calls != nil && *calls != 0 {
+			t.Fatalf("tool ran %d time(s) for a pre-execution refusal; want 0", *calls)
+		}
+	}
+
+	t.Run("unknown_tool", func(t *testing.T) {
+		reg := NewRegistry()
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "unknown_tool", ID: "id", Arguments: json.RawMessage(`{}`)})
+		assertRejectedRefusal(t, res, nil)
+	})
+
+	t.Run("validate_raw_arguments", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{})
+		oversized := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: oversized})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("invalid_arguments_json", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("ask_user_shorthand_normalization", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "ask_user", probeOpts{})
+		// A question without its options is the incomplete-shorthand refusal.
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "ask_user", ID: "id", Arguments: json.RawMessage(`{"question":"q"}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("normalize_args", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{
+			normalizeArgs: func(map[string]any) (map[string]any, error) {
+				return nil, errors.New("normalize refused")
+			},
+		})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("prevalidate", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{preValidate: func(map[string]any) error {
+			return errors.New("prevalidate refused")
+		}})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("schema_validation", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("middleware_refusal", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{})
+		reg.Use(func(context.Context, string, map[string]any) error { return errors.New("middleware refused") })
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("breaker_park", func(t *testing.T) {
+		reg := NewRegistry()
+		// The call must FAIL to build a streak; only failures park.
+		if err := reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        "flaky",
+				Description: "fails every time",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return nil, errors.New("same failure")
+			},
+		}); err != nil {
+			t.Fatalf("Register(flaky): %v", err)
+		}
+		call := llm.ToolCallData{Name: "flaky", ID: "id", Arguments: json.RawMessage(`{"path":"same"}`)}
+		// breakerThreshold failures park the next identical call; each of the
+		// first two runs is the tool's own failure, not a rejection.
+		for i := range breakerThreshold {
+			res := reg.ExecuteCall(context.Background(), nil, call)
+			if !res.IsError || res.Rejected {
+				t.Fatalf("pre-park run %d = %+v, want IsError and Rejected=false", i, res)
+			}
+		}
+		res := reg.ExecuteCall(context.Background(), nil, call)
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("parked run = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("executed_failure_is_not_rejected", func(t *testing.T) {
+		reg := NewRegistry()
+		reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        "boom",
+				Description: "fails after running",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return nil, errors.New("ran and failed")
+			},
+		})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "boom", ID: "id", Arguments: json.RawMessage(`{}`)})
+		if !res.IsError {
+			t.Fatalf("result = %+v, want IsError", res)
+		}
+		if res.Rejected {
+			t.Fatalf("a tool that ran and returned an error is not a rejection: %+v", res)
+		}
+	})
 }

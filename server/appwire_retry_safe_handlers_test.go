@@ -10,6 +10,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -218,6 +219,29 @@ func TestRetrySafeHandlersRefuseWhileThreadClearHoldsTheGate(t *testing.T) {
 				t.Fatal("callback ran while thread clear held the gate")
 			}
 		})
+	}
+}
+
+// TestWithMutationReadWaitsForThreadClear pins the input-loop side of the same
+// gate: an automatic turn admitted while clear owns the write side waits until
+// clear releases it, then runs against whatever session clear installed.
+func TestWithMutationReadWaitsForThreadClear(t *testing.T) {
+	srv := newRetrySafeTestServer()
+	srv.appMutationGate.Lock()
+	ran := make(chan struct{})
+	go func() {
+		srv.WithMutationRead(func() { close(ran) })
+	}()
+	select {
+	case <-ran:
+		t.Fatal("automatic input ran while thread/clear held the mutation gate")
+	case <-time.After(50 * time.Millisecond):
+	}
+	srv.appMutationGate.Unlock()
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("automatic input did not run after thread/clear released the mutation gate")
 	}
 }
 

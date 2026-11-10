@@ -178,9 +178,7 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 	editClient := dialHubRPC(t, hub)
 	defer editClient.Close()
 	mustInitializeHubClient(t, client)
-	if _, err := editClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize(edit client): %v", err)
-	}
+	mustInitializeHubClient(t, editClient)
 
 	const (
 		authoredURL = "http://127.0.0.1:9/v1?tenant=authored"

@@ -75,6 +75,7 @@ import {
   absoluteTime,
   EMPTY_TASKS_PANEL_ENTRY,
   groupTasks,
+  isKnownTaskStatus,
   relativeTime,
   type TaskRow,
   taskAggregateLabel,
@@ -92,7 +93,7 @@ import {
   VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
+import { TaskCheck, taskStatusTouch, taskStatusWord } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
 
 export interface TasksPanelProps {
@@ -128,6 +129,7 @@ const CLASS = {
   summaryLine: requireClass(styles.summaryLine, "taskspanel.module.css", "summaryLine"),
   descDim: requireClass(styles.descDim, "taskspanel.module.css", "descDim"),
   descStruck: requireClass(styles.descStruck, "taskspanel.module.css", "descStruck"),
+  statusWord: requireClass(styles.statusWord, "taskspanel.module.css", "statusWord"),
   time: requireClass(styles.time, "taskspanel.module.css", "time"),
   latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
   latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
@@ -295,16 +297,23 @@ function TaskRowView({ task, sessionRef, settled = false, renderTime }: TaskRowV
   ) : null;
   const summary = (
     <>
-      <TaskCheck touch={STATUS_TOUCH[task.status]} />
+      <TaskCheck touch={taskStatusTouch(task.status)} />
       <span className={CLASS.summaryMain}>
         <span className={CLASS.summaryLine}>
-          {/* The glyph is aria-hidden by design; its status word rides
+          {/* The glyph is aria-hidden by design; a known status word rides
               visually-hidden beside the label, the same word the card's
-              rows carry. */}
-          <VisuallyHidden>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</VisuallyHidden>
+              rows carry. An unrecognized status has no word in that
+              vocabulary, so the visible caption below carries its own raw
+              word - announced once, not twice. */}
+          {isKnownTaskStatus(task.status) && <VisuallyHidden>{taskStatusWord(task.status)}</VisuallyHidden>}
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
+          {!isKnownTaskStatus(task.status) && (
+            <span className={CLASS.statusWord} data-testid="task-status-word">
+              {task.status}
+            </span>
+          )}
           {time}
         </span>
         {latest && (

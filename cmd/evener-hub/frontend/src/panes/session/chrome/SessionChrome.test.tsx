@@ -20,6 +20,7 @@ import {
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
@@ -27,6 +28,7 @@ import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -248,11 +250,13 @@ test("composer placement renders one ordered inline status and actions cluster w
 });
 
 // The composer's narrow layout relocates Stop and Steer into this menu
-// (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap), so the verbs
-// must reach it ONLY through the composer placement: the footer and
-// menu-only mounts share SessionMenu with the rail, where no draft exists
-// for Steer to send.
-test("turn verbs ride the composer placement's menu and no other placement's", async () => {
+// (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap), and the phone's
+// collapsed row makes its menu placement the phone's only session menu while
+// the composer rests - SessionMenu's own header contract keeps Stop there at
+// every width. Both composer-row mounts carry the verbs; the footer mount and
+// the notLoaded menu mount (which passes no turnVerbs) share SessionMenu with
+// the rail, where no draft exists for Steer to send.
+test("turn verbs ride both composer row mounts' menus and no other mount's", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_turn"));
@@ -262,24 +266,36 @@ test("turn verbs ride the composer placement's menu and no other placement's", a
     steer: { onSelect: () => {} },
   };
 
-  const expectNoTurnVerbs = async (placement?: SessionChromePlacement) => {
-    render(<SessionChromeView ref="ref_turn" placement={placement} turnVerbs={turnVerbs} />);
+  const openMenu = async () => {
     await user.click(screen.getByRole("button", { name: /session actions/i }));
+  };
+  const expectVerbsInMenu = async () => {
+    expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Steer" })).toBeTruthy();
+    cleanup();
+  };
+  const expectNoTurnVerbs = async (placement?: SessionChromePlacement, verbs?: typeof turnVerbs) => {
+    render(<SessionChromeView ref="ref_turn" placement={placement} turnVerbs={verbs} />);
+    await openMenu();
     expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
     cleanup();
   };
 
   render(<SessionChromeView ref="ref_turn" placement="composer" turnVerbs={turnVerbs} />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Steer" })).toBeTruthy();
-  cleanup();
+  await openMenu();
+  await expectVerbsInMenu();
 
-  // The default (footer) and menu-only mounts share SessionMenu with the
+  // The phone's collapsed row: the menu placement with the verbs supplied.
+  render(<SessionChromeView ref="ref_turn" placement="menu" turnVerbs={turnVerbs} />);
+  await openMenu();
+  await expectVerbsInMenu();
+
+  // The notLoaded menu mount supplies no verbs, and the footer mount never
+  // carries them even when handed them: both share SessionMenu with the
   // rail, where no draft exists for Steer to send.
-  await expectNoTurnVerbs();
   await expectNoTurnVerbs("menu");
+  await expectNoTurnVerbs(undefined, turnVerbs);
 });
 
 test("default placement preserves the standalone session chrome presentation", async () => {
@@ -407,15 +423,6 @@ test("desktop Session actions opens the full Verbosity Dialog, persists selectio
   );
   expect(document.activeElement).toBe(activity);
 
-  const presentation = within(dialog).getByRole("radiogroup", { name: "Presentation" });
-  await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
-  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
-  expect((activity as HTMLButtonElement).disabled).toBe(true);
-  await user.click(within(presentation).getByRole("radio", { name: "Standard" }));
-  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
-  expect((activity as HTMLButtonElement).disabled).toBe(false);
-  expect(activity.getAttribute("aria-checked")).toBe("true");
-
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
   expect(document.activeElement).toBe(actions);
@@ -460,10 +467,6 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
     const detailEditor = within(sheet).getByRole("region", { name: "Transcript detail editor" });
     expect(within(detailEditor).getAllByRole("radio")).toHaveLength(6);
     expect(detailEditor.querySelector("summary")).not.toBeNull();
-    const presentation = within(sheet).getByRole("radiogroup", { name: "Presentation" });
-    await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
-    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("comic");
-    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
@@ -1044,7 +1047,7 @@ test("the cadence slot is desktop-hidden and mobile-shown (CSS source, jsdom has
   const base = css.match(/\.cadenceSlot \{([^}]*)\}/);
   expect(base).not.toBeNull();
   expect(base![1]).toContain("display: none");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
   const slot = mobile![1]!.match(/\.cadenceSlot \{([^}]*)\}/);
   expect(slot).not.toBeNull();

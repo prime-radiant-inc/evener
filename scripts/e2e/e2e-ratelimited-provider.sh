@@ -97,6 +97,7 @@ e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 cd "$repo_root"
 e2e_build_binary fake429 "$run/fake429" "$repo_root/test/e2e/fake429"
 e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
+e2e_build_binary providers-toml "$run/providers-toml" "$repo_root/test/e2e/providers/cmd"
 
 e2e_isolate_home "$run"
 
@@ -109,10 +110,17 @@ e2e_wait_for_port "$run/fake429.log" "$fake429_pid" fake429
 fake429_addr="127.0.0.1:$e2e_port"
 
 # Wire providers.toml at fake429's real address, into the isolated hub's own
-# $HOME/.config/evener — a copy, not a pointer back into the repo tree, so
-# nothing here can leave the checkout dirty even if the hub later rewrites
-# the file.
-sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"
+# $HOME/.config/evener. The one writer spells the registry schema (#4445); it
+# writes a new file, not a pointer back into the repo tree, so nothing here can
+# leave the checkout dirty even if the hub later rewrites the file.
+"$run/providers-toml" \
+	--out "$HOME/.config/evener/providers.toml" \
+	--default ratelimited \
+	--base-url "http://$fake429_addr/v1"
+
+# e2e_isolate_home unsets the operator's provider paths; name the isolated
+# file so the hub cannot fall back to anything else.
+export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"
 
 echo "==> starting evener hub" >&2
 "$run/evener" hub -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &

@@ -148,6 +148,12 @@ type toolDeps struct {
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
+	// wakeableWork reports whether a resting session can be woken; see
+	// Session.hasWakeableWork for the sources it counts. The communicate
+	// handler refuses end_reason waiting_on_work when it returns false.
+	// Nil disables the refusal.
+	wakeableWork func() bool
+
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
 	// warning can tell the truth about what happens to those jobs. Captured by
 	// value: the flag is fixed for a session's lifetime.
@@ -240,6 +246,9 @@ type taskGuard struct {
 	// afterFailedTaskReload is a test-only scheduling seam after a failed retry
 	// Load has released the store lock. Production leaves it nil.
 	afterFailedTaskReload func()
+	// beforeAutoAdvance is a test-only seam immediately before a post-commit
+	// auto-advance update. Production leaves it nil.
+	beforeAutoAdvance func()
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
@@ -312,8 +321,8 @@ func newToolDeps(s *Session) *toolDeps {
 		emit:                s.emit,
 		deliverCommunicate:  s.deliverCommunicate,
 		postDelegateUpdate:  s.postDelegateUpdate,
-		steer:               s.SteerKind,
-		steerTaskCompletion: s.SteerTaskCompletion,
+		steer:               s.steerKind,
+		steerTaskCompletion: s.steerTaskCompletion,
 		drainSteering:       s.drainSteeringForCommunicate,
 		prependSteering:     s.prependSteering,
 		abort:               s.abortIfClosing,
@@ -374,10 +383,11 @@ func newToolDeps(s *Session) *toolDeps {
 			search: s.webSearch,
 		},
 		requestSkillCompaction: s.requestSkillCompaction,
-		pressure:               s.ContextPressure,
+		pressure:               s.contextPressure,
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
+		wakeableWork:           s.hasWakeableWork,
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),

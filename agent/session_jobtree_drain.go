@@ -735,7 +735,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		}
 		if now.After(phase.secondWindowStartedAt.Add(DrainStallTimeout)) {
 			s.clearDrainGraceChild(child.id)
-			s.recordDrainAbandonedChild(child.id, row.id, row.generation)
+			s.recordDrainAbandonedChild(child.id, row.id, row.generation, "two drain grace windows passed with its run still open")
 			continue
 		}
 	}
@@ -843,7 +843,7 @@ func (s *Session) clearDrainGraceTree() {
 // longer outstanding at all, and the drain quiesces normally instead of
 // reaching the stall watchdog's give-up. Warning at the decision point is the
 // only placement that reports the abandonment on every path.
-func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, generation uint64) {
+func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, generation uint64, reason string) {
 	s.drainAbandonedMu.Lock()
 	if s.drainAbandonedChildren == nil {
 		s.drainAbandonedChildren = make(map[string]drainAbandonedChild)
@@ -855,11 +855,34 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 		return
 	}
 	s.emit(events.WarningData{
-		Message:    fmt.Sprintf("no longer waiting on delegate %s after two drain grace windows with its run still open", delegateID),
+		Message:    fmt.Sprintf("no longer waiting on delegate %s: %s", delegateID, reason),
 		Source:     "drain",
 		Code:       events.WarningCodeDelegateAbandonedByDrain,
 		DelegateID: delegateID,
 	})
+}
+
+// recordDrainAbandonedChildOnLaneRefusal marks the child whose lane failed
+// revalidation as given up on, so the drain's liveness walks stop counting
+// its pending attention and notifications as deliverable work and every
+// drive loop (they all read the same gate) stops paying the revalidation on
+// each pass. Without the stamp a refused lane holds the drain open until
+// its context is cancelled: the pending can never be delivered while the
+// lane is gone, foreign-held, or unverifiable. The stamp is keyed to the
+// row's generation, so a relaunch clears it, and a revive path that
+// revalidates the lane successfully clears it too
+// (reviveValidateIsolationLane) — a lane that comes back is driven again.
+func (s *Session) recordDrainAbandonedChildOnLaneRefusal(sub *subagent, reason string) {
+	if s == nil || sub == nil || sub.sess == nil {
+		return
+	}
+	row, ok := s.directDelegateForChildSession(sub.sess.id)
+	if !ok {
+		// Nothing tracks this child as a delegate row, so no drain walk
+		// reads a stamp for it anyway; the refusal alone is the signal.
+		return
+	}
+	s.recordDrainAbandonedChild(sub.sess.id, row.id, row.generation, reason)
 }
 
 // childDrainAbandoned reports whether the one-shot drain has given up waiting on
@@ -879,6 +902,23 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	defer s.drainAbandonedMu.Unlock()
 	abandoned, exists := s.drainAbandonedChildren[childSessionID]
 	return exists && abandoned.generation == row.generation
+}
+
+// clearDrainAbandonedDelegate clears every drain-abandonment stamp recorded
+// for delegateID, so a child given up on because its lane failed
+// revalidation is driven and waited on again the moment a later revive path
+// re-establishes the lane (or finds the delegate needs none).
+func (s *Session) clearDrainAbandonedDelegate(delegateID string) {
+	if s == nil || delegateID == "" {
+		return
+	}
+	s.drainAbandonedMu.Lock()
+	for childSessionID, abandoned := range s.drainAbandonedChildren {
+		if abandoned.delegateID == delegateID {
+			delete(s.drainAbandonedChildren, childSessionID)
+		}
+	}
+	s.drainAbandonedMu.Unlock()
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its
@@ -961,10 +1001,10 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 	return s.drainJobTreeUsing(ctx, s.ProcessInputKind)
 }
 
-// DrainJobTreeKeepingReport is DrainJobTree for a delegate that has already
+// drainJobTreeKeepingReport is DrainJobTree for a delegate that has already
 // reported: a drain turn that ends with a terminal communicate replaces the
 // report, and a drain turn that ends without one leaves the report standing.
-func (s *Session) DrainJobTreeKeepingReport(ctx context.Context) (string, error) {
+func (s *Session) drainJobTreeKeepingReport(ctx context.Context) (string, error) {
 	return s.drainJobTreeUsing(ctx, s.keepingReport(s.ProcessInputKind))
 }
 
@@ -986,14 +1026,20 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		reported := s.Communicated()
+		reported := s.communicated()
 		res, err := process(ctx, input, images, kind)
 		if !reported {
 			return res, err
 		}
 		s.mu.Lock()
 		if !s.comm.called {
+			// The restore replaces the report fields, not the fact that this
+			// input sent a non-terminal update: keeping it makes a later
+			// missing-report reminder acknowledge that update instead of
+			// claiming the delegate never communicated (#3734).
+			updated := s.comm.updated
 			s.comm = s.latestReport
+			s.comm.updated = updated
 			if isNoReportFailure(err) {
 				err = nil
 			}
@@ -1407,7 +1453,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// only user-sourced steering, so a carrier turn stands down
 					// before any model call — which is exactly how an earlier
 					// attempt at this shipped inert.
-					if err := s.SteerKind(text, events.SteeringKindNotification); err != nil {
+					if err := s.steerKind(text, events.SteeringKindNotification); err != nil {
 						bgAnnounced[setKey]--
 						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("job announcement admission failed: %v", err)})
 						return lastResult, err
@@ -1492,6 +1538,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// A wake that releases the wait below is consumed by it, so take the
 		// edge back before parking: the next pass must treat the wake as its
 		// own and kick at full rate instead of skipping on a stale streak.
+		if hook := s.cfg.testOnly.jobTreeDrainParked; hook != nil {
+			hook(s)
+		}
 		wokeByWait, err := waitDrainWake(ctx, wake, recheck)
 		if err != nil {
 			return lastResult, err

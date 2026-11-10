@@ -294,8 +294,8 @@ func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult
 		Name:      "delegate_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume through registered tool"}`, fixture.delegateID)),
 	})
-	if call.IsError {
-		t.Fatalf("registered post-commit restore failure returned a transport error: %s", call.Output)
+	if !call.IsError {
+		t.Fatalf("registered post-commit restore failure was not marked as an error: %s", call.Output)
 	}
 	var result struct {
 		DelegateID          string `json:"delegate_id"`
@@ -329,12 +329,10 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 			{name: "maximum", requested: 60_001, want: 60 * time.Second},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
-				fixture := newColdDelegateFixture(t, "")
-				root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
-				if err != nil {
-					t.Fatalf("restore root: %v", err)
-				}
-				defer root.Close()
+				// The child holds its first model turn until cleanup, so on the
+				// success path no terminal packet can answer the inline wait:
+				// the cancelled wait is the only thing that ends the send.
+				root, fixture, entered, _ := newBlockingColdDelegateRuntime(t)
 				if failure {
 					root.cfg.testOnly.sessionInitFault = func(point string) error {
 						if point == "builtin_agents" {
@@ -354,6 +352,10 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 					observed = true
 					observedDuration = duration
 					_, observedDeadline = waitCtx.Deadline()
+					if !failure {
+						// Cancel only once the launched child is mid-turn.
+						<-entered
+					}
 					cancelCall()
 				}
 				arguments, err := json.Marshal(map[string]any{
@@ -369,8 +371,8 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 					Name:      "delegate_send",
 					Arguments: arguments,
 				})
-				if call.IsError {
-					t.Fatalf("registered %s send: %s", path, call.Output)
+				if call.IsError != failure {
+					t.Fatalf("registered %s send IsError = %v, want %v: %s", path, call.IsError, failure, call.Output)
 				}
 				if !observed || !observedDeadline {
 					t.Fatalf("registered %s wait was not observed with a deadline", path)
@@ -1187,10 +1189,10 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 		// role floor for a hook side effect.
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("before generic Stop continuation") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("after generic Stop continuation") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
 	abortUnpersistedDelegateOutcome(t, outcome)
@@ -1611,11 +1613,11 @@ func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClo
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseProvider) }) }
 	t.Cleanup(release)
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-releaseProvider
 		return agenttest.FinalResponse("provider released after stop")
-	}}
+	}})
 	root := restoreSupervisionRoot(t, fixture, clock)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "block for stop", 0)
 	if started.result.Err != nil {
@@ -2408,11 +2410,11 @@ func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldDelegateFixture
 	fixture := newColdDelegateFixture(t, "")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
 		return agenttest.CommunicateResponse(true, "done")
-	}}
+	}})
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -2434,7 +2436,16 @@ func newColdDelegateFixture(t *testing.T, sharedOwner string) coldDelegateFixtur
 
 func newColdDelegateFixtureConfigured(t *testing.T, sharedOwner string, configure func(*delegatestore.Descriptor)) coldDelegateFixture {
 	t.Helper()
-	meta, client, profile, stateDir, workspace, adapter := closedDelegateResourceBootstrapFixture(t)
+	return newColdDelegateFixtureConfiguredInState(t, sharedOwner, realTempDirForTest(t), configure)
+}
+
+// newColdDelegateFixtureConfiguredInState builds the cold delegate fixture
+// with the parent session inside a caller-chosen state directory, so a test
+// can share one state root between the parent and the session that examines
+// it.
+func newColdDelegateFixtureConfiguredInState(t *testing.T, sharedOwner, stateDir string, configure func(*delegatestore.Descriptor)) coldDelegateFixture {
+	t.Helper()
+	meta, client, profile, _, workspace, adapter := closedDelegateResourceBootstrapFixtureInState(t, stateDir)
 	delegateID := identifier.MustNewDelegateID()
 	childID := identifier.MustNewSessionID()
 	config := meta.Config.Clone()

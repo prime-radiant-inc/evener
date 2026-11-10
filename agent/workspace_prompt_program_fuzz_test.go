@@ -229,7 +229,7 @@ func wppGitSnapshot(t *testing.T, token string) {
 	if origin := gitOriginURL(context.Background(), env, ""); origin != "https://example.invalid/"+token+".git" {
 		t.Fatalf("origin = %q", origin)
 	}
-	inRepo, branch, modified, untracked, commits, _ := snapshotGit(context.Background(), env, nested)
+	inRepo, branch, modified, untracked, commits, _, _ := snapshotGit(context.Background(), env, nested)
 	if !inRepo || branch != "feature/"+token || modified != 2 || untracked != 2 || strings.Join(commits, ",") != "abc first,def second" {
 		t.Fatalf("snapshot = repo:%v branch:%q modified:%d untracked:%d commits:%#v", inRepo, branch, modified, untracked, commits)
 	}
@@ -240,12 +240,12 @@ func wppGitSnapshot(t *testing.T, token string) {
 	if gitOriginURL(context.Background(), nil, nested) != "" {
 		t.Fatal("nil origin environment returned a value")
 	}
-	if snapshot, branch, modified, untracked, commits, _ := snapshotGit(context.Background(), nil, nested); snapshot || branch != "" || modified != 0 || untracked != 0 || commits != nil {
+	if snapshot, branch, modified, untracked, commits, _, _ := snapshotGit(context.Background(), nil, nested); snapshot || branch != "" || modified != 0 || untracked != 0 || commits != nil {
 		t.Fatalf("nil snapshot = %v %q %d %d %#v", snapshot, branch, modified, untracked, commits)
 	}
 	noRepo := t.TempDir()
 	noRepoEnv := &wppEnv{workDir: noRepo}
-	if inRepo, _, _, _, _, _ := snapshotGit(context.Background(), noRepoEnv, noRepo); inRepo || len(noRepoEnv.calls) != 0 {
+	if inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), noRepoEnv, noRepo); inRepo || len(noRepoEnv.calls) != 0 {
 		t.Fatalf("non-repo snapshot invoked scripted command: repo=%v calls=%#v", inRepo, noRepoEnv.calls)
 	}
 	if !hasGitMetadataAncestor("") || !hasGitMetadataAncestor("relative") || !hasGitMetadataAncestor(nested) || hasGitMetadataAncestor(noRepo) {
@@ -255,7 +255,7 @@ func wppGitSnapshot(t *testing.T, token string) {
 	insideFalse := &wppEnv{workDir: nested, replies: map[string]wppReply{
 		"git rev-parse --is-inside-work-tree": {result: execenv.ExecResult{Stdout: "false\n"}},
 	}}
-	if inRepo, _, _, _, _, _ := snapshotGit(context.Background(), insideFalse, nested); inRepo || len(insideFalse.calls) != 1 {
+	if inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), insideFalse, nested); inRepo || len(insideFalse.calls) != 1 {
 		t.Fatalf("false inside-work-tree snapshot = repo:%v calls:%#v", inRepo, insideFalse.calls)
 	}
 	partial := &wppEnv{workDir: nested, replies: map[string]wppReply{
@@ -268,13 +268,13 @@ func wppGitSnapshot(t *testing.T, token string) {
 	if origin := gitOriginURL(context.Background(), partial, nested); origin != "" {
 		t.Fatalf("failed origin = %q", origin)
 	}
-	if inRepo, branch, modified, untracked, commits, _ := snapshotGit(context.Background(), partial, nested); !inRepo || branch != "" || modified != 0 || untracked != 0 || len(commits) != 0 {
+	if inRepo, branch, modified, untracked, commits, _, _ := snapshotGit(context.Background(), partial, nested); !inRepo || branch != "" || modified != 0 || untracked != 0 || len(commits) != 0 {
 		t.Fatalf("partial snapshot = repo:%v branch:%q modified:%d untracked:%d commits:%#v", inRepo, branch, modified, untracked, commits)
 	}
 	blankCWD := &wppEnv{workDir: nested, replies: map[string]wppReply{
 		"git rev-parse --is-inside-work-tree": {result: execenv.ExecResult{Stdout: "false"}},
 	}}
-	if inRepo, _, _, _, _, _ := snapshotGit(context.Background(), blankCWD, ""); inRepo || len(blankCWD.calls) != 1 {
+	if inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), blankCWD, ""); inRepo || len(blankCWD.calls) != 1 {
 		t.Fatalf("blank cwd snapshot = repo:%v calls:%#v", inRepo, blankCWD.calls)
 	}
 }
@@ -348,7 +348,7 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	if got := sess.cachedSystemPrompt; got != "test system prompt" {
 		t.Fatalf("minimal cached prompt = %q", got)
 	}
-	sess.RegisterTool("wpp_custom", "custom fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("wpp_custom", "custom fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
 	})
 	sess.mcpTools = []llm.ToolDefinition{{Name: "wpp_mcp", Description: "mcp fixture"}}
@@ -371,11 +371,17 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
 	sess.refreshSystemPromptCache(env)
-	prompt, warning := sess.renderSystemPrompt(env)
-	if warning != "" {
-		t.Fatalf("unexpected render warning: %q", warning)
+	prompt, warning, failed := sess.renderSystemPrompt(env)
+	// The fixture deliberately configures a missing append file: the render
+	// itself must still succeed, and the omission must be disclosed rather than
+	// silently dropped.
+	if failed {
+		t.Fatalf("render failed: %s", warning)
 	}
-	again, _ := sess.renderSystemPrompt(env)
+	if warning == "" {
+		t.Fatal("a configured but unreadable append file was not disclosed")
+	}
+	again, _, _ := sess.renderSystemPrompt(env)
 	if prompt != again || prompt != sess.cachedSystemPrompt {
 		t.Fatal("system prompt cache/render was not deterministic")
 	}

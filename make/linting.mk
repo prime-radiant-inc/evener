@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-biome lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -106,34 +106,34 @@ lint-internal: build-dev
 # from the repo root, and a module-list-driven linter only reaches what the
 # list names.
 #
-# The second run is the server/appwire_*.go camelCase regime. tagliatelle's
-# overrides are per-package and those files share package `server` with 119
-# snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
-# holds the other half and explains itself.
+# The second run checks the AppWire and device voice camelCase regimes.
+# tagliatelle's overrides are per-package, but these files share packages
+# with snake_case surfaces; .golangci-appwire.yml retains only the exact
+# wire files/fields and holds the other half of the split.
 #
 # The module-lint sweep runs a second time with GOOS=darwin whenever the host
 # is not darwin. golangci-lint compiles only the files its GOOS selects, so a
 # Linux CI host's pass compiles no _darwin.go file and a darwin-only finding
 # reaches main unlinted, first failing the gate for whoever next runs it on a
 # Mac (agent/execenv/process_boundary_darwin.go arrived with five findings this
-# way, #2847). The appwire pass is one module and needs no such repeat.
+# way, #2847). The separately scoped AppWire/voice pass runs on the host.
 ## golangci-lint across every workspace module, plus the second
-## appwire-specific camelCase pass over server/appwire_*.go. The module sweep
+## AppWire/voice camelCase pass over explicitly scoped wire files. The module sweep
 ## repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI.
-## See "The server/appwire_*.go camelCase regime" in
+## See "The AppWire and voice camelCase regimes" in
 ## docs/developing-evener/linting.md.
 ## proves: golangci-lint's full ruleset (struct-tag casing, formatting,
 ##   exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES
 ##   workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a
-##   darwin-only source is linted on a Linux host (#2928); and the appwire
-##   camelCase regime holds for server/appwire_*.go.
+##   darwin-only source is linted on a Linux host (#2928); and AppWire/voice
+##   camelCase holds without exempting unrelated snake_case surfaces.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: golangci-lint fails for any module, under the host GOOS or, off
 ##   darwin, under GOOS=darwin.
 lint-golangci: build-dev
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/... ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.
@@ -200,7 +200,7 @@ lint-gofmt:
 ## fails-when: `make generate` exits nonzero, an expected output is no longer
 ##   tracked, or regenerated output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md docs/developing-evener/config-knobs.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts appwire-client/typescript/reasoningEffort.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md docs/developing-evener/config-knobs.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that
@@ -274,43 +274,49 @@ lint-js-toolchain-pins:
 lint-tracked-file-size:
 	$(call run_quiet_lint,scripts/ops/tracked-file-size-check.sh)
 
-# lint-biome delegates to the frontend's own `lint` script, the same command
-# the web job's `make test-web` runs, so the two scopes are defined in exactly
-# one place and cannot drift. It runs that script from cmd/evener-hub/frontend
-# so npm resolves `biome` from that install's node_modules. No `biome` is
-# installed at the repository root (mobile-native carries its own @biomejs/biome
-# for the native tree, which a root `npx biome` never resolves), so a root
-# `npx biome` downloads the unrelated `biome@0.3.3`, which ignores its arguments
-# and exits 0 (issue
-# #1406: every root-scoped "biome both scopes" invocation reported green while
-# checking nothing). web-preflight owns the install-readiness definition the
-# other web targets use, so this gate cannot run against a stale or missing
-# node_modules.
-## Run the frontend's Biome over cmd/evener-hub/frontend/src and
-## appwire-client/typescript via the frontend `lint` script.
-## proves: Both frontend Biome scopes pass the @biomejs/biome ruleset, run by
-##   the frontend install's own `lint` script (the same command the web job
-##   runs) rather than the unrelated root-resolved `biome` package.
-## trigger: Required CI (the web job's make test-web runs the same frontend
-##   lint script); local make lint.
-## requires: The frontend node_modules install; web-preflight makes it ready
-##   (and refuses npm ci through a symlinked install).
-## fails-when: The frontend `lint` script is nonzero in either scope.
-lint-biome: web-preflight
-	$(call run_quiet_lint,cd cmd/evener-hub/frontend && npm run lint)
+# lint-repo-audit holds the repository's own source, scripts and Makefile to
+# the rules that fail on what a change writes rather than on what the code
+# does, so they gate in lint instead of red-ing an unrelated package's tests.
+## Run the repository source audits in internal/devtool/repoaudit: no new
+## copy-only or error-text test, one source for shared constants and configs,
+## and safe scratch and recursive deletes in scripts and Makefile recipes.
+## proves: No Go test checks only wording or adds an error-text assertion
+##   beyond its allowlist; the quiet threshold, custom content seed, effort
+##   vocabulary, canonical temp-dir helper and e2e providers.toml writer each
+##   have one source; projection-work test policy stays in the host; the
+##   coverage scripts count through covstmt; the e2e and UI runners isolate
+##   through the shared helpers; and no script or recipe mints scratch outside
+##   TMPDIR, before its trap, or deletes recursively from a variable beyond
+##   the reviewed allowlists; and mobile-native/.gitignore keeps the
+##   mobile-native/build derived-data tree untracked.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain and git.
+## fails-when: Any check in internal/devtool/repoaudit reports a finding.
+lint-repo-audit: build-dev
+	$(call run_quiet_lint,./evener-dev dev repo-audit)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-biome secret-scan
+# The frontend's Biome check runs from `make test-web` (cmd/evener-dev's
+# web-checks calls the frontend's own `npm run lint`), not from `make lint`:
+# one command, one owner. Running Biome from the repository root is wrong for a
+# second reason — no `biome` binary is installed there. mobile-native carries
+# its own @biomejs/biome for the native tree, which a root `npx biome` never
+# resolves, so a root `npx biome` downloads the unrelated `biome@0.3.3`, which
+# ignores its arguments and exits 0 (issue #1406: every root-scoped "biome both
+# scopes" invocation reported green while checking nothing).
 
-## Go lint, formatting, tagged floors, generated outputs, imports, frontend
-## Biome, and secrets.
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+
+## Go lint, formatting, tagged floors, generated outputs, imports, repository
+## source audits, and secrets. The frontend's Biome scopes run in `make
+## test-web`, not here.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
 ##   that no web or native import names the AppWire TypeScript package by
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
 ##   version across the npm trees; that no tracked file is over 1 MiB beyond a
-##   short allowlist; that the frontend's Biome lint script passes over both frontend scopes;
-##   and the repo secret scan.
+##   short allowlist; the repository source audits in
+##   internal/devtool/repoaudit; and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks, and the frontend node_modules install.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.

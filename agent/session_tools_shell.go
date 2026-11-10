@@ -168,6 +168,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			if err := s.refuseSleepOnlyShell(shellArgs.Command); err != nil {
+				return "", err
+			}
 			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
 			// cwd, or "" if omitted) against env now, once, for both the streaming and
 			// buffered dispatch paths below. Recorded on the job (see
@@ -186,7 +189,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
-				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg), s.cfg.TurnEndsProcess)
+				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg), shellToolResultMaxLines(reg), s.cfg.TurnEndsProcess)
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
@@ -284,8 +287,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				budget := execenv.NewGlobBudget()
 				matches, excluded, err = g.GlobWithBudget(ctx, pat, path, includeIgnored, budget)
 				truncatedAt = budget.TruncatedAt()
-			case execenv.GlobExcluder:
-				matches, excluded, err = g.GlobWithExclusions(ctx, pat, path, includeIgnored)
 			default:
 				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}
@@ -410,9 +411,39 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
+		if looksLikeShellFragment(raw) {
+			return "", fmt.Errorf("cwd %q is not a directory: %w", raw, errShellCwdIsCommand)
+		}
+		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory: %w", raw, abs, errShellCwdNotFound)
 	}
 	return abs, nil
+}
+
+var (
+	// errShellCwdNotFound: cwd names no existing directory.
+	errShellCwdNotFound = errors.New("cwd directory not found")
+	// errShellCwdIsCommand: cwd holds shell syntax that did not resolve to a
+	// directory. The model meant to put it in command.
+	errShellCwdIsCommand = errors.New("cwd takes one directory path; put cd, redirections and pipelines in command")
+)
+
+// looksLikeShellFragment reports whether a cwd value that failed path
+// validation reads as shell syntax: an operator, or whitespace-separated
+// words led by a common command name. The command list stays short so a
+// missing directory with spaces in its name keeps the ordinary error.
+func looksLikeShellFragment(raw string) bool {
+	if strings.ContainsAny(raw, "|&;<>`") || strings.Contains(raw, "$(") {
+		return true
+	}
+	fields := strings.Fields(raw)
+	return len(fields) > 1 && shellCommandWords[fields[0]]
+}
+
+var shellCommandWords = map[string]bool{
+	"cd": true, "ls": true, "git": true, "sed": true, "grep": true, "cat": true,
+	"find": true, "echo": true, "head": true, "tail": true, "awk": true,
+	"mkdir": true, "rm": true, "cp": true, "mv": true, "make": true,
+	"go": true, "npm": true, "test": true, "pwd": true,
 }
 
 // shellSingleQuote returns s as one literal word for a POSIX shell. The
@@ -534,12 +565,25 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 	return registered.Limit.MaxChars
 }
 
-func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool) (tool.StateResult, error) {
+// shellToolResultMaxLines returns the registry line bound for shell output, or
+// 0 when the registry imposes none.
+func shellToolResultMaxLines(reg *tool.Registry) int {
+	if reg == nil {
+		return 0
+	}
+	registered := reg.Get("shell")
+	if registered == nil {
+		return 0
+	}
+	return registered.Limit.MaxLines
+}
+
+func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool) (tool.StateResult, error) {
 	// complete-or-handle (spec §0.6): within-bound results carry a settle
 	// closure. Apply both layers — ride-whole budget (shellRideWholeBytes)
 	// and tool-result char bound (maxChars) — to decide keep vs discard.
 	if res.settle != nil {
-		return marshalCompleteOrHandleResult(res, maxChars, turnEndsProcess)
+		return marshalCompleteOrHandleResult(res, maxChars, maxLines, turnEndsProcess)
 	}
 
 	out := shellToolResult{
@@ -563,7 +607,14 @@ func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool)
 		out.DroppedBytes = res.DroppedBytes
 		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
-	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+	return tool.StateResult{
+		Output: formatShellResult(out),
+		State:  out,
+		// A failed shell status means the machinery could not launch or
+		// finalize the command; the model and the no-progress signal must see
+		// that as a failed call, not a successful mutation.
+		IsError: res.Status == string(jobstore.StatusFailed),
+	}, nil
 }
 
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
@@ -576,7 +627,7 @@ func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool)
 // If either layer triggers → settle(true) keeps the delayed job (durable),
 // returns a truncated tail + job_id. Otherwise → settle(false) discards the
 // delayed job (ephemeral), returns complete output inline with no job_id.
-func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProcess bool) (tool.StateResult, error) {
+func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool) (tool.StateResult, error) {
 	falseVal := false
 	out := shellToolResult{
 		Type:            res.Type,
@@ -601,7 +652,14 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProces
 	disp := shellResultDisposition(len(res.Output), len([]rune(formatShellResult(out))), maxChars, shellRideWholeBytes)
 	if !disp.Keep {
 		_ = res.settle(false)
-		return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+		return tool.StateResult{
+			Output: formatShellResult(out),
+			State:  out,
+			// A failed shell status means the machinery could not finalize
+			// the command; the model and the no-progress signal must see that
+			// as a failed call, not a successful mutation.
+			IsError: res.Status == string(jobstore.StatusFailed),
+		}, nil
 	}
 
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
@@ -611,11 +669,26 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProces
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
 	// through the job transcript_ref. The full output is retained in the durable job.
-	digest := shellInlineDigest(res.Output, res.TotalBytes, res.DroppedBytes)
+	// Reserve the rendered footer (and its newline) from the character bound so
+	// the registry never truncates away the digest's omission marker.
+	out.Output = nil
+	footerChars := 0
+	if maxChars > 0 {
+		footerChars = len([]rune(formatShellResult(out))) + 1
+	}
+	charBudget := 0
+	if maxChars > 0 {
+		charBudget = max(maxChars-footerChars, 1)
+	}
+	digest := shellInlineDigestFrom(res.Output, res.TotalBytes, res.DroppedBytes, res.RetainedStartPartial, maxLines, charBudget)
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated
-	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+	return tool.StateResult{
+		Output:  formatShellResult(out),
+		State:   out,
+		IsError: res.Status == string(jobstore.StatusFailed),
+	}, nil
 }
 
 // shellSettleDisposition is the keep-vs-discard decision for a within-bound

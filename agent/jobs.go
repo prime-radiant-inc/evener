@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,8 +79,15 @@ type jobManager struct {
 	transcriptRef    string
 	store            *jobstore.Store
 	running          map[string]*runningJob
-	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// noticesInFlight spans job finalization start or watch retirement through
+	// notification enqueue.
+	// Guarded by jm.mu, like running, which includes runs still finalizing.
+	noticesInFlight int
+	watches         map[watchKey]*watchConfig
+	terminalFlush   map[*watchConfig]bool
+	// hubRosterReplacement serializes roster setup through failure cleanup.
+	// Initialized under jm.mu, acquired without holding jm.mu or Session.mu.
+	hubRosterReplacement chan struct{}
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -187,6 +193,17 @@ type jobManager struct {
 	// stopReceiptsAfterCapture observes the subtree-stop boundary after exact
 	// live receipts are captured and before they are consumed. Nil in production.
 	stopReceiptsAfterCapture func()
+	// testOnlyAfterHubWatchDetach pauses after endHubWatch detaches its config
+	// and before the final terminal send is recorded. Nil in production.
+	testOnlyAfterHubWatchDetach func()
+	// testOnlyBeforeTerminalWatchSend runs inside endHubWatch's window between
+	// releasing the config lock and persisting the terminal send, where a
+	// concurrent prior-notice settlement must not strip the terminal
+	// delivery's eligibility. Nil in production.
+	testOnlyBeforeTerminalWatchSend func()
+	// testOnlyTerminalSendRetryDelay overrides the completion send's retry
+	// cadence in tests. Zero in production keeps the production delay.
+	testOnlyTerminalSendRetryDelay time.Duration
 	// watchReceiptBoundary observes entry into the delegate controller for a
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
@@ -196,6 +213,14 @@ type jobManager struct {
 	// Nil in production.
 	stableWatchArmFailure func(attentionID string) error
 	clock                 clock.Clock
+	// longRunningTimer is the armed reminder cadence for long-running shell
+	// jobs, nil while no shell job is running. Guarded by mu.
+	longRunningTimer clock.Timer
+	// reminderClock times that cadence. It is deliberately not clock: the
+	// job-lifecycle timers (foreground wait, finalize retry) must stay the only
+	// waiters on the job clock, or a test counting them with BlockUntil would
+	// see the 30-minute reminder instead.
+	reminderClock clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -595,12 +620,11 @@ type listFilter struct {
 	IncludeDescendants bool
 }
 
-// jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
+// jobsDir is the session work dir the job stores, delegate journal, and
+// worktrees live under; it exists so the agent package's many call sites keep
+// one short name for schema.SessionWorkDir.
 func jobsDir(stateDir, sessionID string) string {
-	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
-	}
-	return filepath.Join(schema.SessionsDir(stateDir), sessionID)
+	return schema.SessionWorkDir(stateDir, sessionID)
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)
@@ -648,6 +672,7 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
+		reminderClock:         clock.Real(),
 		closeGrace:            defaultCloseGrace,
 		quietWindow:           delegateQuietWindow,
 		quietCheckInterval:    delegateQuietCheckInterval,
@@ -713,6 +738,7 @@ func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
+	jm.stopLongRunningReminderLocked()
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
@@ -811,6 +837,7 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	// Refuse new process-local work and let idle progress tickers observe
 	// closing rather than being cancelled.
 	jm.closing = true
+	jm.stopLongRunningReminderLocked()
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
@@ -1507,10 +1534,16 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	// jobs completed before the tool returned (spec §6.4d).
 
 	jm.mu.Lock()
+	leavingRunning := false
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		delete(jm.running, run.rec.JobID)
+		leavingRunning = true
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if leavingRunning && owner != nil {
+		owner.managedJobFinished()
+	}
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
@@ -1760,6 +1793,24 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 	return compiled.Validate(value)
 }
 
+func (jm *jobManager) hasLiveRuns() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return len(jm.running) > 0
+}
+
+func (jm *jobManager) hasNoticeEmissionInFlight() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.noticesInFlight > 0
+}
+
+func (jm *jobManager) noteNoticeEmission(delta int) {
+	jm.mu.Lock()
+	jm.noticesInFlight += delta
+	jm.mu.Unlock()
+}
+
 // enqueueNotifications queues a group of notifications onto the owner's rail
 // and wakes it ONCE, reporting whether anything was queued (a manager with no
 // rail wired queues nothing, and its owner still owes a kick). Every notice
@@ -1784,6 +1835,8 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	jm.noteNoticeEmission(1)
+	defer jm.noteNoticeEmission(-1)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
@@ -1824,7 +1877,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
 		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		tokens, watchSendRecorded, _ = jm.recordWatchSends(watchDeliveries)
 		ownNotices = append(ownNotices, tokens...)
 	} else {
 		jm.mu.Unlock()
@@ -1872,7 +1925,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return nil
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if owner != nil {
+		owner.managedJobFinished()
+	}
 
 	_ = run.output.Close()
 

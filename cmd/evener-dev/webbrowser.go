@@ -16,18 +16,20 @@ package dev
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// browserGuards is every guard in verdict order. The last five
-// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard, comicguard) are the never-signalled
+// browserGuards is every guard in verdict order. The last four
+// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard) are the never-signalled
 // checks that also need the built production frontend (needsBuild);
 // retirementguard is never-signalled too, but needs no build. Keep the
-// building five last.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard, "comicguard"}
+// building four last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard}
 
 const (
 	skillGuard      = "skillguard"
@@ -44,13 +46,24 @@ const (
 // newBrowserGate is the browser gate over its guards; the caller supplies
 // where it runs (see runWebGate).
 func newBrowserGate(slots int, buildFrontend bool) *webGate {
-	return &webGate{
+	gate := &webGate{
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
+	// skillguard is the longest guard: with more than one slot, starting it
+	// first overlaps it with the short guards instead of queueing it behind
+	// every one of them (#3634). One slot saves no wall time and would make an
+	// interrupt wait for the longest guard, so it keeps verdict order; on a
+	// multi-slot lane an interrupt now waits for skillguard, as it would once
+	// that guard had started in any slot. Verdicts still print in
+	// browserGuards order, and the build fence still gates it.
+	if slots > 1 {
+		gate.launchFirst = skillGuard
+	}
+	return gate
 }
 
 // browserGuardSpec is guard's launch contract under root, its own scratch
@@ -60,15 +73,6 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 func browserGuardSpec(guard, root string) guardSpec {
 	vite := "BROWSER_GUARD_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache")
 	switch guard {
-	case "comicguard":
-		return guardSpec{
-			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestComicChatBrowser$", "-count=1"},
-			dir:             ".",
-			env:             []string{vite},
-			needsBuild:      true,
-			waitOnInterrupt: true,
-		}
 	case backgroundJobsGuard:
 		return guardSpec{
 			name:            guard,
@@ -147,6 +151,37 @@ func browserGuardSpec(guard, root string) guardSpec {
 	}
 }
 
+// browserGuardShards splits the gate across CI's web-browser runners, one
+// shard per runner, so the lane's wall time is its slowest shard instead of
+// every guard on one runner's four cores. Each shard is built around one long
+// guard (overflowguard, skillguard, cascadeguard) with shorter guards beside
+// it. Every guard belongs to exactly one shard, and the workflow's matrix
+// names every shard.
+var browserGuardShards = map[string][]string{
+	"overflow": {"layoutguard", "overflowguard", "spawnguard", "transcriptscrollguard", retirementGuard, "mermaidguard", "memoryguard"},
+	"skill":    {"shellguard", skillGuard},
+	"cascade":  {cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard},
+}
+
+// browserShardGuards is shard's guards in verdict order (BROWSER_GUARD_SHARD),
+// or every guard when shard is empty. A name that is no shard is an error.
+func browserShardGuards(shard string) ([]string, error) {
+	if shard == "" {
+		return browserGuards, nil
+	}
+	members, ok := browserGuardShards[shard]
+	if !ok {
+		return nil, fmt.Errorf("no browser guard shard %q (shards: %s)", shard, strings.Join(slices.Sorted(maps.Keys(browserGuardShards)), ", "))
+	}
+	var guards []string
+	for _, guard := range browserGuards {
+		if slices.Contains(members, guard) {
+			guards = append(guards, guard)
+		}
+	}
+	return guards, nil
+}
+
 // browserGuardSlots reads BROWSER_GUARD_CONCURRENCY: digits only, read as
 // decimal (08 is eight, 00 is zero), and at least one, so no value can leave
 // the gate with no slot to start a guard in.
@@ -165,10 +200,16 @@ func browserGuardSlots(value string) int {
 // repository root.
 func runWebBrowserGuards(args []string) int {
 	if len(args) != 0 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots)")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots, BROWSER_GUARD_SHARD runs one shard)")
+		return 2
+	}
+	guards, err := browserShardGuards(os.Getenv("BROWSER_GUARD_SHARD"))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "evener-dev dev web-browser-guards: %v\n", err)
 		return 2
 	}
 	gate := newBrowserGate(browserGuardSlots(os.Getenv("BROWSER_GUARD_CONCURRENCY")), !frontendBuilt(frontendDir))
+	gate.checks = guards
 	return runWebGate(gate, "evener-test-web-browser")
 }
 

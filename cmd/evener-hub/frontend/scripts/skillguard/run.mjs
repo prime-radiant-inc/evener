@@ -25,6 +25,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
   createBrowserProcessCleanup,
@@ -48,7 +49,6 @@ import { ReactionBudget } from "./budgets.mjs";
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
-const CHILD_EXIT_GRACE_MS = 2_000;
 
 // Mint the profile Chrome is pointed at under a short root, never the ambient
 // temp directory. This guard runs under a deep TMPDIR (a test harness nested in
@@ -260,18 +260,31 @@ function selectEditorRange(editor, start, end) {
 }
 
 export class Driver {
-  constructor({ url, artifactDir, controlPath, milestonePath }) {
+  constructor({
+    url,
+    artifactDir,
+    controlPath,
+    milestonePath,
+    spawnChrome = spawn,
+    chromeBinary = null,
+  }) {
     this.url = url;
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // Launch seam for the unit tests: the real guard spawns Chrome itself, but
+    // the startup deadline is a timing contract that needs no browser.
+    this.spawnChrome = spawnChrome;
     // How slow THIS machine has proven to be: every wait's budget is sized
     // from the slowest reaction a completed wait has already observed, so a
     // loaded runner gets a proportional hang tripwire instead of the fixed
     // floor (see budgets.mjs).
     this.reactions = new ReactionBudget();
+    // Scopes the stamps settleExpression leaves in the page, so a sample from
+    // an earlier settle can never confirm a later one.
+    this.settleKeys = 0;
     this.failures = [];
-    this.chromeBinary = null;
+    this.chromeBinary = chromeBinary;
     this.chromeArgv = [];
     this.chromeStderr = "";
     this.page = null;
@@ -291,7 +304,7 @@ export class Driver {
   }
 
   async start() {
-    this.chromeBinary = findChrome();
+    this.chromeBinary ??= findChrome();
     this.profileDir = skillGuardChromeProfileDir();
     this.lifecycle = createBrowserProcessCleanup({ profileDir: this.profileDir });
     this.chromeArgv = [
@@ -305,7 +318,7 @@ export class Driver {
       `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       "about:blank",
     ];
-    this.chrome = spawn(this.chromeBinary, this.chromeArgv, {
+    this.chrome = this.spawnChrome(this.chromeBinary, this.chromeArgv, {
       stdio: ["ignore", "ignore", "pipe"],
       env: chromeProfileEnvironment(this.profileDir),
       detached: process.platform !== "win32",
@@ -318,8 +331,8 @@ export class Driver {
     let lineBuffer = "";
     const announced = new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHILD_EXIT_GRACE_MS * 5}ms`)),
-        CHILD_EXIT_GRACE_MS * 5,
+        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHROME_ANNOUNCEMENT_DEADLINE_MS}ms`)),
+        CHROME_ANNOUNCEMENT_DEADLINE_MS,
       );
       const finish = (fn, value) => {
         clearTimeout(timer);
@@ -398,25 +411,50 @@ export class Driver {
     })()`;
   }
 
+  // settleExpression waits until `exprSource` returns the same non-null value
+  // on two consecutive polls, and returns that value. It is the one form of
+  // the "two equal reads" quiescence barrier: settleComposer's editor state and
+  // cascadeguard's scroll geometry both use it instead of each carrying a
+  // copy (#3686). A null/undefined reading is "not ready yet", never a settled
+  // value, and it clears the stamp so a null poll in between breaks the run.
+  // Each settle owns its own slot, so interleaved settles cannot invalidate
+  // each other and an earlier settle's sample cannot confirm a later one.
+  async settleExpression(exprSource, { timeoutMs = 15000, label } = {}) {
+    const key = `${++this.settleKeys}:${label ?? exprSource}`;
+    // The sample is wrapped so a legitimate false/0 reading is still a value
+    // waitPage can hold; returning it bare would read as "not held yet".
+    const settled = await this.waitPage(
+      `(() => {
+        const slots = window.__driverSettleSamples ?? (window.__driverSettleSamples = {});
+        const sample = ${exprSource};
+        if (sample === null || sample === undefined) {
+          delete slots[${JSON.stringify(key)}];
+          return null;
+        }
+        const stamp = JSON.stringify(sample);
+        const previous = slots[${JSON.stringify(key)}];
+        slots[${JSON.stringify(key)}] = stamp;
+        return previous === stamp ? { sample } : null;
+      })()`,
+      { timeoutMs, label: label ?? `a stable reading of ${exprSource}` },
+    );
+    return settled.sample;
+  }
+
   // settleComposer waits until one session's editor stops changing under it,
-  // and returns the state it settled on. Two reads 80ms apart that agree is
-  // the signal that the last render has landed; it is not a promise that no
-  // further one is coming, which is why every caller re-checks afterwards.
-  // Focus is part of that state: a focus change during the wait is a change.
+  // and returns the state it settled on. Two equal reads 80ms apart is the
+  // signal that the last render has landed; it is not a promise that no further
+  // one is coming, which is why every caller re-checks afterwards. Focus is part
+  // of that state: a focus change during the wait is a change. An editor that is
+  // not mounted yet is "not settled yet", so the wait also covers the mount.
+  // Through waitPage the timeout is a FLOOR: a run that has already proven this
+  // machine slow widens it (budgets.mjs), and an editor that never mounts fails
+  // after that budget rather than immediately.
   async settleComposer(ref, { timeoutMs = 5000 } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    let previous = null;
-    for (;;) {
-      const now = await evaluate(this.send, this.composerEditStateExpr(ref));
-      if (!now) throw new Error(`settleComposer(${ref}): no composer editor`);
-      const key = JSON.stringify(now);
-      if (key === previous) return now;
-      previous = key;
-      if (Date.now() > deadline) {
-        throw new Error(`settleComposer(${ref}): composer still changing after ${timeoutMs}ms (${key})`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 80));
-    }
+    return this.settleExpression(this.composerEditStateExpr(ref), {
+      timeoutMs,
+      label: `composer editor state for ${ref}`,
+    });
   }
 
   // Use Chrome's editing path, not value setters or synthetic input events.
@@ -691,6 +729,12 @@ export class Driver {
   // fails the wait (at the caller's budget plus at most one settle window)
   // instead of extending it forever.
   //
+  // `observe: false` keeps a completed wait out of the reaction budget. A wait
+  // that is not measuring the app's reaction to a guard action - a mount wait
+  // that is expected to block until a pane exists - must not become the
+  // "slowest reaction" that widens every later tripwire for the rest of the
+  // run.
+  //
   // The settle window itself is part of the budget the caller asked for, so
   // the deadline is extended once, to `settleMs` after the condition is first
   // held. Without it a condition that first holds inside the last settleMs of
@@ -698,7 +742,7 @@ export class Driver {
   // loaded moment the wait was widened to survive. It is accounted for ONCE:
   // re-extending on every hold would let a flapping condition postpone the
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
-  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
+  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, observe = true } = {}) {
     const startedAt = Date.now();
     // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
     // budget: a run that has already proven this machine slow widens it (up to
@@ -714,7 +758,7 @@ export class Driver {
     // and without it the condition held at this poll, which is now.
     const settled = (value) => {
       const reactedAt = settleMs > 0 ? heldSince : Date.now();
-      this.reactions.observe(reactedAt - startedAt);
+      if (observe) this.reactions.observe(reactedAt - startedAt);
       return value;
     };
     let settleAccounted = false;
@@ -789,8 +833,19 @@ export class Driver {
     })()`;
   }
 
-  async composerState(ref) {
-    return evaluate(this.send, this.composerStateExpr(ref));
+  // composerState reads one session's composer once it is mounted. The
+  // expression returns null until BOTH the composer wrapper and its pane are
+  // present, and each call site used to carry that wait itself - a call site
+  // that forgot read null and crashed on `.text` under load (#3686). Owning the
+  // wait here makes the null return unreachable; dumpPageState, which wants a
+  // snapshot rather than a wait, evaluates the expression directly. The wait is
+  // not an observation of the machine: a slow mount must not widen later waits.
+  async composerState(ref, { timeoutMs = 15000 } = {}) {
+    return this.waitPage(this.composerStateExpr(ref), {
+      timeoutMs,
+      label: `composer state for ${ref}`,
+      observe: false,
+    });
   }
 
   // The rail element mounts before the hub's session list arrives, and waitPage
@@ -1662,7 +1717,7 @@ export class Driver {
       evaluate(this.send, this.transcriptBlocksExpr(ref)).catch((e) => `turn-block read failed: ${e}`),
       evaluate(this.send, this.transcriptBlockItemsExpr(ref)).catch((e) => `turn-block items read failed: ${e}`),
       evaluate(this.send, this.queueStripExpr(ref)).catch((e) => `queue read failed: ${e}`),
-      this.composerState(ref).catch((e) => `composer read failed: ${e}`),
+      evaluate(this.send, this.composerStateExpr(ref)).catch((e) => `composer read failed: ${e}`),
     ]);
     return new Error(
       `${error instanceof Error ? error.message : String(error)}\n` +
@@ -1990,7 +2045,16 @@ async function runScenarios(driver) {
   const bState = await driver.composerState(driver.sessionB);
   check(bState.text === "", `session B composer not fresh: ${JSON.stringify(bState)}`);
   await driver.openSession(driver.sessionA);
-  state = await driver.composerState(driver.sessionA);
+  // The reopened pane samples bare the instant openSession returns, while the
+  // staged draft restores on its own boundary: production publishes the
+  // reloaded transcript's entries and the composer rehydrates from the durable
+  // record after the editor is already visible. Wait for the structured
+  // restoration (text and the skill chip together) and keep the assertions
+  // below, so a draft that never restores still fails the step.
+  state = await driver.waitPage(
+    `(() => { const state = ${driver.composerStateExpr(driver.sessionA)}; return state && state.text === ${JSON.stringify(inlineText(PROSE.draft))} && state.chips.some((c) => c.includes(${JSON.stringify(SKILL_NAME)})) ? state : null; })()`,
+    { label: "the switched-back composer restores its durable draft" },
+  );
   check(state.text === inlineText(PROSE.draft), `draft text did not survive the switch: ${JSON.stringify(state)}`);
   check(state.chips.some((c) => c.includes(SKILL_NAME)), `draft chips did not survive the switch: ${JSON.stringify(state)}`);
   driver.milestone("draft-remounted", { ...state, storage: await evaluate(driver.send, driver.draftStorageExpr()) });

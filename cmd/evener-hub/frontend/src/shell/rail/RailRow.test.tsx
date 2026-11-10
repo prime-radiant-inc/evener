@@ -9,12 +9,14 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -25,6 +27,7 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { MOBILE_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
@@ -188,6 +191,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetConnectionStoreForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   resetNavigationStoreForTests();
@@ -628,6 +632,109 @@ describe("compact session status", () => {
     expect(within(panel).getByText("3 watches · 1 armed")).toBeTruthy();
     expect(within(panel).getByText("archived")).toBeTruthy();
     expect(within(panel).getByText("2m")).toBeTruthy();
+  });
+
+  // #3637: a working row's compact status names what the session last set out
+  // to do, from the same evener/activity/read the native Board reads, instead
+  // of the bare state word. The card is the only place this status appears,
+  // and it mounts only while open, so the read runs only while someone is
+  // looking.
+  test("a working session's context status names its latest tool intent", async () => {
+    const client = new FakeClient();
+    client.on("evener/activity/read", () => ({
+      sessions: [
+        {
+          ref: "local:a",
+          minutes: [0, 0, 0, 0, 0, 0, 0],
+          runningSubagents: 0,
+          quietForMs: 0,
+          latestIntent: "Reading the board's row tests.",
+        },
+      ],
+    }));
+    connectionStore.setState({ state: "ready", client });
+    renderRow({ state: "active" });
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    await waitFor(() =>
+      expect(within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind")).toBe("intent"),
+    );
+    expect(within(panel).getByTestId("rail-context-status").textContent).toBe("Reading the board's row tests.");
+  });
+
+  // A working session whose model call waits out a usage limit until a known
+  // reset is not just working: its status says it waits and resumes by itself.
+  // Once the resume time has passed the wait is over, and the status is the
+  // working row's own again.
+  test.each([
+    ["ahead", 90 * 60_000, true],
+    ["passed", -60_000, false],
+  ] as const)(
+    "a working session whose quota wait resume time is %s (%d ms away) shows the quota status: %s",
+    (_when, offsetMs, quota) => {
+      const resumesAt = new Date(Date.now() + offsetMs).toISOString();
+      renderRow({
+        state: "active",
+        failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+      });
+
+      const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+      const kind = within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind");
+      expect(kind === "quota").toBe(quota);
+    },
+  );
+
+  // The wait is a fact about the row, not only about its hover card: a glance
+  // at the rail must say the session is waiting and not stuck.
+  test.each([
+    ["working with the resume time ahead", "active", 90 * 60_000, true],
+    ["working with the resume time passed", "active", -60_000, false],
+    ["not working with the resume time ahead", "idle", 90 * 60_000, false],
+  ] as const)("the row shows the quota wait for a session %s: %s", (_when, state, offsetMs, shown) => {
+    const resumesAt = new Date(Date.now() + offsetMs).toISOString();
+    renderRow({
+      state,
+      failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+    });
+
+    const line = screen.queryByTestId("rail-row-quota-wait");
+    expect(line !== null).toBe(shown);
+    if (line) expect(line.closest("[data-session-ref]")).not.toBeNull();
+  });
+
+  test("the row's quota wait counts down with the rail clock and ends at the resume time", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      render(
+        <RailTickProvider>
+          <RailRow
+            node={sessionRailNode(
+              apiNode({
+                state: "active",
+                failure: {
+                  title: "Usage limit reached",
+                  cause_kind: "provider",
+                  status: 429,
+                  resumes_at: new Date(start + 90 * 60_000).toISOString(),
+                },
+              }),
+            )}
+            info={info()}
+            actions={actions()}
+          />
+        </RailTickProvider>,
+      );
+      const before = screen.getByTestId("rail-row-quota-wait").textContent;
+      act(() => vi.advanceTimersByTime(60 * 60_000));
+      const after = screen.getByTestId("rail-row-quota-wait").textContent;
+      expect(after).not.toBe(before);
+      act(() => vi.advanceTimersByTime(31 * 60_000));
+      expect(screen.queryByTestId("rail-row-quota-wait")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The bug this pins: on a touch-only device the row's own tap must open the
@@ -2244,7 +2351,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // Occupant side: the same three conditions hide the timestamp/Badge
     // under the menu. The flip lives inside a hover-capable desktop media
     // block - on touch the actions are always visible BESIDE the occupant
-    // (the 899px block below), and a sticky tap-hover or treeitem focus
+    // (the mobile block below), and a sticky tap-hover or treeitem focus
     // must never make the timestamp vanish out from under the row. Rules
     // nested in @media mangle the flat matchAll above, so this half is
     // pinned against the media block's own text.
@@ -2300,7 +2407,8 @@ describe("shared right slot (RailRow.module.css)", () => {
     // with, so this block forces them visible AND turns the shared cell back
     // into an ordinary flex row - on touch the occupant and the menu sit
     // side by side; the visibility swap above is a desktop-hover mechanism.
-    const mobileRules = mediaBlock(RAIL_CSS, "max-width: 899px");
+    // mediaBlock takes the condition without the query's outer parentheses.
+    const mobileRules = mediaBlock(RAIL_CSS, MOBILE_QUERY.slice(1, -1));
     const rightSlotBlock = nestedRuleBlock(mobileRules, ".rightSlot");
     const actionsBlock = nestedRuleBlock(mobileRules, ".actions");
     expect(rightSlotBlock).toMatch(/display:\s*flex/);

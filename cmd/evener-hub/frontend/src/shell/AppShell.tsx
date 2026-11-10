@@ -5,7 +5,7 @@
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
 import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { type MutableRefObject, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -14,9 +14,10 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
-import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
+import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
+import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
 import {
   selectLiveRows,
   selectLocation,
@@ -26,7 +27,7 @@ import {
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
-import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -44,12 +45,18 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
-import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
+import { isAppDrivenNavigation, navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
-import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
+import {
+  consumeRoutedSessionFocus,
+  focusRoutedSession,
+  openNestedSessionWithOwner,
+  openTopLevelSession,
+  requestRoutedSessionFocus,
+} from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useBrowserConnection } from "./useBrowserConnection";
-import { useIsMobile } from "./useIsMobile";
+import { isMobileViewport } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import {
   conversationOpenParentRef,
@@ -85,7 +92,7 @@ initTranscriptDisplay();
 // requires it before it fetches a continuation page.
 
 // Workspace-only notification election and attention chrome start at module
-// evaluation; the comic entry never imports this module.
+// evaluation.
 initNotifications();
 
 import styles from "./AppShell.module.css";
@@ -138,11 +145,11 @@ function readPathname(): string {
   return window.location.pathname;
 }
 
-function usePathname(): readonly [string, number] {
+function usePathname(interactiveNavigation: MutableRefObject<string | null>): readonly [string, number] {
   const [pathname, setPathname] = useState(readPathname);
   const [historyRevision, bumpHistoryRevision] = useReducer((revision: number) => revision + 1, 0);
   useEffect(() => {
-    const onPopState = () => {
+    const readRouteState = () => {
       const nextPathname = readPathname();
       // Synchronize the settings selection with the route the window just moved
       // to, in THIS tick and before React re-renders. A Back/Forward into a
@@ -155,16 +162,23 @@ function usePathname(): readonly [string, number] {
       setPathname(nextPathname);
       bumpHistoryRevision();
     };
+    const onPopState = () => {
+      // Every route reached through history - an app navigation, the rail, a
+      // link, or the browser's Back/Forward - is an interactive placement. The
+      // mount catch-up below is boot restoration, not one.
+      if (!isAppDrivenNavigation()) interactiveNavigation.current = readPathname();
+      readRouteState();
+    };
     window.addEventListener("popstate", onPopState);
     const unobserve = observeRouteHistory(() => bumpHistoryRevision());
     // A child mount effect may already have canonicalized the focused pane's
     // URL. Subscribe before catching up so that first navigation is not lost.
-    onPopState();
+    readRouteState();
     return () => {
       window.removeEventListener("popstate", onPopState);
       unobserve();
     };
-  }, []);
+  }, [interactiveNavigation]);
   return [pathname, historyRevision];
 }
 
@@ -196,10 +210,7 @@ function routePlacementIsApplied(
   // Startup restoration and contextual drill retain the source's route role.
   // Later pathname changes must still place their ordinary session.
   const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
-    const params =
-      (allowFocusedCompanion || allowInitialCascade) && pane.type === "sessionZoom"
-        ? parseZoomParams(pane.params)
-        : null;
+    const params = allowFocusedCompanion || allowInitialCascade ? zoomIntentOf(pane) : null;
     const source = params && !params.inspection ? params.source : null;
     return source ? { ...pane, ...source } : pane;
   };
@@ -254,7 +265,7 @@ function routePlacementIsApplied(
     return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
+  const focusedIntent = rawFocused === undefined ? null : zoomIntentOf(rawFocused);
   const focusedSeparatedInspection =
     (allowFocusedCompanion || allowRestoredInspection) &&
     rawFocused?.slot === "secondary" &&
@@ -273,8 +284,7 @@ function routePlacementIsApplied(
     allowFocusedCompanion &&
     conversationRef !== null &&
     workspace.panes.some((pane) => {
-      if (pane.type !== "sessionZoom") return false;
-      const params = parseZoomParams(pane.params);
+      const params = zoomIntentOf(pane);
       if (!params || !zoomCoversRouteSource(pane, params)) return false;
       return zoomParamsCoverConversation(params, conversationRef);
     });
@@ -291,15 +301,16 @@ function routePlacementIsApplied(
     // New/pending routes and generic or stale document bindings still reconcile.
     if (
       typeof sourceSession === "string" &&
+      typeof docParams.session === "string" &&
       docParams.session === sourceSession &&
       docParams.path === documentState.reference.path
     ) {
       return true;
     }
   }
-  if (allowFocusedCompanion && documentState?.origin?.type === "sessionZoom") {
+  if (allowFocusedCompanion && documentState?.origin) {
     const origin = documentState.origin;
-    const params = parseZoomParams(origin.params);
+    const params = zoomIntentOf(origin);
     // A cascade column's filename open binds its document to the hosting
     // zoom: that pane's cascade covers the routed conversation, so the
     // focused document is the route's companion, like the column
@@ -334,11 +345,20 @@ function routePlacementIsApplied(
   const childPanes = panes.filter(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
+  const child = childPanes[0];
+  // The cascade route role is a copy of its source record; parent metadata is
+  // keyed by the original workspace record.
+  const originalChild = child === undefined ? undefined : workspace.panes.find((pane) => pane.id === child.id);
+  const childParent = originalChild === undefined ? undefined : conversationOpenParentRef(originalChild);
   return (
     ownerPanes.length === 1 &&
     ownerPanes[0]?.id === main.id &&
-    childPanes.length === 1 &&
-    focusIsApplied(childPanes[0]?.id ?? "")
+    child !== undefined &&
+    focusIsApplied(child.id) &&
+    // A placement that already has the right shape is not settled until the
+    // child records its owner, or a host swap loses the Back target.
+    childParent !== undefined &&
+    conversationContextIncludes(childParent, ancestorRef)
   );
 }
 
@@ -490,7 +510,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   }, [controller]);
 
   const connectionState = useConnectionStore((s) => s.state);
-  const [pathname, historyRevision] = usePathname();
+  const interactiveNavigationRef = useRef<string | null>(null);
+  const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
@@ -517,7 +538,23 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       .lookupLocation(locationRef)
       .catch(() => undefined);
   }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
-  const isMobile = useIsMobile();
+  const [viewportReady, setViewportReady] = useState(false);
+  const viewport = useTranscriptDisplayStore((state) => state.viewport);
+  useLayoutEffect(() => {
+    // Module initialization can precede the shell mount. Publish that initial
+    // drift through preparation too, never select a host from a live snapshot.
+    transcriptDisplayStore.getState().setViewport(isMobileViewport() ? "mobile" : "desktop");
+    setViewportReady(true);
+  }, []);
+  const isMobile = viewport === "mobile";
+  const handoffGeneration = conversationHandoffGeneration(viewport);
+  const hasHost = route !== null;
+  // A route departure can leave the workspace's retained pane record alive.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname fences pending destination work
+  useEffect(() => {
+    if (!hasHost) cancelConversationHandoff(handoffGeneration);
+    return () => cancelConversationHandoff(handoffGeneration);
+  }, [handoffGeneration, hasHost, pathname]);
   // Route-change epoch for in-flight live demands: leaving the session (to settings, the dashboard, another
   // session) and returning BEFORE a demand resolves can restore an identical
   // focused pane id and session ref, so the press-time pane/ref guards alone
@@ -550,7 +587,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // (shell/palette/commands.ts); same shared-seam precedent as
   // next-needs-you above.
   useEffect(() => {
-    if (isMobile) return undefined;
+    if (!viewportReady || isMobile) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
     // Opens (or re-focuses) a live session by URL, then guarantees the session
@@ -566,9 +603,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
       }
-      const placed = workspaceStore.getState().mainPane();
-      // focusPane already no-ops for a pane that is focused or absent.
-      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      focusRoutedSession(ref);
     };
     const liveSessions = createLiveSessionController({
       generation: () => navigationStore.getState().clientGenerationID,
@@ -605,7 +640,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       liveSessions.dispose();
       for (const dispose of unregister) dispose();
     };
-  }, [isMobile]);
+  }, [isMobile, viewportReady]);
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
   useKeyboardInset();
@@ -742,6 +777,34 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // placement before the route branch decides what to place. A stale
     // location read must not rebuild a retained secondary as main either.
     const attentionToken = currentAttentionEntryToken();
+    const settleNavigationFocus = () => {
+      if (interactiveNavigationRef.current !== pathname) return;
+      if (route?.type !== "session") {
+        interactiveNavigationRef.current = null;
+        return;
+      }
+      const ref = refParam(route.params);
+      if (ref === null || pendingSessionRef.current !== null) return;
+      interactiveNavigationRef.current = null;
+      focusRoutedSession(ref);
+    };
+    const settleRequestedFocus = () => {
+      const requested = consumeRoutedSessionFocus();
+      if (requested === null) return;
+      if (route?.type !== "session" || refParam(route.params) !== requested || pendingSessionRef.current !== null) {
+        // The request belongs to a route that is still waiting for its location
+        // read; keep it for the placement that can finally focus it.
+        if (route?.type === "session" && refParam(route.params) === requested) {
+          requestRoutedSessionFocus(requested);
+        }
+        return;
+      }
+      focusRoutedSession(requested);
+    };
+    const settlePlacementFocus = () => {
+      settleNavigationFocus();
+      settleRequestedFocus();
+    };
     if (attentionToken === null) {
       if (restoredAttentionTokenRef.current !== null) {
         restoredAttentionTokenRef.current = null;
@@ -771,6 +834,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         routePlacementPathnameRef.current = null;
         if (armedPathname === pathname) {
           placedPathnameRef.current = pathname;
+          settlePlacementFocus();
           return;
         }
       }
@@ -815,6 +879,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       ) {
         pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
+        settlePlacementFocus();
         return;
       }
       openedForPathnameRef.current = pathname;
@@ -829,12 +894,15 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
           routePlacementPathnameRef.current = null;
         }
       }
+      settlePlacementFocus();
       return;
     }
     if (route?.type === "welcome") reconcileWelcomeRouteWithLocation(location);
+    settlePlacementFocus();
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+    settlePlacementFocus();
   }, [pathname, historyRevision, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
 
   return (
@@ -854,8 +922,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             registered and its trigger chords stay inert - RailHost's
             rail.toggle no-registration pattern - and no hold-hint listener
             is ever installed. */}
-          {!isMobile && <CheatsheetOverlay />}
-          {!isMobile && <HoldHints />}
+          {viewportReady && !isMobile && <CheatsheetOverlay />}
+          {viewportReady && !isMobile && <HoldHints />}
           <div className={styles.content}>
             {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole
@@ -863,10 +931,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-            {!isMobile && route !== null && !singlePane && <RailHost />}
+            {viewportReady && !isMobile && route !== null && !singlePane && <RailHost />}
             {route === null ? (
               <NotFound />
-            ) : isMobile ? (
+            ) : !viewportReady ? null : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} singlePane={singlePane} />
             ) : (
               // The workspace column carries the dock host's row flex share by
@@ -882,7 +950,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {/* Desktop: the activity sidebar is the zoom system's triage surface,
               a right shell region scoped to the session being read. Mobile
               StackHost mounts the same surface as its full-screen overlay. */}
-            {!isMobile && route !== null && <ActivitySidebar />}
+            {viewportReady && !isMobile && route !== null && <ActivitySidebar />}
           </div>
         </div>
       </MotionProvider>

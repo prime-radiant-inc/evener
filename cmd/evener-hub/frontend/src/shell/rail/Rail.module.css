@@ -48,7 +48,7 @@
 }
 
 /* The sidebar owns its own chrome: a header zone stacking the identity/
- * status/actions row and the primary "+ New session" button - a column so none of it
+ * status/actions row and the secondary "+ New session" button - a column so none of it
  * steals a full-width top bar's worth of the workspace's vertical space. */
 .header {
   flex: none;
@@ -65,8 +65,18 @@
   gap: var(--space-2);
 }
 
-/* Stretches the primary Button to the rail's full width without touching the
- * widget's own computed className (Button owns its class list). */
+.wordmark {
+  display: block;
+  color: var(--ink-hi);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--line-height-title);
+}
+
+/* Stretches the New-session Button to the rail's full width without touching
+ * the widget's own computed className (Button owns its class list). */
 .newSession {
   display: grid;
 }
@@ -74,12 +84,20 @@
 .brandIdentity {
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+.needsYou {
+  display: flex;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .body {

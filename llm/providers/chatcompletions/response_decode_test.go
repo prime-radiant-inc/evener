@@ -30,7 +30,7 @@ func TestFromChatCompletionResponse_DetailItemDecodeError(t *testing.T) {
 		"role":              "assistant",
 		"reasoning_details": []any{map[string]any{"type": float64(123)}},
 	}, "stop")
-	if _, err := fromChatCompletionResponse(raw, nil); err == nil {
+	if _, err := fromChatCompletionResponse(raw, nil, nil); err == nil {
 		t.Fatal("a reasoning_details item with a non-string type must fail the decode")
 	}
 }
@@ -43,7 +43,7 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 		"role":              "assistant",
 		"reasoning_details": []any{map[string]any{"type": "reasoning.encrypted", "id": "e1", "data": "d1"}},
 	}, "stop")
-	resp, err := fromChatCompletionResponse(raw, nil)
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,34 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 	}
 	if want[0]["type"] != "reasoning.encrypted" || want[0]["id"] != "e1" || want[0]["data"] != "d1" {
 		t.Fatalf("encrypted item = %v, want every original field preserved", want[0])
+	}
+}
+
+// TestFromChatCompletionResponse_ToolCallThoughtSignature keeps the Gemini
+// continuation token carried by OpenAI-compatible gateways such as shisa.
+func TestFromChatCompletionResponse_ToolCallThoughtSignature(t *testing.T) {
+	raw := chatResponseRaw(map[string]any{
+		"role":    "assistant",
+		"content": nil,
+		"tool_calls": []any{map[string]any{
+			"id":   "call_gemini",
+			"type": "function",
+			"function": map[string]any{
+				"name":      "read_file",
+				"arguments": `{"path":"x"}`,
+			},
+			"extra_content": map[string]any{
+				"google": map[string]any{"thought_signature": "sig-1"},
+			},
+		}},
+	}, "tool_calls")
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-1" {
+		t.Fatalf("tool calls = %+v, want one call with the Gemini signature", calls)
 	}
 }
 
@@ -91,7 +119,7 @@ func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
 			map[string]any{"type": "thinking", "thinking": "step two"},
 		},
 	}, "stop")
-	resp, err := fromChatCompletionResponse(raw, nil)
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,13 +169,13 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 // list is "no choices", and an unmarshalable raw value surfaces the marshal
 // error instead of panicking.
 func TestFromChatCompletionResponse_ShapeFailures(t *testing.T) {
-	if _, err := fromChatCompletionResponse(map[string]any{"choices": float64(5)}, nil); err == nil {
+	if _, err := fromChatCompletionResponse(map[string]any{"choices": float64(5)}, nil, nil); err == nil {
 		t.Fatal("a non-array choices field must fail the decode")
 	}
-	if _, err := fromChatCompletionResponse(map[string]any{"choices": []any{}}, nil); err == nil {
+	if _, err := fromChatCompletionResponse(map[string]any{"choices": []any{}}, nil, nil); err == nil {
 		t.Fatal("an empty choices list must fail with no choices")
 	}
-	if _, err := fromChatCompletionResponse(map[string]any{"bad": make(chan int)}, nil); err == nil {
+	if _, err := fromChatCompletionResponse(map[string]any{"bad": make(chan int)}, nil, nil); err == nil {
 		t.Fatal("an unmarshalable raw value must surface the marshal error")
 	}
 }
@@ -155,7 +183,7 @@ func TestFromChatCompletionResponse_ShapeFailures(t *testing.T) {
 // TestFromChatCompletionResponse_FinishReasonMap pins that a row's
 // FinishReasonMap wins over the raw wire value while keeping it as Raw.
 func TestFromChatCompletionResponse_FinishReasonMap(t *testing.T) {
-	resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{"role": "assistant", "content": "hi"}, "stop"), map[string]string{"stop": "end_turn"})
+	resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{"role": "assistant", "content": "hi"}, "stop"), map[string]string{"stop": "end_turn"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +206,7 @@ func TestFromChatCompletionResponse_ChoiceLevelUsage(t *testing.T) {
 			"usage":         map[string]any{"prompt_tokens": float64(7), "completion_tokens": float64(3), "total_tokens": float64(10)},
 		}},
 	}
-	resp, err := fromChatCompletionResponse(raw, nil)
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

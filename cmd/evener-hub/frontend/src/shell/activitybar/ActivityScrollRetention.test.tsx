@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { sessionActivitySnapshot, settleSessionActivityForTests } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
@@ -19,9 +19,9 @@ import { resetDisclosureStoreForTests, setDisclosureOpen } from "../../widgets/d
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
 import styles from "./activitybar.module.css";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { ActivitySidebar } from "./activitySidebarTestUtils";
 
 const ref = "remote:owner";
 const ROW_HEIGHT = 48;
@@ -124,6 +124,53 @@ function prepareRetainedAnchor() {
   activitySidebarStore.getState().setCategoryView(ref, "jobs", { anchor });
 }
 
+// The jobs-list handler both round-trip tests serve from: each 10-row page
+// comes from the shared fixture stamped with the current revision, and while
+// `slowWhile` reads true every page answer is delayed 350ms so the walk the
+// store paces takes real wall-clock time.
+function serveRevisionedJobs(
+  client: ReturnType<typeof activityClient>,
+  slowWhile?: () => boolean,
+): { set revision(next: number) } {
+  let revision = 0;
+  client.on("evener/thread/jobs/list", async ({ cursor }) => {
+    if (slowWhile?.()) await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    const offset = cursor ? Number(cursor) : 0;
+    return {
+      context: activityContext(),
+      scope: "session",
+      jobs: jobs.slice(offset, offset + 10).map((job) => ({
+        ...job,
+        terminal: true,
+        outcome: "success",
+        status: "completed",
+        description: `${job.description} revision ${revision}`,
+      })),
+      page: { complete: offset === 20, issues: [], ...(offset < 20 ? { nextCursor: String(offset + 10) } : {}) },
+    };
+  });
+  return {
+    set revision(next: number) {
+      revision = next;
+    },
+  };
+}
+
+// Open the jobs category from a fresh client and walk to the retained
+// boundary row: the connect/scope/open/mount sequence and the two visibility
+// rounds both round-trip tests start from.
+async function openJobsToRetainedBoundary(client: ReturnType<typeof activityClient>): Promise<void> {
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("jobs");
+  mount();
+  fireEvent.click(await screen.findByText("10 completed jobs"));
+  await act(async () => Visibility.latest().emit(true));
+  await screen.findByRole("button", { name: /History 19 revision 0/ });
+  await act(async () => Visibility.latest().emit(true));
+  await screen.findByRole("button", { name: /History 22 revision 0/ });
+}
+
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   installGeometry();
@@ -192,31 +239,8 @@ test.each(["refresh", "reconnect"] as const)(
   "About round trip preserves a later-page job anchor and expanded history through %s",
   async (recovery) => {
     const client = activityClient();
-    let revision = 0;
-    client.on("evener/thread/jobs/list", ({ cursor }) => {
-      const offset = cursor ? Number(cursor) : 0;
-      return {
-        context: activityContext(),
-        scope: "session",
-        jobs: jobs.slice(offset, offset + 10).map((job) => ({
-          ...job,
-          terminal: true,
-          outcome: "success",
-          status: "completed",
-          description: `${job.description} revision ${revision}`,
-        })),
-        page: { complete: offset === 20, issues: [], ...(offset < 20 ? { nextCursor: String(offset + 10) } : {}) },
-      };
-    });
-    connectionStore.getState().connect(client);
-    installFocusedScope(ref);
-    activitySidebarStore.getState().openWith("jobs");
-    mount();
-    fireEvent.click(await screen.findByText("10 completed jobs"));
-    await act(async () => Visibility.latest().emit(true));
-    await screen.findByRole("button", { name: /History 19 revision 0/ });
-    await act(async () => Visibility.latest().emit(true));
-    await screen.findByRole("button", { name: /History 22 revision 0/ });
+    const serve = serveRevisionedJobs(client);
+    await openJobsToRetainedBoundary(client);
     viewport().scrollTop = 22 * ROW_HEIGHT + 12;
     fireEvent.scroll(viewport());
     const saved = activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor;
@@ -232,16 +256,21 @@ test.each(["refresh", "reconnect"] as const)(
     fireEvent.click(screen.getByRole("radio", { name: "About" }));
     await screen.findByText("owner");
     fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
-    const restored = await screen.findByRole("button", { name: /History 22 revision 0/ });
-    await waitFor(() => {
-      expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
-      expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
+    // The re-observed jobs read walks to the retained boundary page by page,
+    // paced by the store's own clock. Await the walk's registered read span —
+    // an awaitable completion — instead of polling a condition ceiling that
+    // load can push the pacing past.
+    await act(async () => {
+      await settleSessionActivityForTests(client, ref, "session", "jobs");
     });
+    const restored = screen.getByRole("button", { name: /History 22 revision 0/ });
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
+    expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
     expect(restored.getBoundingClientRect().top).toBe(-12);
     expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
 
-    revision = 1;
+    serve.revision = 1;
     act(() => {
       if (recovery === "refresh")
         client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"]));
@@ -250,14 +279,45 @@ test.each(["refresh", "reconnect"] as const)(
         client.emitReady();
       }
     });
-    const fresh = await screen.findByRole("button", { name: /History 22 revision 1/ });
-    await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false));
+    // Same for the recovery walk: it re-reads every page to the boundary on
+    // the store's pacing, so await its span rather than watching a deadline.
+    await act(async () => {
+      await settleSessionActivityForTests(client, ref, "session", "jobs");
+    });
+    const fresh = screen.getByRole("button", { name: /History 22 revision 1/ });
+    expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
     expect(fresh.getBoundingClientRect().top).toBe(-12);
     expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
     expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(9);
   },
 );
+
+test("a refresh walk whose paced pages answer slower than a condition-watch ceiling still restores the anchored display", async () => {
+  // The walk's pages can answer slower than any condition-watch ceiling, so
+  // the assertions await its registered read span rather than poll a
+  // deadline: geometry, calls and the saved anchor stay decided by the
+  // store's own pacing, never by how long the pages took.
+  const client = activityClient();
+  let slowPages = false;
+  const serve = serveRevisionedJobs(client, () => slowPages);
+  await openJobsToRetainedBoundary(client);
+  viewport().scrollTop = 22 * ROW_HEIGHT + 12;
+  fireEvent.scroll(viewport());
+  const saved = activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor;
+  expect(saved).toEqual(anchor);
+
+  serve.revision = 1;
+  slowPages = true;
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
+  await act(async () => {
+    await settleSessionActivityForTests(client, ref, "session", "jobs");
+  });
+  const fresh = screen.getByRole("button", { name: /History 22 revision 1/ });
+  expect(fresh.getBoundingClientRect().top).toBe(-12);
+  expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
+});
 
 test("reload retains a clamped anchor until existing page demand supplies its trailing extent", async () => {
   prepareRetainedAnchor();

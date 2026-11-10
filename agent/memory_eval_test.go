@@ -382,7 +382,9 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 	for _, mode := range []string{"initial-module", "initial-compile", "final-compile"} {
 		t.Run(mode, func(t *testing.T) {
 			home := memoryEvalIsolateProcess(t)
-			b := &memoryEvalAdmission{}
+			// The compiler diagnostic names this identifier, so any copy of it in
+			// the retained or published evidence proves redaction did not run.
+			b := &memoryEvalAdmission{evidenceRoot: t.TempDir(), sensitive: []string{"missingSymbol"}}
 			adapter := &memoryEvalAdapter{}
 			c, p := memoryEvalFixtureClient(t, b, adapter)
 			stages, calls := 0, 0
@@ -419,6 +421,43 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 			_, dispatchErr := c.Complete(context.Background(), llm.Request{Provider: "codex-jesse-at-pr", Model: "gpt-6.1-sol", Messages: []llm.Message{llm.User("opaque-refused-dispatch-708")}})
 			if !errors.Is(dispatchErr, runErr) || b.logical != before {
 				t.Fatalf("verifier terminal error lost before another dispatch: returned=%v cause=%v logical=%d want=%d", dispatchErr, runErr, b.logical, before)
+			}
+			// The failing stage's identity, reason and Go diagnostic must survive
+			// the stop, rather than dying with the stage value that was dropped.
+			stop, ok := errors.AsType[*memoryEvalVerifierStopError](runErr)
+			if !ok {
+				t.Fatalf("verifier stop did not carry its stage: %v", runErr)
+			}
+			phase := "final"
+			if strings.HasPrefix(mode, "initial-") {
+				phase = "initial"
+			}
+			if stop.Phase != phase || stop.Pair != "recall" || stop.Disabled || stop.Stage != "A" || stop.Cause == nil {
+				t.Fatalf("stop lost its identity: phase=%q pair=%q disabled=%t stage=%q cause=%v", stop.Phase, stop.Pair, stop.Disabled, stop.Stage, stop.Cause)
+			}
+			retained := stop.Evidence
+			if retained.Name != "A" || retained.Failure == "" || retained.Verifier == "" {
+				t.Fatalf("retained evidence lost identity, reason or output: name=%q failure=%q verifier=%q", retained.Name, retained.Failure, retained.Verifier)
+			}
+			if retained.Counters == "" || retained.Elapsed <= 0 {
+				t.Fatalf("retained evidence lost its chronology: counters=%q elapsed=%s", retained.Counters, retained.Elapsed)
+			}
+			raw, err := os.ReadFile(filepath.Join(b.evidenceRoot, "recall-disabled-false-A.failed.json"))
+			if err != nil {
+				t.Fatalf("failing stage evidence not published: %v", err)
+			}
+			var published struct{ Name, Failure, Verifier string }
+			if err := json.Unmarshal(raw, &published); err != nil {
+				t.Fatalf("published evidence does not decode: %v", err)
+			}
+			if published.Name != "A" || published.Failure == "" || published.Verifier == "" {
+				t.Fatalf("published evidence lost identity, reason or output: name=%q failure=%q verifier=%q", published.Name, published.Failure, published.Verifier)
+			}
+			if mode != "initial-module" {
+				// Both copies of the compiler diagnostic are redacted.
+				if strings.Contains(retained.Verifier, "missingSymbol") || strings.Contains(string(raw), "missingSymbol") || !strings.Contains(string(raw), "[redacted]") {
+					t.Fatal("retained or published evidence exposed the verifier diagnostic unredacted")
+				}
 			}
 		})
 	}
@@ -1541,7 +1580,7 @@ func TestMemoryEvalPrerequisites(t *testing.T) {
 			}
 			cmd.Env = append(cmd.Env, "MEMORY_EVAL_PREREQUISITE_MODE="+mode)
 			out, err := cmd.CombinedOutput()
-			t.Log(string(out))
+			logProbeOutput(t, out)
 			if strings.HasPrefix(mode, "live-") {
 				if err == nil || strings.Contains(string(out), "qualified-before-discovery") {
 					t.Fatal("unsupported live prerequisite did not refuse before discovery")
@@ -1556,6 +1595,18 @@ func TestMemoryEvalPrerequisites(t *testing.T) {
 				t.Fatal("offline unsupported qualification not skipped")
 			}
 		})
+	}
+}
+
+// logProbeOutput logs the fixture subprocess's output with every line
+// prefixed. A live prerequisite mode is *expected* to fail the child probe, and
+// its bare "--- FAIL: TestMemoryEvalPrerequisiteProbe" verdict otherwise reads
+// as a top-level failure of the enclosing parent in CI's test report, which
+// strips leading indentation before matching verdict lines.
+func logProbeOutput(t *testing.T, out []byte) {
+	t.Helper()
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+		t.Logf("probe: %s", line)
 	}
 }
 

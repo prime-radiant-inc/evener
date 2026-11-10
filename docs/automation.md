@@ -77,6 +77,15 @@ Use `--timeout` and a CI supervisor deadline together. The first SIGINT or SIGTE
 
 After an ambiguous interruption, inspect the saved session and filesystem before starting again. Re-running the same prompt creates another attempt and can repeat shell commands or external writes. `--resume SESSION_ID` continues known work; `--resume-with SESSION_ID` creates a separate session with previous context. Neither is an exactly-once transaction.
 
+The hub's AppWire `thread/start` can spawn a session and fail before answering.
+When the spawned identity is known, its error data includes `createdRef` and
+`createdInstanceId` alongside the original `evenerErrorInfo` and error code.
+Use that ref to inspect the session rather than starting the same request again;
+for a remote host, `createdRef` is qualified in the calling hub's namespace.
+Otherwise missing evidence is an unknown launch, not proof that nothing spawned.
+Creation after a spawn is never automatically retryable. A start refused before
+spawn reports `mutationOutcome: "notAccepted"` and carries no created identity.
+
 ## Diagnose without starting a model task
 
 ```sh
@@ -90,3 +99,304 @@ evener providers list --help
 Use doctor to inspect retained state, then correct the specific setup or runtime failure. Do not “fix” a sandbox failure by removing the sandbox in an unattended retry. Provider probes and model-driven runs are separate, opt-in checks; a deterministic documentation or protocol test should not call a hosted model.
 
 For a persistent application rather than a one-shot process, use [AppWire integration](integrations.md). For agent tool lifetimes, see [Job control](job-control.md).
+
+## Manager sessions
+
+Start a Manager by setting `manager: true` in the AppWire `thread/start`
+parameters. Anyone authorized to start a session may supply it. Manager is an
+immutable session property: an existing session cannot gain or lose it.
+
+From a client, the web form's **Start as Manager** switch (under Advanced
+options) sends that parameter with the launch. From a shell, `evener serve
+--manager` starts the daemon session with the same property. A one-shot `evener
+run` session has no hub connection, so it has no Manager mode.
+
+The session saves the bit in its metadata. Resume, process restart and Clear
+preserve it. Fresh roots and forks do not inherit it; a new Manager requires an
+explicit `manager: true` start. A missing bit means false, so existing sessions
+remain ordinary without migration.
+
+The daemon reports `thread.evener.manager`, and the hub reads that projection
+rather than storing a separate preference. Web **Session Details** and native
+**Session Info** show a read-only Manager indication. Normal refresh preserves
+loaded history pages when their source identity still matches, and preserves
+unsent input. Reconnect may replace stale pages with the latest authoritative
+window.
+
+A Manager reaches sessions through its own hub, including connected hosts and
+other Managers. A Manager hosted on another machine uses that machine's hub,
+not the controller through which someone viewed or started it. See
+[remote Manager and input support](evener-hub-remote-operations.md#remote-manager-and-input-support)
+for routing and capability limits.
+
+### Watch the top-level roster
+
+Register one aggregate watch with `job_watch` using
+`{"operation":"create","hub":{"scope":"top_level"}}`. Its first model-visible
+notification is the full current top-level roster, excluding the Manager's own
+workspace ref even after Clear changes its session ID. Later notifications
+carry source-qualified refs and meaningful `new`, `needs_you`, `error`, or
+`disappeared` events. Read each entry's `level`, `askPending`,
+`approvalPending`, and `needsResponse` fields to decide what needs action;
+the roster is not a synthesized summary. A per-target watch can also fire for
+the same change, so holding both can produce two wakes. A roster watch create
+takes the ordinary `note` payload beside the hub object, and that note rides
+every roster frame.
+
+The broker confirms disappearance across two consecutive attention
+publications. A genuine end is reported one attention tick later; a Clear
+replacement retaining the same workspace ref is not reported as an end,
+including when it leaves a one-tick gap. A changed session instance is reported
+as `new`, locally or remotely, including on an ordinary reconnect after Clear.
+First registration and resync recovery still deliver an explicit empty initial
+snapshot when the Manager is the only top-level session. Unchanged ordinary
+rebinds stay quiet.
+
+The watch accumulates changes to different sessions while a notification is
+pending and deduplicates revisions. After an interrupted stream or lost
+revision, re-register for a fresh full snapshot rather than assuming the last
+delta is complete. `job_list` discovery is a secondary read and may be
+unavailable independently of the roster watch. See the
+[roster design record](superpowers/specs/2026-11-04-manager-roster-watch-design.md).
+
+### Manager questions and fenced answers
+
+A question notice carries `pendingQuestion`, the session instance identity,
+`askBootGeneration`, `askRevision`, `compositeList`, `compositeTotal`, and
+`calllessCount`. The excerpt's call identity is `(turnId, callId)`, not call ID
+alone. An append and a daemon restart can each deliver a new `needs_you` notice
+while `askPending` and the attention level stay unchanged. Discovery also
+carries `attentionLevel` and its published `attentionAsOf` observation, so lost
+notices do not hide a waiting question. That observation can be older than the
+row's current status.
+
+Answer directly from an excerpt only when `complete:true`, `truncated:false`,
+and `count:1` are explicit and its identities are accepted. Otherwise fetch the
+canonical content for every pending composite. `read_transcript`'s hub branch
+reads newest history and pages backward; match both turn and call, including
+several calls in one turn. Excerpt flags absent after restore are unknown.
+
+Rows and roster notices carry at most ten composites. When `truncatedList` has
+`listReason:"pageable"`, enumerate the whole set with `job_status`:
+
+```json
+{"hub":{"ref":"local:WORKSPACE_ID","expected_ask_revision":7,"expected_ask_boot_generation":"OBSERVED_BOOT","offset":0,"limit":100}}
+```
+
+Use the observed pair, not the example values. The result's
+`read.pendingAskPage` carries `composites`, `total`, `nextOffset` and
+`calllessCount`. Keep the pair and follow `nextOffset` until absent, then fetch
+the named canonical questions. `total` counts composite calls; the excerpt's
+question count cannot drive page completion. A mixed legacy set also requires
+finding `calllessCount` questions by content in history. Page keys cannot be
+combined with `jobId`, and this page grammar belongs to `job_status`, not
+`read_transcript`.
+
+Relay the evaluated answer through `delegate_send` with the observed
+`expected_instance_id`, `expected_ask_revision`, and
+`expected_ask_boot_generation`, alongside its existing mutation ID and input
+mode. The ask pair is optional, but both fields must travel together; revision
+zero is a real observation. The hub checks the target's `AskFence` capability
+for start, queue and steer, reusing start's prepared row. Unfenced ordinary text
+queue and steer keep their no-extra-read path.
+
+The daemon compares the pair during admission. `ask-fence-mismatch` refuses the
+answer without consuming questions; the same mutation ID replays that refusal.
+Read the changed set and decide again before sending a new mutation. An
+admitted reply resolves the captured set, leaving later appends pending through
+consumption and restore. Clear still uses the separate instance precondition.
+
+`listReason:"unavailable"` marks a truncated list without page support. A
+fenced page or answer on an older daemon returns
+`ask-fence-unsupported-on-daemon` before dispatch. Use bounded history reads to
+locate full question content and the existing unfenced input path only with its
+ordinary semantics; do not claim conditional protection that peer lacks. A
+large old remote row can still exceed the Manager whole-read cap and return a
+typed refusal instead of a partial answer.
+
+A bounded roster segment can omit whole lane entries. Its `roster_dropped`
+count, bounded dropped refs and `roster_recovery` instruction survive
+coalescing. Read the named lanes with `job_status` and `read_transcript`;
+discovery helps recover the rest of a small fleet, but it is not a guarantee
+that every lane in a large fleet fits one call. A truncation recovery marker is
+separate from `roster_resync`, which still asks for watch re-registration.
+
+## Manager discovery, status and bounded reads
+
+An authenticated live Manager runtime can use `job_list` with
+`{"hub":{"mode":"discovery"}}` to discover reachable sessions and sources,
+then `job_status` with `{"hub":{"ref":"local:WORKSPACE_ID"}}` to read a
+source-qualified session's status through the existing hub read owner. Use a
+returned reference rather than constructing one. Ordinary calls keep their
+existing behavior. Explicit tool-policy denials still apply.
+
+Discovery is shallow: it lists source-qualified sessions and every configured
+host, including an empty or offline host. It does not mark a session seen,
+acknowledge a report, or reveal SSH paths, keys or host administration rows.
+The response carries one `builtAt` moment for the whole snapshot. Each `Sources`
+row says whether that source `answered`, was `attempted-failed`, was
+`skipped-unattached`, or was `not-selected` by an explicit filter. Explicitly
+naming multiple sources preserves fail-whole behavior: one named source's typed
+failure fails the read rather than serving a partial list.
+
+Locally probed roster rows report `probeState` as `fresh` or `retained`.
+A fresh row can carry its running `activeTurnId` and
+`activeTurnStartedAt`; a working row with no running subagent can also carry
+`quietForMs`, measured at `builtAt`. A retained row keeps durable facts but
+omits those volatile turn and activity facts. A crashed local lane remains in
+discovery with `status.type: systemError`, `crashed: true`, and retained probe
+state, but cannot receive a live read, model query, session-tool binding, or
+route. Disk-index and read-only alias rows carry no fleet facts. Remote rows
+keep the remote source's ordinary status, question and failure facts but omit
+the local hub's active-turn, quiet, probe-state and crash fields.
+
+Use `job_list` with `hub:{mode:"activity",ref,resource:"summary"}` for
+counts/context, or `resource:"delegates"`, `"jobs"`, or `"watches"` with
+`cursor` and `limit` for the corresponding bounded collection. The owner
+and scope come from the existing activity methods, not navigation rows.
+Activity follow-ups retain the selected resource, subtree or session scope,
+and page limit, so a later page never silently narrows the read.
+
+Use `job_list` with `hub:{mode:"tasks",ref,offset,limit,snapshot}` for the
+complete task descriptions and prompts. Omit offset/snapshot on the first page;
+its default limit is 50 and maximum is 200. Follow `nextOffset` with the
+returned snapshot and original page limit. The token is the SHA-256 identity
+of the complete ordered authoritative list, canonical ref and session instance,
+not a clock or page counter. Changes anywhere in that list return
+`snapshot_changed` instead of a mixed continuation; restart at offset zero.
+`data:null` means task data is unavailable; `data:[]` means the authoritative
+list is empty. An unknown or changing instance cannot mint a task token.
+
+`read_transcript` with `hub:{ref,itemLimit}` reads the latest bounded history;
+its returned `nextCursor` pages older items with `hub:{ref,cursor,itemLimit}`.
+For a smaller Manager-facing view, add exactly one `turnWindow`: `latest`, an
+exact `turn`, `since` a turn with a forward limit, or `before` a turn with a
+backward limit. `itemTypes` selects exact wire item types; `messages` is the
+source-aware shorthand for user, agent and human-steering messages. The optional
+`previewBytes`, `messageBytes`, `itemLimit` and `windowBudgetBytes` bounds keep
+tool output, message bodies, each turn and the complete encoded result bounded.
+The response reports the effective bounds and any excluded, withheld, truncated
+or budget-elided populations instead of implying that the view is complete.
+
+Use each returned structured `followUps` entry unchanged. Every page-level and
+per-turn continuation has its own shape-preserving entry with the original
+selection and bounds. A truncated settled item can carry a
+`fetchCursor`; call `read_transcript` with only `hub:{ref,fetchCursor}` and follow
+the next fetch cursor until the base64 ranges are complete. Cursors are bound to
+the exact thread, source incarnation, projection and item version. Refresh the
+window when a cursor is stale, the item changed, or compatibility recovery says
+the item is no longer reachable. In-flight items have no fetch cursor.
+`job_status` with `hub:{ref,jobId}` reads the job's full metadata, and
+`read_transcript` with `hub:{ref,jobId,maxBytes,beforeBytes}` pages its output
+backward in lifetime bytes. Each job handle names both its owner ref and job ID;
+do not route by job ID alone. `model_list` with `hub:{host:"SOURCE_ID",refresh:true}`
+reads the selected host's catalog and diagnostics, rather than the Manager's
+frozen local catalog. Ordinary local transcript JSONL, expansion, range and
+artifact arguments are rejected on hub reads, not silently interpreted there.
+Read responses stay below the tool result cap; use returned structured
+`followUps` to fetch the next page instead of treating a preview as complete.
+
+Session configuration supplies the Manager schemas and guidance independently
+of transport availability. A disconnect leaves that tool surface intact;
+individual calls may report unavailable while healthy ordinary work continues.
+Calls made during runtime binding installation wait until replies can be routed.
+Installation refusal or disconnect releases those calls as unavailable; caller
+cancellation ends its wait without sending an operation.
+Ending a Watch stops observations waiting to send. An observation already admitted
+to the wire finishes within the existing write budget under the binding's lifetime,
+so cancelling one Watch preserves the shared connection. Binding shutdown cancels
+accepted writes; genuine write failures retire the connection.
+The authenticated connection supplies caller identity, and the hub checks the
+daemon's Manager projection before admitting an operation. Tool arguments cannot
+grant Manager status or choose a different caller.
+
+## Start an independent worker from a Manager
+
+A Manager can call `delegate` with `prompt` and
+`hub:{cwd,model,watch:{events,completion}}`, plus an optional
+`reasoning_effort` that sets the created session's reasoning effort (absent
+keeps the hub's launch default). This creates an empty, independent
+ordinary top-level session on the Manager's local hub. It attaches the requested
+`job_watch` and reads its initial state **before** submitting the prompt with
+`turn/start`. Use `events:["question","communicate"]` and `completion:true` to
+receive question and terminal-result notices even when no browser is open.
+Read a pending question with `job_status` and
+`hub:{ref:"local:WORKSPACE_ID"}`, then send an answer with `delegate_send` using
+the returned ref, `input_mode:"start"`, `message`, a fresh
+`client_mutation_id`, and the returned `expected_instance_id`. A notification
+alone never answers a question. Resolve a pending approval with
+`session_control` and the approval's `escalationId` instead.
+
+A completion watch follows the recorded question-to-answer relationship across
+successive answers, including a watch attached while a question is pending.
+Unrelated work cannot complete it. A transient continuation read retries the
+original candidate under the same watch ID, preserving pending deliveries. The
+existing subscription consumer uses two seconds per call, two seconds between
+retries and at most five consecutive failed calls, with an interruption notice.
+Clear, replacement or subscription cancellation stops recovery. Permanent
+request/evidence failures and exhausted retries end the watch explicitly rather
+than guessing. Cancellation checks between reads do not impose a hard wall-clock
+bound on catch-up or underlying OS I/O; see
+[completion evidence](job-control.md#manager-observation-evidence).
+
+`hub` accepts `cwd`, `model` and `watch`, plus an optional `host` naming any
+host the Manager's hub can reach; an absent host keeps the local default and
+any other unknown field is rejected rather than ignored. The hub's own roster
+resolves or refuses the host, and the receiving hub spawns locally under its
+own working-directory and model validation, so the created worker is
+addressed by its `HOST:WORKSPACE_ID` reference. Discovery of an empty remote
+host and its model catalog does not create a worker there on its own.
+
+Hub creation takes `prompt`, `hub` and `reasoning_effort` (which sets the
+created session's effort), plus the shared `intent` argument every tool
+accepts. The
+owned-delegate arguments (`name`, `agent_type`, `task_list`, `isolation`,
+`sandbox` and the rest) do not apply to it and are refused with the arguments
+named rather than dropped: a created worker is not an owned delegate, so it is
+identified by its ref and its prompt-derived title. Give a worker a display
+name with `session_control`'s `rename` on its returned ref.
+
+The `delegate` result reports `created`, `watch` and `input` separately. A
+successful creation followed by a failed watch returns the worker ref, leaves
+the worker empty, and does not submit its prompt. A successful watch followed
+by failed or uncertain input keeps the watch attached and reports that input
+outcome separately. Once input has a mutation identity, `input.clientMutationId`
+retains it on submitted, refused and uncertain outcomes. Retry uncertain input
+with `delegate_send` using that same ID, prompt, worker ref and instance, not a
+new creation or a fresh mutation ID. If the launch is unknown, it stays unknown:
+never retry creation automatically. Inspect any returned worker ref before deciding what
+to do next. Workers are not owned delegates; they continue independently when
+their Manager's turn ends, and their watch notices are not delegate reports.
+
+Manager `job_watch` supports local and remote targets through the same shared
+hub subscriptions as human clients. For an existing remote worker, attach
+`job_watch(operation="create", hub={ref:"HOST:WORKSPACE_ID",events:["question"],completion:true})`
+before sending input. Hub watch creates take the ordinary watch arguments that
+apply to a session watch: `note` rides every delivery, and `every` throttles
+observation fires where the hub object selects exactly one event kind.
+Arguments that cannot apply to a session watch — job-output triggers, self
+timers, assistant.tool filters — are refused with an error naming the
+argument. Remote question/answer/completion and saved Manager
+attribution are checked through real two-hub SSH acceptance, without a browser.
+An idle completion watch anchors to the latest execution identity in the same
+indexed history cut as its snapshot, not a later model-change or delivery turn;
+an active turn takes precedence, and empty history supplies no anchor.
+Clearing a Manager watch leaves human subscribers attached. Local no-browser
+sandbox approval is qualified; approval caused by a live remote prompt remains
+unexercised end to end.
+
+An in-process owned child can also be watched by its canonical child ref. Its
+list and read identify the child session, but `instanceId` names the current
+serving root session and its boot generation is root-qualified. Root replacement
+invalidates that observation identity. A completion-enabled watch observes child
+`communicate` events. Delegates carry no `end_reason`: their completion is
+certified by the accepted terminal communicate itself — its recorded acceptance
+ending the delegate's turn — not by a `done` reason. Watching a child does not
+make it eligible for sandbox approval: approval remains root-only, and ordinary
+delegated controls are unchanged.
+
+## Apply human controls from a Manager
+
+`session_control` accepts `{"action":"rename","arguments":{"ref":"local:WORKSPACE_ID","name":"Research"}}`. The action is a closed set: `approval`, `resume`, `fork`, `clear`, `model`, `vision_model`, `reasoning_effort`, `compact`, `drain_queue`, `promote_queued`, `cancel_queued`, `rename`, `goal`, `human_notes`, `remove_url`, `archive`, `delete`, `pin`, `unpin`, and `seen`. Each uses the matching existing AppWire parameters. Supply only one typed payload; archive requires `kind:"session"` and its `archived` boolean also unarchives. `seen` requires one to 500 session marks, each with exactly one of `seenThrough` and `unread`. Queue editing cancels the selected entry and lets you recompose with `delegate_send`; it does not add queued input. Pinning by section name can create a section. Only ended or confirmed-crashed local sessions can be deleted.
+
+To stop human-style work, call `job_stop` with `{"hub":{"mode":"interrupt","arguments":{"ref":"local:WORKSPACE_ID","clientMutationId":"UNIQUE_ID","expectedInstanceId":"INSTANCE_ID"}}}`. Modes `delegate`, `shutdown`, and `force_stop` take their corresponding `DelegateStopParams`, `ThreadShutdownParams`, and `ThreadForceStopParams` fields in `arguments`. Three target scopes stay separate: `delegate` uses a `dlg_` ID and stops **one run**, leaving its child delegates alive; `owned_delegate` takes `{ref,delegateId,maxWaitMs?}` with a `dlg_` ID and stops the **owned subtree**, returning `already_stopped` when it has settled; `job` takes `{ref,jobId,includeChildren?,maxWaitMs?}` with a `job_` ID and stops **that shell job**, plus only its **immediate** shell children when `includeChildren` is true. These flags match human `job_stop`; they do not make `delegate` recursive or clear watches. A descendant ref is checked against its actual job or delegate owner before the stop reaches the root daemon; later reads or input still address the descendant's original ref. Force-stop still uses the human verified-daemon owner and must not become an unchecked remote kill. The authenticated binding identifies the Manager; no tool argument can select a caller or an RPC method.

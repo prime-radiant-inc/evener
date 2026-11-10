@@ -195,6 +195,15 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 	if err != nil {
 		return true
 	}
+	return m.unsafeGitEntryInfo(entry, info)
+}
+
+// unsafeGitEntryInfo decides whether an entry is unsafe given what the metadata
+// check already returned. Taking that result as an argument lets a test supply
+// the regular-file metadata that a FIFO swapped in after the check would have
+// produced, so the check-then-open gap is pinned without a mutable package
+// global (#4847).
+func (m *Manager) unsafeGitEntryInfo(entry string, info os.FileInfo) bool {
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(entry)
 		if err != nil {
@@ -215,7 +224,7 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 	if info.Size() > maxGitPointerBytes {
 		return true
 	}
-	file, err := os.Open(entry)
+	file, err := openRegularNoBlock(entry)
 	if err != nil {
 		return true
 	}
@@ -260,8 +269,8 @@ func (m *Manager) targetIsMixedManagedContent(target string) bool {
 		}
 		for _, spelling := range spellings {
 			for _, candidate := range targets {
-				rel, err := filepath.Rel(spelling, candidate)
-				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				rel, under := pathUnder(spelling, candidate)
+				if !under {
 					continue
 				}
 				if !hasGitComponent(rel) {

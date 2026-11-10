@@ -323,7 +323,7 @@ func TestAppThreadTreeEntriesCarryTheSharedThreadRowFacts(t *testing.T) {
 	failure := &appwire.ThreadFailure{Title: "Provider error"}
 	thread := appwire.Thread{
 		ID: "thread-remote", Source: "remote", ModelProvider: "gpt-5.6",
-		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting, ActiveFlags: []string{"resumeRequired"}},
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
 		Evener: appwire.EvenerThread{
 			Ref:             "remote:thread-remote",
 			AskPending:      true,
@@ -381,10 +381,10 @@ func TestAppThreadTreeEntriesCarryTheSharedThreadRowFacts(t *testing.T) {
 	if entry.Profile != "codex-jesse-fsck.com" || entry.LastMessage != "the opening line" || entry.CurrentModel != "gpt-5.6" {
 		t.Errorf("entry profile/model/message = %q/%q/%q, want the row's", entry.Profile, entry.CurrentModel, entry.LastMessage)
 	}
-	// Only a local probe reads capabilities and status flags; the remote row
-	// keeps the tree's own projection for those.
-	if entry.CapabilitiesKnown || entry.ActiveFlags != nil {
-		t.Errorf("entry capabilities/flags = %v/%v, want the remote row's own (none)", entry.CapabilitiesKnown, entry.ActiveFlags)
+	// Only a local probe reads capabilities; the remote row keeps the tree's own
+	// projection for that.
+	if entry.CapabilitiesKnown {
+		t.Errorf("entry capabilities = %v, want the remote row's own (none)", entry.CapabilitiesKnown)
 	}
 }
 

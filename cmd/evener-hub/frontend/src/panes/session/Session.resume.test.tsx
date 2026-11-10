@@ -7,17 +7,24 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../mutationReceiptTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
+import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { resetWorkspaceStoreForTests } from "../../shell/workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import {
+  installResumeRetrySchedulerForTests,
+  resetThreadsStoreForTests,
+  sendResumesModel,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { Toast } from "../../widgets";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
@@ -39,34 +46,11 @@ import {
   FAKE_CLOCK_ONLY,
   readResponse,
   resumeViaSend,
+  seedPendingSend,
+  stubSessionSlots,
   turnFixture,
   versionedReadResponse,
 } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -128,21 +112,6 @@ afterEach(() => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
 });
-
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
 
 test("an incompatible session shows a plain degraded notice with no buttons", async () => {
   const fake = connectReadyFakeClient();
@@ -326,6 +295,237 @@ test("a fenced remote session's Send drives the resume and then dispatches", asy
   expect(starts[0]?.params).toEqual(expect.objectContaining({ ref: resumedRef }));
 });
 
+// A resumed conversation replaces this pane's route. The retargeted rows keep
+// their composition owner - this pane's seat - so the replacement pane must be
+// placed under the SAME seat, or a refusal after the resume bounces a row the
+// authoring composer can never restore.
+test("a resume carries the authoring pane's seat to the resumed conversation", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "remote:stable-seat";
+  const resumedRef = "remote:current-seat";
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        let result: unknown = {};
+        if (request.id) {
+          switch (request.method) {
+            case "thread/read":
+              result =
+                request.params.ref === resumedRef
+                  ? readResponse(resumedRef, {
+                      status: { type: "idle" },
+                      evener: {
+                        ref: resumedRef,
+                        capabilities: CAPABILITIES,
+                        mutationStateAuthoritative: true,
+                        queue: { revision: 1 },
+                      },
+                    })
+                  : readResponse(ref, {
+                      status: { type: "notLoaded" },
+                      evener: {
+                        ref,
+                        capabilities: CAPABILITIES,
+                        resumeRequired: true,
+                        mutationStateAuthoritative: false,
+                        queue: { revision: 0 },
+                      },
+                    });
+              break;
+            case "thread/resume":
+              result = readResponse(resumedRef, { status: { type: "idle" } });
+              break;
+            case "thread/turns/list":
+              result = { data: [], nextCursor: null };
+              break;
+            case "turn/start":
+              result = {
+                turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+                receipt: {
+                  clientMutationId: request.params.clientMutationId,
+                  disposition: "applied",
+                  threadId: `thr_${resumedRef}`,
+                  projectionState: "reflected",
+                },
+              };
+              break;
+          }
+          socket.receive({ id: request.id, result });
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  // The shell's committed record for this pane, carrying its durable seat.
+  const authorSeat = "author-seat";
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main", composerSeatId: authorSeat }],
+    focusedPaneId: "p1",
+  });
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    // Production removes the author pane when the resumed route places a NEW
+    // pane (replacePrimary's new-main arm); this mount renders only the
+    // author pane, and the replacePrimary below plays AppShell's placement,
+    // so the harness never re-commits the author's record in place.
+    if ((route.params as { ref: string }).ref !== ref) return null;
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  // AppShell's route placement replaces the removed author pane; the
+  // replacement pane is placed under the authoring seat, so the retargeted
+  // rows restore into it.
+  const replacementId = workspaceStore.getState().replacePrimary("session", { ref: resumedRef });
+  const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
+  expect(replacement?.composerSeatId).toBe(authorSeat);
+});
+
+// A nested session resumed under a new ref carries its authoring seat to the
+// resumed pane's placement AND closes the superseded pane in the same
+// transition: the two-live-panes invariant. The resumed composer auto-restores
+// the retargeted work its seat owns.
+test("a nested resume carries the authoring seat and closes the superseded pane", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ownerRef = "remote:owner";
+  const ref = "remote:nested-old";
+  const resumedRef = "remote:nested-new";
+  const authorSeat = "nested-author-seat";
+  workspaceStore.setState({
+    panes: [
+      { id: "p-owner", type: "session", params: { ref: ownerRef }, slot: "main", composerSeatId: "owner-seat" },
+      { id: "p-nested", type: "session", params: { ref }, slot: "secondary", composerSeatId: authorSeat },
+    ],
+    focusedPaneId: "p-nested",
+  });
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id) return;
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result =
+              request.params.ref === resumedRef
+                ? readResponse(resumedRef, {
+                    status: { type: "idle" },
+                    evener: {
+                      ref: resumedRef,
+                      capabilities: CAPABILITIES,
+                      mutationStateAuthoritative: true,
+                      queue: { revision: 1 },
+                    },
+                  })
+                : readResponse(ref, {
+                    status: { type: "notLoaded" },
+                    evener: {
+                      ref,
+                      capabilities: CAPABILITIES,
+                      resumeRequired: true,
+                      mutationStateAuthoritative: false,
+                      queue: { revision: 0 },
+                    },
+                  });
+            break;
+          case "thread/resume":
+            result = readResponse(resumedRef, { status: { type: "idle" } });
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = {
+              turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${resumedRef}`,
+                projectionState: "reflected",
+              },
+            };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    // Production closes the superseded pane in the resume transition and
+    // AppShell places a NEW pane for the resumed route (played by the
+    // openNestedSessionWithOwner call below); this mount renders only the
+    // superseded pane, so the harness never re-commits its record.
+    if ((route.params as { ref: string }).ref !== ref) return null;
+    return <Session params={route.params as { ref: string }} paneId="p-nested" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the nested text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  // The superseded nested pane closes in the same transition.
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === "p-nested")).toBeUndefined();
+  });
+  // The resumed route places the way AppShell does for a nested session, and
+  // the new pane takes the authoring seat, so the retargeted work restores.
+  openNestedSessionWithOwner(resumedRef, ownerRef);
+  const resumedPane = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === resumedRef);
+  if (!resumedPane?.composerSeatId) throw new Error("resumed pane lacks a seat");
+  expect(resumedPane.composerSeatId).toBe(authorSeat);
+  // The hard invariant: exactly one live pane holds the authoring seat.
+  const holders = workspaceStore.getState().panes.filter((pane) => pane.composerSeatId === authorSeat);
+  expect(holders).toHaveLength(1);
+});
+
 // A merely-resumable local session needs no special UI: sending a prompt resumes
 // it (the hub folds the resume into turn/start), so its standalone Resume notice
 // and button are dropped. The two other causes of the obligation keep the
@@ -440,7 +640,7 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
     </ClientProvider>,
   );
   await screen.findByRole("alert");
-  if (pending) await act(async () => seedPendingSend());
+  if (pending) await act(async () => seedPendingSend(mutationStorage));
   expect(emptyStateReasons(document.body)).not.toContain("no-turns");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
@@ -950,4 +1150,388 @@ test("a Stop on the resumed identity before the resume RPC leaves suppresses the
   await waitFor(() => expect(threadsStore.getState().resumeFailures.get(stableRef)?.stopCanceled).toBe(true));
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
   await shutdownCompletion;
+});
+
+// A failed Send-resumes resume is not a one-shot dead end: while the ref's
+// restart obligation stands, the store keeps a retry owner that re-drives the
+// resume with capped backoff and no attempt limit, retiring the moment one
+// lands (and with it the fence, the parked send's dispatch and the failure
+// record). Native's settle path already retries refused resumes for its parked
+// rows; this pins the browser's owner for the same recovery.
+test("a failed send-resumes resume is re-driven with capped backoff until one lands", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-owner";
+  let resumeFails = true;
+  let resumeAttempts = 0;
+  const failureTokens: string[] = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, {
+      status: { type: resumeFails ? "notLoaded" : "idle" },
+    });
+    response.thread.evener.resumeRequired = resumeFails;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    if (resumeFails) {
+      // A generated opaque sentinel: the assertions check the record carries
+      // THIS attempt's failure, never any particular phrasing.
+      const token = `probe-failure-${crypto.randomUUID()}`;
+      failureTokens.push(token);
+      throw new Error(token);
+    }
+    return readResponse(ref, { status: { type: "idle" } });
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(sendResumesModel(ref)).toBe(true);
+  await resumeViaSend(ref, "the pressed text");
+  // The press drove resume #1, which the hub refused; the failure is published
+  // for the press surface and one paced retry is armed.
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
+  expect(firstFailure?.message).toBe(failureTokens[0]);
+  const pressFailureSeq = firstFailure?.seq ?? 0;
+  expect(resumeAttempts).toBe(1);
+  // The attempt captured the durable stop epoch before it began, so the arm
+  // lands with the published failure itself.
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  expect(scheduledResumeRetries[0]?.attempt).toBe(1);
+  // The scheduled retry fires with no press: resume #2 also fails, and the
+  // backoff doubles for the one after it. The automatic failure updates the
+  // record in place - the press surface's toast identity (seq) must not bump
+  // once for every background attempt.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(resumeAttempts).toBe(2));
+  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(failureTokens[1]);
+  expect(threadsStore.getState().resumeFailures.get(ref)?.seq).toBe(pressFailureSeq);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+  expect(scheduledResumeRetries[1]?.attempt).toBe(2);
+  // The third attempt lands: the fence clears, the failure record drops, the
+  // parked send drains, and the retry owner retires with nothing more armed.
+  resumeFails = false;
+  await act(async () => {
+    scheduledResumeRetries[1]?.fire();
+  });
+  // The landing drive reads the durable epoch before it starts, so its full
+  // sequence (RPC, identity fences, retarget, hydration, publish) gets the
+  // same budget the parked-send drain below does rather than the default.
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false), {
+    timeout: 5000,
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false), { timeout: 5000 });
+  await waitFor(
+    () =>
+      expect(
+        fake.calls.some(
+          (call) =>
+            call.method === "turn/start" &&
+            (call.params as { input?: { text?: string }[] }).input?.[0]?.text === "the pressed text",
+        ),
+      ).toBe(true),
+    { timeout: 5000 },
+  );
+  expect(resumeAttempts).toBe(3);
+  expect(scheduledResumeRetries).toHaveLength(2);
+}, 15000);
+
+// The retry owner serves the user's Send intent; a Stop that reverses that
+// intent is the user's own answer, and re-driving the resume would fight the
+// acknowledged Stop. A stop-canceled drive publishes its failure (the existing
+// contract) but arms no automatic retry.
+test("a Stop that cancels the resume drive arms no automatic retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-stopped";
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    const response = readResponse(params.ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = params.ref === ref;
+    return response;
+  });
+  fake.on("thread/resume", () => resumeHeld);
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(sendResumesModel(ref)).toBe(true);
+  await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the Stop must land while it is genuinely on the
+  // wire, not while the drive is still reading.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  // The Stop lands on the drive's own ref while the resume RPC is still on the
+  // wire: the drive's stop baseline records it, so resolving the resume can
+  // only fail the identity fence.
+  await act(async () => {
+    await threadsStore.getState().shutdown(ref);
+    resolveResume(readResponse(ref, { status: { type: "idle" } }));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
+});
+
+// The armed retry must die at the user's own hand: a Stop during the backoff
+// window is the user reversing the Send intent the retry serves, and a drive
+// fired after it would take a fresh stop baseline - blind to that Stop - and
+// restart the daemon the user just stopped. forceStop is the sharp case: it
+// re-arms the recovery obligation itself, so the fire-time fence alone would
+// let the armed drive through.
+test("a Stop during the armed backoff retires the pending resume retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-stopped-mid-backoff";
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  fake.on("evener/thread/forceStop", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  await act(async () => {
+    await threadsStore.getState().forceStop(ref);
+  });
+  expect(scheduledResumeRetries[0]?.cancelled).toBe(true);
+});
+
+// A Stop that lands on the drive's own ref while the resume RPC is on the
+// wire can surface in the catch as a plain transport failure - the Stop is
+// killing the very daemon the resume reaches - so the error's type cannot be
+// the only Stop signal: the drive re-checks its own stop baseline on failure,
+// arms no automatic retry.
+test("a Stop followed by a rejected resume RPC arms no automatic retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-rejected-after-stop";
+  const standingRow = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "standing uncertain row" }] },
+    attachments: [],
+    optimisticDisplay: { text: "standing uncertain row" },
+  });
+  await mutationStorage.markAttempted(standingRow.clientMutationId);
+  await mutationStorage.markUnknown(standingRow.clientMutationId, "blockedUnknown");
+  let rejectResume!: (error: Error) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectResume = reject;
+  });
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    const response = readResponse(params.ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = params.ref === ref;
+    return response;
+  });
+  fake.on("thread/resume", () => resumeHeld);
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the rejection must answer a request that is
+  // genuinely on the wire when the Stop lands, or the held promise rejects
+  // before the drive ever adopts it.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  await act(async () => {
+    await threadsStore.getState().shutdown(ref);
+    rejectResume(new Error("connection reset by peer"));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
+});
+
+// A Send press that joins an in-flight drive still owns a toast for that
+// drive's failure: the joined press marks the drive, and its failure mints a
+// fresh seq - a fresh toast identity - instead of the quiet in-place update
+// the retry owner's own failures keep.
+test("a Send press that joins an in-flight automatic drive still hears that drive's failure", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-press-joins-drive";
+  let resumeAttempts = 0;
+  let rejectHeldResume!: (error: Error) => void;
+  const heldResume = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectHeldResume = reject;
+  });
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    if (resumeAttempts === 1) throw new Error("rendezvous timed out (attempt 1)");
+    return heldResume;
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
+  const firstFailureSeq = firstFailure?.seq ?? 0;
+  // The paced retry's drive is in flight - its resume RPC is held - when a
+  // second Send press joins it.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(resumeAttempts).toBe(2));
+  await resumeViaSend(ref, "a second pressed text");
+  // The joined press surfaces the failure it joined as its own: the record
+  // carries the held resume's rejection (a generated opaque sentinel), and
+  // its toast identity is a fresh seq.
+  const joinedFailureToken = `probe-joined-${crypto.randomUUID()}`;
+  await act(async () => {
+    rejectHeldResume(new Error(joinedFailureToken));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(joinedFailureToken));
+  expect(threadsStore.getState().resumeFailures.get(ref)?.seq).not.toBe(firstFailureSeq);
+  // The joined press's failure re-arms the retry owner. Await that arm so this
+  // test ends with the drive's whole catch tail settled rather than leaving
+  // the next test to observe it: an arm that escapes this test arms through
+  // whichever scheduler the NEXT test has installed.
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+});
+
+// An identity-changing resume moves the user's work under the resumed ref, and
+// a Stop can land on THAT ref while the drive is still running: the post-resume
+// read then rejects before the drive's identity fence ever runs, surfacing in
+// the catch as a plain transport failure. The Stop generation check must fence
+// both identities, or the failure of a drive the user already stopped re-arms
+// the retry and restarts the session they shut down.
+test("a Stop on the resumed identity mid-drive arms no automatic retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-stop-resumed";
+  const resumedRef = "local:resume-stop-resumed-2";
+  let resumeReadIssued!: () => void;
+  const resumeReadOnWire = new Promise<void>((resolve) => {
+    resumeReadIssued = resolve;
+  });
+  let holdResumedRead = true;
+  let rejectHeldRead!: (error: Error) => void;
+  const heldRead = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectHeldRead = reject;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === resumedRef) {
+      if (holdResumedRead) {
+        holdResumedRead = false;
+        resumeReadIssued();
+        return heldRead;
+      }
+      return readResponse(resumedRef, { status: { type: "idle" } });
+    }
+    return readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: CAPABILITIES,
+        resumeRequired: true,
+        mutationStateAuthoritative: false,
+        queue: { revision: 0 },
+      },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(resumedRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  // The resume returned the resumed identity and its post-resume read is on
+  // the wire when the user Stops the resumed session; that Stop refuses the
+  // read, which rejects as a plain transport failure before any fence runs.
+  await act(async () => {
+    await resumeReadOnWire;
+  });
+  await act(async () => {
+    await threadsStore.getState().shutdown(resumedRef);
+    rejectHeldRead(new Error("connection reset by peer"));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
 });

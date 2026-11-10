@@ -411,20 +411,11 @@ func hostReceiptRowFor(entry hostreg.Host) HostMutationReceiptRow {
 // deliberately absent (attached false, midEnsure/midAttach false): the row a
 // replay renders is the durable outcome, not a later attach's state.
 func hostReceiptRow(receipt HostMutationReceipt, kind hostMutationKind) appwire.HostRow {
-	return appwire.HostRow{
-		Name:          receipt.Row.Name,
-		Address:       receipt.Row.Address,
-		User:          receipt.Row.User,
-		KeyPath:       receipt.Row.KeyPath,
-		EvenerPath:    receipt.Row.EvenerPath,
-		ConfigPath:    receipt.Row.ConfigPath,
-		Addr:          receipt.Row.Addr,
-		Roots:         append([]string(nil), receipt.Row.Roots...),
-		Origin:        hostOriginHubTOML,
-		Generation:    receipt.Generation,
-		IncarnationID: receipt.IncarnationID,
-		Removed:       kind == hostMutationRemove,
-	}
+	row := hostRowForReceiptRow(receipt.Row)
+	row.Generation = receipt.Generation
+	row.IncarnationID = receipt.IncarnationID
+	row.Removed = kind == hostMutationRemove
+	return row
 }
 
 // validateHostMutationReceipts checks the receipts a hub.toml document carries

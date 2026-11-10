@@ -96,6 +96,7 @@ native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigResolve
 native:.:./cmd/evener-fuzzregistry:FuzzParseRegistry
 native:.:./cmd/evener-fuzzregistry:FuzzRegistryProgram
 native:.:./cmd/evener-dev:FuzzParseGoTestJSON
+native:.:./scripts/native/ios/qualification:FuzzSimulatorSelection
 native:agent:./plugin:FuzzPluginManifestParse
 native:agent:./plugin:FuzzPluginLoaderProgram
 native:agent:./plugin:FuzzDiscoverEvenerwideFrontmatter
@@ -463,7 +464,8 @@ native:.:./internal/bundled:FuzzAssets
 native:.:./internal/fuzzroutes:FuzzReadOnly
 native:.:./internal/httpguard:FuzzHubTokenAuthorized
 native:.:./internal/httpguard:FuzzPolicy
-native:.:./internal/maketargetsdoc:FuzzParseFamily
+native:.:./internal/maketargetsdoc:FuzzRenderRewrite
+native:.:./internal/maketargetsdoc/makefile:FuzzParseFamily
 native:.:./internal/selfupdate:FuzzResolveTarget
 native:.:./test/scenarios:FuzzScenarioStateRule
 native:.:./tools/tool-fluency/cmd/evener-fluency:FuzzFluencyParsers
@@ -476,7 +478,6 @@ native:.:./cmd/evener:FuzzRootCommandSeedCoverage
 native:auth:./openai:FuzzAuthOpenAIFaultSeams
 native:auth:./openai:FuzzAuthOpenAISeedReplay
 native:llm:.:FuzzCoreContracts
-native:llm:.:FuzzCoreDeterministicScenarios
 native:llm:.:FuzzRootScenarioReplay
 native:.:./internal/appwiredoc:FuzzPackageUnion
 native:.:./internal/binresolve:FuzzPackageUnion

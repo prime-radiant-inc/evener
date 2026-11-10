@@ -3,6 +3,7 @@ package hostops
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,10 @@ import (
 // quarantine that drops a name it could not prove. Each row plants one
 // malformed region in an otherwise custodyable corrupt store (the sequence
 // corruption the shared records already carry) and asserts the boot's refusal.
+// The pendingCompensation family is the exception the raw walk must leave
+// unjudged: the duplicate-key byte rule still applies, but a record's keys are
+// not the walk's to spell-check, so a store carrying an armed record still
+// quarantines (TestQuarantineCompletesWithArmedCompensations).
 
 const (
 	custodyArmRec1 = `{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
@@ -42,6 +47,16 @@ func custodyArmStore(hwm uint64, records, extra string) string {
 		body += `,` + extra
 	}
 	return body + `}`
+}
+
+// custodyArmStoreAt is custodyArmStore with an explicit top-level
+// state-transition sequence. A row whose only corruption is its compensation
+// region uses sequence 2 — the terminal record's stamp — so the loader refuses
+// it for that region alone; rows that need unrelated corruption keep
+// custodyArmStore's sequence 1.
+func custodyArmStoreAt(sequence, hwm uint64, records, extra string) string {
+	return strings.Replace(custodyArmStore(hwm, records, extra), `"sequence":1`,
+		`"sequence":`+strconv.FormatUint(sequence, 10), 1)
 }
 
 // validTombstoneWithID renders a schema-valid tombstone for the rows that need
@@ -110,27 +125,6 @@ func TestCustodySnapshotRefusesUnprovableCorruptStores(t *testing.T) {
 			name: "a store carrying trailing bytes after the JSON document",
 			body: custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2, "") + ` garbage`,
 		},
-		// The compensation rows below are refused twice over today: the loader
-		// refuses the malformed record (the arms these rows pin), and the
-		// custody byte-walk then refuses the whole pendingCompensation family —
-		// see ownedKeysFor's pendingCompensation branch, which reports an
-		// owned key set even when the walk carries none. That second refusal is
-		// reported separately; the loader's own decode arms run first.
-		{
-			name: "a compensation record missing its phase",
-			body: custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2,
-				`"pendingCompensation":{"hB":{"host":"hB","rows":[],"stashReference":"stash","generation":3}}`),
-		},
-		{
-			name: "a compensation record carrying a phase outside the machine",
-			body: custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2,
-				`"pendingCompensation":{"hB":{"host":"hB","phase":"nonsense","rows":[],"stashReference":"stash","generation":3}}`),
-		},
-		{
-			name: "a compensation record keyed by a host it does not name",
-			body: custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2,
-				`"pendingCompensation":{"hZ":{"host":"hB","phase":"compensating-armed","rows":[],"stashReference":"stash","generation":3}}`),
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +133,96 @@ func TestCustodySnapshotRefusesUnprovableCorruptStores(t *testing.T) {
 			writeRawStore(t, path, 0o600, tc.body)
 			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
+			}
+		})
+	}
+}
+
+// TestQuarantineCompletesWithArmedCompensations pins the corrected raw-walk
+// contract for the pendingCompensation family: the custody byte-walk carries no
+// owned-key table and does not spell-check the keys inside a raw field, so a
+// corrupt store that also carries an armed (or loader-malformed) compensation
+// record still completes the custody-first quarantine instead of wedging every
+// boot. In the preimage-row row, that unjudged interior is what ownedKeysFor
+// must report not-owned.
+//
+// Every row is a store the loader refuses. The first is the reported
+// regression: a well-formed armed record while an unrelated corruption — the
+// state-transition sequence sitting below the terminal record's stamp — makes
+// the loader refuse the store. The others carry a sound sequence and only their
+// compensation region makes the loader refuse them, so each pins one loader
+// arm: the canonical spelling of the record and of a preimage row, and the
+// record's own decode rules. Custody consumes the family as a raw region the
+// replacement discards.
+func TestQuarantineCompletesWithArmedCompensations(t *testing.T) {
+	t.Parallel()
+
+	value, err := newTokenValue()
+	if err != nil {
+		t.Fatalf("newTokenValue: %v", err)
+	}
+	row := tokenRowJSON("hB", value, tokenEpoch, tokenEpoch.Add(5*time.Minute), tokenEpoch)
+	nonCanonicalRow := strings.Replace(row, `"host":"hB"`, `"Host":"hB"`, 1)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "a well-formed armed record over an unrelated corrupt sequence",
+			body: custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hB":{"host":"hB","phase":"compensating-armed","rows":[],"stashReference":"stash","generation":3}}`),
+		},
+		{
+			name: "a record key outside the canonical spelling",
+			body: custodyArmStoreAt(2, 2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hB":{"Host":"hB","phase":"compensating-armed","rows":[],"stashReference":"stash","generation":3}}`),
+		},
+		{
+			name: "a preimage row key outside the canonical spelling",
+			body: custodyArmStoreAt(2, 2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hB":{"host":"hB","phase":"compensating-armed","rows":[`+nonCanonicalRow+
+					`],"stashReference":"stash","generation":3}}`),
+		},
+		{
+			name: "a compensation record missing its phase",
+			body: custodyArmStoreAt(2, 2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hB":{"host":"hB","rows":[],"stashReference":"stash","generation":3}}`),
+		},
+		{
+			name: "a compensation record carrying a phase outside the machine",
+			body: custodyArmStoreAt(2, 2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hB":{"host":"hB","phase":"nonsense","rows":[],"stashReference":"stash","generation":3}}`),
+		},
+		{
+			name: "a compensation record keyed by a host it does not name",
+			body: custodyArmStoreAt(2, 2, custodyArmRec1+`,`+custodyArmRec2,
+				`"pendingCompensation":{"hZ":{"host":"hB","phase":"compensating-armed","rows":[],"stashReference":"stash","generation":3}}`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, tc.body)
+			store, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open on a corrupt store carrying a compensation record: err = %v, want the custody-first quarantine", err)
+			}
+			signal := store.Quarantine()
+			if signal == nil || signal.QuarantineEpoch != 1 || signal.QuarantinedFile != path {
+				t.Fatalf("Quarantine() = %+v, want epoch 1 for %s", signal, path)
+			}
+			// §4 starts the replacement with no outstanding compensation, so the
+			// family the corrupt file carried is discarded by design.
+			if got := store.Compensations(); len(got) != 0 {
+				t.Fatalf("the replacement store carries compensations %+v, want none", got)
+			}
+			// The corrupt bytes survive in the aside file: a quarantine that
+			// lost them would drop the only evidence of what the file held.
+			_, aside := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
+			if string(aside) != tc.body {
+				t.Fatalf("the aside file = %s, want the planted bytes %s", aside, tc.body)
 			}
 		})
 	}

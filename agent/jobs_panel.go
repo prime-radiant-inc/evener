@@ -10,12 +10,6 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// isOutputNotExistErr reports whether err means the job's output file does
-// not exist, through the jobstore fmt.Errorf %w wrapping. (The raw os.Stat
-// results in the historical readers use os.IsNotExist directly; wrapped
-// paths need errors.Is.)
-func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
-
 // JobOutputPage is a wire payload, so its definition lives in appwire beside
 // the evener/jobs/output shape (and under that package's camelCase tag
 // carve-out). The alias keeps this package's producer named in domain terms.

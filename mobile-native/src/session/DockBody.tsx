@@ -3,7 +3,7 @@
 // needs (a long question, the largest text sizes, the keyboard up), while the
 // dock's header and answer controls stay on screen outside it.
 import { type ReactNode, useRef } from "react";
-import { ScrollView, type StyleProp, type ViewStyle } from "react-native";
+import { ScrollView, type ScrollViewInstance, type StyleProp, type ViewStyle } from "react-native";
 import { shrinkingScroller } from "./dockCard";
 
 export function DockBody({
@@ -13,7 +13,7 @@ export function DockBody({
 	contentContainerStyle?: StyleProp<ViewStyle>;
 	children: ReactNode;
 }) {
-	const scroller = useRef<ScrollView>(null);
+	const scroller = useRef<ScrollViewInstance>(null);
 	const viewport = useRef(0);
 	const content = useRef(0);
 	const flashed = useRef(false);

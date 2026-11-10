@@ -2,24 +2,34 @@ package appsource
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/rendezvous"
 )
 
 type LocalDaemonSource struct {
-	sourceID string
-	entries  func() []LocalDaemonEntry
-	client   *http.Client
-	dial     appwireDialFunc
+	sessionToolsFactory     func(appwire.SessionBinding) (appwire.SessionHubClient, error)
+	sessionToolsHubID       func() (string, error)
+	sessionToolsPoke        chan struct{}
+	sessionToolsMu          sync.Mutex
+	sessionToolsLifetime    context.Context
+	sessionToolsConnections map[string]sessionToolsLiveConnection
+	sourceID                string
+	entries                 func() []LocalDaemonEntry
+	client                  *http.Client
+	dial                    appwireDialFunc
 
 	itemPagingLocks keyedMutexRegistry
 	itemSnapshots   *itemSnapshotStateCache
@@ -45,6 +55,14 @@ type LocalDaemonEntry struct {
 	Entry     rendezvous.Entry
 	SessionID string
 	Status    string
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. Retained, crashed, remote, and alias rows leave
+	// them empty.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	ProbeState          appwire.ThreadProbeState
+	Activity            *appwire.ThreadActivity
+	Crashed             bool
 	// ReadOnlyAlias addresses an in-process descendant through its owner's
 	// daemon. It is valid for reads/subscriptions only; mutation methods must not
 	// accidentally apply a child-targeted request to the owning root session.
@@ -59,6 +77,11 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// Manager mirrors hubcore.LiveEntry.Manager — the session's own start-time
+	// Manager property as its daemon projects it. threadFromEntry carries it
+	// into EvenerThread.Manager so hub views read the session's own property,
+	// never a hub-side record.
+	Manager bool
 	// PendingEscalation mirrors hubcore.LiveEntry.PendingEscalation — true
 	// while the daemon reports a blocked sandbox-exemption escalation. The
 	// unprobed fallback folds it out of Clear, matching the daemon's own
@@ -75,6 +98,7 @@ type LocalDaemonEntry struct {
 	// hub's sessions names the question as a local probe would. A read-only
 	// alias has none.
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure mirrors hubcore.LiveEntry.Failure: the summary of the failed turn
 	// the root rests on (S1c). threadFromEntry carries it into
 	// appwire.EvenerThread.Failure, so a controller hub says why a remote
@@ -166,6 +190,24 @@ func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID
 	}
 }
 
+// InvalidateDaemonRelay drops the canonical relay connection that reaches
+// entry's daemon after a resume has replaced it. The relay session is keyed by
+// the workspace ref the replacement shares, so without this the next
+// subscribed read or send reuses the superseded daemon's socket even though
+// the roster now names the replacement.
+func (s *LocalDaemonSource) InvalidateDaemonRelay(entry rendezvous.Entry) {
+	ref, err := s.relaySessionRef(entry)
+	if err != nil {
+		return
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session != nil {
+		session.invalidateConnection()
+	}
+}
+
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
 	if sourceID == "" {
 		sourceID = appwire.LocalSourceID
@@ -183,6 +225,173 @@ func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaem
 
 func (s *LocalDaemonSource) ID() string {
 	return s.sourceID
+}
+
+type sessionToolsLiveConnection struct {
+	binding   appwire.SessionBinding
+	transport appwire.Transport
+	// epoch is the relay connection that published the binding. The binding
+	// lives exactly as long as that connection: the daemon cancels it when
+	// the connection closes, and the next dial negotiates a fresh one.
+	epoch uint64
+}
+
+// SetSessionTools is installed before any source connection starts. It does not
+// accept a caller identity from tool parameters or from a cold alias.
+func (s *LocalDaemonSource) SetSessionTools(factory func(appwire.SessionBinding) (appwire.SessionHubClient, error), hubID func() (string, error)) {
+	s.sessionToolsFactory = factory
+	s.sessionToolsHubID = hubID
+	s.sessionToolsPoke = make(chan struct{}, 1)
+	s.sessionToolsConnections = map[string]sessionToolsLiveConnection{}
+}
+
+func (s *LocalDaemonSource) SessionToolsThread(binding appwire.SessionBinding) (appwire.Thread, error) {
+	for _, entry := range s.entries() {
+		if !localDaemonEntryRouteEligible(entry, false) {
+			continue
+		}
+		thread := s.threadFromEntry(entry)
+		if thread.Evener.Ref == binding.Ref && thread.Evener.InstanceID == binding.InstanceID {
+			return thread, nil
+		}
+	}
+	return appwire.Thread{}, appwire.SessionUnavailable("runtime binding no longer names a discovered live session")
+}
+
+func (s *LocalDaemonSource) ReconcileSessionTools() {
+	if s.sessionToolsPoke == nil {
+		return
+	}
+	select {
+	case s.sessionToolsPoke <- struct{}{}:
+	default:
+	}
+}
+
+// RunSessionTools holds demand on the existing canonical relay, whose recovery
+// owner reconnects even when the roster's identity has not changed.
+func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
+	if s.sessionToolsFactory == nil {
+		return
+	}
+	s.sessionToolsMu.Lock()
+	s.sessionToolsLifetime = ctx
+	s.sessionToolsMu.Unlock()
+	type held struct {
+		lease  RelaySessionRoutePublicationLease
+		cancel context.CancelFunc
+	}
+	leases := map[string]held{}
+	var workers sync.WaitGroup
+	defer func() {
+		for _, hold := range leases {
+			hold.cancel()
+			hold.lease.Close()
+		}
+		s.sessionToolsMu.Lock()
+		var transports []appwire.Transport
+		for ref, connection := range s.sessionToolsConnections {
+			transports = append(transports, connection.transport)
+			delete(s.sessionToolsConnections, ref)
+		}
+		s.sessionToolsMu.Unlock()
+		for _, transport := range transports {
+			_ = transport.Close()
+		}
+		workers.Wait()
+	}()
+	s.ReconcileSessionTools()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.sessionToolsPoke:
+		}
+		wanted := s.sessionToolsWanted()
+		s.sessionToolsMu.Lock()
+		var stale []appwire.Transport
+		hubID, _ := s.sessionToolsHubID()
+		for ref, connection := range s.sessionToolsConnections {
+			if wanted[ref].Evener.InstanceID != connection.binding.InstanceID || hubID != connection.binding.HubID {
+				stale = append(stale, connection.transport)
+				delete(s.sessionToolsConnections, ref)
+			}
+		}
+		s.sessionToolsMu.Unlock()
+		for _, transport := range stale {
+			_ = transport.Close()
+		}
+		for ref, hold := range leases {
+			if _, ok := wanted[ref]; !ok {
+				hold.cancel()
+				hold.lease.Close()
+				delete(leases, ref)
+			}
+		}
+		for raw := range wanted {
+			if _, ok := leases[raw]; ok {
+				continue
+			}
+			ref, err := appwire.ParseRef(raw)
+			if err != nil {
+				continue
+			}
+			lease, err := s.AcquireRelaySession(ref)
+			if err != nil {
+				continue
+			}
+			life, cancel := context.WithCancel(ctx)
+			feed, err := lease.Listen(life)
+			if err != nil {
+				cancel()
+				lease.Close()
+				continue
+			}
+			leases[raw] = held{lease: lease, cancel: cancel}
+			workers.Go(func() {
+				for delivery := range feed {
+					if delivery.Acknowledge != nil {
+						delivery.Acknowledge()
+					}
+				}
+			})
+			workers.Go(func() {
+				// Retention keeps the canonical relay connected without
+				// subscribing: the daemon's subscriber count must stay zero
+				// for a session no one watches, or its curable sandbox
+				// denials raise approval cards nobody can answer.
+				read, err := lease.Read(life, appwire.ThreadReadParams{Ref: raw})
+				if err == nil {
+					if read.Handoff != nil {
+						read.Handoff.Prepare()
+						read.Handoff.Commit()
+					}
+					return
+				}
+				// Reuse the relay's paced recovery for first-dial failures too.
+				if l, ok := lease.(*relaySessionLease); ok {
+					l.session.mu.Lock()
+					start := !l.session.closed && !l.session.recovering
+					l.session.recovering = l.session.recovering || start
+					l.session.mu.Unlock()
+					if start {
+						l.session.recoverCanonicalFeed()
+					}
+				}
+			})
+		}
+	}
+}
+
+func (s *LocalDaemonSource) sessionToolsWanted() map[string]appwire.Thread {
+	wanted := map[string]appwire.Thread{}
+	for _, entry := range s.entries() {
+		if localDaemonEntryRouteEligible(entry, false) {
+			thread := s.threadFromEntry(entry)
+			wanted[thread.Evener.Ref] = thread
+		}
+	}
+	return wanted
 }
 
 func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
@@ -283,16 +492,60 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 				}
 				client := appwire.NewClient(transport)
 				client.SetLogf(hubConnectionLogf)
+				var binding appwire.SessionBinding
+				s.sessionToolsMu.Lock()
+				bindingLifetime := s.sessionToolsLifetime
+				s.sessionToolsMu.Unlock()
+				if s.sessionToolsFactory != nil && (bindingLifetime == nil || bindingLifetime.Err() == nil) {
+					hubID, hubErr := s.sessionToolsHubID()
+					if hubErr == nil {
+						binding = appwire.SessionBinding{Ref: ref.String(), InstanceID: currentEntry.SessionID, HubID: hubID, BindingID: rand.Text()}
+						owner, ownerErr := s.sessionToolsFactory(binding)
+						if ownerErr == nil {
+							client.SetSessionTools(binding, owner)
+						} else {
+							binding.BindingID = ""
+							binding.HubID = ""
+						}
+					}
+				}
 				client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
 					observe(epoch, message, err)
 				})
 				client.Start(ctx)
-				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); initializeErr != nil {
+				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}, Capabilities: appwire.Capabilities{SessionTools: binding.BindingID != ""}}); initializeErr != nil {
 					_ = transport.Close()
 					if callerErr := ctx.Err(); callerErr != nil {
 						return nil, nil, callerErr
 					}
 					return nil, nil, localDaemonInitializeError(initializeErr)
+				}
+				if binding.BindingID != "" {
+					if !client.Features().SessionTools {
+						// Keep HubID stable so reconciliation does not recycle this connection.
+						binding.BindingID = ""
+					} else if bindErr := client.BindSessionTools(ctx); bindErr == nil {
+						s.sessionToolsMu.Lock()
+						if bindingLifetime != nil && bindingLifetime.Err() != nil {
+							s.sessionToolsMu.Unlock()
+							_ = transport.Close()
+							return nil, nil, bindingLifetime.Err()
+						}
+						s.sessionToolsMu.Unlock()
+					} else {
+						binding.BindingID = ""
+						binding.HubID = ""
+					}
+				}
+				if s.sessionToolsFactory != nil {
+					binding.Ref = ref.String()
+					binding.InstanceID = currentEntry.SessionID
+					s.sessionToolsMu.Lock()
+					s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, transport: transport, epoch: epoch}
+					s.sessionToolsMu.Unlock()
+					// Reconcile a failed binding or a daemon identity that changed
+					// while this connection was being established.
+					s.ReconcileSessionTools()
 				}
 				return client, transport, nil
 			},
@@ -315,6 +568,28 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	return lease, nil
 }
 
+// SessionToolsSupported reports support negotiated by the live relay
+// connection that serves the target. Descendant sessions share the root
+// daemon's relay, so the target resolves through the same canonical mapping
+// the read path uses before the session is looked up. known is false until
+// the target is serving.
+func (s *LocalDaemonSource) SessionToolsSupported(target appwire.Ref) (supported, known bool) {
+	if target.SourceID != s.sourceID {
+		return false, false
+	}
+	ref, err := s.ResolveRelaySession(appwire.ThreadReadParams{Ref: target.String()})
+	if err != nil {
+		return false, false
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session == nil {
+		return false, false
+	}
+	return session.SessionToolsSupported()
+}
+
 // acquireRelaySession preserves the old parameter-based source call sites while
 // keeping canonical resolution separate from relay session acquisition.
 func (s *LocalDaemonSource) acquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {
@@ -334,7 +609,7 @@ func (s *LocalDaemonSource) ListThreads(ctx context.Context, _ appwire.ThreadLis
 		if err := ctx.Err(); err != nil {
 			return appwire.ThreadListResponse{}, err
 		}
-		out.Data = append(out.Data, s.threadFromEntry(entry))
+		out.Data = append(out.Data, s.threadFromEntryAt(entry, threadListBuiltAt(ctx)))
 	}
 	if err := ctx.Err(); err != nil {
 		return appwire.ThreadListResponse{}, err
@@ -358,6 +633,13 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 		if err != nil {
 			lease.Close()
 			return appwire.ThreadReadResponse{}, err
+		}
+		target, parseErr := appwire.ParseRef(result.Response.Thread.Evener.Ref)
+		if parseErr != nil {
+			target, parseErr = appwire.ParseRef(params.Ref)
+		}
+		if supported, known := s.SessionToolsSupported(target); parseErr == nil && known {
+			result.Response.TargetSessionToolsSupported = &supported
 		}
 		key := result.Response.Thread.Evener.Ref
 		if key == "" {
@@ -393,7 +675,496 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
-	return s.ReadThreadAtEntry(ctx, entry, params)
+	return s.readThreadWindowPages(ctx, entry, params)
+}
+
+const (
+	// localDaemonWindowTransferBudgetFloor and ...BudgetMax mirror the packer's
+	// own clamp of the requested window budget (cmd/evener-hub's
+	// transcriptWindowBudgetFloorBytes and transcriptWindowMaximumContentBudget).
+	// This package cannot import the hub package that owns them. The source
+	// collects at least this much selected content before it stops paging, so a
+	// stopped page always holds more than the packer can serve and the packer
+	// trims it into the normal withheld-turn continuation.
+	localDaemonWindowTransferBudgetFloor   = 16 << 10
+	localDaemonWindowTransferBudgetDefault = 192 << 10
+	localDaemonWindowTransferBudgetMax     = 224 << 10
+	// localDaemonWindowTransferMaxPages bounds a latest-window walk whose pages
+	// hold no selected content. The hub reports the rest as withheld turns, so a
+	// small page with a continuation is better than an unbounded walk.
+	localDaemonWindowTransferMaxPages = 64
+)
+
+// readThreadWindowPages walks the daemon's bounded window transfer pages and
+// merges only as many as the packer needs. The daemon returns one bounded page
+// and names the turns it withheld; the source requests the next page from that
+// boundary until the requested content is gathered or the window ends. A
+// daemon that does not page (Window nil) is read exactly as before.
+func (s *LocalDaemonSource) readThreadWindowPages(ctx context.Context, entry rendezvous.Entry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if params.TurnWindow == nil || !params.IncludeTurns {
+		return s.ReadThreadAtEntry(ctx, entry, params)
+	}
+	var merged appwire.ThreadReadResponse
+	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		var readErr error
+		merged, readErr = readThreadWindowTransfer(ctx, client, params)
+		if readErr != nil {
+			return readErr
+		}
+		supported := client.Features().SessionTools
+		merged.TargetSessionToolsSupported = &supported
+		return nil
+	})
+	return merged, err
+}
+
+// readThreadWindowTransfer walks a daemon's bounded window pages on one
+// connection. The daemon returns one bounded page and names the turns it
+// withheld; this reads the next page from that boundary until the content the
+// packer needs is gathered or the window ends. A page that ends inside one turn
+// names its resume position, and the walk gathers that turn whole before it
+// reports any of it withheld: the packer withholds whole turns, so a fragment
+// short of its turn's end would lose the remainder. A daemon that does not page
+// (Window nil) is read exactly once, as before.
+func readThreadWindowTransfer(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if params.TurnWindow == nil || !params.IncludeTurns {
+		return client.ThreadRead(ctx, params)
+	}
+	var merged appwire.ThreadReadResponse
+	var turns []appwire.Turn
+	var pending *appwire.ThreadWindowResult
+	started := false
+	target := localDaemonWindowTransferTarget(params.WindowBudgetBytes)
+	selector := *params.TurnWindow
+	prepend := selector.Since == ""
+	scope := selector
+	var scopePage appwire.ThreadReadResponse
+	var resume *appwire.ThreadWindowTransfer
+	pages := 0
+	for {
+		pageParams := params
+		pageParams.WindowTransfer = resume
+		if resume != nil {
+			pageParams.TurnWindow = &appwire.ThreadTurnWindow{Turn: resume.TurnID}
+		} else {
+			pageParams.TurnWindow = &selector
+		}
+		if pages > 0 {
+			// The relay's first read holds the subscription; the rest only
+			// continue the same snapshot.
+			pageParams.Subscribe = false
+		}
+		page, err := client.ThreadRead(ctx, pageParams)
+		if err != nil {
+			if resume != nil && started && localDaemonWindowTransferRefused(err) {
+				// An invalid resume is a daemon that predates the field
+				// rejecting it, or a boundary the transcript moved under.
+				// Keep the pages already gathered: failing the whole read
+				// would serve nothing.
+				break
+			}
+			return appwire.ThreadReadResponse{}, err
+		}
+		pages++
+		if started && merged.Snapshot != nil && page.Snapshot != nil &&
+			localDaemonSourceIncarnation(merged.Snapshot.Incarnation) != localDaemonSourceIncarnation(page.Snapshot.Incarnation) {
+			// The history line was replaced between pages. Mixing the two
+			// snapshots would serve one window from two transcripts; keep the
+			// page already read and let its withheld turns continue.
+			break
+		}
+		if !started {
+			merged = page
+			started = true
+		}
+		if prepend {
+			turns, err = localDaemonMergeWindowTurns(turns, page.Thread.Turns, true)
+		} else {
+			turns, err = localDaemonMergeWindowTurns(turns, page.Thread.Turns, false)
+		}
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if resume == nil {
+			scope = selector
+			scopePage = page
+			pending = nil
+			if page.Window != nil && page.Window.WithheldTurns > 0 {
+				pending = page.Window
+			}
+		}
+		if pages >= localDaemonWindowTransferMaxPages {
+			break
+		}
+		if next := localDaemonWindowTransferResume(page, prepend); next != nil {
+			resume = next
+			continue
+		}
+		if resume != nil {
+			// The turn this page resumed is complete now; the rest of the
+			// window continues from the turn-level page that cut it.
+			resume = nil
+			if pending == nil {
+				break
+			}
+			if localDaemonWindowSelectedBytes(turns, params.ThreadWindowParams) >= target {
+				break
+			}
+			next, ok := localDaemonNextWindowPage(scope, scopePage)
+			if !ok {
+				break
+			}
+			selector = next
+			continue
+		}
+		if pending == nil {
+			break
+		}
+		enough := localDaemonWindowSelectedBytes(turns, params.ThreadWindowParams) >= target
+		if enough && params.TurnWindow.Latest == 0 && len(turns) < 2 {
+			// The packer trims a page it cannot fit, but it serves a lone turn
+			// whole. Only a latest window can report a source-withheld rest, so
+			// every other window needs a second fetched turn to resume from.
+			enough = false
+		}
+		if enough {
+			break
+		}
+		next, ok := localDaemonNextWindowPage(selector, page)
+		if !ok {
+			break
+		}
+		selector = next
+	}
+	merged.Thread.Turns = turns
+	merged.Window = pending
+	return merged, nil
+}
+
+// localDaemonWindowTransferRefused reports the invalid-parameter answer a
+// resume page gets: an older daemon's strict-decode rejection of a parameter
+// it does not know, or a stale boundary the transcript moved under.
+func localDaemonWindowTransferRefused(err error) bool {
+	var wire appwire.WireError
+	return errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams
+}
+
+// localDaemonWindowTransferResume names the intra-turn continuation a bounded
+// transfer page advertises through a partial turn fragment. A reopened turn's
+// items can surround another turn's, so the partial turn is not always the
+// page's first (or last): every fragment is considered, and the resume position
+// is that fragment's own open end. A page cut at a turn boundary returns nil.
+func localDaemonWindowTransferResume(page appwire.ThreadReadResponse, backward bool) *appwire.ThreadWindowTransfer {
+	if backward {
+		for _, turn := range page.Thread.Turns {
+			if !turn.HasEarlierItems || len(turn.Items) == 0 || turn.Items[0].Position == nil {
+				continue
+			}
+			return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *turn.Items[0].Position, Before: true}
+		}
+		return nil
+	}
+	for _, turn := range slices.Backward(page.Thread.Turns) {
+		if !turn.HasLaterItems || len(turn.Items) == 0 {
+			continue
+		}
+		last := turn.Items[len(turn.Items)-1]
+		if last.Position == nil {
+			continue
+		}
+		return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *last.Position}
+	}
+	return nil
+}
+
+// localDaemonMergeWindowTurns unions a page's positioned items into the walk's
+// accumulated turns in transcript order. Turns, not pages, are not the physical
+// unit here: a reopened turn can have items on both sides of another turn, so
+// two pages fetched by turn selector can interleave. Appending or prepending
+// would then duplicate a position or place a later fragment before an earlier
+// one, which the packer's strictly-increasing candidate order rejects. The
+// merge keys every item by position, keeps one delivery of each, regroups
+// adjacent turn runs, and leaves a turn open on an end only while the union
+// still lacks items a page reported missing there.
+func localDaemonMergeWindowTurns(accumulated, page []appwire.Turn, prepend bool) ([]appwire.Turn, error) {
+	accumulatedCandidates, err := appitempaging.CandidatesFromTurns(accumulated)
+	if err != nil {
+		return nil, err
+	}
+	pageCandidates, err := appitempaging.CandidatesFromTurns(page)
+	if err != nil {
+		return nil, err
+	}
+	byPosition := make(map[appwire.ThreadItemPosition]appitempaging.TranscriptItemCandidate, len(accumulatedCandidates)+len(pageCandidates))
+	for _, candidate := range pageCandidates {
+		byPosition[candidate.Position] = candidate
+	}
+	for _, candidate := range accumulatedCandidates {
+		byPosition[candidate.Position] = candidate
+	}
+	merged := make([]appitempaging.TranscriptItemCandidate, 0, len(byPosition))
+	for _, candidate := range byPosition {
+		merged = append(merged, candidate)
+	}
+	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
+		return appitempaging.ComparePosition(a.Position, b.Position)
+	})
+	turns, err := appitempaging.RegroupTurnFragments(merged)
+	if err != nil {
+		return nil, err
+	}
+	openEarlier, openLater := localDaemonTransferOpenEnds(accumulated, page)
+	for index := range turns {
+		turns[index].HasEarlierItems = false
+		turns[index].HasLaterItems = false
+	}
+	for turnID, boundary := range openEarlier {
+		if localDaemonTransferCovers(merged, turnID, boundary, false) {
+			continue
+		}
+		for index := range turns {
+			if turns[index].ID == turnID {
+				turns[index].HasEarlierItems = true
+				break
+			}
+		}
+	}
+	for turnID, boundary := range openLater {
+		if localDaemonTransferCovers(merged, turnID, boundary, true) {
+			continue
+		}
+		for index := len(turns) - 1; index >= 0; index-- {
+			if turns[index].ID == turnID {
+				turns[index].HasLaterItems = true
+				break
+			}
+		}
+	}
+	return localDaemonInsertEmptyWindowShells(turns, accumulated, page, prepend), nil
+}
+
+// localDaemonTransferOpenEnds records, per turn, the boundary position a page
+// reported missing items beyond: earlier than an earlier-items fragment's first
+// item, later than a later-items fragment's last item.
+func localDaemonTransferOpenEnds(accumulated, page []appwire.Turn) (map[string]appwire.ThreadItemPosition, map[string]appwire.ThreadItemPosition) {
+	earlier := make(map[string]appwire.ThreadItemPosition)
+	later := make(map[string]appwire.ThreadItemPosition)
+	record := func(turns []appwire.Turn) {
+		for _, turn := range turns {
+			if turn.ID == "" || len(turn.Items) == 0 {
+				continue
+			}
+			first, last := turn.Items[0], turn.Items[len(turn.Items)-1]
+			if turn.HasEarlierItems && first.Position != nil {
+				current, seen := earlier[turn.ID]
+				if !seen || appitempaging.ComparePosition(*first.Position, current) < 0 {
+					earlier[turn.ID] = *first.Position
+				}
+			}
+			if turn.HasLaterItems && last.Position != nil {
+				current, seen := later[turn.ID]
+				if !seen || appitempaging.ComparePosition(*last.Position, current) > 0 {
+					later[turn.ID] = *last.Position
+				}
+			}
+		}
+	}
+	record(accumulated)
+	record(page)
+	return earlier, later
+}
+
+// localDaemonTransferCovers reports whether the union already holds an item of
+// the turn beyond the boundary a page reported open: older for an earlier-items
+// end, newer for a later-items end.
+func localDaemonTransferCovers(merged []appitempaging.TranscriptItemCandidate, turnID string, boundary appwire.ThreadItemPosition, newer bool) bool {
+	for _, candidate := range merged {
+		if candidate.TurnID != turnID {
+			continue
+		}
+		order := appitempaging.ComparePosition(candidate.Position, boundary)
+		if (newer && order > 0) || (!newer && order < 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// localDaemonInsertEmptyWindowShells restores the shells of selected turns that
+// projected no items. Regrouping drops them, but the packer needs the shell to
+// keep the turn in the window. Shells follow the pages' turn order.
+func localDaemonInsertEmptyWindowShells(turns, accumulated, page []appwire.Turn, prepend bool) []appwire.Turn {
+	order := make([]string, 0, len(accumulated)+len(page))
+	seen := make(map[string]bool, len(accumulated)+len(page))
+	appendOrder := func(list []appwire.Turn) {
+		for _, turn := range list {
+			if turn.ID == "" || seen[turn.ID] {
+				continue
+			}
+			seen[turn.ID] = true
+			order = append(order, turn.ID)
+		}
+	}
+	if prepend {
+		appendOrder(page)
+		appendOrder(accumulated)
+	} else {
+		appendOrder(accumulated)
+		appendOrder(page)
+	}
+	rank := make(map[string]int, len(order))
+	for index, id := range order {
+		rank[id] = index
+	}
+	shells := make(map[string]appwire.Turn)
+	collect := func(list []appwire.Turn) {
+		for _, turn := range list {
+			if turn.ID == "" || len(turn.Items) != 0 {
+				continue
+			}
+			if _, exists := shells[turn.ID]; !exists {
+				shells[turn.ID] = turn
+			}
+		}
+	}
+	collect(accumulated)
+	collect(page)
+	present := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		present[turn.ID] = true
+	}
+	merged := append([]appwire.Turn(nil), turns...)
+	for id, shell := range shells {
+		if present[id] {
+			continue
+		}
+		at := len(merged)
+		for index, turn := range merged {
+			if turnRank, ok := rank[turn.ID]; ok && turnRank > rank[id] {
+				at = index
+				break
+			}
+		}
+		merged = append(merged, appwire.Turn{})
+		copy(merged[at+1:], merged[at:])
+		merged[at] = shell
+	}
+	return merged
+}
+
+// localDaemonSourceIncarnation removes the normalized window fence a daemon
+// applies to a windowed read's snapshot. Each transfer page names a different
+// window selector, so its fence differs even when both pages project the same
+// source transcript; the unfenced value is the identity that must be compared.
+func localDaemonSourceIncarnation(incarnation string) string {
+	if source, ok := appwire.ThreadWindowSourceIncarnation(incarnation); ok {
+		return source
+	}
+	return incarnation
+}
+
+// localDaemonNextWindowPage names the daemon read that fetches the turns the
+// page withheld. A since window continues strictly after its logical newest
+// served turn; a latest or before window continues strictly before its logical
+// oldest served turn. The boundary comes from the page's window result because
+// a reopened turn's fragments interleave with the turns around it: the page's
+// physical last (or first) fragment need not belong to the turn the next
+// selector must resume from, and a selector that names an already-served turn
+// spends its limit on that turn instead of the withheld one.
+func localDaemonNextWindowPage(selector appwire.ThreadTurnWindow, page appwire.ThreadReadResponse) (appwire.ThreadTurnWindow, bool) {
+	if page.Window == nil || page.Window.WithheldTurns <= 0 || len(page.Thread.Turns) == 0 {
+		return appwire.ThreadTurnWindow{}, false
+	}
+	limit := page.Window.WithheldTurns
+	if selector.Since != "" {
+		newest := page.Window.LastServedTurnID
+		if newest == "" {
+			newest = page.Thread.Turns[len(page.Thread.Turns)-1].ID
+		}
+		if newest == "" {
+			return appwire.ThreadTurnWindow{}, false
+		}
+		return appwire.ThreadTurnWindow{Since: newest, Limit: limit}, true
+	}
+	oldest := page.Window.FirstServedTurnID
+	if oldest == "" {
+		oldest = page.Thread.Turns[0].ID
+	}
+	if oldest == "" {
+		return appwire.ThreadTurnWindow{}, false
+	}
+	return appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: oldest, Limit: limit}}, true
+}
+
+func localDaemonWindowTransferTarget(requested int) int {
+	switch {
+	case requested <= 0:
+		return localDaemonWindowTransferBudgetDefault
+	case requested < localDaemonWindowTransferBudgetFloor:
+		return localDaemonWindowTransferBudgetFloor
+	case requested > localDaemonWindowTransferBudgetMax:
+		return localDaemonWindowTransferBudgetMax
+	default:
+		return requested
+	}
+}
+
+// localDaemonWindowSelectedBytes estimates the transcript content a page holds
+// after the requested type filter and per-item byte bounds, which is what the
+// packer measures. It deliberately omits the envelope and metadata the packer
+// adds, so it never overstates what the packer can serve.
+func localDaemonWindowSelectedBytes(turns []appwire.Turn, params appwire.ThreadWindowParams) int {
+	previewBytes := params.PreviewBytes
+	if previewBytes == 0 {
+		previewBytes = 2 << 10
+	}
+	messageBytes := params.MessageBytes
+	if messageBytes == 0 {
+		messageBytes = 8 << 10
+	}
+	total := 0
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if !localDaemonWindowIncludesItem(params.ItemTypes, item) {
+				continue
+			}
+			size := len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Description) + len(item.Output) + len(item.Error) + len(item.Raw)
+			if (item.Type == "agentMessage" || item.Type == "userMessage") && len(item.Text) > messageBytes {
+				size -= len(item.Text) - messageBytes
+			}
+			if len(item.Output) > previewBytes {
+				size -= len(item.Output) - previewBytes
+			}
+			total += size
+		}
+	}
+	return total
+}
+
+// localDaemonWindowIncludesItem mirrors the packer's item type predicate,
+// including the source-aware "messages" alias, because the source decides how
+// far to walk a transfer page before the packer sees it.
+func localDaemonWindowIncludesItem(itemTypes []string, item appwire.ThreadItem) bool {
+	if len(itemTypes) == 0 {
+		return true
+	}
+	for _, itemType := range itemTypes {
+		if itemType == item.Type {
+			return true
+		}
+		if itemType != "messages" {
+			continue
+		}
+		switch item.Type {
+		case "agentMessage", "userMessage":
+			return true
+		case "steering":
+			if item.Source == "user" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ReadThreadAtEntry reads an exact daemon endpoint, including before roster
@@ -403,6 +1174,10 @@ func (s *LocalDaemonSource) ReadThreadAtEntry(ctx context.Context, entry rendezv
 	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ThreadRead(ctx, params)
+		if callErr == nil {
+			supported := client.Features().SessionTools
+			out.TargetSessionToolsSupported = &supported
+		}
 		return callErr
 	})
 	return out, err
@@ -477,6 +1252,11 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
 	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -494,6 +1274,11 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -508,8 +1293,86 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 		return err
 	}
 	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
+}
+
+// targetManagerProof binds a hub-authorized caller label to the live target
+// runtime. A missing binding must fail closed, never turn Manager input human.
+func (s *LocalDaemonSource) targetManagerProof(ctx context.Context, entry rendezvous.Entry, proof *appwire.SessionActorProof) (*appwire.SessionActorProof, error) {
+	if proof == nil {
+		return nil, nil
+	}
+	if err := s.ensureSessionToolsBinding(ctx, entry); err != nil {
+		return nil, err
+	}
+	ref := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
+	s.sessionToolsMu.Lock()
+	connection, ok := s.sessionToolsConnections[ref]
+	s.sessionToolsMu.Unlock()
+	if !ok || connection.binding.BindingID == "" || connection.binding.InstanceID != entry.SessionID {
+		return nil, appwire.InvalidRequest("Manager target has no live binding")
+	}
+	bound := *proof
+	bound.BindingID = connection.binding.BindingID
+	return &bound, nil
+}
+
+// ensureSessionToolsBinding establishes the target's canonical relay binding
+// under the caller's context when Manager input races RunSessionTools's
+// background setup: a newly discovered or resumed worker can receive input
+// before the retained relay finishes binding. The canonical relay's dial
+// installs the binding, and a retention read through the shared session
+// performs or awaits that dial, so the input waits for the same setup
+// instead of being refused by it. Failures surface as themselves: an
+// unreachable daemon is a retryable dial error, not a missing binding.
+//
+// A cached binding only vouches while the relay connection that published it
+// is still connected: the daemon cancels the binding when that connection
+// closes, and the cache keeps the old BindingID until the re-dial replaces
+// it. Input sent on the canceled binding is refused with no recovery, so a
+// stale epoch falls through to the acquisition below, which awaits the
+// re-dial and the replacement binding under the caller's context.
+func (s *LocalDaemonSource) ensureSessionToolsBinding(ctx context.Context, entry rendezvous.Entry) error {
+	if s.sessionToolsFactory == nil {
+		return nil
+	}
+	raw := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
+	ref, err := appwire.ParseRef(raw)
+	if err != nil {
+		return err
+	}
+	s.sessionToolsMu.Lock()
+	connection, ok := s.sessionToolsConnections[raw]
+	valid := ok && connection.binding.BindingID != "" && connection.binding.InstanceID == entry.SessionID
+	s.sessionToolsMu.Unlock()
+	if valid {
+		s.relayMu.Lock()
+		session := s.relaySessions[raw]
+		s.relayMu.Unlock()
+		if session != nil && session.connectionEpochLive(connection.epoch) {
+			return nil
+		}
+	}
+	lease, err := s.AcquireRelaySession(ref)
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	read, err := lease.Read(ctx, appwire.ThreadReadParams{Ref: raw})
+	if err != nil {
+		return err
+	}
+	if read.Handoff != nil {
+		read.Handoff.Prepare()
+		read.Handoff.Commit()
+	}
+	return nil
 }
 
 // StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
@@ -522,6 +1385,24 @@ func (s *LocalDaemonSource) StopDelegate(ctx context.Context, params appwire.Del
 	var out appwire.DelegateStopResponse
 	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodEvenerDelegateStop, params, &out)
+	})
+	return out, err
+}
+
+func (s *LocalDaemonSource) StopJob(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	}
+	entry, err := s.entryForRef(ref, "")
+	if err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	var out appwire.SessionStopResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodEvenerJobsStop, request, &out)
 	})
 	return out, err
 }
@@ -545,6 +1426,11 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}
@@ -560,6 +1446,11 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}
@@ -569,9 +1460,20 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 }
 
 func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-		return requestAs[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, params)
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.TurnPromoteQueuedAsSteerResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
+		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -696,6 +1598,11 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if err != nil {
 			return nil, err
 		}
+		// This operation's whole contract is to subscribe, so its read
+		// carries the demand itself: the originating consumer read may
+		// reach here with Subscribe false (a relayOnThreadRead history
+		// read), and the relay no longer forces the field.
+		params.Subscribe = true
 		result, readErr := lease.Read(ctx, params)
 		if readErr != nil {
 			lease.Close()
@@ -900,7 +1807,7 @@ func localDaemonDialError(err error) error {
 	// handshake: the daemon answered the HTTP upgrade but the connection died
 	// before Initialize completed.
 	if _, closed := errors.AsType[websocket.CloseError](err); closed || isTransportLoss(err) {
-		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+		return appwire.RetryableSessionUnavailable("local daemon unavailable: " + err.Error())
 	}
 	return err
 }
@@ -926,7 +1833,7 @@ func localDaemonCallError(err error) error {
 	if !appwire.IsTransportFailure(err) {
 		return err
 	}
-	return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
+	return appwire.RetryableSessionUnavailable("local daemon unavailable: " + wire.Message)
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {
@@ -1020,7 +1927,7 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 			return LocalDaemonEntry{}, err
 		}
 		if ref.SourceID != s.sourceID {
-			return LocalDaemonEntry{}, fmt.Errorf("source not found: %s", ref.SourceID)
+			return LocalDaemonEntry{}, fmt.Errorf("%w: %s", ErrSourceNotFound, ref.SourceID)
 		}
 		threadID = ref.ThreadID
 	}
@@ -1050,11 +1957,15 @@ func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
 	entries := s.listedEntries()
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
-		if item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
+		if localDaemonEntryRouteEligible(item, true) && item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
 			out = append(out, item)
 		}
 	}
 	return out
+}
+
+func localDaemonEntryRouteEligible(item LocalDaemonEntry, allowReadOnlyAlias bool) bool {
+	return !item.Crashed && (allowReadOnlyAlias || !item.ReadOnlyAlias)
 }
 
 // listedEntries preserves confirmed incompatible owners for display, without
@@ -1067,7 +1978,7 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
 		entry := item.Entry
-		if entry.Endpoint == "" || localDaemonThreadID(item) == "" || (entry.Protocol != appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired) {
+		if entry.Endpoint == "" || localDaemonThreadID(item) == "" || (entry.Protocol != appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired && !item.Crashed) {
 			continue
 		}
 		sourceID := entry.SourceID
@@ -1083,11 +1994,21 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 }
 
 func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Thread {
+	return s.threadFromEntryAt(item, time.Time{})
+}
+
+func (s *LocalDaemonSource) threadFromEntryAt(item LocalDaemonEntry, builtAt time.Time) appwire.Thread {
 	entry := localDaemonRendezvousEntry(item)
 	threadID := localDaemonThreadID(item)
 	ref := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
 	instanceID := firstLocalNonEmpty(entry.InstanceID, threadID)
 	status := localDaemonThreadStatus(item.Status)
+	if item.Crashed {
+		status = appwire.ThreadStatusSystemError
+		item.ActiveTurnID = ""
+		item.ActiveTurnStartedAt = 0
+		item.Activity = nil
+	}
 	startedAt := int64(0)
 	if !entry.StartedAt.IsZero() {
 		startedAt = entry.StartedAt.Unix()
@@ -1103,16 +2024,23 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:                ref,
-			InstanceID:         instanceID,
-			Capabilities:       listRowCapabilities(item, status),
-			AskPending:         item.PendingAsk,
-			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
-			Failure:            appwire.CloneThreadFailure(item.Failure),
-			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
-			LastTurnEndedAt:    item.LastTurnEndedAt,
-			LastMessage:        item.LastMessage,
-			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
+			Ref:                 ref,
+			InstanceID:          instanceID,
+			ActiveTurnID:        item.ActiveTurnID,
+			ActiveTurnStartedAt: item.ActiveTurnStartedAt,
+			QuietForMS:          FleetQuietForMS(status == appwire.ThreadStatusActive, item.Subagents.Running, item.Activity, builtAt),
+			ProbeState:          item.ProbeState,
+			Crashed:             item.Crashed,
+			Manager:             item.Manager,
+			Capabilities:        listRowCapabilities(item, status),
+			AskPending:          item.PendingAsk,
+			PendingQuestion:     appwire.ClonePendingQuestion(item.PendingQuestion),
+			PendingAsk:          appwire.ClonePendingAsk(item.PendingAskState),
+			Failure:             appwire.CloneThreadFailure(item.Failure),
+			PendingEscalations:  append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:     item.LastTurnEndedAt,
+			LastMessage:         item.LastMessage,
+			Tasks:               appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
@@ -1157,6 +2085,29 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		}
 	}
 	return thread
+}
+
+type threadListBuiltAtContextKey struct{}
+
+// WithThreadListBuiltAt gives every local discovery row the response's one
+// sampled build moment. Other list callers omit fleet quiet time.
+func WithThreadListBuiltAt(ctx context.Context, builtAt time.Time) context.Context {
+	return context.WithValue(ctx, threadListBuiltAtContextKey{}, builtAt)
+}
+
+func threadListBuiltAt(ctx context.Context) time.Time {
+	builtAt, _ := ctx.Value(threadListBuiltAtContextKey{}).(time.Time)
+	return builtAt
+}
+
+// FleetQuietForMS applies the roster activity meter's quiet-time rule at one
+// caller-owned moment. A retained or absent activity sample supplies nil.
+func FleetQuietForMS(working bool, runningSubagents int, activity *appwire.ThreadActivity, builtAt time.Time) *int64 {
+	if !working || runningSubagents != 0 || activity == nil || builtAt.IsZero() {
+		return nil
+	}
+	quiet := max(builtAt.Sub(time.UnixMilli(activity.LastActivityAt)).Milliseconds(), 0)
+	return &quiet
 }
 
 // listRowCapabilities projects a local list row's capability set. A probed
@@ -1251,6 +2202,13 @@ func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {
 }
 
 func localDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
+	return LocalDaemonWorkspaceRef(sourceID, entry, threadID)
+}
+
+// LocalDaemonWorkspaceRef is the shared roster/discovery workspace identity.
+// An explicit workspace survives Clear. Without one, the reference uses the
+// projected thread ID.
+func LocalDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
 	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == sourceID {
 		return ref.String()
 	}

@@ -1,12 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
-import { APPWIRE_PROTOCOL_VERSION, type ConnectionState } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 
@@ -27,6 +24,7 @@ import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { AppShell } from "./AppShell";
 import { resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
+import { installLocationForRoute, navClient, navigationRead, warmRoute } from "./appShellTestUtils";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { resetDockChunkForTests } from "./DockRegion";
@@ -53,186 +51,6 @@ const ALL_FEATURES_OFF = {
   auth: false,
 };
 
-const TREE_SESSION = {
-  row_id: "project:proj1:local:s1",
-  ref: "local:s1",
-  host_id: "local",
-  session_id: "s1",
-  title: "Session one",
-  project: "prime-radiant",
-  state: "idle",
-  kind: "session",
-  live: true,
-  children: [],
-};
-
-let stoppedTreeSession = false;
-
-const EMPTY_NAV_RESPONSE = {
-  generation_id: "generation_test",
-  revision: 1,
-  sources: [],
-  attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-  catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-};
-
-function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const treeSession = stoppedTreeSession ? { ...TREE_SESSION, state: "ended", live: false } : TREE_SESSION;
-  switch (params.resource) {
-    case "manifest":
-      return wireSnapshot(params, EMPTY_NAV_RESPONSE, '"test"');
-    case "section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: params.section === "live" ? [treeSession] : [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "pin_catalog":
-      return wireSnapshot(params, { pin_sections: [], remaining: 0 }, '"test"');
-    case "pin_section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "catalog":
-      return wireSnapshot(
-        params,
-        {
-          projects:
-            params.catalog === "projects"
-              ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
-              : [],
-          remaining: 0,
-        },
-        '"test"',
-      );
-    case "project":
-      return wireSnapshot(
-        params,
-        {
-          key: "proj1",
-          current: { sessions: [treeSession], remaining: 0 },
-          recent: { sessions: [], remaining: 0 },
-          archived: { sessions: [], remaining: 0 },
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "project_page":
-      return wireSnapshot(
-        params,
-        {
-          key: params.projectKey,
-          tier: params.tier,
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "location":
-      return wireSnapshot(
-        params,
-        {
-          ref: params.ref,
-          top_level_ref: params.ref,
-          top_level: true,
-          session: { ...treeSession, ref: params.ref, session_id: params.ref },
-        },
-        '"test"',
-      );
-    case "subagents":
-      // Session activity surfaces can demand the scope's subagents page;
-      // answer with an empty one (tests that need rows install them into the
-      // store directly).
-      return wireSnapshot(
-        params,
-        {
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-  }
-  throw new Error(`unsupported navigation resource: ${params.resource}`);
-}
-
-// A FakeClient whose connect() advertises a v2 navigation capability with a
-// generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
-// depend on the navigation store being in mode "v3" (rather than "error")
-// must use this instead of a bare `new FakeClient("ready")`, whose default
-// InitializeResponse has no navigation capability.
-function navClient(initialState: ConnectionState = "ready"): FakeClient {
-  const client = new FakeClient(initialState);
-  client.on("evener/navigation/read", navigationRead);
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: APPWIRE_PROTOCOL_VERSION,
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
-  }));
-  return client;
-}
-
-function installLocation(location: NavigationSessionLocation): void {
-  const key = { kind: "location", ref: location.ref } as const;
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(key), {
-    key,
-    data: location,
-    loadedRevision: location.revision,
-    targetRevision: null,
-    forceToken: 0,
-    etag: '"test"',
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: location.generation_id,
-  });
-  navigationStore.setState({
-    mode: "v3",
-    clientGenerationID: location.generation_id,
-    resources,
-  });
-}
-
-function installLocationForRoute(ref: string, ownerRef?: string): void {
-  const owner = ownerRef ?? (ref === "local:child" ? "local:owner" : ref === "local:sub1" ? "local:s1" : ref);
-  installLocation({
-    generation_id: "generation_test",
-    revision: 1,
-    ref,
-    top_level_ref: owner,
-    top_level: owner === ref,
-    tier: "current",
-    session: {
-      ref,
-      host_id: "local",
-      session_id: ref,
-      title: ref,
-      project: "test-project",
-      state: "idle",
-      kind: owner === ref ? "session" : "subagent",
-      live: false,
-      children: [],
-    },
-  });
-}
-
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
   /\/\*[\s\S]*?\*\//g,
   "",
@@ -247,74 +65,13 @@ test("keeps the desktop shell full-bleed contract in AppShell.module.css", () =>
   expect(appShellCss).toContain("padding: 0;");
 });
 
-// Renders a route to completion so both halves of its lazy-loading cost are
-// already paid by the time a test measures it. The module cache is only the
-// first half: React.lazy keeps a payload of its own that stays uninitialized
-// until React first RENDERS the component, so a warm module cache still
-// leaves the first render suspending. The welcome route crosses two nested
-// boundaries (AppShell's lazy DockHost, then PaneHost's lazy Welcome); each
-// other pane crosses one more of its own. Rendering inside an awaited act
-// lets each reveal commit as soon as its already-imported chunk resolves;
-// outside act, react-dom holds every reveal for FALLBACK_THROTTLE_MS (300ms,
-// react-dom 19.2) on a real timer. Mirrors App.test.tsx's own warmRoute.
-//
-// The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
-// default. That default is an assertion window - it exists to hold a test to a
-// responsiveness bar - and a warm-up has no such bar to hold, so the deadline
-// here is a tripwire for a hung render.
-const WARM_ROUTE_TRIPWIRE_MS = 10_000;
-
-async function warmRoute(
-  path: string,
-  findLandmark: (options: { timeout: number }) => Promise<unknown>,
-): Promise<void> {
-  window.history.pushState({}, "", path);
-  if (path.startsWith("/s/")) {
-    const ref = decodeURIComponent(path.slice("/s/".length));
-    installLocation({
-      generation_id: "generation_test",
-      revision: 1,
-      ref,
-      top_level_ref: ref,
-      top_level: true,
-      session: {
-        ref,
-        host_id: "local",
-        session_id: ref,
-        title: ref,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: false,
-        children: [],
-      },
-    });
-  }
-  await act(async () => {
-    render(<AppShell client={new FakeClient("ready")} />);
-  });
-  await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
-  // Unmounting also clears DockHost's pending debounced layout save (its own
-  // effect cleanup), so no warm render leaks a write into a later test.
-  cleanup();
-  resetWorkspaceStoreForTests();
-  // The /settings/hub warm route mounts the real HubSection, whose
-  // mount effect calls settingsOverviewStore.getState().fetch() for real
-  // against this warm-up's own FakeClient (no handler scripted for
-  // "evener/settings/overview", so it settles into a scripted-looking
-  // "no handler" error) - settingsOverviewStore is a module singleton, so
-  // that leftover error/inflight bookkeeping must not survive into this
-  // file's own tests.
-  resetSettingsOverviewStoreForTests();
-  localStorage.clear();
-  window.history.pushState({}, "", "/");
-}
-
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
 // beforeAll pattern for the same reason: the slow part of lazy-loading is
 // the transform/import work, an awaitable completion, not something to race
 // with a widened findBy deadline.
+let savedCascadeLayout: string | null = null;
+
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
@@ -322,22 +79,35 @@ beforeAll(async () => {
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
   await import("../panes/spawn/Spawn");
+  await import("../panes/zoom/Zoom");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path) - pre-warmed for the same
   // reason as the two panes above.
   await import("./DockHost");
 
   // Then render each pane once, for the React.lazy half of the cost - see
-  // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
+  // warmRoute (appShellTestUtils). Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
   await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
   await warmRoute("/s/local:ref_warm", (wait) => screen.findByText(/loading transcript/i, undefined, wait));
   await warmRoute("/settings/hub", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
+
+  // The six startup-cascade tests below all consume the SAME saved six-edge
+  // layout - only the restore half differs per test - so the real save runs
+  // ONCE here instead of six times inside the tests' own 5s windows (#4679:
+  // the family rode 40-60% of the default testTimeout and struck it under
+  // workstation load; the save's bytes are asserted against the same constants
+  // every time, so nothing about it is test-specific). This pass also warms
+  // the sessionZoom pane's lazy payload with a real render: this file pre-warms
+  // every other pane type it renders, but the zoom pane is the one it renders
+  // cold - each test's retype otherwise pays the zoom chunk's on-demand
+  // transform plus react-dom's real-timer fallback-reveal throttle outside
+  // act, both awaitable completions nobody was awaiting.
+  savedCascadeLayout = await saveOrderingCascade();
 });
 
 beforeEach(() => {
-  stoppedTreeSession = false;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -376,7 +146,7 @@ afterEach(() => {
   paletteStore.setState({ open: false, query: "" });
   // Several tests below navigate to /settings/* and mount the real
   // HubSection, whose mount effect touches settingsOverviewStore for
-  // real - same module-singleton reasoning as warmRoute's own reset above.
+  // real - same module-singleton reasoning as warmRoute's own reset (appShellTestUtils).
   resetSettingsOverviewStoreForTests();
   vi.unstubAllGlobals();
 });
@@ -401,6 +171,12 @@ const ORDERING_SAVED_PANES = [
   { id: "pane_session_2", type: "session", params: { ref: "local:neighbor" }, slot: "secondary" },
 ];
 
+// Seats are per-tab runtime ownership, not saved layout geometry. Compare the
+// saved/restored pane shape without them, then test seats separately.
+function panesWithoutSeats<T extends { composerSeatId?: string }>(panes: readonly T[]) {
+  return panes.map(({ composerSeatId: _composerSeatId, ...pane }) => pane);
+}
+
 function orderingClient() {
   const ancestry = ["local:root", "local:step-1", "local:step-2", "local:step-3", "local:step-4", "local:step-5"];
   const client = cascadeClient((ref) => {
@@ -418,9 +194,12 @@ function orderingClient() {
   return client;
 }
 
-// Prepare legacy in-place intent using real retype, pane registration,
+// Prepare the saved six-edge cascade using real retype, pane registration,
 // Dockview, and DockHost's synchronous final-save flush. No fabricated layout.
-async function saveOrderingCascade(): Promise<void> {
+// Runs ONCE in beforeAll: every startup test below restores these same bytes,
+// so the mount/save cycle belongs to the file's warm-up (60s hook budget),
+// not inside each test's own 5s window. Returns the saved layout bytes.
+async function saveOrderingCascade(): Promise<string> {
   const client = orderingClient();
   connectionStore.getState().connect(client);
   const sourceId = workspaceStore.getState().openPane("session", { ref: "local:root" });
@@ -444,7 +223,7 @@ async function saveOrderingCascade(): Promise<void> {
     expect(workspaceStore.getState().retypePane(source, "sessionZoom", ORDERING_CASCADE)).toBe(true);
   });
   await screen.findByRole("button", { name: "Return to previous view" });
-  expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+  expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual(ORDERING_SAVED_PANES);
   expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
   view.unmount();
   const raw = localStorage.getItem(LAYOUT_KEY);
@@ -457,6 +236,7 @@ async function saveOrderingCascade(): Promise<void> {
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+  return raw;
 }
 
 test.each([
@@ -467,7 +247,6 @@ test.each([
   { order: "restoration-before-location", routeRef: "local:different-root" },
   { order: "cached-location-with-warm-host", routeRef: "local:different-root" },
 ] as const)("startup $order respects route $routeRef against a saved six-edge cascade", async ({ order, routeRef }) => {
-  await saveOrderingCascade();
   const client = orderingClient();
   const reply = deferred<void>();
   const requested = deferred<void>();
@@ -495,7 +274,7 @@ test.each([
     }
   }
   // Copy the exact saved bytes into the observed external storage root.
-  const saved = localStorage.getItem(LAYOUT_KEY);
+  const saved = savedCascadeLayout;
   if (saved === null) throw new Error("Missing saved startup fixture");
   const storage = new StartupStorage();
   storage.setItem(LAYOUT_KEY, saved);
@@ -517,7 +296,7 @@ test.each([
       expect(location?.data).toMatchObject({ ref: routeRef, top_level_ref: routeRef, top_level: true });
       expect(location?.loading).toBe(false);
       expect(location?.stale).toBe(false);
-      expect(workspaceStore.getState().panes).toEqual([
+      expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual([
         { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
       ]);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
@@ -541,7 +320,7 @@ test.each([
     await restored.promise;
     if (order === "restoration-before-location") {
       await requested.promise;
-      expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+      expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual(ORDERING_SAVED_PANES);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
       await act(async () => {
@@ -556,7 +335,8 @@ test.each([
     expect(events.indexOf("restored")).toBeGreaterThan(events.indexOf("layout-read"));
     if (order !== "restoration-before-location") {
       expect(events.indexOf("location-ready")).toBeLessThan(events.indexOf("layout-read"));
-      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([
+      const layoutReadPanes = witnesses.find((w) => w.event === "layout-read")?.panes;
+      expect(panesWithoutSeats(Array.isArray(layoutReadPanes) ? layoutReadPanes : [])).toEqual([
         { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
       ]);
       if (order === "completed-placement-before-restoration") {
@@ -570,7 +350,7 @@ test.each([
       expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([]);
     }
     if (routeRef === "local:different-root") {
-      expect(workspaceStore.getState().panes).toEqual([
+      expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual([
         { id: "pane_session_3", type: "session", params: { ref: "local:different-root" }, slot: "main" },
       ]);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
@@ -579,9 +359,10 @@ test.each([
       expect(await screen.findByRole("heading", { name: "local:different-root" })).toBeTruthy();
       expect(window.location.pathname).toBe("/s/local%3Adifferent-root");
     } else {
-      expect(workspaceStore.getState().panes, `Startup witnesses: ${JSON.stringify(witnesses)}`).toEqual(
-        ORDERING_SAVED_PANES,
-      );
+      expect(
+        panesWithoutSeats(workspaceStore.getState().panes),
+        `Startup witnesses: ${JSON.stringify(witnesses)}`,
+      ).toEqual(ORDERING_SAVED_PANES);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
       expect(await screen.findByRole("button", { name: "Return to previous view" })).toBeTruthy();

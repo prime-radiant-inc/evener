@@ -2505,7 +2505,7 @@ it("parked Edit waits for a deferred encoder and keeps the pending image", async
 
 it("actual screen keeps an occupied destination when the resume handoff is refused", async () => {
 	const f = await mount();
-	f.document.edit("existing destination work");
+	act(() => f.document.edit("existing destination work"));
 	const oldRef = `${f.ref}-old`;
 	const oldDestination = { hubId: "hub-1", sessionRef: oldRef };
 	const oldKey = nativeMutationTargetKey("hub-1", oldRef);

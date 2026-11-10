@@ -37,6 +37,31 @@ type childDiscoveryProvider struct {
 	release chan struct{}
 }
 
+// childDiscoveryWait bounds each wait the real runtime must satisfy. A delivery
+// regression fails at the wait that never completed, not at the whole-suite
+// timeout, and the test context still cancels the wait first when the test ends.
+const childDiscoveryWait = 15 * time.Second
+
+// awaitChildValue bounds one receive from a channel the real runtime must
+// feed. A closed channel fails at the wait rather than yielding a zero value
+// that only fails at an unrelated assertion later.
+func awaitChildValue[T any](ctx context.Context, t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, childDiscoveryWait)
+	defer cancel()
+	select {
+	case value, ok := <-ch:
+		if !ok {
+			t.Fatalf("%s: channel closed", what)
+		}
+		return value
+	case <-waitCtx.Done():
+		t.Fatalf("%s: %v", what, waitCtx.Err())
+		var zero T
+		return zero
+	}
+}
+
 func (*childDiscoveryProvider) Name() string { return "openai" }
 func (*childDiscoveryProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
@@ -75,17 +100,100 @@ func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
 	}
 }
 
-// readChildRetryingIndexContention follows the typed locked answer's automatic
+func TestChildDiscoveryReadRetriesTransientIndexAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"index locked", appwire.TranscriptIndexLocked(), true},
+		{"index rebuilding", appwire.TranscriptIndexRebuilding(), true},
+		{"history failed", appwire.TranscriptHistoryFailed(7), false},
+		{"not a wire error", errors.New("transport reset"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryableChildDiscoveryRead(tc.err); got != tc.want {
+				t.Fatalf("retryableChildDiscoveryRead(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChildDiscoveryReadRetriesAutomaticReadFailure(t *testing.T) {
+	t.Run("retries the rebuilding answer once and keeps the later response", func(t *testing.T) {
+		var refreshes, reads atomic.Int32
+		calls := 0
+		got, err := retryChildDiscoveryReads(t.Context(), t, func() (appwire.ThreadReadResponse, error) {
+			calls++
+			if calls == 1 {
+				return appwire.ThreadReadResponse{}, appwire.TranscriptIndexRebuilding()
+			}
+			return appwire.ThreadReadResponse{BootGeneration: "after-repair"}, nil
+		}, &refreshes, &reads)
+		if err != nil {
+			t.Fatalf("rebuilding answer was not retried: %v", err)
+		}
+		if calls != 2 || got.BootGeneration != "after-repair" {
+			t.Fatalf("calls = %d, generation = %q, want 2 and the response after the repair", calls, got.BootGeneration)
+		}
+	})
+
+	t.Run("does not retry a permanent history failure", func(t *testing.T) {
+		var refreshes, reads atomic.Int32
+		calls := 0
+		_, err := retryChildDiscoveryReads(t.Context(), t, func() (appwire.ThreadReadResponse, error) {
+			calls++
+			return appwire.ThreadReadResponse{}, appwire.TranscriptHistoryFailed(7)
+		}, &refreshes, &reads)
+		wire, ok := wireErrorFromError(err)
+		if !ok || !wireErrorInfoIs(wire.Data, appwire.ErrorTranscriptHistoryFailed) {
+			t.Fatalf("permanent history failure = %v, want it returned", err)
+		}
+		if calls != 1 {
+			t.Fatalf("permanent history failure read %d times, want 1", calls)
+		}
+	})
+}
+
+// retryableChildDiscoveryRead reports whether a failed child history read
+// carries the automatic retry disposition: the transcript index's transient
+// answers and the other read failures the server says are safe to repeat. A
+// permanent history error is not retried.
+func retryableChildDiscoveryRead(err error) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	return ok && data.RetryDisposition == appwire.RetryDispositionAutomatic
+}
+
+// childDiscoveryIndexRetryBudget bounds readChildRetryingIndexContention's
+// retries of the transcript index's transient answers, so a repair that never
+// commits fails at the helper with its last error rather than at the test
+// timeout.
+const childDiscoveryIndexRetryBudget = 5 * time.Second
+
+// readChildRetryingIndexContention follows the typed index answers' automatic
 // retry disposition: the child's daemon extends the transcript index on its
-// own projection goroutine, so a fallback read can meet that writer mid-extension.
+// own projection goroutine, so a fallback read can meet that writer
+// mid-extension or meet the hub's background repair of it.
 // The scenario's discovery counters are those of the first attempt, which is
 // the one that runs discovery; a retry only repeats the saved-history read, and
 // its own refreshes and reads are discarded.
 func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client *appwire.Client, params appwire.ThreadReadParams, refreshes, reads *atomic.Int32) (appwire.ThreadReadResponse, error) {
 	t.Helper()
+	return retryChildDiscoveryReads(ctx, t, func() (appwire.ThreadReadResponse, error) {
+		return client.ThreadRead(ctx, params)
+	}, refreshes, reads)
+}
+
+func retryChildDiscoveryReads(ctx context.Context, t *testing.T, read func() (appwire.ThreadReadResponse, error), refreshes, reads *atomic.Int32) (appwire.ThreadReadResponse, error) {
+	t.Helper()
 	var firstRefreshes, firstReads int32
+	deadline := time.Now().Add(childDiscoveryIndexRetryBudget)
 	for attempt := 0; ; attempt++ {
-		read, err := client.ThreadRead(ctx, params)
+		response, err := read()
 		if attempt == 0 {
 			firstRefreshes, firstReads = refreshes.Load(), reads.Load()
 		} else {
@@ -93,15 +201,14 @@ func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client 
 			reads.Store(firstReads)
 		}
 		if err == nil {
-			return read, nil
+			return response, nil
 		}
-		wire, ok := wireErrorFromError(err)
-		if !ok || !wireErrorInfoIs(wire.Data, appwire.ErrorTranscriptIndexLocked) {
-			return read, err
+		if !retryableChildDiscoveryRead(err) || time.Now().After(deadline) {
+			return response, err
 		}
 		select {
 		case <-ctx.Done():
-			return read, ctx.Err()
+			return response, ctx.Err()
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -151,7 +258,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()}
+	cfg := testWebConfig(t, hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()})
 	cfg.DeletionStore, err = hubcore.NewDeletionStore(cfg.HubStateRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +283,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "child-discovery-root", nil); done <- err }()
 	t.Cleanup(func() { cancel(); <-done; sess.Close() })
-	childID := <-providerScript.ready
+	childID := awaitChildValue(ctx, t, providerScript.ready, "child readiness")
 	for _, row := range roster.List() {
 		if slices.Contains(row.RunningSubagentIDs, childID) {
 			t.Fatal("child already in initial roster")
@@ -285,7 +392,8 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		t.Fatalf("discovery found=%v refreshes=%d reads=%d", found, refreshes.Load(), reads.Load())
 	}
 	close(providerScript.release)
-	for note := range client.Notifications() {
+	for {
+		note := awaitChildValue(ctx, t, client.Notifications(), "no child output notice")
 		if note.Method != appwire.NotifyHistoryUpdated {
 			continue
 		}
@@ -315,5 +423,4 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		}
 		return
 	}
-	t.Fatal("subscription closed without the child output")
 }

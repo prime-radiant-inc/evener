@@ -15,6 +15,7 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
@@ -83,17 +84,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
 
 // kata 1gm2: a record born from a real submit used to reach recovery carrying
 // only the translated prose, so the restored composer showed sentences where
@@ -697,7 +687,18 @@ test("clear permits explicit fresh recovery without replaying old-instance input
   expect(await retryBlockedMutation(record.clientMutationId)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads);
   await flushPendingTurnsProjectionForTests();
-  expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
+  // The endpoint's Retry re-queues through a FRESH row carrying the wire id
+  // inside its payload: the terminal refusal lands in recovery under the
+  // FRESH key (findable by its payload's wire id), while the superseded
+  // predecessor keeps its id and evidence in the outbox.
+  expect(await storage.getOutbox(record.clientMutationId)).toMatchObject({
+    state: "superseded",
+    attempted: true,
+  });
+  const refused = (await storage.listRecovery("ref_a")).find(
+    (entry) => entry.clientMutationId !== record.clientMutationId,
+  );
+  expect(refused).toMatchObject({
     recoveryKind: "rejected",
     payload: { expectedInstanceId: "thr_ref_a" },
   });

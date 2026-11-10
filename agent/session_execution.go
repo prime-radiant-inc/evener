@@ -55,6 +55,8 @@ func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
 	announced := s.sessionStarted
+	s.conversation.generation++
+	s.conversation.active = nil
 	s.execution = executionState{running: true, turnID: turnID, announced: announced, startedAt: s.sclock().Now()}
 	// A turn already recorded runs again only when recovery reclaims it: it
 	// reopens, and stays open until its next completion.
@@ -131,6 +133,7 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 		// execution running when the copy is written.
 		return
 	}
+	s.noteConversationTurnLocked(rec.Turn)
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
 		s.noteRecordedExecutionLocked(rec.Turn.TurnID)
 	}
@@ -261,12 +264,12 @@ func (s *Session) TranscriptRecordedLength() int64 {
 	return s.attachedTranscript().RecordedLength()
 }
 
-// SetDescendantRecordedFunc installs fn on every descendant session this
+// setDescendantRecordedFunc installs fn on every descendant session this
 // session spawns, now and later (inherited like the descendant event func):
 // fn(sessionID, record) under that child's append lock. The constraints of
 // SetTranscriptRecordedFunc apply: fn must not call back into any session of
 // the tree or take a lock an appender or a session holds.
-func (s *Session) SetDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
+func (s *Session) setDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg.spawn.descendantRecorded = fn
@@ -463,7 +466,8 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	causal := s.activeCausalProvenance()
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, ConversationProvenance: s.activeConversationProvenance(), CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():
@@ -491,8 +495,13 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	}
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
+	if !data.EndTurn {
+		// A non-terminal update is not a result, but the delegate did reach its
+		// parent; the missing-report reminder must not claim otherwise (#3734).
+		s.comm.updated = true
+	}
 	s.mu.Unlock()
-	s.emit(data)
+	s.emitWithProvenance(data, causal)
 	return nil
 }
 

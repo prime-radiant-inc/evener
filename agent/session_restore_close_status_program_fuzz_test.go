@@ -307,7 +307,7 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	if err := sess.Rename(name); err != nil {
 		t.Error(err)
 	}
-	sess.RegisterTool("srsp_custom", "status fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("srsp_custom", "status fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
 	})
 

@@ -54,6 +54,7 @@ export type CurrentTranscriptAdmission = Pick<
 const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "ref",
   "parentRef",
+  "kind",
   "threadId",
   "imageSessionId",
   "name",
@@ -75,6 +76,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "jobsUpdatedAt",
   "jobsTreeRevision",
   "olderCursor",
+  "olderFrontier",
   "lastFrameAt",
   "modelRetry",
   "goal",

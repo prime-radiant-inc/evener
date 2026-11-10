@@ -4,7 +4,13 @@
 // installs the host below once its store exists.
 
 import type { AppwireClientLike, ThreadItemPosition, ThreadModel } from "@evener/appwire-client";
-import { encodeTranscriptItem, pruneBackgroundHistoryBodies, threadModelFromCache } from "@evener/appwire-client";
+import {
+  comparePositions,
+  encodeTranscriptItem,
+  olderHistoryExhausted,
+  pruneBackgroundHistoryBodies,
+  threadModelFromCache,
+} from "@evener/appwire-client";
 import { type CacheLifetime, observedCacheEpoch } from "./cacheLifetime";
 import {
   entryHistoryKey,
@@ -25,6 +31,7 @@ import {
 } from "./threadOwners";
 import type { TranscriptReader, TranscriptRepository, TranscriptRetirementOutcome } from "./transcriptRepository";
 import { getReadyEpoch } from "./wiredClient";
+import { withDeadline } from "./withDeadline";
 
 /** The slice of the thread store this module reads and writes. */
 export interface EntryRouteStoreState {
@@ -82,6 +89,18 @@ export interface EntryRouteHost {
       seedModel?: ThreadModel;
     },
   ): TranscriptRepository;
+  /**
+   * One bounded older-range read against the source — the same read a user's
+   * scroll issues — so a pane whose restored older rows no current-baseline
+   * statement validated can reconcile them against the source automatically.
+   * "accepted" means the page was accepted and its range reconciled;
+   * "discarded" means a competing read moved the baseline while the page was
+   * in the air — a retryable rejection the caller may retry within its own
+   * bounded budget once the competing read settles; "unissued" means no page
+   * could serve the range (no sendable cursor, a failed request, or a page
+   * that merged nothing against an unchanged baseline — genuine exhaustion).
+   */
+  reconcileRecordedRange(ref: string): Promise<"accepted" | "discarded" | "unissued">;
 }
 
 let installedHost: EntryRouteHost | undefined;
@@ -179,6 +198,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
     lastLocalOpenUsable: route?.lastLocalOpenUsable,
     localOpenDeadlineMissed: route?.localOpenDeadlineMissed,
+    unresolvedOpenMiss: route?.unresolvedOpenMiss,
   };
 }
 
@@ -226,6 +246,23 @@ export interface EntryTranscriptRoute {
   // body-suppressed with no demand cursor. Distinguishes that strand from the
   // fast recovery-needed answers a repository without a usable record returns.
   localOpenDeadlineMissed?: boolean;
+
+  // True while some raced local opening missed its bound and no later open
+  // has established a usable view since: the pane's recorded display is
+  // still owed its convergence. Unlike localOpenDeadlineMissed — per-open,
+  // cleared when the next open begins, and read by the recovery chain to
+  // pace its own attempts — this fact survives the acquisition's follow-up
+  // opens: the promotion or certification open that follows a miss can
+  // refuse fast (a transient storage error answers a fast recovery-needed
+  // through openLocal's catch), and its own start has already reset the
+  // per-open marker, so without this fact the pane would strand
+  // body-suppressed with nothing scheduled — the CI strand where bodies
+  // stayed [] after an awaited ensureThread.
+  unresolvedOpenMiss?: boolean;
+  /** @internal A replacement repository adopted the outgoing one's pending
+   * recorded-range recovery; the next successful publication owes the chain's
+   * one-shot successor arm (see the replacement seam in threads.ts). */
+  pendingReplacementRecovery?: boolean;
 }
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
@@ -306,8 +343,7 @@ const entryTranscriptLatestOpening = new Map<string, number>();
 // its own publication already completed, and whose older frontier is still
 // outstanding, has no pruned publication for the gate to protect, while
 // consumers hold live paging demand the gate would strand exactly between
-// the claim and the open's settle (the Comic restore's next accepted page is
-// the observed strand) — so it does not hold them, while still recording its
+// the claim and the open's settle — so it does not hold them, while still recording its
 // verdict like any open, including arming the recovery chain on a miss.
 const entryTranscriptQuietOpenings = new Map<string, number>();
 
@@ -387,7 +423,15 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
   // never this key. Tag both kinds so an opaque server cursor cannot collide.
   if (local)
     return JSON.stringify(["local", route?.repository?.getBaselineIdentity(), local.entry, local.item, local.sub ?? 0]);
-  return model.olderCursor ? JSON.stringify(["server", model.olderCursor]) : null;
+  if (model.olderCursor) return JSON.stringify(["server", model.olderCursor]);
+  // A cursorless frontier is only exhausted when a source read or page named
+  // it "none" (#5585). Until then the demand must reach the authoritative read
+  // that establishes it: returning null here made HistoryPaging skip
+  // loadOlderTurns and settle the demand as "no more history" (#5586).
+  const authority = route?.repository?.getBaselineIdentity();
+  return authority !== undefined && !olderHistoryExhausted(model)
+    ? JSON.stringify(["frontier-unknown", authority])
+    : null;
 }
 
 // Publish the repository's own model into the real store. Called while the
@@ -409,10 +453,97 @@ export function publishEntryTranscriptModel(ref: string): void {
   );
 }
 
+/** The repository side of the owed-range verdict: a windowed baseline's
+ * outstanding recorded identities, or undefined when the repository owes
+ * nothing below its baseline. */
+export interface EntryRecordedRangeSource {
+  owedRecorded(): { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined;
+  holdsWindowedBaseline(): boolean;
+}
+
+// The opening verdict's owed-range term, on its own: every identity the
+// durable record still owes below a plain windowed baseline must be presented
+// with a real body before the range counts as satisfied. The term is
+// deliberately independent of the open's own status and cache proof — the
+// verdict sites below run it for every status — because a window certified
+// complete while recorded-range debt is outstanding would clear the route's
+// outstanding miss and strand the pane on the wire window with no recovery
+// ever scheduled. The owed range is measured in the record's own item
+// identities, never in the snapshot's length: that number is a byte boundary,
+// so an item count demanded from it would require 200 rows of a record that
+// only has 80 and call a degraded one-blip window complete whenever bytes
+// stayed small. A capture the record could not answer is unknown debt: treat
+// it as owed rather than accept a view that might still be missing its
+// recorded range. Only a windowed baseline can owe a recorded range: an
+// authoritative or cursorless baseline speaks for everything below it, and a
+// repository that never windowed cannot have the debt the arming note stands
+// for, so repositories without the windowed shape stay satisfied.
+export function holdsSatisfiedRecordedRange(
+  model: ThreadModel | undefined,
+  repository?: EntryRecordedRangeSource,
+): boolean {
+  const owed = repository?.holdsWindowedBaseline() ? repository.owedRecorded() : undefined;
+  if (owed === undefined) return true;
+  if ("unknown" in owed) return false;
+  const displayed = new Map(
+    model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+  );
+  // Bound the demand to the promotion window: the newest 200 DISTINCT
+  // identities of what the model presents together with what the record
+  // still owes. An identity the display presents that the capture also names
+  // is one demand row, not two — double-counting it skews the boundary high
+  // and silently drops the oldest owed rows out of the demand. Identities
+  // below that boundary are older demand, not debt — the same line
+  // holdsResidentForegroundRange draws for its own interval.
+  const positionsByKey = new Map<string, ThreadItemPosition>();
+  for (const item of displayed.values()) {
+    if (item.position) positionsByKey.set(item.transcriptKey ?? item.id, item.position);
+  }
+  for (const [key, position] of owed.identities) positionsByKey.set(key, position);
+  const floor = [...positionsByKey.values()].sort(comparePositions).slice(-200)[0];
+  for (const [key, position] of owed.identities) {
+    if (floor && comparePositions(position, floor) < 0) continue;
+    const restored = displayed.get(key);
+    if (restored === undefined || encodeTranscriptItem(restored).identityOnly) return false;
+  }
+  return true;
+}
+
+// The usable verdict every opening records for its route. The owed-range term
+// above runs for every status: a certify-only open may be quick and its cache
+// proof may say current, but the timing envelope of a certification must not
+// also shortcut its completeness duty, so no cache status can certify an
+// opening usable over outstanding recorded-range debt. The window term stays
+// gated on recovery-needed: a healthy current or stale answer keeps a usable
+// partial display (a previously loaded range can exceed the initial
+// promotion), and only an answer that itself reports recovery must prove the
+// whole requested window.
+export function entryOpeningUsableVerdict(
+  result: { status: "current" | "stale" | "recovery-needed"; retainedRangeComplete?: boolean; model?: ThreadModel },
+  repository?: EntryRecordedRangeSource,
+): boolean {
+  return (
+    result.retainedRangeComplete !== false &&
+    holdsSatisfiedRecordedRange(result.model, repository) &&
+    (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model, repository))
+  );
+}
+
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
-// at least its version and a real body.
-export function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+// at least its version and a real body — and the owed range above is
+// satisfied. The daemon answers thread/read with the latest item window (the
+// client requests 40 items) plus a server cursor, so an accepted
+// fresh-baseline read leaves the model holding only that wire window, and the
+// recorded cache — not the wire — is the display's source for the older
+// bodies of the 200-row promotion. Without these clauses every disarm point
+// below would treat a one-blip open's degraded wire window as converged and
+// never restore the recorded rows.
+export function holdsCompleteForegroundWindow(
+  model: ThreadModel | undefined,
+  repository?: EntryRecordedRangeSource,
+): boolean {
+  if (!holdsSatisfiedRecordedRange(model, repository)) return false;
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
@@ -429,6 +560,29 @@ export function holdsCompleteForegroundWindow(model: ThreadModel | undefined): b
         !encodeTranscriptItem(restored).identityOnly
       );
     })
+  );
+}
+
+// The source-superseded ACCEPTANCE verdict: a foreign hydration that settles
+// while this open still owns the route hands the pane to the source lifecycle
+// only when the settling read actually converged the pane — a bodied window
+// over the resident range, or an empty transcript that expects nothing. The
+// armed recorded-range debt is consulted here too, whatever the settling
+// read recovered: a bodied window over an owed range is a source-owned
+// display that still owes its convergence, so the open keeps its recovery
+// handoff (the miss path below) instead of accepting the window as final.
+export function supersededSourceAcceptance(
+  repository: {
+    holdsBodiedForegroundWindow(): boolean;
+    holdsResidentForegroundRange(): boolean;
+    expectsEmptyForegroundWindow(): boolean;
+  } & EntryRecordedRangeSource,
+  model: ThreadModel | undefined,
+): boolean {
+  return (
+    repository.holdsBodiedForegroundWindow() &&
+    (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow()) &&
+    holdsSatisfiedRecordedRange(model, repository)
   );
 }
 
@@ -509,7 +663,12 @@ export async function openEntryTranscript(
         entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
-    const localRead = reader.openLocal(200);
+    // An open that certifies a just-awaited publication runs the local read
+    // in its certify-only shape: the promotion of recorded ranges below the
+    // window belongs to the recovery and promotion opens, so the
+    // certification keeps the timing envelope the publication's own
+    // deadlines (its release waits, its pinned certification opens) assume.
+    const localRead = reader.openLocal(200, { certifyOnly: exceptRegistration !== undefined });
     const restore = established ? localRead : undefined;
     // Only the ordinary open arms the storage backstop: an established
     // restore races the stalled-open window alone, and one clearable timer
@@ -604,10 +763,7 @@ export async function openEntryTranscript(
       // the same empty-expectation semantics the window check carries. The
       // non-empty verdict is unchanged: a window that expects items still
       // needs the resident range AND the bodied window together.
-      if (
-        repository.holdsBodiedForegroundWindow() &&
-        (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow())
-      ) {
+      if (supersededSourceAcceptance(repository, store().getState().threads.get(ref))) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }
@@ -636,6 +792,15 @@ export async function openEntryTranscript(
       // late-result fences.
       fixture.lastLocalOpenStatus = "recovery-needed";
       fixture.localOpenDeadlineMissed = true;
+      fixture.unresolvedOpenMiss = true;
+      // The stranding miss's convergence is owed: the recorded range below a
+      // plain windowed baseline stays debt in the repository until a restore
+      // presents it or the source speaks for it, surviving this open's
+      // refusal and any follow-up open of the same acquisition. The note is
+      // synchronous — no durable pull runs inside this open — and the demand
+      // stays armed until a fill presents the range or the source speaks for
+      // it.
+      repository.noteOwedRecordedRange();
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -664,11 +829,14 @@ export async function openEntryTranscript(
           .then(async (settled) => {
             if (!stillOwnsLateResult()) return;
             fixture.lastLocalOpenStatus = settled.status;
-            const usable =
-              settled.retainedRangeComplete !== false &&
-              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
+            const usable = entryOpeningUsableVerdict(settled, repository);
             if (usable) {
               fixture.lastLocalOpenUsable = true;
+              fixture.unresolvedOpenMiss = false;
+              // The view may have restored recorded bodies the current
+              // baseline never validated: reconcile that range against the
+              // source before it is treated as converged.
+              scheduleEntryRecordedReconciliation(ref);
               return;
             }
             fixture.lastLocalOpenUsable = false;
@@ -694,7 +862,14 @@ export async function openEntryTranscript(
       // tracked re-open can heal; an established restore that stalled past
       // its own settled-opening window hands to source recovery instead
       // (the #4954 stalled-open contract), and must not arm this chain.
-      if (!stalled) fixture.localOpenDeadlineMissed = true;
+      if (!stalled) {
+        fixture.localOpenDeadlineMissed = true;
+        fixture.unresolvedOpenMiss = true;
+        // The deadline-missed open's convergence is owed the same way: the
+        // repository holds the debt past the per-open marker the paced
+        // chain reads.
+        repository.noteOwedRecordedRange();
+      }
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -716,9 +891,7 @@ export async function openEntryTranscript(
     // the complete requested window. Recover missing bodies, not merely a
     // missing certificate, which would replace usable paged history with a
     // latest read.
-    const usable =
-      result.retainedRangeComplete !== false &&
-      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
+    const usable = entryOpeningUsableVerdict(result, repository);
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
     // A quiet certification that establishes the display takes exclusive
     // ownership of the route's opening: the older published opening it
@@ -730,6 +903,13 @@ export async function openEntryTranscript(
     // path and clears its backstop timer instead of lingering toward it.
     if (quiet && usable && retireSupersededPublishedOpening(ref, openingToken)) {
       routeHost().notifyOpeningEstablishedOverSuperseded(ref);
+    }
+    if (usable && openingOwned()) fixture.unresolvedOpenMiss = false;
+    if (usable) {
+      // The view may have restored recorded bodies the current baseline never
+      // validated: reconcile that range against the source before it is
+      // treated as converged.
+      scheduleEntryRecordedReconciliation(ref);
     }
     return usable;
   } finally {
@@ -746,7 +926,6 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
   const retirement = entryRouteRetirements.get(ref) ?? 0;
   let active = true;
   let installed: TranscriptRepository | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const current = () => {
     const state = store().getState();
     return (
@@ -761,7 +940,7 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
       !state.cacheLifetimes.get(ref)?.suppressed
     );
   };
-  const opening = Promise.race([
+  const opening = withDeadline(
     (async () => {
       const metadata = await route.cache.getSessionForRequestedRef(route.clientId, ref);
       if (!current() || !metadata?.resolvedIdentity || route.repository || store().getState().threads.has(ref)) return;
@@ -840,18 +1019,15 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
     })().catch(() => {
       // A storage failure is a miss. The ordinary source opening still runs.
     }),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        active = false;
-        if (installed && route.repository === installed && route.cachedUnverified) {
-          retireEntryTranscriptRoute(route);
-          clearEntryTranscriptLocalOpening(ref);
-        }
-        resolve();
-      }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
-    }),
-  ]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
+    SESSION_CACHE_LOOKUP_DEADLINE_MS,
+    () => {
+      active = false;
+      if (installed && route.repository === installed && route.cachedUnverified) {
+        retireEntryTranscriptRoute(route);
+        clearEntryTranscriptLocalOpening(ref);
+      }
+    },
+  ).finally(() => {
     if (route.cachedOpening === opening) route.cachedOpening = undefined;
   });
   route.cachedOpening = opening;
@@ -901,20 +1077,57 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   if (!route || route.ref !== ref) return;
   if (pendingOpeningRecoveries.get(ref) === route) return;
   if (foregroundHolds(ref) <= 0) return; // no live foreground holder to recover for
-  if (route.localOpenDeadlineMissed !== true) return; // the open refused fast or handed to another path: not this chain's strand
+  // The per-open marker paces the chain's own attempts; the route-level
+  // unresolvedOpenMiss keeps the chain armed across the follow-up opens that
+  // reset the per-open marker — a pane whose promotion or certification open
+  // refused fast after a miss is still owed its convergence, and no later
+  // event will schedule it.
+  if (route.localOpenDeadlineMissed !== true && route.unresolvedOpenMiss !== true) return;
   // The chain exists to promote recorded bodies into a display that is still
   // body-suppressed; a display another path (main's source recovery, a newer
   // open) already healed needs no re-open churn against storage that may
   // never answer.
-  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref))) return;
+  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+  launchEntryOpeningRecovery(ref, route);
+}
+
+// The stale-cursor fallback's replacement inherits the recorded-range demand
+// the outgoing repository still owed (see the replacement seam in threads.ts).
+// The ordinary arming above refuses it — a usable open already cleared the
+// miss flags, and the chain's own terminal states must not re-arm against
+// storage on every later publication — so the replacement's successor arms
+// here instead, once per replacement, under the chain's remaining guards: the
+// dedup, the live foreground holder and the complete-window check keep this a
+// no-op for a replacement whose display needs nothing.
+export function scheduleReplacementEntryRecovery(ref: string): void {
+  const route = entryTranscriptRoute(ref);
+  if (!route || route.ref !== ref) return;
+  if (pendingOpeningRecoveries.get(ref) === route) return;
+  if (foregroundHolds(ref) <= 0) return;
+  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+  launchEntryOpeningRecovery(ref, route);
+}
+
+function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): void {
   pendingOpeningRecoveries.set(ref, route);
   const recovery = (async () => {
     let stalledAttempts = 0;
+    // One source handoff per chain: the handoff is the chain's last resort,
+    // and a promotion re-open that misses its stalled window re-enters the
+    // paced attempts below instead of ending the chain. The cap keeps
+    // storage that never answers from looping the handoff.
+    let sourceHandedOff = false;
     for (;;) {
       const opened = await openEntryTranscript(ref, true);
-      if (opened) return;
-      if (entryTranscriptRoute(ref) !== route) return; // a retired route's recovery must not outlive it
-      if (foregroundHolds(ref) <= 0) return; // holder released: nothing left to recover for
+      if (opened) {
+        return;
+      }
+      if (entryTranscriptRoute(ref) !== route) {
+        return;
+      }
+      if (foregroundHolds(ref) <= 0) {
+        return;
+      }
       // Another path healed the display mid-chain only while the repository
       // still backs that display: a pending attempt whose timeout disposed the
       // shared reader lets the repository reclaim its bodies without
@@ -922,7 +1135,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // the next publication would prune. Require the resident range too, and
       // a reclaimed repository re-opens instead of ending recovery on it.
       if (
-        holdsCompleteForegroundWindow(store().getState().threads.get(ref)) &&
+        holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository) &&
         route.repository?.holdsResidentForegroundRange()
       )
         return;
@@ -955,9 +1168,10 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // discards the failed history wholesale, so the gate cannot outlive
       // the state it describes.
       if (store().getState().threads.get(ref)?.history?.failed !== undefined) return;
+      if (sourceHandedOff) return;
+      sourceHandedOff = true;
       route.repository?.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
-      let sourceReadFailed = false;
       try {
         const client = await routeHost().requireReadyClient();
         const epoch = getReadyEpoch();
@@ -973,21 +1187,23 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
         // owned hydration lifecycle schedules it — and the re-open below
         // promotes the view a successful read restored, so a failed one has
         // nothing to promote.
-        sourceReadFailed = true;
-      }
-      if (sourceReadFailed) {
         return;
       }
       if (entryTranscriptRoute(ref) !== route) return;
       if (foregroundHolds(ref) <= 0) return;
       // Mirror the raced recovery's full sequence: the read that replaced
       // the view is followed by the local re-open that promotes its
-      // restored bodies into the display. A source response that already
-      // healed the display needs no further cache read to converge.
-      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref))) {
-        await openEntryTranscript(ref, true);
-      }
-      return;
+      // restored bodies into the display — the loop's next attempt. A source
+      // response that already healed the display needs no further cache
+      // read to converge. The re-open is an attempt like any other, bounded
+      // by the stalled-open window: a read that outlasts it — healthy but
+      // slow — re-enters the paced attempts below rather than ending the
+      // chain, because the miss sets the route's markers and no caller
+      // follows the chain's own re-open to re-arm them.
+      if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+      // The handoff changed the baseline its re-open certifies, so the
+      // chain gets one fresh paced budget behind it.
+      stalledAttempts = 0;
     }
   })().then(
     () => undefined,
@@ -1005,6 +1221,63 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
     if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
     if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
   });
+}
+
+// An open that restored recorded bodies no current-baseline statement
+// validated (see `unreconciledRecorded`) must not leave that range
+// converged-on-cached-guesses: an older item that changed while the client
+// was away would keep displaying its pre-gap cached version until the user
+// happened to page that deep. The route reconciles the range against the
+// source automatically — the same bounded older page a user's scroll issues —
+// while the restored cached bodies keep displaying through the
+// reconciliation. One chain per repository instance, stopping at the first
+// page that makes no progress: the pending slot is owned by the REPOSITORY,
+// never the route, because a stale-cursor replacement changes the repository
+// under the same route — the replacement must be free to start its own
+// successor chain while the old chain exits on the mismatch below, and the
+// old chain's finally frees only a slot that still names its own repository.
+// The ordinary owner-scoped paths and the user's own paging own the rest.
+const pendingRecordedReconciliations = new Map<string, TranscriptRepository>();
+
+export function scheduleEntryRecordedReconciliation(ref: string): void {
+  const route = entryTranscriptRoute(ref);
+  if (!route || route.ref !== ref) return;
+  const repository = route.repository;
+  if (!repository || repository.unreconciledRecorded().size === 0) return;
+  if (pendingRecordedReconciliations.get(ref) === repository) return;
+  if (foregroundHolds(ref) <= 0) return;
+  pendingRecordedReconciliations.set(ref, repository);
+  void (async () => {
+    try {
+      // The promotion window bounds the owed range and each page is one
+      // bounded read, so the loop cannot run away; it ends when the source
+      // has spoken for every identity the restore displayed or when a page
+      // reconciles nothing (offline, exhausted, superseded).
+      for (let pages = 0; pages < 8; pages += 1) {
+        if (entryTranscriptRoute(ref) !== route) return;
+        if (foregroundHolds(ref) <= 0) return;
+        const owed = repository.unreconciledRecorded();
+        if (owed.size === 0) return;
+        const paged = await routeHost().reconcileRecordedRange(ref);
+        if (entryTranscriptRoute(ref) !== route || route.repository !== repository) return;
+        // A page a competing read discarded mid-flight — an overlay/end
+        // reconciliation read, a refresh, anything that moved the baseline
+        // while the page was in the air — is a retryable rejection, not
+        // exhaustion: the next iteration re-captures the settled baseline's
+        // own cursor and retries within this same bounded budget. A page
+        // that could not be issued, or an accepted page that reconciles
+        // nothing, ends the chain (offline, exhausted, superseded).
+        if (paged === "unissued") return;
+        if (paged === "discarded") continue;
+        if (repository.unreconciledRecorded().size === owed.size) return;
+      }
+    } catch {
+      // A failed reconciliation keeps the displayed cached bodies; the
+      // ordinary retry paths and the user's own paging own the rest.
+    } finally {
+      if (pendingRecordedReconciliations.get(ref) === repository) pendingRecordedReconciliations.delete(ref);
+    }
+  })();
 }
 
 export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
@@ -1071,19 +1344,14 @@ export async function readEntryRouteAuthorities(
   fixture: EntryTranscriptRoute,
   historyKey: string,
 ): Promise<{ clearEpoch: number; historyGeneration: number } | undefined> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    return await withDeadline(
       Promise.all([fixture.cache.getClearEpoch(), fixture.cache.getHistoryGeneration(historyKey)]).then(
         ([clearEpoch, historyGeneration]) => ({ clearEpoch, historyGeneration }),
       ),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-      }),
-    ]);
+      SESSION_CACHE_LOOKUP_DEADLINE_MS,
+    );
   } catch {
     return undefined;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
   }
 }

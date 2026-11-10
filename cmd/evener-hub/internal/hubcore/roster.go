@@ -23,12 +23,24 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID         string
-	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags       []string // the status flags the daemon reported alongside Status
-	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	SessionID string
+	// RosterInstanceID preserves a remote session's identity when SessionID
+	// is its stable, source-qualified tree key. Local entries use SessionID.
+	RosterInstanceID string
+	Status           string // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. A retained record clears both rather than claiming
+	// that a previously observed turn is still running.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	ProbeState          appwire.ThreadProbeState
+	Crashed             bool // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk          bool // true while the daemon reports an unanswered ask_user question
+	PendingEscalation   bool // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// Manager is the session's own start-time Manager property, as its daemon
+	// projects it. It is fixed for the session's life, so one probe answer
+	// stays current for the entry's lifetime.
+	Manager bool
 	// PendingEscalations is the daemon's blocked escalation cards, in the order
 	// it raised them, so the oldest is first. Every producer sets it from the
 	// same read as PendingEscalation, which stays len(PendingEscalations) > 0.
@@ -41,10 +53,12 @@ type LiveEntry struct {
 	// set, and rosterFingerprint hashes it: a question answered and another
 	// asked between two probes leaves PendingAsk and Status where they were.
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure summarizes the failed turn the session rests on (S1c), from the
 	// same root row as Status; the daemon sends it only while that status is
-	// systemError. rosterFingerprint hashes it: a turn retried and failed
-	// again between two probes leaves Status where it was.
+	// systemError, or while a working session's model call waits out a usage
+	// limit (its ResumesAt is set). rosterFingerprint hashes it: a turn
+	// retried and failed again between two probes leaves Status where it was.
 	Failure *appwire.ThreadFailure
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
@@ -84,7 +98,14 @@ type LiveEntry struct {
 	// own, never merged across sessions, matching Watches' rollup rule. An older
 	// daemon that carries no per-child watches omits the entry entirely.
 	ChildWatches map[string][]appwire.EvenerWatchInfo
-	Project      identifier.Project // canonical identity resolved at hub ingestion, when available
+	// ChildQuotaWaits carries each listed in-process child whose model call
+	// is waiting out a provider usage limit: the limit's summary, with the
+	// time the call resumes, keyed by child session ID. A child has no
+	// LiveEntry of its own, so this is how the child's thread-list row (the
+	// hub's read-only alias) says it waits (S09). A child not waiting is
+	// absent.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
+	Project         identifier.Project // canonical identity resolved at hub ingestion, when available
 	// Lifecycle is the daemon's retirement lifecycle as of the probe that
 	// produced this entry; nil when the daemon could not answer
 	// evener/daemon/status (capability unknown). A failed lifecycle probe
@@ -131,17 +152,22 @@ type LiveEntry struct {
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID         string
-	Status            string
-	ActiveFlags       []string
-	PendingAsk        bool
-	PendingEscalation bool
+	SessionID           string
+	Status              string
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	PendingAsk          bool
+	PendingEscalation   bool
+	// Manager mirrors LiveEntry.Manager: the session's own start-time Manager
+	// property, as its daemon projects it on the root row.
+	Manager bool
 	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
 	// cards from the same root row, in raise order.
 	PendingEscalations []appwire.SandboxEscalationRequested
 	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
 	// question from the same root row as PendingAsk (S1b).
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure mirrors LiveEntry.Failure: the failure summary from the same
 	// root row as Status (S1c).
 	Failure *appwire.ThreadFailure
@@ -163,6 +189,8 @@ type ProbeResult struct {
 	LifecycleFresh bool
 	Watches        []appwire.EvenerWatchInfo
 	ChildWatches   map[string][]appwire.EvenerWatchInfo
+	// ChildQuotaWaits mirrors LiveEntry.ChildQuotaWaits.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
@@ -230,13 +258,24 @@ func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]app
 	return out
 }
 
+func cloneChildQuotaWaits(in map[string]*appwire.ThreadFailure) map[string]*appwire.ThreadFailure {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*appwire.ThreadFailure, len(in))
+	for childID, failure := range in {
+		out[childID] = appwire.CloneThreadFailure(failure)
+	}
+	return out
+}
+
 // CloneLiveEntry returns a copy of in that shares no slice, map or pointer
 // with it, so a roster hand-off never aliases the roster's own snapshot.
 func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
-	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
+	out.PendingAskState = appwire.ClonePendingAsk(in.PendingAskState)
 	out.Failure = appwire.CloneThreadFailure(in.Failure)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
@@ -245,6 +284,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
+	out.ChildQuotaWaits = cloneChildQuotaWaits(in.ChildQuotaWaits)
 	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
 	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
@@ -743,14 +783,28 @@ func (r *Roster) recordOwnershipError(generation uint64, err error) {
 		r.mu.Unlock()
 		return
 	}
-	changed := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
+	// The scan confirmed none of the rows it retained. Keep their identities and
+	// routes, but do not keep presenting the previous probe's volatile facts as
+	// current. A single-entry confirmation newer than this failed scan remains
+	// fresh: it is independent evidence about that one daemon.
+	byPID, bySess := maps.Clone(r.byPID), maps.Clone(r.bySess)
+	for pid, entry := range byPID {
+		if r.entryPublishedGen[pid] <= generation {
+			byPID[pid] = retainedProbeEntry(entry)
+		}
+	}
+	for sessionID, entry := range bySess {
+		if r.entryPublishedGen[entry.PID] <= generation {
+			bySess[sessionID] = retainedProbeEntry(entry)
+		}
+	}
+	ownershipChanged := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
 	r.publishedGen = generation
 	r.ownershipErr = err
-	onChange := r.onChange
+	publication := r.publishListingLocked(bySess, byPID, slices.Clone(r.unconfirmed))
+	publication.changed = publication.changed || ownershipChanged
 	r.mu.Unlock()
-	if changed && onChange != nil {
-		onChange()
-	}
+	publication.fire()
 }
 
 type rosterRefreshBatch struct {
@@ -851,8 +905,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 		// carries no fresh lifecycle observation: clear the capability and
 		// mark it stale. Stale lifecycle data must never present as current
 		// eligibility, and a stale row must not offer a retire action.
-		prev.Lifecycle = nil
-		prev.LifecycleFresh = false
+		prev = retainedProbeEntry(prev)
 		outcome.kind = missReused
 		outcome.entry = prev
 		return outcome
@@ -903,10 +956,21 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 	}
 	crashed.Status = "errored"
 	crashed.Crashed = true
+	crashed = retainedProbeEntry(crashed)
 	outcome.kind = missCrashed
 	outcome.entry = crashed
 	outcome.sessionID = sessionID
 	return outcome
+}
+
+func retainedProbeEntry(entry LiveEntry) LiveEntry {
+	entry.ProbeState = appwire.ThreadProbeStateRetained
+	entry.ActiveTurnID = ""
+	entry.ActiveTurnStartedAt = 0
+	entry.Activity = nil
+	entry.Lifecycle = nil
+	entry.LifecycleFresh = false
+	return entry
 }
 
 func (r *Roster) refreshOwnership() {
@@ -1267,7 +1331,9 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
-		ActiveFlags:           result.ActiveFlags,
+		ActiveTurnID:          result.ActiveTurnID,
+		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
+		ProbeState:            appwire.ThreadProbeStateFresh,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
@@ -1275,6 +1341,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
 		ChildWatches:          result.ChildWatches,
+		ChildQuotaWaits:       result.ChildQuotaWaits,
 	}, result)
 }
 

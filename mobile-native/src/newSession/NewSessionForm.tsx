@@ -23,7 +23,7 @@ import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NewSessionService } from "../conversation/services/newSession";
-import { effortLabel, knownAccess, projectName } from "./launchSetup";
+import { effortLabel, knownAccess, memoryRowShows, projectName, schemaOffersMemory } from "./launchSetup";
 import { formFront, showForm } from "./formFront";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
 import { pluginChoice } from "./sheetPlugins";
@@ -38,10 +38,11 @@ const PROMPT_LINE_HEIGHT = 22;
 const readBranch = (service: NewSessionService, host: string, cwd: string) => service.branch(host, cwd);
 
 /** The launch settings More options sets. */
-const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
+const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds", "memoryEnabled"] as const;
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
+	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults, launchSchema } =
+		useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -70,6 +71,10 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				? { sub: "Couldn't list this host's plugins", subTone: "danger" }
 				: { value: "…" };
 	const access = knownAccess(form.launchOverrides.sandbox, launchDefaults);
+	const offersMemory = schemaOffersMemory(launchSchema);
+	const moreOptionsSub = memoryRowShows(offersMemory, form.launchOverrides.memoryEnabled)
+		? "Context strategy, subagent depth, turn limit, memory"
+		: "Context strategy, subagent depth, turn limit";
 	const startMayRepeat = form.startMayRepeat();
 	const block = startBlock({
 		ready,
@@ -82,6 +87,9 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 		startMayRepeat,
+		memoryOff: form.launchOverrides.memoryEnabled === false,
+		// A schema still on its way never holds Start: the hub checks the host.
+		hostOffersMemory: launchSchema === null ? null : offersMemory,
 	});
 	const offerAlert = useOfferAlert();
 	const startFailureSeen = useStartFailureSeen(hubId);
@@ -177,6 +185,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				<View style={{ paddingHorizontal: space.rowInset, paddingVertical: space.rowPadding, gap: 8 }}>
 					<TextInput
 						accessibilityLabel="What should the agent do?"
+						testID="session-prompt"
 						placeholder="What should the agent do?"
 						placeholderTextColor={palette.inkLow}
 						autoFocus
@@ -303,8 +312,15 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				/>
 				<Row
 					label="More options"
-					sub="Context strategy, subagent depth, turn limit"
-					value={MORE_OPTIONS.some((field) => form.launchOverrides[field] !== undefined) ? "Custom" : undefined}
+					sub={moreOptionsSub}
+					tone={block?.field === "moreOptions" ? "danger" : "normal"}
+					value={
+						form.manager
+							? "Manager"
+							: MORE_OPTIONS.some((field) => form.launchOverrides[field] !== undefined)
+								? "Custom"
+								: undefined
+					}
 					chevron
 					onPress={() => navigation.navigate("MoreOptions")}
 				/>

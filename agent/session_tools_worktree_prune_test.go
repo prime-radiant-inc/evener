@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,12 +40,20 @@ func (r *wtRepo) listOp(t *testing.T) (map[string]any, error) {
 
 // pruneOp drives the prune operation through the registered tool surface.
 func (r *wtRepo) pruneOp(t *testing.T) (map[string]any, error) {
+	return r.pruneOpArgs(t, nil)
+}
+
+// pruneOpArgs drives the prune operation with extra tool arguments beyond the
+// operation name (the orphan arm's orphaned_delegate_days).
+func (r *wtRepo) pruneOpArgs(t *testing.T, extra map[string]any) (map[string]any, error) {
 	t.Helper()
 	rt := r.s.reg.Get("manage_worktree")
 	if rt == nil {
 		t.Fatal("registry is missing manage_worktree")
 	}
-	out, err := rt.Exec(t.Context(), r.s.currentEnv(), map[string]any{"operation": "prune"})
+	args := map[string]any{"operation": "prune"}
+	maps.Copy(args, extra)
+	out, err := rt.Exec(t.Context(), r.s.currentEnv(), args)
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +212,18 @@ func (r *wtRepo) addOrphanedBranchLaneFixture(t *testing.T, name, branch string)
 // list
 // ============================================================
 
+// failAllWorktreeGit makes every lifecycle git call fail at the session's git
+// boundary, the way a host with no usable git binary does, so the operation
+// under test produces its failure in-process instead of forking a git command
+// and waiting it out.
+var errWorktreeGitUnavailable = errors.New(`exec: "git": executable file not found in $PATH`)
+
+func failAllWorktreeGit(s *Session) {
+	scriptedGitRunner(s, func([]string) (string, error, bool) {
+		return "", errWorktreeGitUnavailable, true
+	})
+}
+
 // TestWorktreeList_NotInGitRepo covers worktreeList's own "not in a git
 // repository" guard.
 func TestWorktreeList_NotInGitRepo(t *testing.T) {
@@ -219,8 +241,7 @@ func TestWorktreeList_NotInGitRepo(t *testing.T) {
 func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	restore := hideGitInRepo(t, r.mainRoot)
-	defer restore()
+	failAllWorktreeGit(r.s)
 
 	_, err := r.listOp(t)
 	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
@@ -234,27 +255,26 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
-	_, err := s.worktreePrune(context.Background())
+	_, err := s.worktreePrune(context.Background(), 0)
 	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
 		t.Fatalf("prune outside a git repo: err = %v, want the not-in-a-git-repository error", err)
 	}
 }
 
 // TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable covers
-// worktreePrune's own error-propagation from collectRegisteredLanes (the FIRST
-// sweep it calls): with git hidden, sweep 1's own `worktree list
-// --porcelain` call fails and worktreePrune must surface that error rather
-// than continuing to sweep 2/3.
+// error-propagation from worktreePrune's own first `worktree list --porcelain`
+// call: with every git call failing, that listing fails and worktreePrune must
+// surface it rather than continuing to sweep 2/3. The name predates this
+// coverage: the listing fails before collectRegisteredLanes, the first sweep,
+// is called, so the sweep-1 error path is not what this test exercises.
 func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	r.addManagedWorktreeFixture(t, "lane")
-	restore := hideGitInRepo(t, r.mainRoot)
-	defer restore()
+	failAllWorktreeGit(r.s)
 
 	_, err := r.pruneOp(t)
-	if err == nil {
-		t.Fatal("expected prune to fail when git is unavailable for sweep 1")
+	if !errors.Is(err, errWorktreeGitUnavailable) {
+		t.Fatalf("prune with git unavailable for sweep 1: err = %v, want the git-unavailable error", err)
 	}
 }
 
@@ -1447,7 +1467,7 @@ func TestWorktreePrune_CancelReachesSweeps(t *testing.T) {
 		}
 	}
 
-	if _, err := r.s.worktreePrune(ctx); err != nil {
+	if _, err := r.s.worktreePrune(ctx, 0); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 	if _, statErr := os.Stat(path); statErr != nil {

@@ -24,3 +24,13 @@ var FuzzTestSkip = `(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolA
 //
 // Ported verbatim from scripts/lib/gate-surface-lib.sh's GATE_TEST_RUN.
 var TestRun = `^(Test|Example)`
+
+// HubIntegrationRun is the regex for the hub's runner-bound integration tests:
+// the members of testing-budget.json's deploy-host integration, retirement,
+// live-stack E2E classes. The default gate skips them so the timing ratchet
+// measures the stable suite; the hub-integration gate runs exactly this set,
+// outside the ratchet.
+//
+// Ported verbatim from scripts/lib/gate-surface-lib.sh's
+// GATE_HUB_INTEGRATION_RUN.
+var HubIntegrationRun = `^(TestHostDeployFilesystemSafety|TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget|TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact|TestDaemonRetirementProcessAdmittedWorkResetsInterval|TestDaemonRetirementProcessDirectPositiveExits|TestDaemonRetirementProcessDirectZeroStaysResident|TestDaemonRetirementProcessHelperExitsWithItsFixture|TestDaemonRetirementProcessHubZeroStaysResident|TestDaemonRetirementProcessReadsDoNotResetInterval|TestDaemonRetirementProcessRestartedHubRediscoversOrResumes|TestE2E_StopIsOfferedWheneverTheWireSaysActive|TestE2E_SendPromptToARetiredSession|TestE2E_SendPromptAfterDaemonDiedMidTurn|TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn|TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary)$`

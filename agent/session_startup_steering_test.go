@@ -24,7 +24,7 @@ func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSessionWithMutationStore(t, s)
 
-	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+	s.steerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 	if !s.hasPendingSteering() {
 		t.Fatal("system steering did not queue; this test is not in the state it means to be")
 	}
@@ -56,7 +56,7 @@ func TestSystemSteeringDoesNotWakeThePendingUserInputPath(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSessionWithMutationStore(t, s)
 
-	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+	s.steerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 
 	wakes := 0
 	s.SetPendingUserInputWakeFunc(func() { wakes++ })
@@ -107,7 +107,7 @@ func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 	serveSessionWithMutationStore(t, s)
 
 	// The daemon's own startup context, injected before any client is served.
-	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+	s.steerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 
 	// Installing the notify callback is what the daemon does next. Nothing may
 	// ask the session to run: there is no user input yet, so there is no turn to
@@ -117,7 +117,7 @@ func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 	if woke != 0 {
 		t.Fatalf("the daemon was asked to run %d turns before the user said anything", woke)
 	}
-	if s.hasPendingUserSteering() || s.QueueDepth() > 0 {
+	if s.hasPendingUserSteering() || s.queueDepth() > 0 {
 		t.Fatal("the pending-user-input path would run a turn for the daemon's own startup context")
 	}
 
@@ -141,7 +141,7 @@ func TestDaemonSteeringAloneNeverWakes(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSessionWithMutationStore(t, s)
-	s.SteerKind("<SYSTEM-REMINDER>daemon context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+	s.steerKind("<SYSTEM-REMINDER>daemon context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 
 	wakes := 0
 	s.SetNotifyFunc(func() { wakes++ })

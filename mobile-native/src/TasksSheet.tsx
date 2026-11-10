@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, SectionList, View } from "react-native";
 import type { TaskRow } from "@evener/appwire-client";
-import { absoluteTime, createTasksPanelStore, EMPTY_TASKS_PANEL_ENTRY, groupTasks } from "@evener/appwire-client";
+import {
+	absoluteTime,
+	createTasksPanelStore,
+	EMPTY_TASKS_PANEL_ENTRY,
+	groupTasks,
+	isKnownTaskStatus,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
@@ -10,7 +16,7 @@ import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
-import { TaskStatusMark, TASK_STATUS_LABEL } from "./taskStatus";
+import { TaskStatusMark, taskStatusLabel } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Copy, ErrorMessage, useColors } from "./ui";
 import { Button } from "./sheet/Grouped";
@@ -97,7 +103,10 @@ export function TaskList({
 			count: groups.inProgress.length,
 		},
 		{
-			title: "Open",
+			// Remaining work, not the `open` status: an unrecognized status
+			// rides here too, and the row carries its own raw word. The web
+			// pane names this same group "Remaining" (issue #2256).
+			title: "Remaining",
 			key: "open",
 			data: groups.open,
 			count: groups.open.length,
@@ -132,7 +141,7 @@ export function TaskList({
 			>
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={`${TASK_STATUS_LABEL[task.status] ?? task.status}: ${task.description}`}
+					accessibilityLabel={`${taskStatusLabel(task.status)}: ${task.description}`}
 					accessibilityState={{ expanded: open }}
 					onPress={() => toggle(task.id)}
 					style={{ minHeight: 44, justifyContent: "center", gap: 4 }}
@@ -140,8 +149,9 @@ export function TaskList({
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
 						{/* The composed label above already reads the state in words. */}
 						<TaskStatusMark status={task.status} size={16} style={{ marginTop: 2 }} />
-						<View style={{ flex: 1, minWidth: 0 }}>
+						<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
 							<Copy>{task.description}</Copy>
+							{!open && !isKnownTaskStatus(task.status) && <Copy muted>{task.status}</Copy>}
 						</View>
 					</View>
 					{!open && latest && (task.status === "open" || task.status === "in_progress") ? (
@@ -152,7 +162,7 @@ export function TaskList({
 					<View style={{ gap: 10, paddingVertical: 8 }}>
 						<Copy
 							muted
-						>{`${TASK_STATUS_LABEL[task.status] ?? task.status} · ${task.type}${task.reasoningEffort ? ` · ${task.reasoningEffort}` : ""}`}</Copy>
+						>{`${taskStatusLabel(task.status)} · ${task.type}${task.reasoningEffort ? ` · ${task.reasoningEffort}` : ""}`}</Copy>
 						{task.dependsOn?.length ? (
 							<Copy muted>{`Depends on ${task.dependsOn.map((id) => `#${id}`).join(", ")}`}</Copy>
 						) : null}

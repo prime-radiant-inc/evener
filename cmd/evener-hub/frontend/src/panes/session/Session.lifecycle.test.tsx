@@ -17,6 +17,7 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { setSessionCacheLookupDeadlineForTests } from "../../stores/sessionCacheSchema";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
 import {
   acquireBackgroundThread,
@@ -27,9 +28,7 @@ import {
 } from "../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { Toast } from "../../widgets";
-import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
-import * as ComposerModule from "./composer/Composer";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import "./index";
@@ -43,35 +42,11 @@ import {
   readResponse,
   scrollRootOf,
   stubScrolledAway,
+  stubSessionSlots,
   testThread,
   turnFixture,
   versionedReadResponse,
 } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -129,6 +104,7 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  setSessionCacheLookupDeadlineForTests(250);
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
@@ -847,20 +823,42 @@ test("the live older control loads cached bodies without a server cursor after a
     await gate.promise;
     return getBefore(...args);
   });
+  // This gate holds the paging decision's LOCAL read until the test observes
+  // the loading row and releases it. On a loaded worker that hold can exceed
+  // the product's 250ms lookup deadline, which makes the paging decision
+  // reconcile through a source read and fails the no-re-read assertion
+  // (#4616 follow-up). Widen only this test's deadline; production keeps 250ms.
+  setSessionCacheLookupDeadlineForTests(30_000);
   const mounted = render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
   try {
-    expect(await screen.findByText("Loading older turns…")).toBeTruthy();
+    // The row's structured state is the observable; its loading label is copy.
+    // The auto-load is driven by a deferred render chain (Session mount ->
+    // projection -> virtualizer rows -> LoadOlderRow's own geometry check), and
+    // under a loaded gate that chain measured 52-563ms across nine runs here -
+    // one CI run expired Testing Library's 1s default (#4616). 2s leaves room
+    // for that chain and still fits this test's own 5s budget.
+    await waitFor(() => expect(screen.queryByTestId("load-older-row")?.getAttribute("data-state")).toBe("loading"), {
+      timeout: 2000,
+    });
     await act(async () => {
       gate.resolve();
       await settleEntryTranscriptForTests("ref_a");
     });
-    await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)));
+    // The released local page publishes through a deferred store/render round
+    // trip; Testing Library's 1s default expired on one of ten loaded runs
+    // (#4616 follow-up). The assertion is unchanged; only the bound covers the
+    // work it waits for.
+    await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)), {
+      timeout: 5000,
+    });
     expect(screen.getByText("row-1")).toBeTruthy();
-    expect(screen.queryByText("Loading older turns…")).toBeNull();
+    // ConversationBody renders the row only while older history remains, so a
+    // completed load removes it. Either absence or idle proves paging stopped.
+    expect(screen.queryByTestId("load-older-row")?.getAttribute("data-state")).not.toBe("loading");
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBeUndefined();
     expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
@@ -871,7 +869,11 @@ test("the live older control loads cached bodies without a server cursor after a
     await lease.release();
     cache.close();
   }
-});
+  // The bounded-opening setup (background lease, entry settle, a 225-item
+  // render, the paging round trip) measured 2.0-6.6s on a loaded 16-core host,
+  // so Vitest's 5s default trips on a correct run. 15s is a hang tripwire, not
+  // the wait above.
+}, 15_000);
 
 test("older turns load with no click at all once the paging trigger fires", async () => {
   const fake = connectReadyFakeClient();

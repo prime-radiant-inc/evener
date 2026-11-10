@@ -84,16 +84,10 @@ func (r *hubRelay) startTurn(ctx context.Context, source appsource.Source, param
 		}
 		return appwire.TurnStartResponse{}, err
 	}
-	// The relay's own read doubles as the skill-input capability check, so a
-	// selection is judged by the same read that established the live relay —
-	// including after an auto-resume, where the recheck runs against the
-	// replacement daemon this prepareRelay just read. The validator is a
-	// no-op without a skill item, so ordinary sends are unchanged.
-	if err := appwire.ValidateSkillInputSupport(params.Input, prepared.Thread.Evener.Capabilities.SkillInput); err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if err := appwire.ValidateCommandInputSupport(params.Input, prepared.Thread.Evener.Capabilities.CommandInput); err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	// The relay's read also supplies the input capability verdict, including
+	// after a resume, without taking a second daemon snapshot.
+	if err := prepareInputMode(ctx, source, params.Ref, params.ThreadID, params.Input, params.ExpectedAskRevision, params.ExpectedAskBootGeneration, &prepared.Thread); err != nil {
+		return appwire.TurnStartResponse{}, err
 	}
 	return withDeletionTargetOwnership(ctx, r.cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 		return source.StartTurn(ctx, params)

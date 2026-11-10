@@ -13,8 +13,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -97,8 +97,8 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
-// RegisterTool registers a custom tool at runtime.
-func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+// registerTool registers a custom tool at runtime.
+func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
 	// Register itself can happen outside s.mu. But the cache rebuild below
 	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
@@ -118,7 +118,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
 }
@@ -277,6 +277,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
+	// PostToolBatch renders this round's calls after dispatch, and the
+	// arguments that actually ran are the ones a hook should see: a repair or
+	// a PreToolUse updatedInput rewrote them after the model's bytes were read.
+	s.recordDispatchedToolArguments(call)
 
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
@@ -346,6 +350,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
+	var readKey readRangeKey
+	var readBefore readStamp
+	trackRepeat := false
+	if call.Name == "read_file" && prep.PrevalErr == "" {
+		if key, ok := s.readFileKey(call.Arguments); ok {
+			readBefore, trackRepeat = statReadStamp(key.path)
+			readKey = key
+		}
+	}
 	if prep.PrevalErr != "" {
 		res = tool.ExecResult{
 			ToolName:   call.Name,
@@ -357,13 +370,32 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			Err:        prep.Err,
 		}
 	} else {
+		// A tool call is the work a Stop hook's block asked for, so it ends the
+		// continuation that block started: the next Stop dispatch in this turn
+		// reports stop_hook_active false. The flag is per turn and per session; a
+		// tool that never ran cannot clear it, so the clear sits here — past both
+		// closing checks and past a validation-only result, at the call that
+		// actually dispatches.
+		// The result tool's own call is the completion the next Stop dispatch
+		// judges, not work a block asked for. Clearing the flag here would make a
+		// hook that blocks once and then permits on stop_hook_active=true block
+		// again forever, until the round budget ran out.
 		if prevalidated {
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 		}
+		// The result tool's own call is the completion the next Stop dispatch
+		// judges, not work a block asked for. A call the breaker parked never
+		// ran either, so it is not work a block asked for.
+		if call.Name != s.resultToolName() && !res.Rejected {
+			s.stopHookActive.Store(false)
+		}
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
+	if trackRepeat && !res.IsError {
+		s.noteReadFileRepeat(readKey, readBefore, &res)
+	}
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
 	// card and block HERE — between dispatch and the TOOL_CALL_END emit, so the tool
 	// item stays "in progress" while the human decides. On approve, re-dispatch this
@@ -454,14 +486,19 @@ func errorResult(call llm.ToolCallData, msg string) tool.ExecResult {
 // an unusable updatedInput). changed reports that a hook replaced call's
 // arguments, so the prepared call's validation no longer applies.
 func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, prep prepareResult) (early *tool.ExecResult, changed bool) {
-	if s.hookRunner == nil {
+	// A runner with none registered skips building the input and dispatching a
+	// hook that cannot run; the zero result is what an unmatched dispatch
+	// returns anyway.
+	if s.hookRunner == nil || !s.hookRunner.Has(plugin.HookPreToolUse) {
 		return nil, false
 	}
-	hi := s.hookInput(plugin.HookPreToolUse)
-	hi.ToolName = toolname.EvenerToClaude(call.Name)
-	hi.ToolUseID = call.ID
-	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-		_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+	hi := s.toolHookInput(plugin.HookPreToolUse, *call, prep.RawArgumentsRejected)
+	registered := s.reg.Get(call.Name)
+	if registered == nil {
+		registered = &tool.RegisteredTool{}
+	}
+	if !prep.RawArgumentsRejected && registered.UnmarshalArgs != nil {
+		hi.UnmarshalToolArguments = registered.UnmarshalArguments
 	}
 
 	preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
@@ -474,6 +511,17 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 	for _, m := range preResult.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+	// continue:false stops the tool call, like a deny: the tool never runs and
+	// the model gets the hook's stopReason as the call's error result. A
+	// stop outranks any allow the same dispatch returned, so it is checked
+	// before updatedInput is applied. Like a deny, it returns before the
+	// stop_hook_active reset below: the work a Stop hook's block asked for is
+	// still undone.
+	if !prep.RawArgumentsRejected && preResult.Stopped {
+		stopMsg := s.hookStopText(preResult.StopReason, "Tool call stopped by hook")
+		res := errorResult(*call, stopMsg)
+		return &res, false
+	}
 	if !prep.RawArgumentsRejected && preResult.Denied {
 		denyMsg := "Tool call denied by hook"
 		if preResult.DenyMessage != "" {
@@ -483,7 +531,7 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 		return &res, false
 	}
 	if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
-		if err := applyUpdatedToolInput(call, preResult.UpdatedInput); err != nil {
+		if err := applyUpdatedToolInput(call, *registered, preResult.UpdatedInput); err != nil {
 			res := errorResult(*call, "invalid hook updatedInput: "+err.Error())
 			return &res, false
 		}
@@ -492,19 +540,45 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 	return nil, false
 }
 
-// runPostToolHooks runs the PostToolUse hooks for a dispatched call. A non-nil
-// early result replaces res because a hook's context could not be delivered.
+// runPostToolHooks runs the post-tool hooks for a dispatched call: PostToolUse
+// when the call succeeded, PostToolUseFailure when it failed after dispatch. A
+// non-nil early result replaces res because a hook's context could not be
+// delivered.
 func (s *Session) runPostToolHooks(ctx context.Context, call llm.ToolCallData, res tool.ExecResult) *tool.ExecResult {
-	if s.hookRunner == nil {
+	// A runner with neither post-tool event registered skips building an input
+	// for a dispatch that cannot match; every result it would carry is zero.
+	if s.hookRunner == nil || (!s.hookRunner.Has(plugin.HookPostToolUse) && !s.hookRunner.Has(plugin.HookPostToolUseFailure)) {
 		return nil
 	}
-	hi := s.hookInput(plugin.HookPostToolUse)
-	hi.ToolName = toolname.EvenerToClaude(call.Name)
-	hi.ToolUseID = call.ID
-	hi.ToolResult = res.FullOutput   // legacy alias
-	hi.ToolResponse = res.FullOutput // official field
-	postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
-	for _, m := range postResult.ModelContext {
+	// PostToolUse is Claude's success event: a call that errored after
+	// dispatch reports PostToolUseFailure instead, and a pre-execution refusal
+	// (Rejected) or a call that never left the session (PrevalOnly) fires
+	// neither. res.Output rather than FullOutput is the error text because it
+	// is the model-facing text Claude means by the failed tool's result.
+	// Deliberate divergence: Claude fires PostToolUseFailure for a Bash command
+	// that exits nonzero, while evener fires PostToolUse, because a nonzero
+	// shell exit is a SUCCESS here (agent/transcript/failures.go, Jesse's
+	// 2026-10-16 ruling — that rule also drives transcript glyphs, failure
+	// counts, and loop detection).
+	var hookResult hooks.RunResult
+	switch {
+	case !res.IsError:
+		hi := s.toolHookInput(plugin.HookPostToolUse, call, false)
+		hi.ToolResult = res.FullOutput   // legacy alias
+		hi.ToolResponse = res.FullOutput // official field
+		hookResult = s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
+	case !res.PrevalOnly && !res.Rejected:
+		hi := s.toolHookInput(plugin.HookPostToolUseFailure, call, false)
+		hi.Error = res.Output
+		hi.DurationMS = &res.DurationMS
+		// A real cancel returns through skippedToolResult/emitCanceledEnd
+		// before this point, so the flag is always false here rather than
+		// inferred.
+		notInterrupt := false
+		hi.IsInterrupt = &notInterrupt
+		hookResult = s.hookRunner.RunPostToolUseFailure(s.apiLogContext(ctx), hi)
+	}
+	for _, m := range hookResult.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
 			// Keep the tool state: a turn-ending communicate's records the
 			// end reason restore reads (endedOnNeedsResponse).
@@ -513,8 +587,21 @@ func (s *Session) runPostToolHooks(ctx context.Context, call llm.ToolCallData, r
 			return &failed
 		}
 	}
-	for _, m := range postResult.UserMessages {
+	for _, m := range hookResult.UserMessages {
 		s.deliverHookUserMessage(m)
+	}
+	// continue:false on either tool post-hook ends the TURN, not the call:
+	// the tool already ran, so the stop is recorded for the round loop, which
+	// persists these results first and then ends the turn through
+	// finishProcessingAtFailureBoundary (the same tail PostToolBatch's block
+	// uses). The reason becomes a user warning and a steering turn there.
+	if hookResult.Stopped {
+		s.mu.Lock()
+		if !s.toolHookStop {
+			s.toolHookStop = true
+			s.toolHookStopReason = strings.TrimSpace(hookResult.StopReason)
+		}
+		s.mu.Unlock()
 	}
 	return nil
 }
@@ -559,13 +646,13 @@ func toolStartDescription(args map[string]any) string {
 	return ""
 }
 
-func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {
+func applyUpdatedToolInput(call *llm.ToolCallData, registered tool.RegisteredTool, updated map[string]any) error {
 	if call == nil || len(updated) == 0 {
 		return nil
 	}
 	args := map[string]any{}
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		if err := registered.UnmarshalArguments(call.Arguments, &args); err != nil {
 			return err
 		}
 	}

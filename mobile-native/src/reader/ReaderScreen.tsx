@@ -8,23 +8,33 @@ import { docImageReadURL, rebindFileReference, type FileReference } from "@evene
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
-import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	Component,
+	type ComponentProps,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	FlatList,
-	type CellRendererProps,
+	type FlatListProps,
 	Image,
+	type ListViewToken,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
 	Text,
 	View,
-	type ViewToken,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubProfiles } from "../connection";
 import type { Routes } from "../screens";
 import { timeAgo } from "../session/format";
@@ -50,6 +60,7 @@ import { useShareDocument } from "./useShareDocument";
 const hubs = new HubProfiles(SecureStore);
 
 type Row = { kind: "block"; block: DocumentBlock } | { kind: "line"; index: number; text: string };
+type ReaderCellProps = ComponentProps<NonNullable<FlatListProps<Row>["CellRendererComponent"]>>;
 
 interface ScrollMetrics {
 	offset: number;
@@ -92,10 +103,11 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				: routeReference,
 		[publication, source, routeReference],
 	);
-	// A retained artifact is a different document from a folder file of the same
-	// name, so its root is part of its identity here and in the memory store.
+	// A retained-root document (artifacts, scratch) is a different document
+	// from a folder file of the same name, so its root is part of its identity
+	// here and in the memory store.
 	const key = useMemo(
-		() => ({ sessionRef, path, ...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}) }),
+		() => ({ sessionRef, path, ...(reference.root !== undefined ? { root: reference.root } : {}) }),
 		[sessionRef, path, reference.root],
 	);
 	const { document, notice: refreshNotice, imageAttempt, reload } = useDocument(hubId, sessionRef, reference, inFront);
@@ -108,6 +120,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const insets = useSafeAreaInsets();
+	const detailPaneWidth = useDetailPaneWidth();
 	const list = useRef<FlatList<Row>>(null);
 
 	// This visit's view of the past: the version you last read. A re-read
@@ -175,8 +188,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		anchor.current = headings[0]?.index ?? 0;
 	}, [headings]);
 	const [titleShown, setTitleShown] = useState(false);
-	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ViewToken, "index">[] }) => {
-		viewable.current = viewableItems.flatMap((token) => (token.index === null ? [] : [token.index]));
+	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ListViewToken, "index">[] }) => {
+		viewable.current = viewableItems.flatMap((token) => (token.index === undefined ? [] : [token.index]));
 		setTitleShown(
 			!viewable.current.includes(anchor.current) && viewable.current.some((index) => index > anchor.current),
 		);
@@ -387,7 +400,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 
 	const cellRenderer = useMemo(
 		() =>
-			class ReaderCell extends Component<CellRendererProps<Row>> {
+			class ReaderCell extends Component<ReaderCellProps> {
 				render() {
 					const { children, index, onLayout, style } = this.props;
 					return (
@@ -435,7 +448,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		sessionRef,
 		path,
 		sessionTitle,
-		...(reference.root === "artifacts" ? { root: "artifacts" as const, readTarget: reference.readTarget } : {}),
+		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
 	};
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
@@ -448,7 +461,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					hubId,
 					sessionRef,
 					path,
-					...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+					...(reference.root !== undefined ? { root: reference.root } : {}),
 					blockIndex: block.index,
 					blockHash: block.hash,
 					quote: selected,
@@ -522,7 +535,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	);
 
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<FlatList
 				ref={list}
 				data={rows}
@@ -628,7 +644,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					</View>
 				</View>
 			) : null}
-		</View>
+		</SafeAreaView>
 	);
 }
 

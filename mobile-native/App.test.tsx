@@ -31,6 +31,7 @@ vi.mock("@react-navigation/native", () => ({
 	createNavigationContainerRef: () => ({ getRootState: () => undefined }),
 }));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-camera", () => ({}));
 vi.mock("expo-clipboard", () => ({}));

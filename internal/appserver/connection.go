@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -14,11 +15,19 @@ type admittedRequest struct {
 }
 
 type Connection struct {
-	id         string
-	server     *Server
-	send       chan appwire.Message
-	sendMu     sync.RWMutex
-	sendClosed bool
+	peerMu       sync.Mutex
+	peerHubID    string
+	sessionMu    sync.Mutex
+	sessionTools *sessionToolsConnection
+	// sessionToolsInstalling reserves the single runtime slot while its callback waits outside sessionMu.
+	sessionToolsInstalling *sessionToolsConnection
+	sessionNext            atomic.Uint64
+	sessionLifetime        context.Context
+	id                     string
+	server                 *Server
+	send                   chan appwire.Message
+	sendMu                 sync.RWMutex
+	sendClosed             bool
 	// requests is the bounded inbound queue between the transport's receive
 	// loop (the only producer) and the serial worker (the only consumer).
 	// Neither side ever closes it — producer teardown is "stop sending",
@@ -282,6 +291,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	if c.isInitialized() && req.Method == appwire.MethodInitialize {
 		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("already initialized"))
+	}
+	if req.Method == appwire.MethodRuntimeSessionBind {
+		return c.bindSessionTools(ctx, req)
 	}
 	if !c.server.cfg.AdapterNativeInitialize {
 		if err := appwire.ValidateMutationParams(req.Method, req.Params); err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -44,7 +45,7 @@ func runEndpoint(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 	opts.addrPresent = set["addr"]
 	report, err := resolveHubEndpoint(context.Background(), opts, deps)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("endpoint: %v", err))
 		return err
 	}
 	return json.NewEncoder(stdout).Encode(report)

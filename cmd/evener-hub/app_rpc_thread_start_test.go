@@ -46,7 +46,7 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -64,8 +64,11 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
 	for _, fault := range []string{"probe", "listing", "status", "stale-instance"} {
 		t.Run(fault, func(t *testing.T) {
+			capture := captureHubDiagnostics(t)
+			refreshes := captureRosterRefreshErrors(t)
 			const sessionID = "033snFBSHFr78ZbQQMAeBD"
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			lists := 0
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{
 					ID:        sessionID,
@@ -83,6 +86,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 				}}, nil
 			})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				lists++
 				if fault == "status" {
 					return appwire.ThreadListResponse{}, appwire.Unavailable("status temporarily unavailable")
 				}
@@ -136,19 +140,16 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 				writeRendezvous(t, runDir, old)
 				roster.Refresh()
 			}
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 				RunDir:  runDir,
 				Roster:  roster,
 				Spawner: spawner,
-				Past:    hubcore.NewPastIndex(""),
-			})
+			}))
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
 
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 			resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 				Model: "openai/gpt-5",
 				CWD:   "/tmp",
@@ -201,7 +202,35 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 			if spawns != 1 || turns != 2 || gotPrompt != "continue review" {
 				t.Fatalf("follow-up delivery: spawns=%d turns=%d prompt=%q", spawns, turns, gotPrompt)
 			}
-
+			// The listing faults deliberately write malformed rendezvous JSON, so
+			// the spawn's roster refresh must report that decode failure for the
+			// session it just spawned. The other faults inject their failure
+			// elsewhere and must not produce a roster-refresh diagnostic at all.
+			// The startup-phase lifecycle trace is its own diagnostic stream;
+			// this assertion is about roster-refresh failures.
+			var lines []string
+			for _, line := range capture.recorded() {
+				if strings.HasPrefix(line, "[hub] lifecycle ") {
+					continue
+				}
+				lines = append(lines, line)
+			}
+			if fault == "listing" || fault == "stale-instance" {
+				if len(lines) != 1 {
+					t.Fatalf("hub diagnostics = %q, want exactly one roster refresh failure", lines)
+				}
+				if !strings.Contains(lines[0], sessionID) {
+					t.Fatalf("roster refresh diagnostic = %q, want the spawned session %q", lines[0], sessionID)
+				}
+				if !refreshes.hasJSONSyntaxError() {
+					t.Fatal("injected malformed rendezvous JSON did not fail a roster refresh")
+				}
+			} else if len(lines) != 0 {
+				t.Fatalf("unexpected hub diagnostics: %q", lines)
+			}
+			if fault == "status" && lists == 0 {
+				t.Fatal("injected status probe fault did not run")
+			}
 		})
 	}
 }
@@ -221,7 +250,7 @@ func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	nonInteractive := true
@@ -252,7 +281,7 @@ func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	nonInteractive := true
@@ -283,7 +312,7 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 			return rendezvous.Entry{}, errors.New(spawnErr)
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -351,11 +380,10 @@ func TestHubRPCThreadStartRejectsModelOutsideEvenerLaunchContractBeforeSpawn(t *
 			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -393,7 +421,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 			SessionID: "sess_non_enumerable_model",
 		}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -431,7 +459,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 			SessionID: "sess_degraded_model",
 		}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -464,7 +492,7 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 		spawnCalled = true
 		return rendezvous.Entry{}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -504,7 +532,7 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
 		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
 	}, credsStore)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg, CredsStore: credsStore})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Registry: reg, CredsStore: credsStore}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -532,11 +560,10 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 			return rendezvous.Entry{}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -574,12 +601,10 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 		},
 	}
 	maxRounds := 7
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:       runDir,
-		HubStateRoot: t.TempDir(),
-		Spawner:      spawner,
-		Past:         hubcore.NewPastIndex(""),
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Spawner: spawner,
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -794,13 +819,11 @@ func TestHubRPCThreadStartEnvModelSatisfiesRequiredGate(t *testing.T) {
 			Model:    "gpt-5",
 		}}},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:           runDir,
-		HubStateRoot:     t.TempDir(),
 		LaunchConfigRoot: launchRoot,
 		Spawner:          spawner,
-		Past:             hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -827,13 +850,11 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 			return rendezvous.Entry{}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:           runDir,
-		HubStateRoot:     t.TempDir(),
 		LaunchConfigRoot: launchRoot,
 		Spawner:          spawner,
-		Past:             hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{

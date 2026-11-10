@@ -12,7 +12,6 @@ web UI, use [`docs/web-ui/design-system.md`](../web-ui/design-system.md).
 | Path | Contents |
 | --- | --- |
 | `specs/` | Feature specs, including agreed designs and their review rounds. |
-| `plans/` | Task-by-task implementation plans, with checkboxes and evidence. |
 | `research/` | Reading and comparison studies that informed a design. |
 | `reviews/` | Independent review records. |
 | `handoffs/` | Context written for a successor session or engineer. |
@@ -20,10 +19,19 @@ web UI, use [`docs/web-ui/design-system.md`](../web-ui/design-system.md).
 | `proofs/` | Captured evidence for a specific claim or gate. |
 | `mockups/` | Static mockups and reference images. |
 
+Plans were removed in 2026-11: they were task-by-task checklists whose value
+ended when the work landed, and the specs they implemented remain. A plan that
+still held an undelivered decision went to an issue before its file went, and
+the last such program is [#6029](https://github.com/prime-radiant-inc/evener/issues/6029).
+A stale citation in a code comment points at history; the spec for the feature
+is in `specs/`.
+
 ## Status rules
 
 - A plan is not a promise. A checked box means a step was done in that effort,
-  not that the behavior still exists.
+  not that the behavior still exists. The plans themselves are deleted once
+  they stop holding an undelivered decision: a program plan with open
+  workstreams is handed to an issue first.
 - A spec marked **Proposed** describes an intention. A spec marked **Approved**
   records a decision; the code and the current guides show whether it shipped.
 - Where a plan and a guide disagree, the guide is right.

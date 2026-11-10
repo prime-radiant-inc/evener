@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -60,10 +61,22 @@ type SessionConfig struct {
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
+	// CommitProvenance controls whether the system prompt tells the model to
+	// end commit messages with the Evener provenance trailer. Empty and
+	// "coauthor" enable it; "off" disables it. Persisted with the session.
+	CommitProvenance string `json:"commit_provenance,omitempty"`
+
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
 	// may be a linked worktree.
 	Project identifier.Project `json:"-"`
+	// AdoptWorktreeLane, when set, tells a fresh session its environment is
+	// already rooted in a lane a predecessor occupied. Init records the lane
+	// metadata and restore root instead of running the launch-inside occupancy
+	// rule; the caller takes the managed lane's lock after the predecessor
+	// closes and the replacement is published. Used by thread/clear to keep the
+	// lane (#2957). Not persisted.
+	AdoptWorktreeLane *WorktreeLane `json:"-"`
 	// MaxToolRoundsPerInput caps how many tool-call rounds a single
 	// ProcessInput may run before the turn stops with a TURN_LIMIT event.
 	// Zero defaults to unlimited; set an explicit positive value to cap it.
@@ -85,8 +98,16 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 2.
+	// sub-agents (root session is depth 0). Zero defaults to 2; a positive
+	// value is the nesting depth. A launch that explicitly disables subagents
+	// sets DisableSubagents, which resolves this to zero in applyDefaults.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
+
+	// DisableSubagents records a launch that chose no subagents at all (the
+	// hub's max_subagent_depth=0 and the CLI's --max-subagent-depth 0). It is
+	// separate from MaxSubagentDepth's zero value, which keeps its historical
+	// "use the default" meaning for programmatic constructors.
+	DisableSubagents bool `json:"disable_subagents,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
 	// across the whole session tree (the tree-counter cap). Zero defaults to
@@ -110,7 +131,9 @@ type SessionConfig struct {
 	AgentName string `json:"agent_name,omitempty"`
 
 	// ReasoningEffort is passed through to the Unified LLM request when non-empty.
-	// Valid values are provider-dependent but typically include: low|medium|high.
+	// Valid values are the canonical vocabulary (minimal|low|medium|high|xhigh|max)
+	// or none; the request path clamps the level to the model's own ladder, so
+	// this is the requested level, not the level any one request sends.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// SkillsDirs are extra directories to scan for skills (each is treated
@@ -150,6 +173,10 @@ type SessionConfig struct {
 	// The task prompt is the complete specification; the agent must make all decisions
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
+	// Manager starts this session as a Manager of the sessions its hub can
+	// reach. A start-time property: set once at launch, persisted with the
+	// session, and never changed afterwards.
+	Manager bool `json:"manager,omitempty"`
 
 	// AskResponderAttached says this process answers ask_user questions for a
 	// NonInteractive session (`evener run --ask-responder`), so ask_user is
@@ -226,6 +253,14 @@ type SessionConfig struct {
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
+
+	// RendezvousDir is the run directory the hosting daemon registered its
+	// rendezvous entry in (serve's --run-dir, EVENER_RUN_DIR, or the platform
+	// default, resolved by the host before it built this config). The
+	// owner-liveness probe reads the same directory, so a lane's live owner
+	// is found where its daemon actually registers. Engine-only like
+	// StateDir: never persisted, repopulated by the host on every launch.
+	RendezvousDir string `json:"-"`
 
 	// AcquireSessionOwnership reserves a freshly generated session ID for this
 	// process before any ID-specific state is persisted. Top-level hosts install
@@ -337,6 +372,12 @@ type spawnConfig struct {
 	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	parentSessionID string
 
+	// agentType is the child's agent type as its SubagentStart/SubagentStop
+	// hooks report it and match on: the plugin-scoped catalog key when the
+	// spawn named a plugin agent, else the resolved agent name ("subagent" for
+	// an unnamed delegate). Empty on a root session.
+	agentType string
+
 	// parentToolCallID is the tool call ID that spawned this sub-agent session.
 	parentToolCallID string
 
@@ -362,7 +403,8 @@ type spawnConfig struct {
 	// inherited unchanged like descendantEvent; each descendant installs it as
 	// its own transcript's recorded-entry hook, so it runs under that
 	// transcript's append lock.
-	descendantRecorded func(sessionID string, rec transcript.Record)
+	descendantRecorded    func(sessionID string, rec transcript.Record)
+	descendantPublication func(sessionID string) TranscriptPublicationHooks
 
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.
@@ -456,9 +498,18 @@ type spawnConfig struct {
 	isolation string
 }
 
+// defaultMaxSubagentDepth is the nesting depth a launch gets when it does not
+// set one.
+const defaultMaxSubagentDepth = 2
+
 func (c *SessionConfig) applyDefaults() {
 	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
 		c.ProviderIdleTimeout = "10m"
+	}
+	if c.CommitProvenance != "" {
+		if mode, err := commitprovenance.Normalize(c.CommitProvenance); err == nil {
+			c.CommitProvenance = mode
+		}
 	}
 	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
 	// default of 200 killed long-running agentic sessions doing real work from
@@ -474,10 +525,10 @@ func (c *SessionConfig) applyDefaults() {
 	if c.MaxCommandTimeoutMS <= 0 {
 		c.MaxCommandTimeoutMS = 600_000
 	}
-	if c.MaxSubagentDepth <= 0 {
-		// Default 2: a root session's delegation allowance derives from this, so 2
-		// lets a delegate itself delegate one level (grant allowance 1) by default.
-		c.MaxSubagentDepth = 2
+	if c.DisableSubagents {
+		c.MaxSubagentDepth = 0
+	} else if c.MaxSubagentDepth <= 0 {
+		c.MaxSubagentDepth = defaultMaxSubagentDepth
 	}
 	if c.MaxConcurrentDelegateTurns <= 0 {
 		c.MaxConcurrentDelegateTurns = defaultMaxConcurrentDelegateTurns
@@ -516,6 +567,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         c.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            c.MaxSubagentDepth,
+		DisableSubagents:            c.DisableSubagents,
 		MaxConcurrentDelegateTurns:  c.MaxConcurrentDelegateTurns,
 		MaxRetainedTerminal:         c.MaxRetainedTerminal,
 		ToolOutputLimits:            c.ToolOutputLimits,
@@ -530,6 +582,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptAppend:          c.SystemPromptAppend,
 		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
+		Manager:                     c.Manager,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
 		ShareTasksWithChildren:      c.ShareTasksWithChildren,
@@ -542,6 +595,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ProviderIdleTimeout:         c.ProviderIdleTimeout,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		CommitProvenance:            c.CommitProvenance,
 		VisionModel:                 c.VisionModel,
 	}
 }
@@ -560,11 +614,13 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         s.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            s.MaxSubagentDepth,
+		DisableSubagents:            s.DisableSubagents,
 		MaxConcurrentDelegateTurns:  s.MaxConcurrentDelegateTurns,
 		MaxRetainedTerminal:         s.MaxRetainedTerminal,
 		ToolOutputLimits:            s.ToolOutputLimits,
 		UserInstructionOverride:     s.UserInstructionOverride,
 		AgentName:                   s.AgentName,
+		Manager:                     s.Manager,
 		ReasoningEffort:             s.ReasoningEffort,
 		SkillsDirs:                  s.SkillsDirs,
 		MCPConfigFiles:              s.MCPConfigFiles,
@@ -586,6 +642,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ProviderIdleTimeout:         s.ProviderIdleTimeout,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		CommitProvenance:            s.CommitProvenance,
 		VisionModel:                 s.VisionModel,
 	}
 }

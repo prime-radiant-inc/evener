@@ -44,6 +44,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   errorText,
+  frontierFromCursor,
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
@@ -54,11 +55,14 @@ import {
   mergeOlderItemPage,
   mutationErrorData,
   notificationRoutingKey,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
   WireError,
+  wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
@@ -75,6 +79,7 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
+import { browserBroadcastChannelFactory } from "./browserBroadcastChannel";
 import {
   applyCacheGapRule,
   attachCacheChannel,
@@ -113,6 +118,8 @@ import {
   retireEntryTranscriptIfUnowned,
   retireEntryTranscriptRoute,
   scheduleEntryOpeningRecovery,
+  scheduleEntryRecordedReconciliation,
+  scheduleReplacementEntryRecovery,
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
@@ -126,8 +133,10 @@ import {
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
   type MutationStopBarrier,
+  type MutationStopCapture,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopCapture,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -241,6 +250,8 @@ export interface PromoteDisplayInput {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
+  // Refs whose durable reconcile failed for a reason other than storage: the
+  // ref waits for discovery's retry before anything is dispatched.
   mutationReconciliationFailures: ReadonlySet<string>;
   // Reconciliation failures this page attributes to unavailable storage rather
   // than a mutation-state conflict: the same wedge that fences the durable
@@ -385,6 +396,15 @@ export interface ThreadsStoreState {
   watchThread(ref: string, opts?: { includeTurns?: boolean }): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
+  /** One bounded source page below the wire window, to reconcile restored
+   * older rows no current-baseline statement validated. "accepted" means the
+   * page was accepted and its range reconciled; "discarded" means a competing
+   * read moved the baseline while the page was in the air — a retryable
+   * rejection the caller may retry within its own bounded budget once the
+   * competing read settles; "unissued" means no page could serve the range
+   * (no sendable cursor, a failed request, or a page that merged nothing
+   * against an unchanged baseline — genuine exhaustion). */
+  reconcileRecordedRange(ref: string): Promise<"accepted" | "discarded" | "unissued">;
   // skillNames carries the composer's canonical skill selections for the
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
@@ -396,6 +416,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
   // the rendered action belonged to: activation rechecks the canonical latest
@@ -409,6 +430,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   queue(
     ref: string,
@@ -417,6 +439,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
@@ -432,6 +455,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -780,7 +804,7 @@ function createEntryTranscriptRepository(
   const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
   const ref = fixture.ref;
   const productionRoute = existingEntryRoute(ref) === fixture;
-  return new TranscriptRepository(fixture.cache, {
+  const repository = new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
     historyKey,
@@ -833,6 +857,16 @@ function createEntryTranscriptRepository(
         });
       }),
   });
+  // The route's outstanding miss is the route's fact, not any repository
+  // instance's: every fresh repository for this route — the stale-cursor
+  // replacement's, and one created over a retired repository when a pane
+  // reopens before its recovery converged — inherits the demand, or the
+  // first windowed answer would certify a bare window over the range the
+  // record still owes. The note is synchronous and inert until a windowed
+  // baseline exists; an authoritative full answer below clears it again,
+  // exactly as it would on the repository the route retired.
+  if (fixture.unresolvedOpenMiss) repository.noteOwedRecordedRange();
+  return repository;
 }
 
 async function acceptEntryTranscriptHydration(
@@ -947,6 +981,12 @@ async function acceptEntryTranscriptHydration(
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace.
     if (fixture.repository !== claimedRepository) return;
+    // The pending recorded-range work is the route's fact, not the repository
+    // instance's: identities the display restored but no current-baseline
+    // statement validated yet survive the replacement the stale-cursor
+    // fallback retires. Capture them before the retirement disposes the
+    // outgoing repository.
+    const pendingUnreconciled = claimedRepository?.unreconciledRecorded();
     retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
@@ -958,6 +998,27 @@ async function acceptEntryTranscriptHydration(
       clearEpoch,
       historyGeneration,
     });
+    // A missed opening armed the route's outstanding miss on the outgoing
+    // repository, and a usable open may have cleared that miss while the
+    // bounded reconciliation was still pending — the pending set is the
+    // surviving fact then. Either way the replacement starts with no demand
+    // armed, and nothing else would transfer it: the owed range is the
+    // route's fact, not the repository instance's, so the display's
+    // convergence debt survives the repository the stale-cursor fallback
+    // retires. Re-arm the replacement so the recorded range below its
+    // baseline still restores before certification can accept a bare latest
+    // window, adopt the identities the outgoing repository still owed the
+    // source's word for, and re-arm the recovery chain against the
+    // replacement — its successor must resume, or the windowed answer that
+    // dropped the restored range strands it with nothing left to restore.
+    // The note is synchronous and inert until a windowed baseline exists; an
+    // authoritative full answer below clears it again, exactly as it would
+    // have on the outgoing repository.
+    if (fixture.unresolvedOpenMiss || (pendingUnreconciled?.size ?? 0) > 0) {
+      fixture.repository.noteOwedRecordedRange();
+      if (pendingUnreconciled) fixture.repository.inheritUnreconciledRecorded(pendingUnreconciled);
+      fixture.pendingReplacementRecovery = true;
+    }
   }
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
@@ -1584,21 +1645,30 @@ const ownedWatchedHydrations = new Map<string, OwnedHydration>();
 
 // A scheduler, not a clock: tests install a manual queue and invoke the retry
 // callback directly, so no assertion in this store's suite depends on elapsed
-// time. The returned function cancels the scheduled callback.
-type HydrationRetryScheduler = (attempt: number, retry: () => void) => () => void;
+// time. The returned function cancels the scheduled callback. Every retry pace
+// below is the same shape: the delay for attempt N is the base doubled N-1
+// times, capped at its ceiling.
+type RetryScheduler = (attempt: number, retry: () => void) => () => void;
+
+function backoffRetrySchedulerFor(baseMs: number, maxMs: number): RetryScheduler {
+  return (attempt, retry) => {
+    const delay = Math.min(maxMs, baseMs * 2 ** Math.max(0, attempt - 1));
+    const timer = setTimeout(retry, delay);
+    return () => clearTimeout(timer);
+  };
+}
 
 const HYDRATION_RETRY_BASE_MS = 500;
 const HYDRATION_RETRY_MAX_MS = 15_000;
 
-const backoffHydrationRetryScheduler: HydrationRetryScheduler = (attempt, retry) => {
-  const delay = Math.min(HYDRATION_RETRY_MAX_MS, HYDRATION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  const timer = setTimeout(retry, delay);
-  return () => clearTimeout(timer);
-};
+const backoffHydrationRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(
+  HYDRATION_RETRY_BASE_MS,
+  HYDRATION_RETRY_MAX_MS,
+);
 
-let hydrationRetryScheduler: HydrationRetryScheduler = backoffHydrationRetryScheduler;
+let hydrationRetryScheduler: RetryScheduler = backoffHydrationRetryScheduler;
 
-export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetryScheduler): () => void {
+export function installHydrationRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
   const previous = hydrationRetryScheduler;
   hydrationRetryScheduler = scheduler;
   return () => {
@@ -1609,28 +1679,172 @@ export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetry
 // #4342's paced re-drive for a mutation the hub refused in band as transient
 // backpressure: the row stays queued, and this paces when the next attempt
 // goes out so a saturated hub is not hammered and a freed hub is re-driven
-// promptly. A scheduler, not a clock, mirroring the hydration retry's
-// injectable seam: tests install a manual queue and invoke the retry
-// directly. The returned function cancels the scheduled callback.
-type BackpressureRetryScheduler = (attempt: number, retry: () => void) => () => void;
-
+// promptly, mirroring the hydration retry's injectable seam.
 const BACKPRESSURE_RETRY_BASE_MS = 500;
 const BACKPRESSURE_RETRY_MAX_MS = 15_000;
 
-const backoffBackpressureRetryScheduler: BackpressureRetryScheduler = (attempt, retry) => {
-  const delay = Math.min(BACKPRESSURE_RETRY_MAX_MS, BACKPRESSURE_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  const timer = setTimeout(retry, delay);
-  return () => clearTimeout(timer);
-};
+const backoffBackpressureRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(
+  BACKPRESSURE_RETRY_BASE_MS,
+  BACKPRESSURE_RETRY_MAX_MS,
+);
 
 let backpressureRetryScheduler = backoffBackpressureRetryScheduler;
 
-export function installBackpressureRetrySchedulerForTests(scheduler: BackpressureRetryScheduler): () => void {
+export function installBackpressureRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
   const previous = backpressureRetryScheduler;
   backpressureRetryScheduler = scheduler;
   return () => {
     backpressureRetryScheduler = previous;
   };
+}
+
+// A failed Send-resumes drive is not a dead end: while the ref's restart
+// obligation stands, this owner re-drives the resume with capped backoff and
+// no attempt limit, retiring the moment one resume lands (or the fence clears
+// without it). Native's settle path already retries refused resumes for its
+// parked rows; this is the browser's owner for the same recovery, mirroring
+// the hydration and backpressure seams.
+const RESUME_RETRY_BASE_MS = 5_000;
+const RESUME_RETRY_MAX_MS = 60_000;
+
+const backoffResumeRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(RESUME_RETRY_BASE_MS, RESUME_RETRY_MAX_MS);
+
+let resumeRetryScheduler = backoffResumeRetryScheduler;
+
+export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
+  const previous = resumeRetryScheduler;
+  resumeRetryScheduler = scheduler;
+  return () => {
+    resumeRetryScheduler = previous;
+  };
+}
+
+// Per ref, the armed retry as one entry - its pace count and its cancel handle,
+// one structure, not two kept in sync. Module-side like transientRefusalCancels:
+// an imperative side-channel to timers the reactive state cannot hold. The
+// entry outlives a fired callback (its handle is dropped then) so the pace keeps
+// doubling across the loop; only retire - a landed resume, a cleared fence - may
+// reset it. The cancel handle also retires an armed retry whose fence cleared by
+// other means: the fire-time re-check retires it on the next wake rather than
+// checking on every obligation transition. A retry an identity-changing resume
+// armed also carries the resumed identity's Stop fences.
+const resumeRetries = new Map<string, { attempt: number; cancel?: () => void; resumed?: ResumedStopFence }>();
+
+// The one read every durable stop fence decision shares: a store that cannot
+// answer is an unread epoch, and an unread epoch cancels nothing - the same
+// store cannot have recorded the Stop either.
+async function readDurableStopEpoch(runtime: MutationRuntime | null, ref: string): Promise<number | undefined> {
+  if (runtime === null) return undefined;
+  try {
+    return await runtime.storage.readStopEpoch(ref);
+  } catch {
+    return undefined;
+  }
+}
+
+// A fence judges only epochs that answered: undefined on either side is an
+// unread store, not a Stop, so it is never a mismatch.
+function stopEpochMoved(fresh: number | undefined, fence: number | undefined): boolean {
+  return fresh !== undefined && fence !== undefined && fresh !== fence;
+}
+
+function scheduleResumeRetryForFence(
+  ref: string,
+  armedStopEpoch: number | undefined,
+  armedResumedFence: ResumedStopFence | undefined,
+): void {
+  const existing = resumeRetries.get(ref);
+  // A prior arm can still stand when a NEW drive fails - a press that arrived
+  // while the old backoff ticked. The standing entry's fences belong to the
+  // drive that armed it; the failure now arming supersedes them with this
+  // drive's fences, or the stale pre-Stop epoch would retire the new Send's
+  // recovery at the next fire and leave its pressed row parked. The pace
+  // count survives the supersession, so the backoff keeps its doubling.
+  existing?.cancel?.();
+  const attempt = (existing?.attempt ?? 0) + 1;
+  // The Stop fences travel with the armed retry: the page's Stop generations
+  // (this tab's Stops), the original ref's DURABLE stop epoch captured before
+  // the attempt that armed it, and - for an identity-changing resume - the
+  // resumed identity's generation and durable epoch captured at adoption; the
+  // durable epochs are the ones a Stop from ANY tab bumps, including a
+  // force-stop this page never sees as a generation. A fired drive that finds
+  // any of them moved is a drive whose user intent a Stop has since reversed:
+  // retire it instead of re-driving the resume and restarting the daemon the
+  // user stopped. cancelPendingUserIntents retires the armed retry at this
+  // page's own Stops, on either identity; these fire-time checks cover a Stop
+  // that lands between the arm and this wake, and one from another tab.
+  const armedStopGeneration = userIntentStopGenerations.get(ref) ?? 0;
+  const cancel = resumeRetryScheduler(attempt, () => {
+    // Drop only the handle, not the entry: the pace count persists so the
+    // next failure schedules at the next step, and the re-check below still
+    // owns retiring the whole entry when the fence is gone.
+    const fired = resumeRetries.get(ref);
+    if (fired) resumeRetries.set(ref, { attempt: fired.attempt, resumed: fired.resumed });
+    void (async () => {
+      const state = threadsStore.getState();
+      if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
+        retireResumeRetry(ref);
+        return;
+      }
+      if ((userIntentStopGenerations.get(ref) ?? 0) !== armedStopGeneration) {
+        retireResumeRetry(ref);
+        return;
+      }
+      // The durable fence is only as strong as the durable store: a Stop
+      // cannot bump the epoch while that store is unreadable, and an arm that
+      // could not read the epoch carries no fence to compare, so both unread
+      // shapes check as unchanged rather than blocking the re-drive - and a
+      // fire whose own read fails falls through to the drive rather than
+      // silently stranding the retry.
+      if (armedStopEpoch !== undefined) {
+        const firedStopEpoch = await readDurableStopEpoch(mutationRuntime, ref);
+        if (stopEpochMoved(firedStopEpoch, armedStopEpoch)) {
+          retireResumeRetry(ref);
+          return;
+        }
+      }
+      // The resumed identity's fences: an identity-changing resume armed this
+      // retry, so a Stop of the resumed ref - another pane of this page moves
+      // its generation, another tab moves its durable epoch - retires it just
+      // as a Stop of the original does.
+      if (armedResumedFence !== undefined) {
+        if ((userIntentStopGenerations.get(armedResumedFence.ref) ?? 0) !== armedResumedFence.generation) {
+          retireResumeRetry(ref);
+          return;
+        }
+        if (armedResumedFence.epoch !== undefined) {
+          const firedResumedEpoch = await readDurableStopEpoch(mutationRuntime, armedResumedFence.ref);
+          if (stopEpochMoved(firedResumedEpoch, armedResumedFence.epoch)) {
+            retireResumeRetry(ref);
+            return;
+          }
+        }
+      }
+      // The epoch read above was awaited: a Stop may have retired this retry
+      // while it was pending, and a read that snapshotted before that Stop's
+      // cancellation write passes the comparison above. Re-decide at the
+      // point the drive is acquired - the entry may be gone (retired by the
+      // Stop, or the fence cleared), a newer owner may have replaced it (this
+      // wake's attempt is no longer the ref's), or the page's own Stop
+      // generations may have moved. In every shape this wake no longer speaks
+      // for the user's resume intent, and it owns nothing to retire.
+      const entry = resumeRetries.get(ref);
+      if (
+        entry === undefined ||
+        entry.attempt !== attempt ||
+        (userIntentStopGenerations.get(ref) ?? 0) !== armedStopGeneration
+      ) {
+        return;
+      }
+      void resumeFencedForSend(ref, true, { stopEpoch: armedStopEpoch, resumed: armedResumedFence });
+    })();
+  });
+  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence });
+}
+
+function retireResumeRetry(ref: string): void {
+  resumeRetries.get(ref)?.cancel?.();
+  resumeRetries.delete(ref);
 }
 
 // Per ref, the cancel handle of the paced retry the ref's last in-band
@@ -2087,10 +2301,15 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
     // predates it: discard rather than replace the commit's own ids.
     if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
     // A successful read is the authoritative snapshot: the ref's ids are
-    // exactly the non-canceled rows this read observed.
+    // exactly the rows with live work this read observed. A superseded row is
+    // terminal dead work - its send lives in the fresh row a mint queued,
+    // which the snapshot registers on its own - so it must not keep the
+    // fallback refused the way a canceled row never does either.
     replaceUndeliveredMutations(
       targetRef,
-      outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+      outbox
+        .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+        .map((record) => record.clientMutationId),
     );
     if (outbox.length > 0) {
       pinMutationRef(targetRef);
@@ -2131,9 +2350,12 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
   if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
+  // As above, a superseded row is terminal dead work: only live rows count.
   replaceUndeliveredMutations(
     targetRef,
-    outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+    outbox
+      .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+      .map((record) => record.clientMutationId),
   );
   if (outbox.length > 0 || optimistic.length > 0) {
     pinMutationRef(targetRef);
@@ -2268,6 +2490,16 @@ function getMutationRuntime(): MutationRuntime | null {
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
+  // The settlement's wire sweep retires the wire's sibling rows from storage;
+  // their in-memory registrations resolve through this listener, fired inside
+  // the settlement itself - synchronously, like the resend wrapper's
+  // retiredIds clearing - so a persistence read that fails next (a storage
+  // hiccup) cannot leave the fallback guard armed on rows that no longer
+  // exist. Clearing is idempotent and only ever names retired keys, so
+  // concurrent settlements are safe to interleave.
+  storage.setRetiredIdsListener?.((retiredIds) => {
+    for (const retired of retiredIds) noteHandledMutation(retired);
+  });
   storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
@@ -2374,7 +2606,7 @@ function getMutationRuntime(): MutationRuntime | null {
     // for inside the shared class: sibling tabs over BroadcastChannel, the
     // window's online/focus, the document's visibility, and a timer. A host
     // without them passes nothing and the class does nothing with them.
-    createBroadcastChannel: createMutationBroadcastChannelForTests ?? ((name) => new BroadcastChannel(name)),
+    createBroadcastChannel: createMutationBroadcastChannelForTests ?? browserBroadcastChannelFactory(),
     lifecycleWindow: typeof window === "undefined" ? undefined : window,
     lifecycleDocument: typeof document === "undefined" ? undefined : document,
     setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds),
@@ -2419,12 +2651,42 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   const runtime = getMutationRuntime();
   if (!runtime) return { outbox: [], optimistic: [], recovery: [] };
   await runtime.start;
-  const [outbox, optimistic, recovery] = await Promise.all([
+  const [outbox, displayed, optimistic, recovery, displayedRecovery] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
+    // A retargeted row's durable destination is the resumed ref while the
+    // pane the user watches is the displayed one - the canceled strip
+    // surfaces such rows under the displayed ref, so the persistence read
+    // must load them too or the strip that names them never fills. Rows
+    // the main read already returned (the destination ref's own rows)
+    // win; the merge stays sorted by intentSequence like both reads.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listOutboxDisplayedAt(targetRef),
     runtime.storage.listOptimistic(targetRef),
     runtime.storage.listRecovery(targetRef),
+    // The recovery half of the displayed-ref merge: an edited retargeted
+    // row's recovery is associated with the displayed session too, or the
+    // tray the strip's own Edit opened loses the composition the moment
+    // the displayed session reloads its durable projection.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listRecoveryDisplayedAt(targetRef),
   ]);
-  return { outbox, optimistic, recovery };
+  const seen = new Set(outbox.map((record) => record.clientMutationId));
+  const merged = [...outbox];
+  for (const record of displayed) {
+    if (seen.has(record.clientMutationId)) continue;
+    seen.add(record.clientMutationId);
+    merged.push(record);
+  }
+  const seenRecovery = new Set(recovery.map((record) => record.clientMutationId));
+  const mergedRecovery = [...recovery];
+  for (const record of displayedRecovery) {
+    if (seenRecovery.has(record.clientMutationId)) continue;
+    seenRecovery.add(record.clientMutationId);
+    mergedRecovery.push(record);
+  }
+  const bySequence = (left: { intentSequence: number }, right: { intentSequence: number }) =>
+    left.intentSequence - right.intentSequence;
+  merged.sort(bySequence);
+  mergedRecovery.sort(bySequence);
+  return { outbox: merged, optimistic, recovery: mergedRecovery };
 }
 
 const userIntentStopGenerations = new Map<string, number>();
@@ -2441,6 +2703,18 @@ const userIntentStopGenerations = new Map<string, number>();
 let userIntentStopSequence = 0;
 
 function cancelPendingUserIntents(ref: string): void {
+  // A user Stop reverses the Send intent the armed resume retry serves, so
+  // the retry must die here too - at the one bump every Stop path (interrupt,
+  // forceStop, shutdown) shares - or a fired drive would take a fresh stop
+  // baseline, blind to this Stop, and restart the daemon the user just
+  // stopped. An identity-changing resume armed its retry under the ORIGINAL
+  // ref while carrying the resumed identity's fences, so a Stop naming the
+  // resumed ref retires that retry too: the map is one entry per armed ref,
+  // so the scan is exact and bounded by it.
+  retireResumeRetry(ref);
+  for (const [armedRef, entry] of resumeRetries) {
+    if (entry.resumed?.ref === ref) retireResumeRetry(armedRef);
+  }
   userIntentStopGenerations.set(ref, ++userIntentStopSequence);
 }
 
@@ -2647,6 +2921,20 @@ let resumeFailureSeq = 0;
 interface ResumeDrive {
   promise: Promise<void>;
   targetRef: string;
+  // Whether the retry owner started this drive (no user press awaits it): its
+  // failure updates the existing resumeFailures record in place, while a
+  // press's own failure - or a drive a press joined - mints a new seq.
+  automatic: boolean;
+  // Set when a press that joined this drive arrived AFTER the Stop that
+  // canceled it: the press is fresh intent, and once this drive settles its
+  // own drive starts. Pre-Stop joins leave it unset - their Stop was the
+  // user's last word, and the pressed rows stay parked.
+  restartAfterSettle?: boolean;
+  // The resumed identity this drive was armed to speak for, before adoption
+  // gives it a targetRef of its own: a press joining the un-adopted drive
+  // snapshots this identity's fences too, or a Stop of that identity reads
+  // as fresh intent through the original ref's untouched fences.
+  inheritedResumed?: ResumedStopFence;
 }
 const inFlightResumes = new Map<string, ResumeDrive>();
 
@@ -2675,13 +2963,98 @@ function waitForStopDrain(ref: string): Promise<void> {
   });
 }
 
-async function resumeFencedForSend(ref: string): Promise<void> {
+// `automatic` marks the retry owner's re-drive (not a user press). Its failure
+// updates the existing resumeFailures record in place - without a new seq - so
+// the press surface toasts the press's own failure once and the paced retries
+// behind it stay quiet. A press that JOINS an in-flight drive marks the drive
+// here, so that drive's failure mints a fresh seq - the joined press still
+// hears the failure as its own. The marker also snapshots the page's Stop
+// generations the press arrived at - the keyed ref's, and the drive target's
+// when it has already adopted another identity - so the drive's catch can
+// tell a press that arrived AFTER the Stop that canceled it (fresh intent:
+// generations unchanged since the press) from one the Stop superseded.
+// The marker also snapshots the page's Stop generations the press arrived
+// at and the durable epochs read the moment it joins. A Stop another tab
+// lands is invisible to the page's generations, so the epoch is the only
+// witness of one landing after the press - but a LOCAL Stop's durable write
+// can still be in flight when the press joins, and the join's epoch read
+// would then predate that Stop's own bump, so the epoch only arbitrates when
+// no local Stop was mid-flight at the join; the page's generations are the
+// exact witness for those.
+const pressJoinedResumes = new Map<
+  string,
+  {
+    generation: number;
+    target?: { ref: string; generation: number };
+    // The inherited identity an un-adopted armed drive speaks for: a Stop of
+    // it must be visible to the join check even though the drive's targetRef
+    // is still the original ref.
+    inheritedTarget?: { ref: string; generation: number };
+    epoch: Promise<number | undefined>;
+    targetEpoch?: Promise<number | undefined>;
+    inheritedTargetEpoch?: Promise<number | undefined>;
+  }
+>();
+
+// The durable Stop fences one resume attempt is issued against, inherited
+// from the armed retry that fired it: the original ref's stop epoch, and - for
+// an identity-changing resume - the resumed identity's Stop generation and
+// durable epoch. A drive that cannot even begin re-arms with the same fences
+// instead of none.
+interface InheritedStopFences {
+  stopEpoch?: number;
+  resumed?: ResumedStopFence;
+}
+
+// The resumed identity's Stop fences, captured when a drive adopts the
+// identity: a Stop of the resumed ref - from another pane of this page (its
+// generation) or another tab entirely (its durable epoch) - must retire the
+// armed retry the drive's failure leaves, or the retry re-drives the original
+// alias and restarts the session the user shut down.
+interface ResumedStopFence {
+  ref: string;
+  generation: number;
+  epoch: number | undefined;
+}
+
+async function resumeFencedForSend(ref: string, automatic = false, inherited: InheritedStopFences = {}): Promise<void> {
   const existing = inFlightResumes.get(ref);
-  if (existing !== undefined) return existing.promise;
+  if (existing !== undefined) {
+    if (!automatic) {
+      // The drive a press joins speaks for the original ref always, the
+      // identity it has already adopted (target), and - for a fired retry
+      // that has not adopted yet - the inherited identity its arm carried.
+      // The marker snapshots every one of those identities' fences, so a
+      // Stop landing on ANY of them after the press is visible to the
+      // restart check below.
+      const joinedInherited =
+        existing.targetRef === ref && existing.inheritedResumed !== undefined
+          ? {
+              ref: existing.inheritedResumed.ref,
+              generation: userIntentStopGenerations.get(existing.inheritedResumed.ref) ?? 0,
+            }
+          : undefined;
+      pressJoinedResumes.set(ref, {
+        generation: userIntentStopGenerations.get(ref) ?? 0,
+        target:
+          existing.targetRef !== ref
+            ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
+            : undefined,
+        inheritedTarget: joinedInherited,
+        epoch: readDurableStopEpoch(mutationRuntime, ref),
+        targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
+        inheritedTargetEpoch:
+          joinedInherited !== undefined ? readDurableStopEpoch(mutationRuntime, joinedInherited.ref) : undefined,
+      });
+    }
+    return existing.promise;
+  }
   const stopBaseline = resumeStopBaseline();
   const drive: ResumeDrive = {
-    promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline)),
+    promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline, inherited)),
     targetRef: ref,
+    automatic,
+    inheritedResumed: inherited.resumed,
   };
   // Install the owner before resumeThread can reconnect and publish ready.
   inFlightResumes.set(ref, drive);
@@ -2694,6 +3067,13 @@ async function resumeFencedForSend(ref: string): Promise<void> {
       // Release must wake same-identity sends too, with all other gates intact.
       notifyReadyForMutationDispatch([ref, drive.targetRef]);
     }
+    pressJoinedResumes.delete(ref);
+    // A press that arrived after the Stop that canceled this drive survives
+    // the cancellation: start the drive it asked for, now that this one has
+    // settled and released the owner slot. Its baselines are captured fresh,
+    // so the Stop that canceled this drive is part of the new drive's
+    // baseline and only a Stop after the press can cancel the new drive.
+    if (drive.restartAfterSettle === true) void resumeFencedForSend(ref, false);
   }
 }
 
@@ -2701,15 +3081,77 @@ async function runResumeFencedForSend(
   ref: string,
   drive: ResumeDrive,
   stopBaseline: (ref?: string) => void,
+  inherited: InheritedStopFences = {},
 ): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
-  // retarget moved, whether a Stop won the identity fence, and whether this
+  // retarget moved, whether a Stop won the identity fence, whether this
   // drive registered a swap (it only does when the resume changed the ref).
+  // The stop baseline is the
+  // caller's, captured when the drive acquired ownership, so a Stop that
+  // lands anywhere from acquisition to the last fence is visible to it.
   let resumedRef: string | undefined;
   let movedFirst: RetargetedMutations | null = null;
   let stopWon = false;
   let swapRegistered = false;
+  // Whether a DURABLE epoch comparison did the canceling: a Stop another
+  // tab landed, invisible to this page's generations. The joined-press
+  // restart below arbitrates the durable epochs only in that shape - a
+  // local Stop is witnessed exactly by the generations, and the press's own
+  // epoch read may predate that Stop's still-in-flight durable write.
+  let durableStopCanceled = false;
+  // The durable stop epoch this attempt is issued against: inherited from the
+  // fired retry's arm (so a drive whose storage read fails re-arms with the
+  // SAME fence instead of none), then freshened from storage BEFORE the
+  // readiness check and again before the resume request goes out: a drive
+  // that never reaches the hub still arms carrying the ref's current epoch,
+  // so a Stop another tab lands while the retry waits retires it at fire
+  // instead of leaving an arm no fence can ever mismatch. A Stop from another
+  // tab that lands while the attempt is in flight bumps the epoch past this
+  // baseline, so the retry armed from this attempt's failure retires at fire
+  // instead of adopting that Stop as its baseline and re-driving a session
+  // the user stopped. An unreadable store leaves the inherited fence in
+  // place: the same store cannot have recorded the Stop either.
+  let attemptStopEpoch = inherited.stopEpoch;
+  // The resumed identity's fences this attempt captured at adoption, for the
+  // arm its failure may leave. Seeded from the inherited fence: an attempt
+  // that fails before any resume answer - the hub goes away, the readiness
+  // check throws - never adopts, and its re-arm must keep fencing the
+  // identity the fired arm already carried. A later adoption replaces the
+  // seed with its own fresh captures.
+  let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
   try {
+    const attemptRuntime = mutationRuntime;
+    if (attemptRuntime !== null) {
+      const freshStopEpoch = await readDurableStopEpoch(attemptRuntime, ref);
+      // An automatic attempt inherits the fence its fired arm carried, and a
+      // fresh epoch that has moved past that fence is a Stop from another tab
+      // landing between the fire's own read and this one - invisible to this
+      // page's Stop generations. The user already reversed this attempt:
+      // surface it as the Stop cancellation it is (the attempt aborts and arms
+      // nothing) instead of rebasing the fence onto the Stop's own bump and
+      // re-driving the session it stopped. A read that failed is not a Stop:
+      // the attempt keeps the inherited fence.
+      if (drive.automatic && stopEpochMoved(freshStopEpoch, inherited.stopEpoch)) {
+        durableStopCanceled = true;
+        throw new StopCanceledError();
+      }
+      attemptStopEpoch = freshStopEpoch ?? inherited.stopEpoch;
+      // An identity-changing arm carried the resumed identity, and this
+      // attempt's request is the one that restarts the daemon under it: a
+      // Stop of that identity since the arm - another pane of this page moves
+      // its generation, another tab moves its durable epoch - must abort
+      // BEFORE the request goes out, not at the adoption that follows it.
+      if (drive.automatic && inherited.resumed !== undefined) {
+        if ((userIntentStopGenerations.get(inherited.resumed.ref) ?? 0) !== inherited.resumed.generation) {
+          throw new StopCanceledError();
+        }
+        const freshResumedEpoch = await readDurableStopEpoch(attemptRuntime, inherited.resumed.ref);
+        if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
+          durableStopCanceled = true;
+          throw new StopCanceledError();
+        }
+      }
+    }
     const client = getWiredClient();
     if (client === null || client.state !== "ready")
       throw new Error("Connect to the hub before resuming this session.");
@@ -2723,9 +3165,83 @@ async function runResumeFencedForSend(
     // runs once the drain settles, instead of the user meeting a Resume button.
     // Only a drain in progress waits for another user action to settle.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
-    const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
+    // The reconnect this resume forces is a window the attempt's own reads
+    // cannot see: another tab's Stop can land after the attempt's epoch read
+    // and before the replacement connection is admitted, and a connection
+    // admitted after the Stop passes the hub's freshness guard - the request
+    // would restart the session the other tab's user just stopped. The hook
+    // below runs exactly there, after the reconnect settles and before the
+    // request, so the automatic attempt re-reads both durable epochs and
+    // cancels on a confirmed mismatch. A press keeps only its page-local
+    // fence - it is this page's live intent, and only this page's own Stops
+    // reverse it.
+    const revalidateDurableStops = async (): Promise<void> => {
+      const freshEpoch = await readDurableStopEpoch(mutationRuntime, ref);
+      if (stopEpochMoved(freshEpoch, attemptStopEpoch)) {
+        durableStopCanceled = true;
+        throw new StopCanceledError();
+      }
+      if (inherited.resumed !== undefined) {
+        const freshResumedEpoch = await readDurableStopEpoch(mutationRuntime, inherited.resumed.ref);
+        if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
+          durableStopCanceled = true;
+          throw new StopCanceledError();
+        }
+      }
+      // A same-page shutdown can commit while those reads are in flight - a
+      // snapshot predating the Stop's own durable write passes the epoch
+      // comparisons above - so the page-local fence runs again here, the
+      // last check before the request it guards.
+      stopBaseline();
+    };
+    const { thread } = await client.resumeThread(ref, {
+      beforeRequest: () => {
+        // The page-local fence stays first and synchronous, exactly as
+        // before: any acknowledged Stop on this page since the drive
+        // acquired suppresses the request. A press's hook returns nothing
+        // more - it is this page's live intent, fenced only by this page's
+        // own Stops - so its request timing is what it always was.
+        stopBaseline();
+        // A press's request is on its way; an automatic retry revalidates the
+        // durable fences first, so a Stop landing in the reconnect window still
+        // cancels it before anything reaches the hub.
+        if (!drive.automatic) return;
+        return revalidateDurableStops();
+      },
+    });
     resumedRef = thread.evener.ref;
     drive.targetRef = resumedRef;
+    // The resumed identity's Stop fences, captured at adoption: a Stop of the
+    // resumed ref - from another pane of this page (its generation) or another
+    // tab entirely (its durable epoch) - must retire the armed retry this
+    // drive's failure leaves. An automatic attempt compares its fresh capture
+    // with the fences it inherited: a Stop landing between the two is the user
+    // reversing the resume this attempt serves, so the attempt aborts rather
+    // than rebasing its fences onto the Stop's own bumps. A press's own drive
+    // captures the fences with nothing inherited to compare.
+    if (resumedRef !== ref) {
+      const resumedGeneration = userIntentStopGenerations.get(resumedRef) ?? 0;
+      const resumedEpoch = await readDurableStopEpoch(mutationRuntime, resumedRef);
+      if (
+        drive.automatic &&
+        inherited.resumed !== undefined &&
+        inherited.resumed.ref === resumedRef &&
+        (inherited.resumed.generation !== resumedGeneration || stopEpochMoved(resumedEpoch, inherited.resumed.epoch))
+      ) {
+        if (stopEpochMoved(resumedEpoch, inherited.resumed.epoch)) durableStopCanceled = true;
+        throw new StopCanceledError();
+      }
+      // An unread store cancels nothing: when this is the identity the
+      // inherited fence already named, its known epoch survives the failed
+      // read, so a Stop another tab lands in this window still has a fence
+      // to compare at the next fire. A genuinely new identity has no known
+      // epoch to keep.
+      let armedResumedEpoch = resumedEpoch;
+      if (armedResumedEpoch === undefined && inherited.resumed !== undefined && inherited.resumed.ref === resumedRef) {
+        armedResumedEpoch = inherited.resumed.epoch;
+      }
+      attemptResumedFence = { ref: resumedRef, generation: resumedGeneration, epoch: armedResumedEpoch };
+    }
     // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
     // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
@@ -2792,7 +3308,9 @@ async function runResumeFencedForSend(
       }));
     }
     // The drive succeeded: drop any earlier failure for this ref so a later
-    // composer mount does not re-toast a superseded one.
+    // composer mount does not re-toast a superseded one, and retire the retry
+    // owner - one landed resume is the whole recovery.
+    retireResumeRetry(ref);
     threadsStore.setState((state) => {
       if (!state.resumeFailures.has(ref)) return {};
       const resumeFailures = new Map(state.resumeFailures);
@@ -2812,14 +3330,106 @@ async function runResumeFencedForSend(
     }
     if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
-    resumeFailureSeq += 1;
-    threadsStore.setState((state) => ({
-      resumeFailures: new Map(state.resumeFailures).set(ref, {
-        seq: resumeFailureSeq,
-        message,
-        stopCanceled: error instanceof StopCanceledError,
-      }),
-    }));
+    let stopCanceled = error instanceof StopCanceledError;
+    // A Stop that lands mid-drive can surface here as a plain transport
+    // failure - the Stop is killing the very daemon the resume reaches - so
+    // the error type alone cannot be the Stop signal. Whatever the error, the
+    // catch re-runs the drive's acquisition-time baseline: a Stop generation
+    // that moved since the drive acquired ownership is a Stop that won, and
+    // re-driving the resume would fight it. An identity-changing resume moved
+    // the user's work under the resumed ref, so BOTH identities are fenced -
+    // a Stop of the resumed ref must not leave the original ref's retry
+    // re-driving a session the user shut down.
+    if (!stopCanceled) {
+      try {
+        stopBaseline(ref);
+        if (resumedRef !== undefined) stopBaseline(resumedRef);
+      } catch {
+        stopCanceled = true;
+      }
+    }
+    // An automatic retry's failure keeps the record - and its seq, the press
+    // surface's toast identity - updating only what it learned. A press's own
+    // failure (or the first failure after a success cleared the record) mints
+    // a new record and a new seq - and so does an automatic drive a press
+    // joined, because that press still expects to hear the failure as its own.
+    // The seq is read and minted outside the setter so the updater stays pure.
+    const existing = threadsStore.getState().resumeFailures.get(ref);
+    const seq =
+      drive.automatic && !pressJoinedResumes.has(ref) && existing !== undefined ? existing.seq : ++resumeFailureSeq;
+    threadsStore.setState((state) => {
+      const resumeFailures = new Map(state.resumeFailures);
+      resumeFailures.set(ref, { seq, message, stopCanceled });
+      return { resumeFailures };
+    });
+    // A Stop that won is the user's own reversal of this drive - re-driving it
+    // would fight the Stop - so only every other failure keeps the retry owner
+    // armed while the obligation stands. The fire-time re-check retires the
+    // retry if the fence cleared some other way first. The armed retry carries
+    // the durable stop epoch captured BEFORE this attempt began, and - for an
+    // identity-changing resume - the resumed identity's generation and durable
+    // epoch captured at adoption, so a Stop from another tab or another pane of
+    // this page, on either identity, retires it at fire too. A capture the
+    // wedged store could not read arms without that durable fence: the same
+    // store cannot have recorded the Stop either.
+    if (!stopCanceled) {
+      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence);
+    } else {
+      const join = pressJoinedResumes.get(ref);
+      // A press that arrived AFTER the Stop that canceled this drive is
+      // fresh user intent: the Send pressed on an already-stopped session
+      // asks for a resume of its own, and its row must not park forever
+      // because it happened to ride this doomed drive. The join's snapshot
+      // separates the two: every identity the drive spoke for - the
+      // original ref, the identity it had already adopted, and the inherited
+      // identity its armed retry carried before adoption - fences the press
+      // once the press snapshotted it, so a Stop landing on ANY of them
+      // after the press reads as the user's later word and keeps the press
+      // canceled. An identity the drive adopted only after the press joined
+      // is not in the snapshot - the Stop that canceled on it may predate
+      // the press, unknowably - so that press stays canceled.
+      const joinIdentity = resumedRef ?? ref;
+      if (join !== undefined) {
+        const snapshottedIdentities = [join.target, join.inheritedTarget];
+        const adoptedKnown =
+          joinIdentity === ref
+            ? join.target === undefined
+            : snapshottedIdentities.some((entry) => entry !== undefined && entry.ref === joinIdentity);
+        // A Stop another tab lands is invisible to the page's generations:
+        // it is visible only in the durable epoch, so when a durable check
+        // did the canceling the press survives only if the epochs it
+        // arrived at are also unchanged since it, on every snapshotted
+        // identity. A local Stop never reaches this comparison: the
+        // generations arbitrate it exactly, and the press's own epoch read
+        // may predate that Stop's still-in-flight durable write. Unread
+        // epochs on both sides compare equal - the same store cannot have
+        // recorded a Stop an unread snapshot missed.
+        const epochsUnchanged = durableStopCanceled
+          ? (await join.epoch) === (await readDurableStopEpoch(mutationRuntime, ref)) &&
+            (join.target === undefined || join.targetEpoch === undefined
+              ? true
+              : (await join.targetEpoch) === (await readDurableStopEpoch(mutationRuntime, join.target.ref))) &&
+            (join.inheritedTarget === undefined || join.inheritedTargetEpoch === undefined
+              ? true
+              : (await join.inheritedTargetEpoch) ===
+                (await readDurableStopEpoch(mutationRuntime, join.inheritedTarget.ref)))
+          : true;
+        // The generation comparison runs AFTER those awaited reads: a Stop
+        // this page lands while one of them is in flight is invisible to the
+        // read's snapshot but moves the generations immediately, and running
+        // this check before them would miss it - the restart drive would then
+        // capture the newer Stop as its own baseline and resume over it.
+        const generationsUnchanged =
+          join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
+          adoptedKnown &&
+          snapshottedIdentities.every(
+            (entry) => entry === undefined || entry.generation === (userIntentStopGenerations.get(entry.ref) ?? 0),
+          );
+        if (generationsUnchanged && epochsUnchanged) {
+          drive.restartAfterSettle = true;
+        }
+      }
+    }
   }
 }
 
@@ -2964,28 +3574,50 @@ export function retryBlockedBySnapshot(
   );
 }
 
+// The per-target form of the snapshot refusals: a durable row's Retry is a
+// verdict on its OWN destination, which for a retargeted row is not the pane
+// that renders it. Reads exactly the inputs the press itself consults, so a
+// row's disabled state and retryBlockedMutation's refusal cannot drift. A
+// target whose model is absent or notLoaded keeps Retry disabled - the press
+// would refuse on that snapshot too.
+export function retryBlockedForTarget(targetRef: string): boolean {
+  const state = threadsStore.getState();
+  return (
+    retryBlockedBySnapshot(
+      state.threads.get(targetRef)?.status.type,
+      state.mutationAuthorityRefs.has(targetRef),
+      state.restartBlockingObligations.has(targetRef),
+    ) || state.mutationReconciliationStorageBlocked.has(targetRef)
+  );
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
-  // §4's stop barrier on the release path, the click-time capture: REQUESTED
+  // §4's stop barrier on the Retry path, the click-time capture: REQUESTED
   // here, inside the click's own synchronous prefix, before `await
   // runtime.start` and every other wait in the retry chain — the enqueue
   // barrier's own rule. The ref is unknown until the row is read, so the
-  // capture rides that read: one readonly transaction carries the row AND the
-  // ref's stop epoch, making it the click's first storage observation (on a
-  // cold connection the request itself issues the open). A Stop whose cancel
-  // transaction commits after that snapshot bumps the epoch past the capture,
-  // and the release below refuses — a newer Stop outranks an earlier Retry,
-  // the same commit-order comparison the enqueue barrier carries. A Stop
-  // committed before the capture read's transaction can exist is the bounded
-  // residual §4 states for the enqueue, and for the same reason: the
-  // deliberate post-Stop Retry §9 item 7 protects is indistinguishable from
-  // it in the database.
+  // capture rides that read: one readonly transaction carries the row AND
+  // both stop epochs it crosses, making it the click's first storage
+  // observation (on a cold connection the request itself issues the open).
+  // A Stop whose cancel transaction commits after that snapshot bumps an
+  // epoch past its capture half, and the mint below answers it the way the
+  // enqueue barrier does — the fresh row commits born-canceled, never
+  // dispatching past the newer Stop. A Stop committed before the capture
+  // read's transaction can exist is the bounded residual §4 states for the
+  // enqueue, and for the same reason: the deliberate post-Stop Retry §9 item
+  // 7 protects is indistinguishable from it in the database.
   const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const { record, stopEpoch } = await captureRead;
+  // The capture is the click's PAIR: the row's destination epoch and, for a
+  // retargeted resend, the still-displayed ref's. A Stop on either ref that
+  // commits after this snapshot and before the release write below compares
+  // newer against its half and the release refuses - the same commit-order
+  // comparison the enqueue barrier carries, now on both refs the row crosses.
+  const { record, stopEpoch, displayedStopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -3010,45 +3642,47 @@ export async function retryBlockedMutation(
   // must refuse here too — the daemon would fence the stale send anyway.
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
-  if (
-    retryBlockedBySnapshot(
-      state.threads.get(record.targetRef)?.status.type,
-      state.mutationAuthorityRefs.has(record.targetRef),
-      state.restartBlockingObligations.has(record.targetRef),
-    )
-  )
-    return false;
+  // The snapshot refusals and the storage-blocked fence are per-TARGET (the
+  // row's own destination), shared with QueueStrip's per-row button via
+  // retryBlockedForTarget.
+  if (retryBlockedForTarget(record.targetRef)) return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef) ||
-    // A storage-blocked ref cannot answer the ordering questions a Retry
-    // press asks either: its reconcile sits on the same wedge, and
-    // discovery's retry is what clears this fence.
-    state.mutationReconciliationStorageBlocked.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
   if (!client) return false;
   const epoch = dispatchReadyEpoch;
   if (record.state === "canceled") {
-    // The release is durable before any dispatch. A canceled row provably
+    // The mint is durable before any dispatch. A canceled row provably
     // never reached the daemon, so it needs no reconciliation to prove
-    // absence — release, then let the same fenced resync-and-dispatch tail
-    // every user retry uses carry it out. The barrier is the click-time
-    // capture above: a Stop that landed between the capture and this release
-    // outranks the Retry, and the refused release leaves the row canceled
-    // for it — the release returning false is this press's refusal.
-    // Registered around the write: the reopened row is undelivered work, and a
+    // absence — mint, then let the same fenced resync-and-dispatch tail
+    // every user retry uses carry the fresh row out. The mint never reopens
+    // the old row: it removes it (§6's removal on explicit Retry, so its
+    // chip leaves the canceled strip and a second press cannot mint the
+    // same send twice) and queues a FRESH row at the ref's tail, fenced at
+    // birth — a Stop that landed between the capture and this mint
+    // outranks the Retry and the fresh row commits born-canceled for it.
+    // The identity check is the capture's: a row whose durable destination
+    // or instance no longer matches the press refuses, and the mint
+    // returning undefined is this press's refusal.
+    // Registered around the write: the minted row is undelivered work, and a
     // fallback send must see it before the async refresh can.
-    const released = await trackOutboxWrite(
+    const minted = await trackOutboxWrite(
       record.targetRef,
-      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
-      // The released row keeps the id it is reopened under, and is undelivered
-      // work: it is reopened for a fresh dispatch.
-      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+      () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+      (fresh) =>
+        fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
     );
-    if (!released) return false;
+    if (!minted) return false;
+    // The mint removed the predecessor row, so its in-memory delivery
+    // registration resolves here, synchronously - the same shape the resend
+    // path gives the recovery row it consumes. The fresh row keeps the
+    // registration trackOutboxWrite just took, so unreadable storage cannot
+    // strand the guard on a row that no longer exists.
+    noteHandledMutation(clientMutationId);
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -3066,6 +3700,47 @@ export async function retryBlockedMutation(
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
+  // A blockedUnknown row that is STILL parked after the reconciliation above is
+  // one the crossed-Stop fence held - no automatic path may re-queue it, and
+  // the user's Retry click is the one authorization that can. It runs after
+  // the resync deliberately: an innocent parked row is re-queued by that
+  // fresh authoritative read itself (the reconcile mints it a fresh row,
+  // barrier-free like §4's recovery resends), and the crossed row's own
+  // read may still settle it by receipt. Only the still-parked row mints:
+  // the old row settles terminal "superseded" - never dispatched again, its
+  // id and attempt evidence kept so a receipt or in-band refusal from the
+  // real in-flight attempt still settles it exactly as before - and the
+  // FRESH row inherits the predecessor's wire id (the daemon journals this
+  // composition under it; a re-submission replays the first attempt's
+  // receipt instead of double-applying), queues at the ref's tail, and is
+  // fenced at birth: a Stop that landed inside the capture-to-mint window
+  // makes it born-canceled rather than absorbed. A refused mint (the row's
+  // durable destination or instance no longer matches the press) falls
+  // through to the decision read below - the row it left parked reports
+  // itself. Background retry modes never take this branch.
+  if (record.state === "blockedUnknown" && mode === "user") {
+    const stillParked = await runtime.storage.getOutbox(clientMutationId);
+    if (stillParked?.state === "blockedUnknown") {
+      const minted = await trackOutboxWrite(
+        record.targetRef,
+        () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+        (fresh) =>
+          fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
+      );
+      if (minted) {
+        // The predecessor settled terminal superseded - its delivery is now
+        // owed by the fresh row - so its in-memory registration resolves
+        // here, synchronously; the fresh row keeps the registration
+        // trackOutboxWrite just took. Unreadable storage cannot strand the
+        // guard on the predecessor's id after the pair settles.
+        noteHandledMutation(clientMutationId);
+        notifyMutationPersistence([record.targetRef]);
+        // The resync-and-dispatch tail above already ran its dispatch pass, so
+        // the fresh row drives its own - the same kick a resend gives it.
+        handleDiscoveredMutations(runtime, [record.targetRef]);
+      }
+    }
+  }
   const current = await runtime.storage.getOutbox(clientMutationId);
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
@@ -3145,6 +3820,24 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   // Keep that rejection for the sender without an unhandled interim promise.
   void barrier.catch(() => undefined);
   return barrier;
+}
+
+/** A recovery row and its durable destination's Stop epoch, from ONE readonly
+ * storage snapshot. The recovery Send press requests this in its own
+ * synchronous prefix - the Retry path's own capture discipline
+ * (getOutboxWithStopEpoch): the snapshot is the press's first storage
+ * observation, so a Stop pressed while the Send waits on persistence or
+ * destination hydration stays in the fence's future, and a peer retarget that
+ * lands inside those waits cannot move the destination under the press. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+  displayedRef?: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId, displayedRef);
+  // The capture can fail while the Send is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
 }
 
 export async function updateRecoveryMutation(
@@ -3240,14 +3933,27 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead = captureRecoveryStopBarrier(targetRef),
+  barrierRead: MutationStopCapture | Promise<MutationStopCapture> = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, { text, attachments, skillNames, commandNames, mentions });
+  // The resend is this pane's own send: its intent carries the same seat, so
+  // a row a later refusal bounces from it restores into its authoring pane
+  // instead of landing ownerless.
+  const intent = composerMutationIntent(
+    targetRef,
+    route,
+    { text, attachments, skillNames, commandNames, mentions },
+    compositionOwnerId,
+  );
   const barrier = await barrierRead;
+  // The displayed ref's fence, captured at the same press: a Stop on the
+  // still-displayed session cancels this resend exactly like one on the
+  // destination.
+  const displayedBarrier = displayedBarrierRead === undefined ? undefined : await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3259,6 +3965,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"
@@ -3273,8 +3980,11 @@ export async function resendRecoveryMutation(
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
-  // does not strand the guard on a row that no longer exists.
+  // does not strand the guard on a row that no longer exists. The siblings
+  // the consumption retired went with it - a row deleted from storage has no
+  // delivery left to owe.
   noteHandledMutation(clientMutationId);
+  for (const retired of result.retiredIds) noteHandledMutation(retired);
   pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
@@ -3566,6 +4276,10 @@ async function readThreadHydration(
   // the items TranscriptItemCursorStale exists to protect, since the window
   // alone cannot answer for them. hydrateThread discards the held history
   // instead, matching the hub's intent.
+  // The hub only sets OlderCursor/Snapshot inside IncludeTurns, so a lean
+  // watched read never asked for history: its absent cursor is not a
+  // source-named end of older history (#5585).
+  const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
@@ -3577,8 +4291,8 @@ async function readThreadHydration(
             threadsStore.getState().cacheLifetimes.get(ref),
             threadsStore.getState().threads.get(ref),
           )
-        : applyReadResponse(pending.baseModel, response, now)
-      : hydrateThread(response, ref, now);
+        : applyReadResponse(pending.baseModel, response, now, frontier)
+      : hydrateThread(response, ref, now, frontier);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -3758,6 +4472,7 @@ function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   { text, attachments, skillNames, commandNames, mentions }: ComposerSubmission,
+  compositionOwnerId?: string,
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -3790,6 +4505,9 @@ function composerMutationIntent(
     attachments: durableAttachments(attachments),
     composerText: text,
     composerMentions: mentions,
+    // The acting composer pane's seat, so a refusal's bounced row restores
+    // into the pane that wrote it and no other.
+    compositionOwnerId,
   };
   if (route === "send") {
     return {
@@ -4092,38 +4810,61 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
-// Register an outbox write that can create or reopen a row this tab now owes
-// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
-// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
-// marked as holding undelivered work when the write commits a row that is not
-// canceled. Without this the guard's in-memory state stays stale-empty until an
-// async refresh reads the row back - and if storage wedges first, a fallback
-// send jumps the row that was just written. Every caller names the row it
-// wrote: a reopened recovery row keeps its id and a resend returns the new
-// record, so the settle that proves delivery can resolve it. (Writes that only
-// REMOVE or cancel rows - discardRecovery, updateRecoveryInput, discardCanceled,
-// discardCanceledOfInstance, cancelUnattempted - need no registration: they
-// never create undelivered work, and the next refresh/hydration recomputes the
-// ids from the records when it can read them.)
+// Register an outbox write that can create or re-queue rows this tab now owes
+// delivery (resendRecovery, the Retry mint, the reconcile's automatic
+// requeue), not only the send funnel. It is counted in flight for the
+// fallback's concurrent-enqueue guard, and the ref is marked as holding
+// undelivered work for every row the write commits that is not canceled.
+// Without this the guard's in-memory state stays stale-empty until an async
+// refresh reads the rows back - and if storage wedges first, a fallback send
+// jumps the rows that were just written. Every caller names the rows it wrote:
+// a reopened recovery row keeps its id, a resend returns the new record, and
+// the reconcile's restore returns the rows it re-queued, so the settle that
+// proves delivery can resolve each. (Writes that only REMOVE or cancel rows -
+// discardRecovery, updateRecoveryInput, discardCanceled, discardCanceledOfInstance,
+// cancelUnattempted - need no registration: they never create undelivered
+// work, and the next refresh/hydration recomputes the ids from the records
+// when it can read them.)
+// The registration rule for rows an outbox write committed, in one place: the
+// write changed the ref's outbox (in-flight reads are stale whether or not the
+// rows it touched are undelivered work), and every committed row that is not
+// canceled is undelivered work this tab owes. Both the in-flight-counting
+// wrapper and the reconcile's registration-only requeue call this.
+function noteCommittedOutboxRows(
+  ref: string,
+  committed: Array<{ clientMutationId: string; undelivered: boolean }>,
+): void {
+  if (committed.length === 0) return;
+  noteMutationStateChange(ref);
+  for (const row of committed) if (row.undelivered) noteUndeliveredMutation(ref, row.clientMutationId);
+}
+
+async function trackOutboxWriteRows<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedRows: (result: T) => Array<{ clientMutationId: string; undelivered: boolean }>,
+): Promise<T> {
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  try {
+    const result = await write();
+    noteCommittedOutboxRows(ref, committedRows(result));
+    return result;
+  } finally {
+    releaseInflightDurableEnqueue(ref);
+  }
+}
+
+// The single-row shape most writes take, delegating to the rows primitive so
+// the in-flight accounting and the read-invalidation rule keep one home.
 async function trackOutboxWrite<T>(
   ref: string,
   write: () => Promise<T>,
   committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
 ): Promise<T> {
-  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
-  try {
-    const result = await write();
+  return trackOutboxWriteRows(ref, write, (result) => {
     const committed = committedRow(result);
-    if (committed !== undefined) {
-      // The write changed this ref's outbox, so in-flight reads are stale
-      // whether or not the row it touched is undelivered work.
-      noteMutationStateChange(ref);
-      if (committed.undelivered) noteUndeliveredMutation(ref, committed.clientMutationId);
-    }
-    return result;
-  } finally {
-    releaseInflightDurableEnqueue(ref);
-  }
+    return committed === undefined ? [] : [committed];
+  });
 }
 
 // Remove a ref's dispatch arm once the ref is genuinely idle: it has no
@@ -4425,6 +5166,42 @@ const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
 // clientMutationId, so the daemon dedups them.
 const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 
+// A small listener registry for module seams: publish isolates a throwing
+// listener from the operation that is notifying it.
+function createListenerSet<T>(label: string) {
+  const listeners = new Set<(value: T) => void>();
+  return {
+    subscribe(listener: (value: T) => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    publish(value: T): void {
+      for (const listener of listeners) {
+        try {
+          listener(value);
+        } catch (error) {
+          console.error(`${label} listener failed`, error);
+        }
+      }
+    },
+  };
+}
+
+// The id a storage-fallback send minted; see pendingTurns' recordDirectSend
+// for why the pending store needs it.
+export interface DirectSendAdmission {
+  clientMutationId: string;
+  createdAt: number;
+}
+
+const directSendAdmissions = createListenerSet<DirectSendAdmission>("Direct-send admission");
+
+export function subscribeDirectSendAdmission(listener: (admission: DirectSendAdmission) => void): () => void {
+  return directSendAdmissions.subscribe(listener);
+}
+
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. Delivery here is
 // at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
@@ -4445,6 +5222,9 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
         params: Record<string, unknown>,
       ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      // Provenance for the id no durable row records: see pendingTurns'
+      // recordDirectSend.
+      directSendAdmissions.publish({ clientMutationId, createdAt: Date.now() });
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
@@ -5166,6 +5946,23 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  // A published replace that adopted the outgoing repository's pending
+  // recorded-range recovery needs the chain's successor against the NEW
+  // display — armed here, after the publish, so the successor's
+  // complete-window guard judges the display the replacement actually
+  // established. One shot per replacement: the mark the seam left fires this
+  // once, and every later publication keeps the chain's ordinary arming.
+  const replacedRoute = entryTranscriptRoute(ref);
+  if (replacedRoute?.ref === ref && replacedRoute.pendingReplacementRecovery) {
+    replacedRoute.pendingReplacementRecovery = false;
+    scheduleReplacementEntryRecovery(ref);
+    // The replacement's reconciliation successor arms alongside the recovery
+    // one: the inherited unreconciled identities are the replacement's own
+    // pending slot now, so the chain that validates the restored range
+    // against the source resumes against the new repository instead of dying
+    // with the one the refresh retired.
+    scheduleEntryRecordedReconciliation(ref);
+  }
   reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;
@@ -5232,7 +6029,26 @@ async function publishAndReconcileThreadHydration(
             }
             if (!current()) return;
           }
-          await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          // Round-12: the automatic mint registers the rows it re-queued,
+          // exactly like the explicit Retry wrapper - the fresh row is
+          // undelivered work this tab owes, and a fallback send must see it
+          // before the pin refresh's background read (which failing storage
+          // can starve forever). The predecessor's and the swept siblings'
+          // registrations resolve through the storage write's own retiredIds
+          // publication. Round-13 (the CI red on round-12): this registers
+          // WITHOUT the in-flight durable-enqueue count. That count guards
+          // USER enqueues a fallback send must not jump, but a background
+          // reconcile wedged inside its own write would hold it forever, and
+          // the pinned contract is that a wedged reconcile must not strand a
+          // send. The pending-reconciliation fence owns this window: while
+          // the reconcile is in flight the ref refuses the fallback unless
+          // the fallback's own storage failure waives it - exactly the
+          // storage-blocked waiver.
+          const requeued = await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          noteCommittedOutboxRows(
+            ref,
+            requeued.map((row) => ({ clientMutationId: row.clientMutationId, undelivered: row.state !== "canceled" })),
+          );
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -6327,12 +7143,17 @@ async function handleReady(
 // updated by the caller, so a stale firing between the two calls still sees
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
+  const outgoingClient = getWiredClient();
   const epoch = advanceReadyEpoch();
   residencyIfCreated?.connection(epoch, false);
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // Old leases belong to the outgoing client. The next hydration joins the
   // replacement client's membership without affecting activity owners.
   releaseThreadSubscriptions();
+  // The subscription registry belongs to the outgoing connection too: retire
+  // its handlers rather than letting them fire for a client this store no
+  // longer holds.
+  if (outgoingClient) retireThreadSubscriptions(outgoingClient);
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -6347,6 +7168,10 @@ function rewireClient(client: AppwireClientLike): void {
   if (client === getWiredClient()) return;
   teardownWiring();
   setWiredClient(client);
+  // Wire the shared subscription registry here, at connection time, so its
+  // notification handler is registered once per connection instead of on the
+  // first store action that happens to acquire a thread subscription.
+  wireThreadSubscriptions(client);
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
@@ -6735,8 +7560,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // open. Where that display still has an older frontier, consumers
             // hold live paging demand for the next accepted page, and the
             // held gate strands exactly that demand in the window between the
-            // claim and the open's settle (the Comic restore's next accepted
-            // page is the observed strand) — so it certifies quietly: the
+            // claim and the open's settle — so it certifies quietly: the
             // open still records its verdict, marker and recovery verdicts,
             // just without holding consumers. A display with no older
             // frontier has no demand the gate could strand, and keeps the
@@ -7068,6 +7892,83 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resumeFencedForSend(ref);
   },
 
+  // A pane whose restored older rows no current-baseline statement validated
+  // reconciles them through the same bounded source page a user's scroll
+  // issues below the wire window. This scoped read never displaces the paging
+  // machinery: it captures the pane's own cursor and ownership and accepts
+  // the page into the route's repository, which reconciles every identity the
+  // page covers. It is read-only, so it waits out a reconnect (issue #195's
+  // RCA) instead of failing the caller.
+  async reconcileRecordedRange(ref: string) {
+    await requireReadyClient();
+    // A competing tracked read that started while a page was in the air owns
+    // the ref's convergence until it settles; a retry captured mid-flight
+    // would be discarded again. Wait for the pending settlement, then capture
+    // fresh state.
+    await trackedHydrationCompletions.get(ref);
+    const client = getWiredClient();
+    const capturedEpoch = getReadyEpoch();
+    const fixture = entryTranscriptRoute(ref);
+    const fixtureState = fixture?.ref === ref ? fixture : undefined;
+    const fixtureRepository = fixtureState?.repository;
+    const model = threadsStore.getState().threads.get(ref);
+    if (!client || !fixtureState || !fixtureRepository || !model) return "unissued";
+    const capturedRef = model.ref;
+    const capturedCursor = model.olderCursor;
+    // A local-only scheduling key is never an opaque source cursor: send the
+    // display key on the wire never; the ordinary paths own that range.
+    if (!capturedCursor || capturedCursor.startsWith("entry-local:")) return "unissued";
+    const capturedAuthority = fixtureRepository.getBaselineIdentity();
+    const capturedBefore = fixtureRepository.oldestPosition();
+    const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+    const capturedPageGeneration = olderPageGeneration(ref);
+    const stillOwned = (): boolean => {
+      const current = threadsStore.getState().threads.get(ref);
+      return (
+        current !== undefined &&
+        getWiredClient() === client &&
+        getReadyEpoch() === capturedEpoch &&
+        current.ref === capturedRef &&
+        current.olderCursor === capturedCursor &&
+        (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
+        olderPageGeneration(ref) === capturedPageGeneration &&
+        !pendingThreadHydrations.has(ref) &&
+        entryTranscriptRoute(ref) === fixtureState &&
+        fixtureState?.repository === fixtureRepository &&
+        !threadsStore.getState().deletedRefs.has(ref)
+      );
+    };
+    if (!stillOwned()) return "discarded";
+    let resp: ThreadTurnsListResponse;
+    try {
+      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+    } catch {
+      return "unissued";
+    }
+    if (!stillOwned()) return "discarded";
+    const accepted = fixtureRepository.acceptPage(resp, {
+      lifetime: fixtureState.lifetime,
+      ...nextTranscriptReadIdentity(),
+      authority: capturedAuthority,
+      ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
+      requestCursor: capturedCursor,
+    });
+    if (accepted) {
+      // A late reconciliation page can settle after its pane closed, while a
+      // background lease alone retains the route: the ownership checks above
+      // still pass, so the publication must go through the route's own
+      // prune-aware path — a raw model put would overwrite the background-
+      // pruned store model with the page's bodies, and the repository's own
+      // later reclamation never republishes, retaining those payloads until
+      // an unrelated publication.
+      publishEntryTranscriptModel(ref);
+      return "accepted";
+    }
+    // A page the baseline moved under is a retryable rejection; a page that
+    // merged nothing against the same baseline is genuine exhaustion.
+    return fixtureRepository.getBaselineIdentity() === capturedAuthority ? "unissued" : "discarded";
+  },
+
   async loadOlderTurns(ref) {
     beginHistoryHold(ref);
     try {
@@ -7087,6 +7988,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (!model) return;
       const capturedRef = model.ref;
       const capturedCursor = model.olderCursor;
+      const capturedFrontier = model.olderFrontier;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
       const capturedPageGeneration = olderPageGeneration(ref);
       const fixture = entryTranscriptRoute(ref);
@@ -7108,6 +8010,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           getReadyEpoch() === capturedEpoch &&
           current.ref === capturedRef &&
           current.olderCursor === capturedCursor &&
+          current.olderFrontier === capturedFrontier &&
           fixtureState?.localBefore === capturedLocalBefore &&
           (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
           olderPageGeneration(ref) === capturedPageGeneration &&
@@ -7122,6 +8025,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // frontier runs the bounded reconciliation; no local certificate is an
       // ordinary server continuation.
       if (fixtureState && fixtureRepository) {
+        const recoverAuthoritatively = async (): Promise<boolean> => {
+          if (!stillOwned()) return false;
+          fixtureState.localBefore = undefined;
+          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          return true;
+        };
         const outcome = await fixtureRepository.loadOlderPage(
           TRANSCRIPT_ITEM_PAGE_SIZE,
           fixtureState.lifetime,
@@ -7168,9 +8077,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // A local-only scheduling key is never an opaque source cursor.
           // If its cache lookup is unavailable, recover through the normal
           // authoritative read rather than sending the display key on the wire.
-          if (!stillOwned()) return;
-          fixtureState.localBefore = undefined;
-          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          await recoverAuthoritatively();
+          return;
+        }
+        if (!capturedCursor && !olderHistoryExhausted(model)) {
+          // Deliberate verdict (#5586): a cursorless frontier is exhausted only
+          // when a source read or page named it "none". A cache seed's frontier
+          // is unknown, and the repository deliberately routes it to "server"
+          // rather than latching "exhausted" (#5567). With no cursor there is no
+          // ordinary continuation to send, so the demand must reach the
+          // authoritative read that establishes the frontier; returning here
+          // would dead-end it with no network read. A source-named "none" falls
+          // through to the ordinary no-cursor return below (genuine history end).
+          await recoverAuthoritatively();
           return;
         }
       }
@@ -7245,9 +8164,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async send(ref, text, attachments, skillNames, commandNames, mentions) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await sendMutationIntent(
-      composerMutationIntent(ref, "send", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "send",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 
@@ -7293,20 +8217,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async steer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "steer", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "steer",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 
-  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+  async queue(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     // A queue is composer input too: mark the shared guard for the enqueue's
     // window so Retry cannot enqueue a continuation ahead of the queued row
     // becoming visible in the projection.
     const release = markInputSubmission(ref);
     try {
       await enqueueMutationIntent(
-        composerMutationIntent(ref, "queue", { text, attachments, skillNames, commandNames, mentions }),
+        composerMutationIntent(
+          ref,
+          "queue",
+          { text, attachments, skillNames, commandNames, mentions },
+          compositionOwnerId,
+        ),
       );
     } finally {
       release();
@@ -7338,9 +8272,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "drain", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "drain",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 
@@ -7710,6 +8649,7 @@ installEntryRouteHost({
   onCacheEpochObserved,
   ensureGeneration: (ref) => ensureGenerations.get(ref),
   createRepository: createEntryTranscriptRepository,
+  reconcileRecordedRange: (ref) => threadsStore.getState().reconcileRecordedRange(ref),
 });
 
 function onCacheEpochObserved(observed: number): void {
@@ -8118,6 +9058,7 @@ export function resetThreadsStoreForTests(): void {
   activeStops.clear();
   shutdownDispatchGates.clear();
   inFlightResumes.clear();
+  pressJoinedResumes.clear();
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
@@ -8144,6 +9085,8 @@ export function resetThreadsStoreForTests(): void {
   dispatchableMutationRefs.clear();
   for (const cancelRetry of transientRefusalCancels.values()) cancelRetry();
   transientRefusalCancels.clear();
+  for (const retry of resumeRetries.values()) retry.cancel?.();
+  resumeRetries.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   resetThreadOwnersForTests();

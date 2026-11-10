@@ -163,3 +163,19 @@ func TestClassifyStringerHasName(t *testing.T) {
 		t.Fatalf("ErrorClass strings = %q, want %q", got, want)
 	}
 }
+
+func TestErrorClassStringExhaustive(t *testing.T) {
+	tests := []struct {
+		class ErrorClass
+		want  string
+	}{
+		{ErrorClassRetryable, "retryable"},
+		{ErrorClassPermanent, "permanent"},
+		{ErrorClass(99), "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.class.String(); got != tt.want {
+			t.Errorf("ErrorClass(%d).String() = %q, want %q", int(tt.class), got, tt.want)
+		}
+	}
+}

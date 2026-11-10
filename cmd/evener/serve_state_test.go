@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -522,7 +524,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // TestRunServe_StreamErrorPublishesSystemErrorStatus proves the real serve
 // input loop publishes owning Session state after an exhausted streaming
 // failure: the session rests on a failed turn, so it reports systemError until
-// its next turn (agent RestingWireState). The wrapper observes the production
+// its next turn (agent restingWireState). The wrapper observes the production
 // processing start and finish while forwarding every state mutation to the
 // real AppWire server projection.
 func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
@@ -705,6 +707,13 @@ type clearTestState struct {
 	failPrepareFrom int
 	prepareCalls    int
 	failRendezvous  bool
+	// beforeClear runs after the old session is live and before thread/clear,
+	// for a test that must first move the session (enter a worktree lane).
+	beforeClear func(*agent.Session)
+	// clearDispatch sends thread/clear through the server's real RPC handler
+	// instead of calling the installed callback directly, so the mutation gate
+	// is held exactly as it is in production.
+	clearDispatch bool
 
 	srv *clearIdentityServer
 }
@@ -842,8 +851,8 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		}
 		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
-	updateSessionID := deps.updateSessionID
-	deps.updateSessionID = func(reg *rvreg.Registration, id string) error {
+	updateIdentity := deps.updateIdentity
+	deps.updateIdentity = func(reg *rvreg.Registration, id, workingDir string) error {
 		state.record("rendezvous")
 		state.mu.Lock()
 		fail := state.failRendezvous
@@ -851,14 +860,14 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		if fail {
 			return errClearProbe
 		}
-		return updateSessionID(reg, id)
+		return updateIdentity(reg, id, workingDir)
 	}
 	args := []string{
 		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
-		"--dir", resolvedTempDir(t),
-		"--state-dir", resolvedTempDir(t),
-		"--run-dir", resolvedTempDir(t),
+		"--dir", testfs.CanonicalTempDir(t),
+		"--state-dir", testfs.CanonicalTempDir(t),
+		"--run-dir", testfs.CanonicalTempDir(t),
 	}
 	return deps, state, args
 }
@@ -904,13 +913,28 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		if err := writer.Close(); err != nil {
 			t.Fatalf("close the old transcript writer: %v", err)
 		}
+		if state.beforeClear != nil {
+			state.beforeClear(oldSess)
+		}
 
 		before := len(state.recorded())
-		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+		clearParams := appwire.ThreadClearParams{
 			Ref:                "local:" + obs.oldSessionID,
 			ClientMutationID:   "clear-test",
 			ExpectedInstanceID: obs.oldSessionID,
-		})
+		}
+		if state.clearDispatch {
+			raw, err := json.Marshal(clearParams)
+			if err != nil {
+				t.Fatalf("marshal clear params: %v", err)
+			}
+			_, obs.clearErr = state.srv.AppServer().Router().Dispatch(context.Background(), appwire.Request{
+				Method: appwire.MethodThreadClear,
+				Params: raw,
+			})
+		} else {
+			obs.clearErr = state.srv.clear(context.Background(), clearParams)
+		}
 		obs.steps = state.recorded()[before:]
 
 		if state.srv.envelopeSource != nil {

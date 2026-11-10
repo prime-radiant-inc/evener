@@ -12,7 +12,7 @@ import (
 
 var (
 	manifestStat          = os.Stat
-	manifestReadFile      = os.ReadFile
+	manifestReadFile      = readMetadataFile
 	manifestMarshal       = json.Marshal
 	manifestMarshalIndent = json.MarshalIndent
 	manifestMkdirAll      = os.MkdirAll
@@ -162,6 +162,8 @@ func detectNPMBinServer(dir, pluginName string) (servers json.RawMessage, note s
 	}
 
 	rel := filepath.Clean(filepath.FromSlash(binPath))
+	// The absolute check stays separate: pathUnder joins two paths it is given,
+	// and here the question is whether the recorded bin path escapes at all.
 	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Sprintf("plugin %q: package.json bin %q points outside the plugin directory; not wiring an MCP server", pluginName, binPath)
 	}

@@ -122,7 +122,7 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	jobID := startBackgroundShellJob(t, s, "sleep 300")
+	jobID := startBackgroundShellJob(t, s, idleShellCommand)
 	t.Cleanup(func() {
 		_, _ = s.jobManager.stop(jobID)
 		waitForShellDone(t, s.jobManager, jobID)

@@ -1,12 +1,11 @@
 import type { AnyNotification, ThreadReadResponse } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
@@ -21,39 +20,25 @@ import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { RECOVERY_HINT_DELAY_MS } from "./Session";
+import { installMobileViewport } from "./testing/mobileViewport";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
-import { readResponse, setNavigationTitle, turnFixture, versionedReadResponse } from "./sessionTestUtils";
+import { ALL_CAPABILITIES } from "../../threadTestUtils";
+import {
+  readResponse,
+  seedPendingSend,
+  setNavigationTitle,
+  stubSessionSlots,
+  turnFixture,
+  versionedReadResponse,
+} from "./sessionTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -162,6 +147,31 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   expect(screen.getByRole("status")).toBeTruthy();
   expect(emptyStateReasons(document.body)).toEqual([]);
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
+});
+
+test("a loading session shows a skeleton, delays its recovery affordance, and has no presentation footer", async () => {
+  vi.useFakeTimers();
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => new Promise<ThreadReadResponse>(() => {}));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await flushUntil(() => fake.calls.some((c) => c.method === "thread/read"));
+  expect(screen.getByTestId("session-loading-skeleton")).toBeTruthy();
+  expect(screen.queryByTestId("session-loading-recovery")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Verbosity" })).toBeNull();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECOVERY_HINT_DELAY_MS);
+  });
+  expect(screen.getByTestId("session-loading-recovery")).toBeTruthy();
 });
 
 // #4343's client-visible half: a daemonless read whose transcript index is
@@ -494,21 +504,6 @@ test("a session that has never run invites the first message", async () => {
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
 });
 
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
-
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
@@ -524,7 +519,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
   let clientMutationId = "";
   await act(async () => {
-    clientMutationId = await seedPendingSend("ref_a", { attempted: true });
+    clientMutationId = await seedPendingSend(mutationStorage, "ref_a", { attempted: true });
   });
   expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
@@ -618,7 +613,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
-  const clientMutationId = await act(async () => seedPendingSend());
+  const clientMutationId = await act(async () => seedPendingSend(mutationStorage));
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
   act(() => {
@@ -703,7 +698,7 @@ test("cold-start skeleton clears when the first turn terminates without an autho
     </ClientProvider>,
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-  await act(async () => seedPendingSend());
+  await act(async () => seedPendingSend(mutationStorage));
 
   act(() => {
     fake.emitNotification({
@@ -744,7 +739,7 @@ test("an explicitly rejected first send leaves cold-start state for durable reco
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
-  const clientMutationId = await act(async () => seedPendingSend());
+  const clientMutationId = await act(async () => seedPendingSend(mutationStorage));
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
   await act(async () => {
@@ -767,7 +762,7 @@ test.each(["failed", "error", "cancelled"])(
       </ClientProvider>,
     );
     await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-    await act(async () => seedPendingSend());
+    await act(async () => seedPendingSend(mutationStorage));
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
     act(() => {
@@ -800,7 +795,7 @@ test.each(["closed", "systemError"] as const)(
       </ClientProvider>,
     );
     await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-    await act(async () => seedPendingSend());
+    await act(async () => seedPendingSend(mutationStorage));
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
     act(() => {
@@ -838,7 +833,7 @@ test("a later turn never gets the first-turn skeleton", async () => {
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByText("earlier")).toBeTruthy());
-  await act(async () => seedPendingSend());
+  await act(async () => seedPendingSend(mutationStorage));
 
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(screen.getByTestId("turn-block")).toBeTruthy();
@@ -854,7 +849,7 @@ test("cold-start skeleton is scoped to the session ref and disappears on session
     </ClientProvider>,
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-  await act(async () => seedPendingSend("ref_a"));
+  await act(async () => seedPendingSend(mutationStorage, "ref_a"));
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   view.rerender(
@@ -946,4 +941,48 @@ test("a first-ever visit shows no divider, and unmounting stores the last turn a
   expect(screen.queryByTestId("seen-divider")).toBeNull();
   unmount();
   expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
+});
+
+// A phone share link to a notLoaded remote session with no send surface has
+// no composer (the conversation lifetime never starts, so no card and no
+// menu of its own), no status bar (the phone layout keeps one bottom
+// surface, the composer's own row), and no rail (a single-pane phone hides
+// it), so the fallback session menu is the only remaining way into Overview
+// and About - the desktop's status bar still carries one there.
+test("a phone keeps a session menu for a notLoaded remote share with no send surface", async ({ onTestFinished }) => {
+  // This suite stubs SessionChrome for its placement pins; the fallback
+  // menu's own behavior needs the real chrome back for this test.
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  onTestFinished(() => {
+    stubSessionSlots();
+  });
+  const restoreViewport = installMobileViewport();
+  onTestFinished(restoreViewport);
+  const ref = "remote-share";
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: { ref, capabilities: { ...ALL_CAPABILITIES, send: false }, queue: { revision: 0 } },
+    }),
+  );
+  fake.on("evener/thread/activity/read", answerActivityRead);
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await flushPendingTurnsProjectionForTests();
+
+  // No composer card, no composer menu: the fallback menu is the phone's
+  // only session surface, and its Overview item opens the shared sidebar.
+  expect(screen.queryByTestId("composer-form")).toBeNull();
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
+  // The bare pane render has no app shell to host the shared sidebar; the
+  // menu's Overview request is the contract, and it lands in the store the
+  // shell's sidebar follows.
+  await waitFor(() => expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote-share" }));
 });

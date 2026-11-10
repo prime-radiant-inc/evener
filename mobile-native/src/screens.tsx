@@ -29,12 +29,14 @@ import {
 	Platform,
 	Pressable,
 	ScrollView,
+	type ScrollViewInstance,
 	Text,
-	TextInput,
+	type TextInputInstance,
 	View,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useDetailPaneWidth } from "./duo/paneWidth";
 import {
 	type AskBatch,
 	type AskQuestionRef,
@@ -123,6 +125,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
+import { VoiceControls } from "./voice/VoiceControls";
+import { useVoiceClient } from "./voice/voiceContext";
 import { canonicalFailureAction, type ErrorAction, errorAction } from "./session/errorAction";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
@@ -310,8 +314,9 @@ export type Routes = {
 		hubId: string;
 		sessionRef: string;
 		path: string;
-		/** Set for a document the session filed in its retained artifacts. */
-		root?: "artifacts";
+		/** Set for a document the session filed in a retained root
+		 * (artifacts, scratch). */
+		root?: "artifacts" | "scratch";
 		blockIndex: number;
 		blockHash: string;
 		/** The words the comment is on: a selection, or its block's words. */
@@ -340,7 +345,7 @@ type ReviewSheetParams = {
 	sessionRef: string;
 	path: string;
 	sessionTitle: string;
-	root?: "artifacts";
+	root?: "artifacts" | "scratch";
 	readTarget?: string;
 };
 
@@ -357,7 +362,7 @@ type ReviewSheetParams = {
 export function useFocusAfterModal(
 	navigation: { isFocused: () => boolean },
 	focusAfterModal: RefObject<boolean>,
-	composerInput: RefObject<TextInput | null>,
+	composerInput: RefObject<TextInputInstance | null>,
 ): void {
 	useEffect(() => {
 		if (Platform.OS !== "android") return;
@@ -424,9 +429,11 @@ function ConversationScreenView({
 	attachment: NativeConversationAttachment;
 }) {
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
+	const voiceClient = useVoiceClient();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
+	const detailPaneWidth = useDetailPaneWidth();
 	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
@@ -525,7 +532,7 @@ function ConversationScreenView({
 	}
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
-	const composerInput = useRef<TextInput>(null);
+	const composerInput = useRef<TextInputInstance>(null);
 	// The composer field's focus, for what steps aside while you type in it
 	// (useComposerTyping); the find bar's or a sheet's field raising the
 	// keyboard isn't typing in it.
@@ -994,7 +1001,7 @@ function ConversationScreenView({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new bar height re-pins.
 	useLayoutEffect(() => {
 		if (follow.state.current.following)
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: false });
 	}, [barHeight]);
 	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
@@ -1392,6 +1399,7 @@ function ConversationScreenView({
 	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
 	const artifactsDir = conversation?.artifactsDir;
+	const scratchDir = conversation?.scratchDir;
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
@@ -1415,9 +1423,9 @@ function ConversationScreenView({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, artifactsDir, openFile }
+				? { cwd: documentCwd, artifactsDir, scratchDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, scratchDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {
@@ -1486,7 +1494,7 @@ function ConversationScreenView({
 	// opening once the last row has measured (until then the cell's own layout
 	// lands it).
 	function pinOpeningToEnd() {
-		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+		(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
 	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
@@ -2281,6 +2289,8 @@ function ConversationScreenView({
 	// already on its way, "notKept" when the phone couldn't keep it to send (the
 	// store reports why), "notStopped" when nothing was tried.
 	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		const voiceTarget = voiceClient?.getTarget();
+		if (voiceTarget?.hub.id === route.params.hubId && voiceTarget.ref === route.params.ref) voiceClient?.stopSpeaking();
 		if (stopBusy.current) return "stopping";
 		if (!service || !connectionReady.current || store.getState().pendingSubmission !== null) return "notStopped";
 		stopBusy.current = true;
@@ -2311,7 +2321,7 @@ function ConversationScreenView({
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
-		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: true });
+		(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: true });
 	}
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
@@ -3454,6 +3464,7 @@ function ConversationScreenView({
 							sourceTurns={conversation?.turns}
 							activityPresentation={presentation.activityPresentation.get(item.id)}
 							expandByDefault={presentation.expandByDefault}
+							thinkingOpenByDefault={presentation.thinkingOpenByDefault}
 							showDuration={presentation.showDuration}
 							fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
 							forkDisabled={!connected || !focused || snapshot.status !== "open"}
@@ -3521,7 +3532,10 @@ function ConversationScreenView({
 	);
 
 	return (
-		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={[styles.fill, { backgroundColor: colors.background }]}
+		>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
@@ -3555,7 +3569,9 @@ function ConversationScreenView({
 									// The viewport changed (the keyboard, a dock): while following,
 									// the end stays in view.
 									if (follow.state.current.following)
-										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+										(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({
+											animated: false,
+										});
 								}}
 								data={listRows}
 								// Cells re-render only for a new renderItem or new rows, and
@@ -3596,7 +3612,9 @@ function ConversationScreenView({
 									readerContentHeight.current = height;
 									restoreAfterLayout();
 									if (follow.state.current.following)
-										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+										(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({
+											animated: false,
+										});
 								}}
 								scrollEventThrottle={100}
 								onScroll={(event) => {
@@ -3839,6 +3857,26 @@ function ConversationScreenView({
 						}}
 						onLayout={bottomBar.onLayout}
 					>
+						{activeProfile && conversation ? (
+							<VoiceControls
+								target={{
+									hub: activeProfile,
+									ref: route.params.ref,
+									instanceId: conversation.instanceId ?? "",
+									manager: conversation.manager === true,
+									voiceAvailable:
+										client?.initializeResult?.features != null &&
+										"voice" in client.initializeResult.features &&
+										client.initializeResult.features.voice === true,
+									// A hub that stamps voiceArm says which sessions can arm;
+									// an older hub keeps the earlier behavior.
+									armable:
+										client?.initializeResult?.features?.voiceArmV1 === true
+											? conversation.capabilities?.voiceArm === true
+											: true,
+								}}
+							/>
+						) : null}
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}

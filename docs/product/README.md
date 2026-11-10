@@ -11,8 +11,20 @@ changes; keep implementation history in Git and pull requests.
 - [Product principles](principles.md): the experience changes should produce.
 - [Subsystem map](subsystems.md): responsibilities, sources of truth, entry
   points, dependencies, and recovery ownership across the product.
+- [Lifecycles](lifecycles.md): the declared state machine for sessions, turns,
+  jobs, delegates, watches, tasks, goals, host operations and client mutations,
+  with owners, legal transitions and client classes.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [Manager workflow](../automation.md#manager-sessions): an immutable session
+  start parameter for anyone authorized to start a session. Managers discover,
+  observe and act on sessions reachable through their own hub, with local and
+  remote watches and worker creation on any reachable host (local by default).
+  The daemon owns status;
+  web and native show a read-only indication. Ownership stays in the existing session, hub, input,
+  history and watch subsystems.
+- [Voice conversations](voice.md): native capture and playback, scoped hub
+  bindings, durable spoken input and provenance-fenced manager speech.
 - [Session pulse meter](pulse-meter.md): the hub's live per-session activity
   read behind the Board meter, quiet time and newest root tool intent.
 - [Remote session actions](remote-sessions.md): the effective capability a
@@ -23,8 +35,6 @@ changes; keep implementation history in Git and pull requests.
 - [Device pairing protocol](../device-pairing.md): self-hosted invitations, device comparison, encrypted credential delivery, QR and acoustic wire formats.
 - [Playdate client](playdate-client.md): direct session browsing, chat transcripts,
   voice review, acoustic setup, native enrollment and device-owned draft recovery.
-- [Comic Chat](comic-chat.md): literal comic-panel conversations, thought bubbles,
-  inline subagent readers and shared composer recovery, selected in Verbosity.
 - [Memory](memory.md): host-owned personal/project files, lower-trust indexes,
   scoped tools, gardening, recovery and per-session opt-out.
 - [Friction punchlist](friction.md): open, evidence-backed gaps, with unresolved

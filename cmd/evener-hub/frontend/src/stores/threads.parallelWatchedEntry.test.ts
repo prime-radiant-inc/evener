@@ -1,7 +1,7 @@
-import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import type { AnyNotification, ThreadReadResponse, ThreadSubscriptionLease } from "@evener/appwire-client";
-import { acquireThreadSubscription, RequestTimeoutError, WireError } from "@evener/appwire-client";
+import type { AnyNotification, ThreadReadResponse } from "@evener/appwire-client";
+import { olderHistoryExhausted, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -21,20 +21,21 @@ import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
+  emitAtResponseCut,
+  establishedMemberships,
+  establishMembership,
+  markResponseCut,
+  readResponse,
+  runScheduledHydrationRetry,
+  type ScheduledHydrationRetry,
+  scheduledHydrationRetries,
+} from "./threadHydrationTestUtils";
+import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   threadsStore,
 } from "./threads";
-
-const establishedMemberships: ThreadSubscriptionLease[] = [];
-async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
-  fake.on("thread/read", () => readResponse(ref));
-  const lease = acquireThreadSubscription(fake, ref);
-  establishedMemberships.push(lease);
-  await lease.ensure();
-  fake.calls.length = 0;
-}
 
 // flushUntil drains microtask turns until `done()` reports true (or a bounded
 // number of turns elapse, so a genuine hang fails fast instead of silently).
@@ -45,10 +46,6 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 }
 
 const settleCallerContinuations = nextMacrotask;
-
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
 
 // Like readResponse, but stamped with the same live-history identity
 // ("1"/epoch 1/"inc-1") this file's history/updated fixtures carry, so a
@@ -67,28 +64,6 @@ function versionedReadResponse(
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: snapshotLength },
   };
-}
-
-function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
-  return {
-    ...response,
-    get olderCursor(): string | undefined {
-      cut.reached = true;
-      return response.olderCursor;
-    },
-  };
-}
-
-async function emitAtResponseCut(
-  cut: { reached: boolean },
-  ref: string,
-  emit: () => void,
-  published: () => boolean = () => threadsStore.getState().threads.has(ref),
-): Promise<void> {
-  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
-  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
-  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
-  emit();
 }
 
 function sameEpochReconnectFixture() {
@@ -140,27 +115,7 @@ function sameEpochReconnectFixture() {
   return { authoritativeSnapshot, completion, turnCompleted };
 }
 
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-interface ScheduledHydrationRetry {
-  attempt: number;
-  retry: () => void;
-  cancelled: boolean;
-}
-
-let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
-
-// runScheduledHydrationRetry invokes exactly one scheduled retry, proving first
-// that it exists and was not cancelled - a cancelled entry that still fires
-// would make every "release/swap cancels the retry" assertion below vacuous.
-function runScheduledHydrationRetry(index = 0): void {
-  const scheduled = scheduledHydrationRetries[index];
-  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
-  expect(scheduled?.cancelled).toBe(false);
-  scheduled?.retry();
-}
 
 let cache: SessionEntryCache;
 let mutations: MutationOutboxIndexedDB;
@@ -175,7 +130,7 @@ beforeEach(() => {
   mutations = new MutationOutboxIndexedDB({ indexedDB, databaseName: "parallel-watched-mutations" });
   setProductionEntryCacheForTests(cache);
   setMutationStorageForTests(mutations);
-  scheduledHydrationRetries = [];
+  scheduledHydrationRetries.length = 0;
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
     scheduledHydrationRetries.push(scheduled);
@@ -507,6 +462,12 @@ describe("useThreadsStore.watchThread", () => {
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
     expect(model?.threadId).toBe("thr_ref_a");
+    // The hub omits OlderCursor and Snapshot for includeTurns:false, so this
+    // read never asked for history: its missing cursor is unknown, not a
+    // source-named end of older history.
+    expect(model?.olderCursor).toBeUndefined();
+    expect(model?.olderFrontier).toBe("unknown");
+    expect(olderHistoryExhausted(model!)).toBe(false);
 
     fake.emitNotification({
       method: "thread/status/changed",

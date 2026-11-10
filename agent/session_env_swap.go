@@ -129,7 +129,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(refreshCtx, next, newWD); inRepo {
+		inRepo, branch, mod, untracked, commits, statusKnown, probeFailed := snapshotGit(refreshCtx, next, newWD)
+		ei.GitSnapshotFailed = probeFailed
+		if inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
@@ -182,7 +184,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// still mint a scratch on it, so the close has to keep a reference.
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
-	promptWarning := s.refreshSystemPromptCache(next)
+	promptWarning, _ := s.refreshSystemPromptCache(next)
 	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
 	s.emit(events.EnvironmentChangedData{WorkingDir: installedWorkingDir})

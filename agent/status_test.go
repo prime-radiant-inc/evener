@@ -233,7 +233,7 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			if tt.owed {
 				release = make(chan struct{})
 				launchObserved = make(chan error, 1)
-				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+				fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 					events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 					if err == nil {
 						falseIndex, runIndex := -1, -1
@@ -252,7 +252,7 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 					launchObserved <- err
 					<-release
 					return agenttest.CommunicateResponse(true, "owed attention restored")
-				}}
+				}})
 			}
 			restored, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 			if err != nil {
@@ -308,10 +308,7 @@ func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -351,14 +348,11 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Register a custom tool after session init.
-	sess.RegisterTool("my_custom_tool", "A custom tool", map[string]any{
+	sess.registerTool("my_custom_tool", "A custom tool", map[string]any{
 		"type": "object", "properties": map[string]any{},
 	}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
@@ -401,10 +395,7 @@ description: A test skill
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -483,10 +474,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -572,10 +560,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	exitCode := 7
@@ -646,10 +631,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	base := time.Now().UTC()
@@ -733,10 +715,7 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()

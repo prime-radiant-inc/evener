@@ -57,18 +57,28 @@ func auditPluginContent(dir string) error {
 }
 
 func symlinkReachesGit(root, path string) (bool, error) {
-	target, err := os.Readlink(path)
+	target, err := readLinkTarget(path)
 	if err != nil {
 		return false, err
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(path), target)
 	}
 	if targetTouchesGit(root, target) {
 		return true, nil
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	return err == nil && targetTouchesGit(resolvedOrSelf(root), resolved), nil
+}
+
+// readLinkTarget returns the path a symlink names, resolved against the
+// link's own directory but not through any further links.
+func readLinkTarget(path string) (string, error) {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return target, nil
 }
 
 func resolvedOrSelf(path string) string {
@@ -85,7 +95,7 @@ func resolvedOrSelf(path string) string {
 func targetTouchesGit(sourceRoot, target string) bool {
 	root := filepath.Clean(sourceRoot)
 	target = filepath.Clean(target)
-	if rel, err := filepath.Rel(root, target); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel, under := pathUnder(root, target); under {
 		return hasGitComponent(rel)
 	}
 	rootParts := pathComponents(root)
@@ -226,12 +236,25 @@ func copyEntryExact(src, dst string) error {
 	}
 }
 
+// errNotRegular reports a path that is no longer the regular file the caller's
+// earlier metadata check saw.
+var errNotRegular = errors.New("not a regular file")
+
+// copyRegularFile copies one file's bytes and permissions. The source is opened
+// through openRegularNoBlock, so a FIFO substituted for the regular file the
+// caller checked fails the copy instead of blocking on its open (#4847).
 func copyRegularFile(src, dst string, flags int, mode fs.FileMode) error {
-	in, err := os.Open(src)
+	in, err := openRegularNoBlock(src)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
+	return copyOpenedFile(in, dst, flags, mode)
+}
+
+// copyOpenedFile copies the bytes an already-open descriptor holds, so a
+// caller that verified the descriptor copies the identity it checked.
+func copyOpenedFile(in *os.File, dst string, flags int, mode fs.FileMode) error {
 	out, err := os.OpenFile(dst, flags, mode)
 	if err != nil {
 		return err

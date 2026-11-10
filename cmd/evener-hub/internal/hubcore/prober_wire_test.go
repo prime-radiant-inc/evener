@@ -139,14 +139,14 @@ func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int
 	return 0, nil, 0
 }
 func (s wireProbeEnvelopeSource) FailedToolCalls() (int, bool) { return 0, false }
-func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+func (s wireProbeEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
 	if s.question != nil {
-		return s.question
+		return s.question, nil
 	}
 	if s.askPending {
-		return &appwire.PendingQuestion{Count: 1}
+		return &appwire.PendingQuestion{Count: 1}, nil
 	}
-	return nil
+	return nil, nil
 }
 func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
@@ -259,7 +259,7 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 // snapshot cut as the status and the diagnostics the probe carries.
 func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 	// Wire the production seam set so the daemon's idle answer is the
-	// production shape: every capability but fork is true at idle.
+	// production shape, including its explicit voice support advertisement.
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "th_wire_caps",
 		state:     appwire.ThreadStatusIdle,
@@ -273,10 +273,12 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
 	}
 	want := appwire.ThreadCapabilities{
-		Send: true, Steer: true, Interrupt: true, Queue: true,
+		AskFence:                   true,
+		VoicePresentationContextV1: true,
+		Send:                       true, Steer: true, Interrupt: true, Queue: true,
 		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
 		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
-		SkillInput: true, CommandInput: true, StopSubagent: true, // ForkFromTurn stays the daemon's hardwired false.
+		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true, // ForkFromTurn stays the daemon's hardwired false.
 	}
 	if got.Capabilities != want {
 		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)

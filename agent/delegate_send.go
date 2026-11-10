@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -86,7 +87,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 	for ok {
 		if !channelClosed(finalizing.released) {
 			if expired {
-				return nil, errDelegateTargetBusy
+				return nil, finalizationOutwaited()
 			}
 			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
 				observe()
@@ -101,7 +102,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 				// The ceiling covers the whole attempt: it fires once.
 				expired = true
 				if !channelClosed(finalizing.released) {
-					return nil, errDelegateTargetBusy
+					return nil, finalizationOutwaited()
 				}
 			}
 		}
@@ -109,6 +110,24 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 		finalizing, ok = errors.AsType[delegateFinalizingError](err)
 	}
 	return reservation, err
+}
+
+// withBusyReason gives a target_busy refusal that reached the send without a
+// reason (a race after the reservation, in CommitStart or AttachRuntime) the
+// concurrent_send reason. Any other error, and a busy error that already
+// carries a reason, is returned as is.
+func withBusyReason(err error) error {
+	if !errors.Is(err, errDelegateTargetBusy) {
+		return err
+	}
+	if _, typed := errors.AsType[delegateBusyError](err); typed {
+		return err
+	}
+	return busyBecause(delegateBusyConcurrentSend)
+}
+
+func finalizationOutwaited() error {
+	return busyBecause(delegateBusyFinalizing)
 }
 
 // channelClosed reports whether ch is closed, without blocking. A nil channel
@@ -122,16 +141,6 @@ func channelClosed(ch <-chan struct{}) bool {
 	}
 }
 
-// finishUnlaunchedGeneration fails a generation whose input was admitted but
-// whose run never launched (launch_failed). No run finalizes its runtime, so
-// the caller must release it (releaseFinishedGeneration) once the returned
-// plans (which carry the generation's idle snapshot and result) have been
-// executed, whether or not that failed, or the delegate stays refused as
-// still finalizing.
-func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
-	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
-}
-
 // releaseFinishedGeneration releases runtime's finished generation so the
 // delegate takes its next start, warning if the report fails.
 func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
@@ -143,7 +152,7 @@ func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Sessio
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) delegateSendOutcome {
 	s := runtime.owner
 	failed := func(err error) delegateSendOutcome {
-		return delegateSendOutcome{result: sendMessageFailed(delegateID, err)}
+		return delegateSendOutcome{result: sendMessageFailed(delegateID, withBusyReason(err))}
 	}
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))
@@ -211,12 +220,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if committedChildID != "" {
 		if !s.claimChildCommittedSendStart(committedChildID) {
 			_ = s.delegateController.AbortStart(reservation)
-			return failed(errDelegateTargetBusy)
+			return failed(busyBecause(delegateBusyConcurrentSend))
 		}
 		committedClaimHeld = true
 	}
 	defer func() {
 		if committedClaimHeld {
+			if observer := s.cfg.testOnly.delegateSendRollbackBeforeRedrive; observer != nil {
+				observer(committedChildID)
+			}
 			s.releaseChildCommittedSendStart(committedChildID)
 			// The claim refused every drive for the claimed child that landed
 			// while it was held -- a child notification arriving mid-window runs
@@ -257,7 +269,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if resident := s.subagents.get(committedChildID); resident != nil && resident.sess != nil {
 			if !s.takeSendDriveGuard(resident) {
 				_ = s.delegateController.AbortStart(reservation)
-				return failed(errDelegateTargetBusy)
+				return failed(busyBecause(delegateBusyConcurrentSend))
 			}
 			guarded = resident
 		}
@@ -339,7 +351,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
-			cause := errDelegateTargetBusy
+			cause := busyBecause(delegateBusyConcurrentSend)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
 				finishRestore(sub, nil)
 			})
@@ -381,13 +393,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
-	if err := s.executeDelegateMutationPlans(plans); err != nil {
-		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
-		// The release runs once the failure is announced, whatever that did.
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
-			s.releaseFinishedGeneration(started.lease, sub.sess)
-		})
+	// The start is committed and its input durable. Publish the snapshots
+	// and replay the owed deliveries as best effort: an acknowledgment failure
+	// there is not the start's failure and must not latch finalization recovery
+	// or leave an unlaunched runner. The failure path requeues the parcels; a
+	// covering stop still repairs any receipt left behind.
+	if execErr := s.executeDelegateMutationPlans(plans); execErr != nil {
+		s.emit(warningDataFromErrorCode(events.WarningCodeDelegateStartDeliveryReplay, "delegate start delivery replay failed", execErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
@@ -490,11 +502,12 @@ func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.
 		}
 		if metadata.Worktree != nil {
 			result.Worktree = &delegateWorktreeReport{
-				Path:    metadata.Worktree.Path,
-				Branch:  metadata.Worktree.Branch,
-				HeadSHA: metadata.Worktree.HeadSHA,
-				Ahead:   metadata.Worktree.Ahead,
-				Dirty:   metadata.Worktree.Dirty,
+				Path:         metadata.Worktree.Path,
+				Branch:       metadata.Worktree.Branch,
+				HeadSHA:      metadata.Worktree.HeadSHA,
+				Ahead:        metadata.Worktree.Ahead,
+				Dirty:        metadata.Worktree.Dirty,
+				DisposalHint: metadata.Worktree.DisposalHint,
 			}
 		}
 	}

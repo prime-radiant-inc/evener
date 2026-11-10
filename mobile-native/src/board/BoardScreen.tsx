@@ -29,9 +29,10 @@ import {
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
-	ScrollView,
+	type ScrollViewInstance,
 	Text,
 	TextInput,
+	type TextInputInstance,
 	useWindowDimensions,
 	View,
 } from "react-native";
@@ -138,7 +139,14 @@ import { confirmShutDown } from "../session/confirmShutDown";
 import { Button } from "../sheet/Grouped";
 import { CATEGORY_NAME_MAX_CODE_POINTS } from "../navigationActionRepository";
 
-type Props = NativeStackScreenProps<Routes, "Sessions">;
+type Props = NativeStackScreenProps<Routes, "Sessions"> & {
+	/** The Board is the left pane of the Duo split: it draws its own header and
+	 * reports an opened conversation to the split instead of the root stack. */
+	duoEmbedded?: boolean;
+	/** The split pane's width, for the inline header's hub button. */
+	duoWidth?: number;
+	onOpenConversation?: (params: Routes["Conversation"]) => void;
+};
 type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
@@ -154,7 +162,7 @@ type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
-export function BoardScreen({ navigation, route }: Props) {
+export function BoardScreen({ navigation, route, duoEmbedded, duoWidth, onOpenConversation }: Props) {
 	const { activeProfile } = useConnection();
 	const { palette } = useColors();
 	if (!activeProfile) return <View style={{ flex: 1, backgroundColor: palette.page }} />;
@@ -165,6 +173,9 @@ export function BoardScreen({ navigation, route }: Props) {
 			hubName={activeProfile.name}
 			navigation={navigation}
 			routeKey={route.key}
+			duoEmbedded={duoEmbedded}
+			duoWidth={duoWidth}
+			onOpenConversation={onOpenConversation}
 		/>
 	);
 }
@@ -174,11 +185,17 @@ function Board({
 	hubName,
 	navigation,
 	routeKey,
+	duoEmbedded,
+	duoWidth,
+	onOpenConversation,
 }: {
 	hubId: string;
 	hubName: string;
 	navigation: Navigation;
 	routeKey: string;
+	duoEmbedded?: boolean;
+	duoWidth?: number;
+	onOpenConversation?: (params: Routes["Conversation"]) => void;
 }) {
 	const { client, state, fatal, error, activeProfile } = useConnection();
 	const { palette } = useColors();
@@ -208,9 +225,12 @@ function Board({
 	// The floating compose button's room over the Board's end, from the home
 	// indicator it clears. The Board is inset and padded by it, and the toast
 	// floats above it.
-	const { bottom: bottomInset } = useSafeAreaInsets();
+	const { bottom: bottomInset, left: leftInset, right: rightInset } = useSafeAreaInsets();
 	const composeRoom = composeButtonRoom(bottomInset);
 	const boardUnderBar = underBar(composeRoom);
+	// The split's left pane ends at the divider, not the screen's right safe
+	// area, so only a full-screen Board insets against that edge.
+	const paneRightInset = duoEmbedded ? 0 : rightInset;
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -372,13 +392,13 @@ function Board({
 		setIdleFolded(folded);
 	};
 
-	const scroller = useRef<ScrollView>(null);
+	const scroller = useRef<ScrollViewInstance>(null);
 	// Where the device has Liquid Glass, one glass spans the nav bar and the
 	// chips under it (spec 16.3), and the Board scrolls under both: its
 	// content is inset by them (underGlass), and every scroll it makes itself
 	// lands clear of them. Until the glass has measured, that's the bar alone.
 	const headerHeight = useHeaderHeight();
-	const navGlass = useSystemGlass();
+	const navGlass = useSystemGlass() && !duoEmbedded;
 	const [headerPanel, setHeaderPanel] = useState({ height: 0, onGlass: false });
 	const underGlass = navGlass ? reservedUnderGlass(headerHeight, headerPanel, true) : 0;
 	// Search is bound only while the Board is in view (the plugin poll's
@@ -401,7 +421,7 @@ function Board({
 	} = useBoardSearch(hubId, connected && inFront ? client : null);
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 	const reduceMotion = useReduceMotion();
-	const { height: windowHeight } = useWindowDimensions();
+	const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
@@ -409,9 +429,13 @@ function Board({
 	};
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
+	const openConversationRoute = (params: Routes["Conversation"]) => {
+		if (onOpenConversation) onOpenConversation(params);
+		else navigation.navigate("Conversation", params);
+	};
 	const openSession = (row: NavigationSessionSummary) => {
 		seen.markRead(actionsClient, [row], lastMovedAt);
-		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
+		openConversationRoute({ hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
 	// marked seen the same way. Any other session marks itself seen when its
@@ -420,7 +444,7 @@ function Board({
 		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
-		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
+		else openConversationRoute({ hubId, ref: result.ref, title: result.title });
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -788,7 +812,7 @@ function Board({
 		scrollBoardTo(0);
 		searchInput.current?.focus?.();
 	}, [scrollBoardTo]);
-	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page);
+	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page, !duoEmbedded);
 	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
 	// sheets are part of it, ruling 28), or the app leaving the foreground.
 	useEffect(() => {
@@ -1131,6 +1155,14 @@ function Board({
 
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
+			{duoEmbedded ? (
+				<DuoBoardHeader
+					hubName={hubName}
+					width={duoWidth ?? windowWidth}
+					onOpenHub={() => navigation.navigate("Hub", { screen: "HubHome", params: { hubId } })}
+					onSearch={revealSearch}
+				/>
+			) : null}
 			{/* Fixed under the header; their sections aren't there while
 			    search results are. On the glass the Board runs under them, and
 			    the panel's zIndex raises it over the scroller. */}
@@ -1140,7 +1172,11 @@ function Board({
 				glassTop={navGlass ? headerHeight : undefined}
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
-				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+				{chips.length && !searching ? (
+					<View testID="board-chips" style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
+						<Chips chips={chips} onGlass={navGlass} />
+					</View>
+				) : null}
 			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
@@ -1156,6 +1192,8 @@ function Board({
 					// is tall enough to keep the field hidden.
 					contentContainerStyle={{
 						paddingBottom: 24 + boardUnderBar.endPadding,
+						paddingLeft: leftInset,
+						paddingRight: paneRightInset,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
 					// The Board runs under its compose button, its end and its
@@ -1241,14 +1279,14 @@ function Board({
 				<View
 					testID="board-toast"
 					pointerEvents="box-none"
-					style={{ position: "absolute", left: 0, right: 0, bottom: composeRoom + FLOAT_GAP }}
+					style={{ position: "absolute", left: leftInset, right: paneRightInset, bottom: composeRoom + FLOAT_GAP }}
 				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
 			{/* The compose button floats over the Board's end, so the Board runs
 			    under it; the toast slot sits above it. */}
-			<ComposeButton disabled={!connected} onPress={newSession} />
+			<ComposeButton disabled={!connected} onPress={newSession} rightInset={paneRightInset} />
 		</View>
 	);
 }
@@ -1449,7 +1487,7 @@ function SearchField({
 	onChangeText,
 	onCancel,
 }: {
-	inputRef: RefObject<TextInput | null>;
+	inputRef: RefObject<TextInputInstance | null>;
 	height: number;
 	text: string;
 	searching: boolean;
@@ -1637,9 +1675,11 @@ function useHeader(
 	revealSearch: () => void,
 	glass: boolean,
 	page: string,
+	enabled = true,
 ) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
+		if (!enabled) return;
 		const hubButton = (
 			<HubButton
 				hubName={hubName}
@@ -1669,5 +1709,53 @@ function useHeader(
 				/>
 			),
 		});
-	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
+	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page, enabled]);
+}
+
+/** The Board's header on the Duo's inner display: the root stack header is
+ * hidden there, so the hub and search controls live in the pane. */
+function DuoBoardHeader({
+	hubName,
+	width,
+	onOpenHub,
+	onSearch,
+}: {
+	hubName: string;
+	width: number;
+	onOpenHub: () => void;
+	onSearch: () => void;
+}) {
+	const { palette } = useColors();
+	const { top, left } = useSafeAreaInsets();
+	const scale = useTextScale();
+	return (
+		<View
+			testID="duo-board-header"
+			style={{
+				paddingTop: top,
+				paddingLeft: left,
+				minHeight: top + 44,
+				flexDirection: "row",
+				alignItems: "center",
+				justifyContent: "space-between",
+				backgroundColor: palette.page,
+			}}
+		>
+			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - left - 72)} />
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel="Search sessions"
+				onPress={onSearch}
+				style={({ pressed }) => ({
+					width: 44,
+					height: 44,
+					alignItems: "center",
+					justifyContent: "center",
+					opacity: pressed ? 0.6 : 1,
+				})}
+			>
+				<SymbolView name="magnifyingglass" size={19 * scale} tintColor={palette.accentInk} />
+			</Pressable>
+		</View>
+	);
 }

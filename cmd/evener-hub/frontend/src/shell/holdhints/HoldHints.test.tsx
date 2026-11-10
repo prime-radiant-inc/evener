@@ -31,7 +31,7 @@ import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../../stores/prefs";
 import { AppShell } from "../AppShell";
 import { paletteStore } from "../palette/paletteController";
-import { resetMobileViewportForTests } from "../useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { HoldHints } from "./HoldHints";
 import { HARD_TIMEOUT_MS, HOLD_THRESHOLD_MS, holdHintsStore, resetHoldHintsForTests } from "./holdHintsController";
@@ -44,7 +44,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

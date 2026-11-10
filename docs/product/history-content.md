@@ -74,6 +74,50 @@ construction and history fencing; after a stale cursor, a client refreshes the
 latest selected window without discarding unsent work. Source/index repair and
 transport recovery remain owned by their existing subsystems.
 
+## Manager bounded transcript reads
+
+Manager `read_transcript` hub reads add a compact, non-subscribing view over the
+same live and saved history owners. A request selects one turn window: latest,
+one exact turn, a bounded forward window since a turn, or a bounded backward
+window before a turn. Exact `itemTypes` filtering happens before the per-turn
+item cap; `messages` selects user messages, agent messages and human steering
+according to recorded source metadata. A window has one content filter: a
+request that names the coarse `messages` selection is translated into that
+exact `itemTypes` predicate, and any other coarse combination is refused typed.
+The legacy global selection never re-pages a window. Message and tool-output body bounds apply
+without removing item identity or lifecycle metadata.
+
+The existing history packer owns both ordinary and Manager views. Its Manager
+mode measures complete encoded fragments under the requested content budget,
+with a 16 KiB floor and headroom below the outer 256 KiB tool-result cap. It
+keeps at least one bounded fragment, trims only whole turns in the window's
+direction, and limits cursor-bearing item lines to ten. Each affected turn has
+one aggregate record separating items excluded by type, withheld by the item
+cap, truncated beyond that cursor limit and elided by the content budget. The
+record names whether to continue within the same view or re-read a wider view.
+
+Window and item cursors are hub-owned and bind the requested ref, source
+incarnation and projection. Window continuations retain the original selection
+and bounds. A settled truncated item can carry a version-fenced fetch cursor.
+Before measuring or truncating a Manager window, the hub applies its visible image
+and file-route enrichment once and retains that exact canonical item JSON in a
+bounded least-recently-used byte store. Fetch responses slice only those retained
+bytes and return base64 ranges plus another cursor until complete, regardless of
+whether the item came from a live daemon, saved index, compatibility read or
+remote source. The source is still re-read on each fetch to enforce reachability
+and version fences. Eviction or hub restart returns the typed stale result instead
+of reconstructing bytes from mutable files or routes. A remote item beyond the
+ordinary translated read's reach returns `fetch-unavailable-remote`.
+Older daemons receive only a legacy latest-page read: the hub applies the same
+packer, refuses other window forms with a typed upgrade path, and pages
+compatibility fetch recovery backward only when that daemon advertises
+`PageBefore`.
+
+A cursor mismatch refreshes the view. A changed reachable item reports its new
+version. A remote or compatibility item outside the bounded recovery path reports
+the named degradation instead of returning partial bytes. These recovery reads
+do not change the ordinary client subscription or its selected history view.
+
 ## Original transcript authors
 
 Optional `ThreadItem.authorship` records an original author and an `inherited`
@@ -136,28 +180,43 @@ unknown while preserving proven inheritance. Wrong-typed and unknown JSON
 fields retain the transcript decoder's existing strict outcomes. The transcript
 format marker is unchanged: older strict readers can reject records containing
 the new field, so downgrading a writer is not a promise of readable new history.
-This shared metadata does not change human-interaction permissions or complete
-the Comic client’s consumer and browser acceptance work.
+This shared metadata does not change human-interaction permissions.
 
 ## Summary failure diagnostics
 
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. Model selection, fallback eligibility, retry counts and warning
-visibility are unchanged; repeated failed compactions can still warn.
+model work. A locally rejected summarizer reply is one bad sample, not a route
+verdict. The conversation summary resamples such a reply — an empty reply, a
+reply with no summary section, an empty condensation batch — up to two more
+times on the route that produced it before the next route takes over, and a
+later sample that passes installs the summary without a warning. The
+session-log fork summary resamples a reply that does not parse as a JSON entry
+within the same budget before its error surfaces; the next completed tool
+round attempts the fork again. Cut-off replies (the model's own output limit)
+and deterministic failures get no resample, and a cancelled run resamples
+nothing. Model selection and fallback eligibility are unchanged; an automatic
+pass failing identically to the previously published failure warns once per
+streak, while explicit `/compact` and `compact_context` always report their
+outcome, and a completing summarize layer — including a no-op fold on a window
+too small to summarize — re-arms the warning.
 
 Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning
-message. Advice distinguishes a failed fast/cheap route from the session model,
+message, stating the terminal route's sample count once it exceeds one. Advice
+distinguishes a failed fast/cheap route from the session model,
 since changing the main model need not change an independently configured summary
 model. CLI, AppWire, browser, native and Notification hooks carry these
 existing message/title/hint fields without a new renderer or visibility policy.
 Predictive-checkpoint recovery retains its informational `context_budget` code.
 
-The runtime's typed `summary_failure` record separates the terminal route from
-prior failed routes. It includes controlled category, stage and validation reason
-values, validated HTTP status and retryability when known. Provider/model names
+The runtime's typed `summary_failure` record separates the terminal attempt
+from the last failed sample of each route that attempted the work (the
+terminal route's own earlier samples included), at most two. It includes
+controlled category, stage and validation reason
+values, validated HTTP status and retryability when known, and each attempt's
+route sample count. Provider/model names
 come from routing, are bounded to 256 bytes each and have control characters
 removed from display. A pre-selection failure has no invented model identity.
 Provider messages, response bodies, raw error codes, prompts, summaries, headers

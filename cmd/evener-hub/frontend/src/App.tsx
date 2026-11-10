@@ -1,4 +1,5 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
+import { syncThemeColor } from "./stores/prefs";
 
 const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
 
@@ -18,6 +19,11 @@ const SurfaceGallery = import.meta.env.DEV ? lazy(() => import("./dev/SurfaceGal
 // rendered from the real tokens so a ramp change is reviewed as a picture
 // rather than a diff - see dev/TypeSpecimen.tsx's own header.
 const TypeSpecimen = import.meta.env.DEV ? lazy(() => import("./dev/TypeSpecimen")) : null;
+// PluginsMockups is the same dev-only shape again, at /dev/plugins-mockups:
+// the plugins UI redesign mockups (settings lists, plugin detail sheet with
+// contents, session launcher) rendered from the real widgets with fixture
+// data - see dev/PluginsMockups.tsx's own header.
+const PluginsMockups = import.meta.env.DEV ? lazy(() => import("./dev/PluginsMockups")) : null;
 // DevHarness is a named export (dev/DevHarness.tsx), not a default one -
 // React.lazy needs a Promise<{default}>, so this adapts the import rather
 // than changing DevHarness's own export shape (which dev/DevHarness.test.tsx
@@ -27,6 +33,12 @@ const DevHarnessRoute = import.meta.env.DEV
   : null;
 
 export function App() {
+  // The token sheet is loaded before this module (main.tsx's import order);
+  // run the meta sync after mount so a dev-server stylesheet that arrives
+  // late still gets the active page ground.
+  useEffect(() => {
+    syncThemeColor();
+  }, []);
   if (WidgetGallery !== null && window.location.pathname === "/dev/widgets") {
     return (
       <Suspense fallback={null}>
@@ -45,6 +57,13 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <TypeSpecimen />
+      </Suspense>
+    );
+  }
+  if (PluginsMockups !== null && window.location.pathname === "/dev/plugins-mockups") {
+    return (
+      <Suspense fallback={null}>
+        <PluginsMockups />
       </Suspense>
     );
   }

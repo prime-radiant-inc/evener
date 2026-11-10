@@ -274,6 +274,11 @@
 
 .contextStatus {
   color: var(--ink-mid);
+  /* A working row's status may be the session's latest tool intent (up to
+     the wire's 200 code points), so it wraps inside the card head instead of
+     pushing the eyebrow or overflowing the bubble. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .contextCard[data-state="needs-you"] .contextStatus {
@@ -298,6 +303,18 @@
   width: 13px;
   height: 13px;
   color: var(--ink-mid);
+}
+
+/* The second line of a session row waiting out a provider usage limit. A
+ * sentence rather than a measurement, so --ink-mid like .notStarted, and no
+ * semantic hue: the wait is not an error, the session resumes by itself. It
+ * truncates rather than wrapping so the row stays two lines tall. */
+.quotaWait {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot

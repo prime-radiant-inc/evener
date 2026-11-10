@@ -776,10 +776,7 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -821,10 +818,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -874,10 +868,7 @@ func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	appendRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -909,10 +900,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1387,10 +1375,7 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1445,10 +1430,7 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1533,10 +1515,7 @@ func TestTaskListTool_UpdateNonCurrentLeavesExistingCurrentMarkerFalse(t *testin
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1586,10 +1565,7 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1677,10 +1653,7 @@ func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1716,10 +1689,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -1859,9 +1829,9 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 					},
 				})
 			} else {
-				fixture.adapter.steps = []func(llm.Request) llm.Response{
+				fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 					func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") },
-				}
+				})
 			}
 			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 			if err != nil {
@@ -1977,10 +1947,7 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -2129,10 +2096,7 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 	})
 
 	// Child WITHOUT SharedTaskStore — should have its own empty store.
-	childSess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession (child): %v", err)
-	}
+	childSess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer childSess.Close()
 
 	childStore := childSess.getOrCreateTaskStore()
@@ -2148,10 +2112,7 @@ func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()

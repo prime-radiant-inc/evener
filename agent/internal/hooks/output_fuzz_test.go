@@ -29,7 +29,7 @@ func FuzzParseHookOutput(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, out string, code int) {
-		result := parseHookOutput(out, code)
+		result := parseHookOutput(out, code, nil)
 
 		if result.RawExitCode != code {
 			t.Fatalf("RawExitCode = %d, want echoed input %d", result.RawExitCode, code)

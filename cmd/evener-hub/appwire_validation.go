@@ -53,18 +53,43 @@ func containsSkillInputItem(items []appwire.InputItem) bool {
 // rejected verbatim rather than degraded into slash prose or a text-only
 // mutation, so the client keeps what it composed for an explicit retry.
 func ensureSkillInputSupported(ctx context.Context, source appsource.Source, ref, threadID string, input []appwire.InputItem) error {
-	if !containsSkillInputItem(input) {
-		return nil
-	}
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, ThreadID: threadID, IncludeTurns: false})
-	if err != nil {
+	return prepareInputMode(ctx, source, ref, threadID, input, nil, "", nil)
+}
+
+// prepareInputMode checks the live daemon's capabilities before forwarding any
+// input mode. Start supplies the row its relay already prepared. Queue and steer
+// read only when a selection or an ask fence needs a capability verdict.
+func prepareInputMode(ctx context.Context, source appsource.Source, ref, threadID string, input []appwire.InputItem, revision *uint64, bootGeneration string, prepared *appwire.Thread) error {
+	if err := appwire.ValidateAskFence(revision, bootGeneration); err != nil {
 		return err
 	}
-	if err := appwire.ValidateSkillInputSupport(input, resp.Thread.Evener.Capabilities.SkillInput); err != nil {
+	if revision == nil && !containsSkillInputItem(input) {
+		return nil
+	}
+	if prepared == nil {
+		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, ThreadID: threadID, IncludeTurns: false})
+		if err != nil {
+			return err
+		}
+		prepared = &resp.Thread
+	}
+	if revision != nil {
+		if err := requireAskFenceSupport(prepared.Evener.Capabilities.AskFence); err != nil {
+			return err
+		}
+	}
+	if err := appwire.ValidateSkillInputSupport(input, prepared.Evener.Capabilities.SkillInput); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
-	if err := appwire.ValidateCommandInputSupport(input, resp.Thread.Evener.Capabilities.CommandInput); err != nil {
+	if err := appwire.ValidateCommandInputSupport(input, prepared.Evener.Capabilities.CommandInput); err != nil {
 		return appwire.InvalidParams(err.Error())
+	}
+	return nil
+}
+
+func requireAskFenceSupport(supported bool) error {
+	if !supported {
+		return appwire.WireError{Code: appwire.CodeInvalidParams, Message: "the target daemon does not support ask fencing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorAskFenceUnsupportedOnDaemon}}
 	}
 	return nil
 }

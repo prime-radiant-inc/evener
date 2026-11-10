@@ -8,9 +8,14 @@
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { rmSync } from "node:fs";
 
-import { CHROME_SOCKET_PATH_LIMIT, chromeSingletonSocketPath } from "../browserGuardProcess.mjs";
+import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
+  CHROME_SOCKET_PATH_LIMIT,
+  chromeSingletonSocketPath,
+} from "../browserGuardProcess.mjs";
 import { Driver, skillGuardChromeProfileDir } from "./run.mjs";
 
 const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
@@ -19,6 +24,23 @@ const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPa
 // where `document` resolves. jsdom supplies that global.
 function evaluateExpr(expr) {
   return new Function(`return (${expr});`)();
+}
+
+// A fresh driver with no browser; tests assign `page` or stub the methods they
+// exercise.
+function newDriver() {
+  return new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+}
+
+// A fake CDP page: Runtime.evaluate runs the driver's own expression in jsdom
+// and returns the envelope `evaluate` unwraps.
+function fakePage() {
+  return {
+    send: async (method, params) => {
+      if (method !== "Runtime.evaluate") throw new Error(`unexpected CDP method ${method}`);
+      return { result: { result: { value: evaluateExpr(params.expression) } } };
+    },
+  };
 }
 
 function renderRail(refs) {
@@ -49,6 +71,100 @@ describe("railRowsExpr readiness predicate", () => {
 
   test("keeps the always-truthy { rows } shape when no minimum is given", () => {
     expect(evaluateExpr(driver.railRowsExpr())).toEqual({ rows: [] });
+  });
+});
+
+// settleExpression is the one consecutive-reads barrier: settleComposer's editor
+// state and cascadeguard's scroll geometry both delegate to it (#3686). These
+// cases drive the REAL expression through a fake CDP send, so the two-equal-read
+// contract, the null break, and the per-settle key scoping are pinned without a
+// browser.
+describe("settleExpression holds two consecutive equal readings", () => {
+  // The expressions consume the scripted window.__samples on each poll.
+  const script = (samples) => {
+    window.__samples = [...samples];
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__samples");
+    Reflect.deleteProperty(window, "__driverSettleSamples");
+  });
+
+  test("returns the value two non-null polls agree on", async () => {
+    script([{ text: "a" }, { text: "a" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toEqual({
+      text: "a",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a null poll between equal readings breaks the run", async () => {
+    script([{ text: "b" }, null, { text: "b" }, { text: "b" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 3000, label: "sample" })).resolves.toEqual({
+      text: "b",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a second settle cannot reuse the first settle's sample", async () => {
+    script([{ text: "c" }, { text: "c" }, { text: "c" }, { text: "c" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    // Each settle consumed two readings; an unscoped stamp would let the second
+    // settle confirm off the first, leaving one sample unread.
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("false is a reading, not 'not ready'", async () => {
+    script([false, false]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toBe(
+      false,
+    );
+  });
+
+  test("rejects when the reading never repeats", async () => {
+    script(Array.from({ length: 40 }, (_, index) => ({ n: index })));
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(
+      d.settleExpression("window.__samples.shift()", { timeoutMs: 300, label: "changing sample" }),
+    ).rejects.toBeInstanceOf(Error);
+  });
+});
+
+// composerState used to return null whenever a call site raced the mount, and
+// the next `.text` crashed with a TypeError under load (#3686). The read owns
+// its mount wait now, so it cannot hand a caller null.
+describe("composerState waits for the composer to mount", () => {
+  test("resolves with the state once the composer and its pane appear", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+  });
+
+  test("the mount wait is not recorded as a reaction that widens later waits", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+    expect(d.reactions.slowestMs).toBe(0);
   });
 });
 
@@ -419,5 +535,67 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
     expect(restoredAwayWithReplyUnseen).toBe(true);
     expect(port.scrollTop).toBeGreaterThanOrEqual(896);
     expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+});
+
+// This driver starts Chrome itself. Its announcement wait used to be
+// CHILD_EXIT_GRACE_MS * 5 (10s) while every other guard used the shared
+// CHROME_ANNOUNCEMENT_DEADLINE_MS (120s), so a loaded runner that took longer
+// than 10s to print the DevTools line dropped a 5-PR merge-queue batch. The
+// fake browser below never announces; the faked clock makes the deadline the
+// only thing that decides when start() rejects.
+describe("Chrome DevTools announcement budget", () => {
+  class SilentChrome extends EventEmitter {
+    constructor() {
+      super();
+      this.stderr = new EventEmitter();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("keeps waiting past 10s and fails only at the shared 120s budget", async () => {
+    vi.useFakeTimers();
+    const spawned = [];
+    const d = new Driver({
+      url: "http://127.0.0.1/",
+      artifactDir: "",
+      controlPath: "",
+      milestonePath: "",
+      chromeBinary: "/fake/chrome",
+      spawnChrome: () => {
+        const child = new SilentChrome();
+        spawned.push(child);
+        return child;
+      },
+    });
+    let settled = false;
+    const started = d.start().then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(CHROME_ANNOUNCEMENT_DEADLINE_MS - 10_000 - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(started).resolves.toBeInstanceOf(Error);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      for (const child of spawned) child.exitCode = 0;
+      vi.useRealTimers();
+      await d.lifecycle?.cleanup();
+    }
   });
 });

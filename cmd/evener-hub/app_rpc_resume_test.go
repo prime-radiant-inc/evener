@@ -259,7 +259,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 		},
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: "sess_old"})
@@ -272,17 +272,33 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
+	// The failure the fixture injects must reach the hub's diagnostic sink, and
+	// nothing else may be written to that sink. These are the completed
+	// lifecycle stages that report an error for each fault; "request" repeats
+	// the outcome of the fault that refuses the resume.
+	wantErrorStages := map[string][]string{
+		"status":    {},
+		"listing":   {"post_launch_discovery"},
+		"confirmed": {"post_launch_discovery"},
+		"read":      {"daemon_read", "request"},
+		"identity":  {"daemon_read", "request"},
+	}
 	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
 		t.Run(fault, func(t *testing.T) {
+			capture := captureHubDiagnostics(t)
+			refreshes := captureRosterRefreshErrors(t)
 			const sessionID = "resumed-owner"
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			lists, reads := 0, 0
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				lists++
 				if fault == "confirmed" {
 					return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
 				}
 				return appwire.ThreadListResponse{}, appwire.Unavailable("inventory unavailable")
 			})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				reads++
 				if fault == "read" {
 					return appwire.ThreadReadResponse{}, appwire.Unavailable("read unavailable")
 				}
@@ -318,18 +334,36 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawns != 1 {
 				t.Fatalf("spawns=%d", spawns)
+			}
+			checkDiagnostics := func() {
+				t.Helper()
+				records, other := capture.lifecycleDiagnostics(t)
+				if len(other) != 0 {
+					t.Fatalf("unexpected diagnostic lines: %q", other)
+				}
+				requireErrorStages(t, records, wantErrorStages[fault])
+			}
+			if fault == "status" && lists == 0 {
+				t.Fatal("injected status probe fault did not run")
 			}
 			if fault == "read" || fault == "identity" {
 				if err == nil || roster.HasConfirmedEntry(entry) {
 					t.Fatalf("unverified owner admitted: error=%v", err)
 				}
+				if reads == 0 {
+					t.Fatal("injected owner read fault did not run")
+				}
+				checkDiagnostics()
 				return
+			}
+			if fault == "listing" || fault == "confirmed" {
+				if !refreshes.hasJSONSyntaxError() {
+					t.Fatal("injected malformed rendezvous JSON did not fail a roster refresh")
+				}
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -344,6 +378,7 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			if err != nil || turn.Turn.ID != "delivered" {
 				t.Fatalf("followup=%+v error=%v", turn, err)
 			}
+			checkDiagnostics()
 		})
 	}
 }
@@ -401,9 +436,7 @@ func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T)
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawned {
 				t.Fatal("spawned despite incomplete ownership discovery")
@@ -475,13 +508,12 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 		},
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:      runDir,
 		Roster:      roster,
 		Spawner:     spawner,
-		Past:        hubcore.NewPastIndex(""),
 		ResumeLocks: hubcore.NewResumeLocks(),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
@@ -570,20 +602,17 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 				},
 			}
 
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 				RunDir:      runDir,
 				Roster:      roster,
 				Spawner:     spawner,
-				Past:        hubcore.NewPastIndex(""),
 				ResumeLocks: hubcore.NewResumeLocks(),
-			})
+			}))
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
 
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 			_, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if err == nil {
 				t.Fatal("ThreadResume succeeded, want the replacement spawn to fail")
@@ -1051,9 +1080,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 			client := dialHubRPC(t, hub)
 			defer client.Close()
 
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 			if err != nil {
 				t.Fatalf("TurnStart: %v", err)

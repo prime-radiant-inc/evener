@@ -17,6 +17,7 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   installHydrationRetrySchedulerForTests,
@@ -81,17 +82,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
 
 // Recovery resend bypasses the send funnel, but must still drive the resume
 // after its durable write and preserve the resent row through completion.
@@ -183,7 +173,9 @@ test("a second send while the Send-resumes drive is in flight parks and rides th
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   fake.on("thread/resume", () => new Promise<never>(() => {}));
   await Promise.all([threadsStore.getState().send(ref, "one"), threadsStore.getState().send(ref, "two")]);
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The drive runs beside the parked sends; await its request's arrival and
+  // that it stays one for both.
+  await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   const parked = await storage.listOutbox(ref);
   expect(parked.filter((record) => record.method === "turn/start")).toHaveLength(2);

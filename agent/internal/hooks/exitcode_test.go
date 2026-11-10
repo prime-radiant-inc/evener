@@ -10,12 +10,12 @@ import (
 
 // TestExitBehavior_PerEvent verifies the central exit-code table classifies exit
 // 2 as blocking only for events whose RUNNER actually enforces the block.
-// PreToolUse/Stop/SubagentStop block and are enforced. UserPromptSubmit and
+// PreToolUse/Stop/SubagentStop/PostToolBatch block and are enforced. UserPromptSubmit and
 // PreCompact block in the Claude contract, but evener does not yet enforce the
 // block at their dispatch sites (a deferred parity item), so the table must not
 // claim a block nothing consumes (Fix 3).
 func TestExitBehavior_PerEvent(t *testing.T) {
-	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
+	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch} {
 		if !exitBehavior(e).BlockOnExit2 {
 			t.Fatalf("%s should block on exit 2 (and is enforced)", e)
 		}
@@ -23,6 +23,8 @@ func TestExitBehavior_PerEvent(t *testing.T) {
 	for _, e := range []plugin.HookEvent{
 		plugin.HookUserPromptSubmit, plugin.HookPreCompact,
 		plugin.HookPostToolUse, plugin.HookSessionStart, plugin.HookSessionEnd, plugin.HookNotification,
+		plugin.HookSubagentStart, plugin.HookPostToolUseFailure,
+		plugin.HookStopFailure, plugin.HookPostCompact,
 	} {
 		if exitBehavior(e).BlockOnExit2 {
 			t.Fatalf("%s must NOT claim block-on-exit-2 in the table: nothing enforces it", e)
@@ -47,7 +49,7 @@ func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
 		return Input{CWD: "/tmp", HookEventName: string(event), ToolName: "Bash"}
 	}
 
-	for _, event := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
+	for _, event := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch} {
 		if !exitBehavior(event).BlockOnExit2 {
 			continue
 		}
@@ -60,7 +62,9 @@ func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
 		case plugin.HookStop:
 			blocked = r.RunStop(context.Background(), in(event)).Blocked
 		case plugin.HookSubagentStop:
-			blocked = r.RunSubagentStop(context.Background(), in(event)).Blocked
+			blocked = r.RunSubagentStopFor(context.Background(), in(event), "subagent").Blocked
+		case plugin.HookPostToolBatch:
+			blocked = r.RunPostToolBatch(context.Background(), in(event)).Stopped
 		}
 		if !blocked {
 			t.Fatalf("%s claims BlockOnExit2 but its runner did not block/deny on exit 2", event)
@@ -120,5 +124,44 @@ func TestHookRunner_PostToolUse_ExitCode2_DoesNotBlock(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("PostToolUse exit 2 model context = %v, want it to contain the stderr", result.ModelContext)
+	}
+}
+
+// TestHookRunner_PostToolUseFailure_ExitCode2_DoesNotBlock pins the failure
+// event's exit-2 contract: RunResult has no Denied/Blocked field at all, so
+// exit 2 can only route its stderr to the model. The action already failed;
+// a failure hook cannot block it again.
+func TestHookRunner_PostToolUseFailure_ExitCode2_DoesNotBlock(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo "post-failure-error" >&2; exit 2`,
+		Timeout: 5,
+	})
+
+	result := runner.RunPostToolUseFailure(context.Background(), Input{
+		CWD:           "/tmp",
+		HookEventName: "PostToolUseFailure",
+		ToolName:      "Bash",
+	})
+	if exitBehavior(plugin.HookPostToolUseFailure).BlockOnExit2 {
+		t.Fatal("PostToolUseFailure must never claim block-on-exit-2")
+	}
+	if len(result.ModelContext) == 0 {
+		t.Fatal("PostToolUseFailure exit 2 should surface the stderr to the model")
+	}
+	found := false
+	for _, msg := range result.ModelContext {
+		if strings.Contains(msg, "post-failure-error") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("PostToolUseFailure exit 2 model context = %v, want it to contain the stderr", result.ModelContext)
+	}
+	if len(result.UserMessages) != 0 {
+		t.Fatalf("PostToolUseFailure exit 2 stderr must not go to the user: %v", result.UserMessages)
 	}
 }

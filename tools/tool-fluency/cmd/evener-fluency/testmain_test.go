@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -19,8 +21,19 @@ import (
 // invocation, --help included, so TestMain also treats every binary as
 // supporting --enabled-plugins; TestEvenerSupportsEnabledPlugins* drive the
 // real check.
+//
+// It isolates every git the tests spawn, the runner's fixture commits and
+// version worktrees as much as the harness's, from host config and automatic
+// maintenance.
 func TestMain(m *testing.M) {
 	runnerLoadRegistry = func() (*registry.Registry, error) { return provider.EmbeddedRegistry(), nil }
 	evenerSupportsEnabledPlugins = func(string) (bool, error) { return true, nil }
-	os.Exit(sandboxtest.Run(m, "evener-fluency-test-"))
+	removeGitConfig, err := gittest.IsolateProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evener-fluency TestMain: %v\n", err)
+		os.Exit(2)
+	}
+	code := sandboxtest.Run(m, "evener-fluency-test-")
+	removeGitConfig()
+	os.Exit(code)
 }

@@ -60,7 +60,20 @@ type TaskAggregate struct {
 	Current   *TaskSummary `json:"current,omitempty"`
 }
 
+type ThreadProbeState string
+
+const (
+	ThreadProbeStateFresh    ThreadProbeState = "fresh"
+	ThreadProbeStateRetained ThreadProbeState = "retained"
+)
+
 type EvenerThread struct {
+	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
+	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
+	// Manager is the session's start-time Manager property, reported by the
+	// session itself. It is not a runtime setting: nothing can turn it on or
+	// off after the session starts.
+	Manager bool `json:"manager,omitempty"`
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`
@@ -78,11 +91,18 @@ type EvenerThread struct {
 	InstanceID         string `json:"instanceId,omitempty"`
 	ParentRef          string `json:"parentRef,omitempty"`
 	Kind               string `json:"kind,omitempty"`
-	Profile            string `json:"profile,omitempty"`
+	// ForkLabel names the snapshotted original of an edited message. A remote
+	// projection needs it to nest that original beneath the continuation that
+	// superseded it; the label is also the tree row's display suffix.
+	ForkLabel string `json:"forkLabel,omitempty"`
+	Profile   string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
 	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
+	QuietForMS       *int64             `json:"quietForMs,omitempty"`
+	ProbeState       ThreadProbeState   `json:"probeState,omitempty"`
+	Crashed          bool               `json:"crashed,omitempty"`
 	ContextPressure  float64            `json:"contextPressure,omitempty"`
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`
@@ -130,6 +150,15 @@ type EvenerThread struct {
 	// hub's doc route serves that request out of. Clients compare a link
 	// against it rather than guessing whether the hub can open it.
 	ArtifactsDir string `json:"artifactsDir,omitempty"`
+	// ScratchDir is the session's named scratch directory on the hub that
+	// serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, a session with no scratch directory on disk). Tools write
+	// screenshots and other session-local output there and name those files by
+	// absolute path in messages and tool results; the transcript turns such a
+	// path into a document-pane request, and this is the directory the hub's
+	// doc route serves that request out of. Clients compare an absolute path
+	// against it rather than guessing whether the hub can open it.
+	ScratchDir string `json:"scratchDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -192,6 +221,11 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// AttentionLevel and AttentionAsOf are the Manager roster's derived level
+	// and its Unix-millisecond observation moment. Discovery alone populates
+	// them, and rows outside the live top-level roster leave them absent.
+	AttentionLevel string `json:"attentionLevel,omitempty"`
+	AttentionAsOf  int64  `json:"attentionAsOf,omitempty"`
 	// PendingQuestion is the first question of the session's pending ask and
 	// how many the ask holds (S1b). The daemon reads both from one sample of
 	// the pending set, so it is present exactly when AskPending is true; it is
@@ -303,9 +337,17 @@ type SubagentTally struct {
 // error" or "Usage limit reached", cut to one line of MaxFailureTitleRunes)
 // and its structured cause. It never carries the failure's message, which can
 // quote a provider's error body; the transcript's error row has that.
+//
+// ResumesAt is set while a model call waits out a provider usage limit that
+// named its reset time: the Unix millisecond instant the call resumes by
+// itself. The session is working, not resting, while it waits, so a summary
+// with ResumesAt is the waiting call's limit rather than a failed turn's, and
+// it travels on a working thread. It is absent for any other failure, for a
+// usage limit with no known reset, and once the wait ends.
 type ThreadFailure struct {
-	Title string           `json:"title,omitempty"`
-	Cause *DiagnosticCause `json:"cause,omitempty"`
+	Title     string           `json:"title,omitempty"`
+	Cause     *DiagnosticCause `json:"cause,omitempty"`
+	ResumesAt int64            `json:"resumesAt,omitempty"`
 }
 
 // PendingQuestion is the first question of a session's pending ask (S1b): what
@@ -319,6 +361,13 @@ type PendingQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options,omitempty"`
 	Count    int      `json:"count"`
+	// The displayed question's composite identity is absent for call-less asks.
+	TurnID string `json:"turnId,omitempty"`
+	CallID string `json:"callId,omitempty"`
+	// Live append computes these flags from the full ask. Restore cannot
+	// reconstruct that evidence, so unknown stays absent rather than false.
+	Complete  *bool `json:"complete,omitempty"`
+	Truncated *bool `json:"truncated,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -542,21 +591,25 @@ type DelegateStopResponse struct {
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	EscalationID string `json:"escalationId"`
-	Approve      bool   `json:"approve"`
+	ManagerProof *SessionActorProof `json:"managerProof,omitempty"`
+	ThreadID     string             `json:"threadId,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	EscalationID string             `json:"escalationId"`
+	Approve      bool               `json:"approve"`
 }
 
 type ThreadCapabilities struct {
-	Send         bool `json:"send"`
-	Steer        bool `json:"steer"`
-	Interrupt    bool `json:"interrupt"`
-	Compact      bool `json:"compact"`
-	Clear        bool `json:"clear"`
-	ForkFromTurn bool `json:"forkFromTurn"`
-	Shutdown     bool `json:"shutdown"`
-	ChangeModel  bool `json:"changeModel"`
+	// AskFence supports pair-fenced answers and paged pending-ask reads.
+	AskFence                   bool `json:"askFence,omitempty"`
+	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	Send                       bool `json:"send"`
+	Steer                      bool `json:"steer"`
+	Interrupt                  bool `json:"interrupt"`
+	Compact                    bool `json:"compact"`
+	Clear                      bool `json:"clear"`
+	ForkFromTurn               bool `json:"forkFromTurn"`
+	Shutdown                   bool `json:"shutdown"`
+	ChangeModel                bool `json:"changeModel"`
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
@@ -605,6 +658,19 @@ type ThreadCapabilities struct {
 	// the hub can join such a page to its remote paging window; an
 	// older hub never sends it.
 	PageBefore bool `json:"pageBefore,omitempty"`
+	// VoiceArm advertises that the iPhone may offer voice for this session now:
+	// it is a live manager whose conversation provenance is authoritative for
+	// this instance, and this hub has an OpenAI voice instance with a
+	// credential. The hub owns the bit, so it refreshes with every read instead
+	// of a client-side preflight. FeatureSet.VoiceArmV1 marks a hub that
+	// stamps it; a client talking to a hub without that feature keeps the
+	// earlier behavior.
+	VoiceArm bool `json:"voiceArm,omitempty"`
+	// WindowRead advertises that thread/read accepts bounded transcript turn
+	// windows and their item filters. Older daemons omit it, allowing the hub to
+	// choose its narrow legacy compatibility projection without sending fields
+	// their strict decoder rejects.
+	WindowRead bool `json:"windowRead,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

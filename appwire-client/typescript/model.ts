@@ -63,6 +63,7 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
   pendingText?: string[]; // in-flight delta chunks (join on complete)
@@ -287,9 +288,16 @@ export interface HistoryState {
   turns: TurnModel[];
 }
 
+/** Older-history frontier provenance (#5585). A cursor is opaque, so
+ * `"unknown"` and `"none"` are sentinels the source never returns. */
+export type OlderFrontier = "unknown" | "none" | (string & {});
+
 export interface ThreadModel {
   ref: string;
   parentRef?: string;
+  // The wire's EvenerThread.kind. Fork children must not charge their
+  // inherited prefix to their own token total (threadUsage.ts's sessionTokens).
+  kind?: string;
   threadId: string;
   // The serving session image bytes belong to (the wire Thread.sessionId at
   // hydrate, falling back to the thread id exactly as the hub's
@@ -324,6 +332,8 @@ export interface ThreadModel {
   // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
   // the fence re-hydrates the model without it.
   resumeOnlyFoldable?: boolean;
+  /** The session's immutable start-time Manager property, projected by its daemon. */
+  manager?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
@@ -373,6 +383,17 @@ export interface ThreadModel {
   // changed.
   jobsTreeRevision: number | null;
   olderCursor?: string;
+  /**
+   * The provenance of the older-history frontier (#5585). `"unknown"`: no
+   * accepted source read has named one — a cache seed, or a model assembled by
+   * hand. `"none"`: a source read or page named no older history. Any other
+   * value is the opaque cursor the source returned.
+   *
+   * `olderCursor` alone cannot tell an unknown frontier from a source-named
+   * "no more history", so consumers that need that distinction read this
+   * field, treating an absent value as `"unknown"` (olderFrontierOf).
+   */
+  olderFrontier?: OlderFrontier;
   lastFrameAt: number; // liveness input
   // The in-flight model-call retry, when one is pending (evener/thread/modelRetry).
   // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
@@ -505,6 +526,12 @@ export interface ThreadModel {
   // cwd or inside this directory, so a link's destination is checked against
   // both rather than guessed at.
   artifactsDir?: string;
+  // The session's named scratch directory on the hub that serves it (wire
+  // Thread.evener.scratchDir), absent when no local path names one. An
+  // absolute path a tool named — a screenshot, session-local output — is
+  // openable through the doc pane only when it resolves inside cwd, this
+  // model's artifacts directory, or this directory.
+  scratchDir?: string;
   gitBranch?: string;
   projectPath?: string;
   // When the session began and when its state was last written, as ISO

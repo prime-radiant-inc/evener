@@ -13,6 +13,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import {
   consumePaneFocus,
   type OpenPaneRecord,
@@ -252,7 +253,7 @@ function inspectedCascade() {
   return { source, inspector };
 }
 
-test.each(["loading", "deleted"])("a %s nested seat keeps its presentation return control", async (state) => {
+test.each(["loading", "deleted"])("a %s nested seat keeps its Verbosity control and composer source", async (state) => {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -274,27 +275,18 @@ test.each(["loading", "deleted"])("a %s nested seat keeps its presentation retur
     }
     return { ...response(ref!), requestGeneration };
   });
-  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
   mount(fake);
-  await waitFor(() =>
-    expect(document.querySelector('[data-comic-session="root"] [data-comic-text]')?.textContent).toBe(
-      "root content old-root",
-    ),
-  );
+  await waitFor(() => expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBeDefined());
   if (state === "deleted") await waitFor(() => expect(threadsStore.getState().deletedRefs.has("child")).toBe(true));
   const pane = currentPane();
-  const lifetime = conversationPaneLifetime(pane);
-  const source = lifetime.composers.get("child");
+  const source = conversationPaneLifetime(pane).composers.get("child");
   expect(source).toBeDefined();
   const url = window.location.href;
-  const child = cascadeScope("child", "cascade-column");
-  fireEvent.click(within(child).getByRole("button", { name: "Verbosity" }));
-  await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Standard" })));
-  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+  fireEvent.click(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" }));
+  expect(screen.getByRole("dialog", { name: "Verbosity" })).toBeTruthy();
   expect(currentPane()).toBe(pane);
   expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBe(source);
   expect(window.location.href).toBe(url);
-  expect(cascadeScope("child", "cascade-column").querySelector("[data-comic-font]")).toBeNull();
   expect(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" })).toBeTruthy();
 });
 
@@ -385,6 +377,32 @@ test("root and child render through real conversation readers inside one scaffol
   // more than the columns on screen.
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+// A phone cascade column renders its conversation's activity controls below
+// the conversation footer (CascadeColumn's ScopeActivityControls), so the
+// shared composer inside that footer must not mount a second set of activity
+// chips beside the status chrome.
+test("a phone cascade column keeps its activity counts out of the composer row", async () => {
+  const { fake } = fixture();
+  installMobileViewport();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const columns = screen.getAllByTestId("cascade-column");
+  expect(columns.length).toBeGreaterThan(0);
+  for (const column of columns) {
+    expect(within(column).getAllByTestId("cascade-activity-controls").length).toBeGreaterThan(0);
+    expect(within(column).queryAllByTestId("composer-form").length).toBeGreaterThan(0);
+  }
+  // Focusing the shared composer engages the phone row that would otherwise
+  // carry the chips (a resting phone row sheds them by design).
+  const [editor] = screen.getAllByRole("textbox");
+  if (!editor) throw new Error("cascade column conversation rendered no composer editor");
+  fireEvent.focus(editor);
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  // The column's controls own the counts; no composer row duplicates them.
+  expect(document.querySelectorAll('[data-testid="composer-form"] [data-activity-tab]')).toHaveLength(0);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
@@ -1269,18 +1287,19 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
-// appShellTestUtils.tsx's installMobileViewport, verbatim: the mobile query
-// matches, every other query (the reduced-motion read included) does not.
+// Match the mobile browser query and publish the viewport for this standalone
+// Zoom mount, which has no AppShell media-query listener.
 function installMobileViewport(): void {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),
   );
+  transcriptDisplayStore.getState().setViewport("mobile");
 }
 
 test("a replaced nested origin never renders a non-leaf column on the phone", async () => {

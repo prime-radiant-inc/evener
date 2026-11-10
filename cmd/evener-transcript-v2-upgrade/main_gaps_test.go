@@ -72,18 +72,6 @@ func TestDiscoverTranscriptsWalkError(t *testing.T) {
 	}
 }
 
-// TestInspectTranscriptHeaderStatError covers the stat error path. We simulate
-// this by creating a file and then removing it between Open and Stat — but that's
-// racy. Instead, we test with a path that Open succeeds but Stat fails, which is
-// hard to do portably. Skip if we can't create the condition.
-func TestInspectTranscriptHeaderStatError(t *testing.T) {
-	// On Unix, opening /dev/null succeeds but Stat returns a valid FileInfo.
-	// Instead, use a FIFO or a deleted file. The simplest portable approach:
-	// create a temp file, open it, then test with a path that can be opened
-	// but not stated. This is hard, so we skip this test.
-	t.Skip("stat error after successful open is not portable to test")
-}
-
 // writeOversizedLineFile returns a file whose first line exceeds
 // transcript.DefaultMaxLineBytes. It is sparse: the reader needs the length, not
 // 128 MiB of written bytes, which cost seconds on a loaded runner.
@@ -135,12 +123,6 @@ func TestInspectTranscriptHeaderCurrentVersionDecodeError(t *testing.T) {
 	if err == nil {
 		t.Fatal("inspectTranscriptHeader accepted a current-version header DecodeHeader rejects")
 	}
-}
-
-// TestPrepareTranscriptStatError covers the stat error path in prepareTranscript.
-func TestPrepareTranscriptStatError(t *testing.T) {
-	// Similar to inspectTranscriptHeaderStatError — hard to test portably.
-	t.Skip("stat error after successful open is not portable to test")
 }
 
 // TestPrepareTranscriptReadError covers the ReadLine error path.
@@ -507,14 +489,6 @@ func TestConvertHeaderSuccess(t *testing.T) {
 	if header.FormatVersion != transcript.FormatVersion {
 		t.Fatalf("format version = %d, want %d", header.FormatVersion, transcript.FormatVersion)
 	}
-}
-
-// TestConvertHeaderDecodeFieldsError covers the json.Unmarshal error for the
-// fields map. This is hard to trigger because the first Unmarshal succeeds —
-// the second Unmarshal of the same bytes should also succeed. This branch may
-// be unreachable in practice.
-func TestConvertHeaderDecodeFieldsErrorUnreachable(t *testing.T) {
-	t.Skip("the second json.Unmarshal in convertHeader always succeeds if the first did")
 }
 
 // TestRunUsageOutput covers the flag usage output path.

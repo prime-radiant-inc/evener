@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -24,6 +26,7 @@ import (
 // details captured across one model call (including any fallback retries) for
 // the attempted or successful semantic assistant turn.
 type ModelAttemptMetadata struct {
+	conversation   *conversationRequest
 	HistoryMode    llm.HistoryMode
 	EndpointFamily string
 	// Protocol is the wire protocol of the attempt that answered, read back
@@ -199,7 +202,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt
-	toolDefs := s.allToolDefinitions(round)
+	toolDefs := s.cachedToolDefs
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
@@ -287,12 +290,41 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
 	presentedTurns := historyTurns
+	// presentedBoundary is the unfiltered snapshot length the skill-rebuild
+	// path below uses to find turns appended since the snapshot: the
+	// held-attention filter can shrink the projected list without reopening
+	// that window.
+	presentedBoundary := len(historyTurns)
+	// heldDropped reports that this request's projection kept a held row out
+	// — a nonstandard view of the resident history that must not seed or
+	// continue from a stored anchor.
+	heldDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
+		presentedBoundary = len(snapshot)
+		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
+			// An automatic attention drive projects the resident history,
+			// including the turns a reopen retained — a user-stopped run's
+			// held row would ride this drive's presentation, the immediate
+			// restart the stop exists to prevent — so its turn is kept out
+			// of the projection. A send builds no attention run and still
+			// presents it. Each drop shifts every later turn one position
+			// left, so the in-flight boundary — an index into the
+			// projection — moves with each drop strictly before it, the
+			// same rule the resident drop applies to the baseline.
+			filtered, droppedAt := s.dropHeldDelegateAttentionTurns(snapshot)
+			heldDropped = len(droppedAt) > 0
+			for _, at := range droppedAt {
+				if at < inFlightFrom {
+					scope.InFlightFrom--
+				}
+			}
+			snapshot = filtered
+		}
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
@@ -313,7 +345,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -339,8 +371,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
 		// turns that landed in between and would otherwise be appended again.
-		if len(s.history) > len(presentedTurns) {
-			appended = append(appended, s.history[len(presentedTurns):]...)
+		if len(s.history) > presentedBoundary {
+			appended = append(appended, s.history[presentedBoundary:]...)
+			presentedBoundary = len(s.history)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -360,7 +393,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -411,6 +444,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stageConversationInputs(presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -471,7 +505,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// publication claims exactly that generation, note generation
 			// included — even for an empty note. A FORCED operation is never
 			// captured here; only its round-tail dispatch claims it.
-			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn); err != nil {
 				s.emit(bareWarningDataFromError("context strategy error", err))
@@ -562,8 +596,22 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
 // when it planned a continuation delta, the full-history message list the delta
-// was cut from, for the retry a rejected anchor forces.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
+// was cut from, for the retry a rejected anchor forces. heldDropped reports
+// that the request's projection kept a held row out.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message) {
+	if heldDropped {
+		// A projection that kept a held row out is a nonstandard view of the
+		// resident history: no stored exchange matches its prefix, and the
+		// state its own exchange would store is missing turns the resident
+		// history keeps. It must not continue from an anchor, and the
+		// exchange it settles must not become one — dispatch full-history
+		// with no continuation metadata, so the response turn records no
+		// anchor fingerprint and no later request continues from it.
+		if req.HistoryMode == "" {
+			req.HistoryMode = llm.HistoryModeFullHistory
+		}
+		return req, nil
+	}
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
@@ -910,7 +958,43 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
+
+	// StopFailure, the event an operator uses to log a failed turn and send an
+	// alert. It fires after the failure boundary, still in the terminal branch,
+	// so a hook's own duration cannot inflate the failed turn's recorded duration
+	// or delay the idle transition. It fires instead of Stop: a failed turn never
+	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
+	// outside s.mu, and every output they produce is discarded — the turn is
+	// already over, so nothing can steer or stop it.
+	if s.hookRunner != nil {
+		hi := s.hookInput(plugin.HookStopFailure)
+		hi.Error = hooks.ClaudeErrorName(err)
+		hi.ErrorDetails = hookErrorDetails(err)
+		// last_assistant_message is the failure text the conversation records,
+		// trimmed exactly as TurnFailureInfo.Message trims it, not err.Error():
+		// a hook must see what the reader sees.
+		hi.LastAssistantMessage = strings.TrimSpace(errData.Error)
+		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
+	}
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// hookErrorDetails renders a failed model call as the StopFailure
+// error_details value: the HTTP status and provider error code, whichever are
+// known, never a value the error does not carry. It is empty when neither is.
+func hookErrorDetails(err error) string {
+	var providerErr llm.Error
+	if !errors.As(err, &providerErr) {
+		return ""
+	}
+	var parts []string
+	if status := providerErr.StatusCode(); status != 0 {
+		parts = append(parts, fmt.Sprintf("status=%d", status))
+	}
+	if code := strings.TrimSpace(providerErr.ErrorCode()); code != "" {
+		parts = append(parts, "code="+code)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // isProviderTerminalError identifies the wrapper returned by handleModelError
@@ -1410,6 +1494,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
@@ -1584,7 +1669,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// precedes.
 	// The content-filter recovery fold captures no compaction operation —
 	// it is not any intent's requesting caller.
-	_, _ = s.foldWithForceCompact(ctx, "", nil)
+	_, _ = s.foldWithForceCompact(ctx, "", nil, triggerAuto, true)
 	s.maybeAutoSave()
 }
 
@@ -1695,6 +1780,7 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 // pass through unchanged (identical to legacy expansion). tool_call/tool_result
 // and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
+	t.Message = projectVoicePresentation(t)
 	if !rs.active() || inFlight {
 		return t.Message
 	}
@@ -1781,9 +1867,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		switch t.Kind {
 		case schema.TurnSteering:
 			if len(pendingToolCalls) > 0 {
-				deferredSteering = append(deferredSteering, t.Message)
+				deferredSteering = append(deferredSteering, scope.projectTurnMessage(t, inFlight))
 			} else {
-				history = append(history, t.Message)
+				history = append(history, scope.projectTurnMessage(t, inFlight))
 			}
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
@@ -1821,7 +1907,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()
-			history = append(history, t.Message)
+			history = append(history, scope.projectTurnMessage(t, inFlight))
 		case schema.TurnHookCompleted, schema.TurnAttentionResolution:
 			// Presentational telemetry and attention resolution can appear inside
 			// a tool round without interrupting it.

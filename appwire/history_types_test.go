@@ -2,9 +2,32 @@ package appwire
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestThreadWindowResultJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"data":[{"id":"turn_1","itemsView":"fragment","status":"completed","items":[{"type":"commandExecution","id":"item_1","truncated":true,"truncatedBytes":9000,"inFlight":true,"fetchCursor":"fetch-1"}],"elision":{"excludedByType":{"reasoning":2},"capWithheld":3,"truncatedBeyondCursorLimit":4,"elidedBeyondCursorLimit":5,"continuationCursor":"within-turn","typeExcludedRecovery":"reread-wider-item-types","capWithheldRecovery":"continuation","truncatedBeyondCursorLimitRecovery":"reread-wider-byte-bound","elidedBeyondCursorLimitRecovery":"continuation"}}],"window":{"effectiveBudgetBytes":16384,"appliedBy":"saved-index","servedTurns":1,"withheldTurns":2,"firstServedTurnId":"turn_1","lastServedTurnId":"turn_1","firstWithheldTurnId":"turn_2","lastWithheldTurnId":"turn_3","trimmedEnd":"newest","continuationCursor":"next-window"}}`)
+	var response ThreadTurnsListResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("window response did not preserve its structured wire data: got %s", encoded)
+	}
+}
 
 // TestHistoryUpdatedParamsJSONRoundTrip covers the wire vocabulary added for
 // versioned history: ThreadItemPosition.Sub (omitted at zero),

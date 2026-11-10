@@ -14,12 +14,14 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -36,7 +38,7 @@ type runConfig struct {
 	systemPrompt              string   // --system-prompt file path
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
-	maxSubagentDepth          int      // --max-subagent-depth (-1=default)
+	maxSubagentDepth          int      // --max-subagent-depth (-1=default, 0=disabled)
 	maxConcurrentDelegates    int      // --max-concurrent-delegates (-1=default)
 	maxRetainedTerminal       int      // --max-retained-terminal (-1=default)
 	shareTaskStore            bool     // --share-task-store
@@ -63,6 +65,7 @@ type runConfig struct {
 	runTimeout                  time.Duration // --timeout; zero disables
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
+	commitProvenance            string        // --commit-provenance coauthor|off (empty keeps the default or a resumed value)
 	apiLog                      string        // --api-log on|off (default off)
 	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
@@ -347,10 +350,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
 	// /opt/homebrew/bin; the login shell's own PATH wins for spawned commands
-	// (kata 31gh). LoginShellPATH probes once per process with a short timeout
-	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
-	// on any failure.
-	env.LoginPATH = execenv.LoginShellPATH()
+	// (kata 31gh). The probe has a short timeout and never blocks launch; a
+	// probe failure is reported as the inherited-PATH fallback rather than
+	// cached, so the next launch retries it (#4495).
+	env.LoginPATH, env.LoginPATHProbeError = execenv.LoginShellPATHProbe()
 	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}
@@ -360,6 +363,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
+	commitProvenance, err := commitprovenance.Normalize(cfg.commitProvenance)
+	if err != nil {
+		return err
+	}
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
 		MemoryStateRoot:             memoryStateRoot,
@@ -388,6 +395,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
+		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
@@ -399,9 +407,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.askResponder != "" {
 		baseSessionCfg.AskResponderAttached = true
 	}
-	if cfg.maxSubagentDepth >= 0 {
-		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
-	}
+	applyMaxSubagentDepth(&baseSessionCfg, cfg.maxSubagentDepth)
 	if cfg.maxConcurrentDelegates >= 0 {
 		baseSessionCfg.MaxConcurrentDelegateTurns = cfg.maxConcurrentDelegates
 	}
@@ -442,7 +448,12 @@ func run(ctx context.Context, cfg runConfig) error {
 			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
+			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
+			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
+			// SessionConfig, so restore cannot recover it from the saved meta.
+			ExportATIFPath:            baseSessionCfg.ExportATIFPath,
+			ExportATIFProviderHandles: baseSessionCfg.ExportATIFProviderHandles,
 		})
 		if err != nil {
 			// The restore reopens the session's kept scratch and can fail
@@ -481,6 +492,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
+	bootGeneration, err := schema.NextBootGeneration(stateDir, sess.ID(), 0)
+	if err != nil {
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	sess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed

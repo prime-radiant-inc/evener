@@ -49,6 +49,11 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	if threadID == "" {
 		threadID = status.SessionID
 	}
+	if h := s.appHistories.get(threadID); h != nil {
+		if state := h.conversationProvenance(); state != nil {
+			envelope.ConversationProvenance = state
+		}
+	}
 	if ref == "" {
 		ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	}
@@ -75,15 +80,18 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	statusType := appStatus(status.State, processing)
 	// A failure summary describes the failed turn the session rests on, so it
 	// shows only while the status says so: the next turn moves the status
-	// before any facet re-samples the summary (S1c).
+	// before any facet re-samples the summary (S1c). The one summary a working
+	// session carries is a model call waiting out a usage limit, which names
+	// when the call resumes.
 	var failure *appwire.ThreadFailure
-	if statusType == appwire.ThreadStatusSystemError {
+	if statusType == appwire.ThreadStatusSystemError || envelope.Failure != nil && envelope.Failure.ResumesAt > 0 {
 		failure = envelope.Failure
 	}
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
+	manager := envelope.Manager
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
 	access := cloneThreadAccess(envelope.Access)
@@ -107,41 +115,44 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:                   ref,
-			InstanceID:            threadID,
-			Profile:               status.Profile,
-			TurnCount:             status.Turns,
-			ActiveTurnID:          activeTurnID,
-			ContextPressure:       pressure,
-			ContextUsed:           metrics.Used,
-			ContextWindow:         metrics.Window,
-			ContextRemaining:      metrics.Remaining,
-			ContextAssumed:        metrics.Assumed,
-			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
-			Diagnostics:           threadDiagnostics,
-			Queue:                 queue,
-			PendingMutations:      pendingMutations,
-			Tasks:                 taskAggregate,
-			Goal:                  goalState,
-			HumanNote:             humanNote,
-			AgentNote:             agentNote,
-			SessionURLs:           sessionURLs,
-			Usage:                 usage,
-			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
-			WorkMillis:            workMillis,
-			ActiveTurnStartedAt:   activeTurnStartedAt,
-			FailedToolCalls:       failedToolCalls,
-			AskPending:            askPending,
-			PendingQuestion:       pendingQuestion,
-			Failure:               failure,
-			PendingEscalations:    pendingEscalations,
-			ReasoningEffort:       reasoningEffort,
-			ReasoningEffortLevels: reasoningEffortLevels,
-			SupportsReasoning:     supportsReasoning,
-			VisionModel:           visionModel,
-			LastTurnEndedAt:       lastTurnEndedAt,
-			LastMessage:           lastMessage,
-			Access:                access,
+			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
+			PendingAsk:             projectPendingAsk(envelope.PendingAsk),
+			Ref:                    ref,
+			InstanceID:             threadID,
+			Profile:                status.Profile,
+			TurnCount:              status.Turns,
+			ActiveTurnID:           activeTurnID,
+			ContextPressure:        pressure,
+			ContextUsed:            metrics.Used,
+			ContextWindow:          metrics.Window,
+			ContextRemaining:       metrics.Remaining,
+			ContextAssumed:         metrics.Assumed,
+			Capabilities:           s.appCapabilitiesLocked(status.State, processing),
+			Diagnostics:            threadDiagnostics,
+			Queue:                  queue,
+			PendingMutations:       pendingMutations,
+			Tasks:                  taskAggregate,
+			Goal:                   goalState,
+			HumanNote:              humanNote,
+			AgentNote:              agentNote,
+			SessionURLs:            sessionURLs,
+			Usage:                  usage,
+			Cost:                   appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
+			WorkMillis:             workMillis,
+			ActiveTurnStartedAt:    activeTurnStartedAt,
+			FailedToolCalls:        failedToolCalls,
+			AskPending:             askPending,
+			PendingQuestion:        pendingQuestion,
+			Failure:                failure,
+			PendingEscalations:     pendingEscalations,
+			ReasoningEffort:        reasoningEffort,
+			ReasoningEffortLevels:  reasoningEffortLevels,
+			SupportsReasoning:      supportsReasoning,
+			VisionModel:            visionModel,
+			Manager:                manager,
+			LastTurnEndedAt:        lastTurnEndedAt,
+			LastMessage:            lastMessage,
+			Access:                 access,
 		},
 	}
 }
@@ -331,6 +342,29 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 	}
 }
 
+// attachDescendantQuotaWaits puts each waiting descendant's usage-limit
+// summary on its row, as the root's envelope puts the root's on its own
+// (appThreadWithDiagnosticsLocked lets a summary with a resume time through on
+// a working thread). The summary is attached to the returned copy only.
+func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
+	s.mu.RLock()
+	fn := s.appDescendantQuotaWaitsFunc
+	s.mu.RUnlock()
+	if fn == nil || len(descendants) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(descendants))
+	for i := range descendants {
+		ids = append(ids, descendants[i].ID)
+	}
+	waits := fn(ids)
+	for i := range descendants {
+		if failure := waits[descendants[i].ID]; failure != nil {
+			descendants[i].Evener.Failure = appwire.CloneThreadFailure(failure)
+		}
+	}
+}
+
 // attachSubagentTally stamps the root row with its tree's subagent
 // tally. A nested delegate's lifecycle change is emitted on its owner's stream
 // and never samples the root's envelope, so the tally is read when the row is
@@ -414,7 +448,9 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
-		Send: !active && !closed,
+		AskFence:                   true,
+		VoicePresentationContextV1: s.retrySafeTurns.Start != nil && steerAvailable,
+		Send:                       !active && !closed,
 		// Steer answers "can this harness steer", not "is there a turn to steer
 		// right now": clients apply the status themselves (the web's canSteer
 		// requires active for turn/steer), and the daemon accepts
@@ -487,6 +523,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// advertised true means every endpoint really consumes selections.
 		SkillInput:   s.skillInputSupportedLocked(),
 		CommandInput: s.skillInputSupportedLocked(),
+		WindowRead:   true,
 	}
 }
 

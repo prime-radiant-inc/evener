@@ -1,0 +1,26 @@
+{
+  "id": "hey-evener-20261106-a519522a",
+  "phrase": "Hey Evener.",
+  "settings": {
+    "threshold": 0.99,
+    "releaseThreshold": 0.5,
+    "hopSamples": 1280,
+    "holdoffMs": 2500,
+    "embeddingFrames": 16
+  },
+  "melspectrogram": {
+    "file": "hey_evener_melspectrogram.onnx",
+    "source": "resources/wake-word/melspectrogram.onnx",
+    "sha256": "fd9edc912b9c020a36d55e1f0d0355976dcec1d4606e6f9a037035456f72df75"
+  },
+  "embedding": {
+    "file": "hey_evener_embedding_model.onnx",
+    "source": "resources/wake-word/embedding_model.onnx",
+    "sha256": "79b5db230f6fd7a4a5bb1b28e58778d5c1cf5cee0fa4e3cb5ac481872463b45d"
+  },
+  "classifier": {
+    "file": "hey_evener.onnx",
+    "source": "resources/wake-word/hey_evener.onnx",
+    "sha256": "a519522a2fa56b8a1c761fc71a17ff38e9c8d980c0584610214f61d42cf6851d"
+  }
+}

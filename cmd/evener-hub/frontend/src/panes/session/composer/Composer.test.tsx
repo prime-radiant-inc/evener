@@ -2,18 +2,20 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Thread } from "@evener/appwire-client";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
-import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "../../../shell/activitybar/activitySidebarStore";
+import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
@@ -37,6 +39,7 @@ import {
   currentWorkEvener,
   installCanvasStubs,
   installGatedDecodeStub,
+  installNarrowComposer,
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
@@ -86,6 +89,40 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
     return super.discardRecovery(clientMutationId, shouldDiscard);
   }
 }
+
+function installDuoCoverViewport(): void {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+}
+
+test("the Duo cover composer expands on focus and retains its two-line draft height", async () => {
+  installDuoCoverViewport();
+  installNarrowComposer(450);
+  await mountComposerWithHandle("ref_a");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+  await replaceEditorText(editor, "a saved draft");
+  expect(editor.style.minHeight).toBe("2lh");
+  act(() => editor.blur());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+});
+
+test("a narrow desktop pane keeps its two-line resting height", async () => {
+  installNarrowComposer(382);
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
+});
+
+test("the wide empty composer keeps its two-line resting height", async () => {
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
+});
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
   const fake = connectReadyFakeClient();
@@ -261,18 +298,19 @@ test("confirmed goal replacement invalidates pending attachments without later c
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
-test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
-  // A rejected turn/drainAsSteer recovers with no input, so its activation
-  // writes the same empty text the composer already holds (#1308).
+test("an empty rejected drain stays a notice and leaves the caret stable", async () => {
+  // A rejected turn/drainAsSteer recovers with no input. The 2026-11-09
+  // lifecycle ruling makes it a notice, not a draft, so mount restore must not
+  // activate it into the empty composer.
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "", { method: "turn/drainAsSteer", input: [] });
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  // Activated, then discarded again by the recovery persistence because the
-  // recovered draft is empty: only that path removes the durable row.
-  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
-  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  // The refused row stays in the strip as the notice; nothing was activated or
+  // re-persisted, so the next keystroke lands at the caret already there.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+  expect(screen.getByRole("button", { name: "Edit message" })).toBeDefined();
   const editor = textarea();
   expect(editor.textContent).toBe("");
 
@@ -337,18 +375,19 @@ test("goal replacement preserves a recovery row whose empty-draft discard is alr
 test("goal replacement preserves the consolidated recovery owner while its commit is unobserved", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
-  const source = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+  const folded = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+  const owner = await seedRejectedRecovery(storage, "ref_a", "second recovery");
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "idle" },
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("first recovery");
-  const sourceRow = screen.getByText("second recovery").closest("li");
-  if (!sourceRow) throw new Error("missing second recovery row");
-  const hold = holdNextWriteTransaction(["recovery"]);
+  // Mount restore picks the NEWEST rejected composition this seat owns.
+  expect(textarea().textContent).toBe("second recovery");
+  const sourceRow = screen.getByText("first recovery").closest("li");
+  if (!sourceRow) throw new Error("missing first recovery row");
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
     await hold.reached;
@@ -361,9 +400,9 @@ test("goal replacement preserves the consolidated recovery owner while its commi
     try {
       const records = await reopened.listRecovery("ref_a");
       expect(records.map((row) => row.clientMutationId)).toEqual([owner.clientMutationId]);
-      expect(records[0]?.composerText).toBe("first recovery\n\nsecond recovery");
-      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "first recovery\n\nsecond recovery" }]);
-      expect(await reopened.getRecovery(source.clientMutationId)).toBeUndefined();
+      expect(records[0]?.composerText).toBe("second recovery\n\nfirst recovery");
+      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "second recovery\n\nfirst recovery" }]);
+      expect(await reopened.getRecovery(folded.clientMutationId)).toBeUndefined();
       expect(textarea().textContent).toBe("/goal Keep the session focused");
       expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
     } finally {
@@ -538,7 +577,7 @@ afterEach(() => {
 test.each([false, true])("repeated composer /status targets its ref, phone=%s", async (mobile) => {
   vi.stubGlobal("matchMedia", (media: string) => ({
     media,
-    matches: mobile && media === "(max-width: 899px)",
+    matches: mobile && media === MOBILE_QUERY,
     addEventListener: () => {},
     removeEventListener: () => {},
   }));
@@ -588,4 +627,140 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   }
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+// A phone's composer rests by shedding what an empty editor does not need -
+// attach, the status chips and the activity chips - while the session menu
+// and Send stay, so a landscape phone spends its height on the transcript
+// and session actions stay reachable without focusing first. Focus engages
+// the full row again.
+test("a resting phone composer sheds chips and attach until focus engages the full row", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // At rest: no attach, no status chips, no activity chips. The menu-only
+  // chrome keeps the session actions reachable, and Send stays.
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+  // Focus engages the full row.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeTruthy();
+  expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
+});
+
+// A cascade column's chrome renders the conversation's activity controls
+// below the footer (CascadeColumn's ScopeActivityControls), so its seat
+// declares that ownership and the phone composer row keeps no second set of
+// chips beside the status chrome, even engaged.
+test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_owned_counts"));
+  await threadsStore.getState().ensureThread("ref_owned_counts");
+  render(
+    <ClientProvider client={fake}>
+      <Composer
+        ref="ref_owned_counts"
+        source={createTestComposerSource("ref_owned_counts")}
+        focused={false}
+        ownsActivityCounts
+      />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The engaged row keeps the status chrome and attach, but no chips.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+});
+
+// A turn in flight keeps its Stop control even while the editor rests
+// collapsed: stopping a runaway turn must never depend on focusing first.
+test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } } as Partial<Thread>));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
+});
+
+// A press on a row control can blur the focused editor to body without
+// moving focus, and the press's focus transfer lands only a task after its
+// click. The collapse must hold through the press - clearing engagement on
+// the blur's frame would unmount the pressed control and lose its action -
+// and then rest once the press's release reconciles where focus sits.
+test("a phone press keeps the pressed control mounted through the press", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The editor's focus engages the full row.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+
+  // A press on Attach blurs the editor to body without focusing the button;
+  // the pressed control must stay mounted through the press and its click.
+  await act(async () => {
+    fireEvent.pointerDown(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    editor.blur();
+  });
+  // jsdom schedules the frame on a ~16ms timer, so a plain task yield never
+  // reaches it; wait real milliseconds inside act() so the blur's frame has
+  // fired before the mid-press assertion.
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+  });
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    await nextMacrotask();
+  });
+
+  // The press released and focus stayed on body: the row rests again, with
+  // the controls that never shed still in it.
+  await waitFor(() => expect(screen.queryByTestId("composer-attach")).toBeNull());
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });

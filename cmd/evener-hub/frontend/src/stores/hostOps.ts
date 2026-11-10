@@ -32,7 +32,7 @@ import type {
   OperationProgressEntry,
   OperationRecord,
 } from "@evener/appwire-client";
-import { friendlyErrorMessage, RequestTimeoutError, WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, lifecycleStateIsTerminal, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
 import { HOST_GATE_TIMEOUT_MS, type HostMutationPair, hostsStore } from "./hosts";
@@ -475,15 +475,10 @@ export interface HostOperationRef {
   gone?: true;
 }
 
-/** Settled states end the read loop (08b §10's closed state set): the three
- * terminal states. `orphan-unverified` is deliberately NOT settled: it is
- * durable but an out-of-band transition can still move it, so the loop keeps
- * polling it until the record reaches a terminal state — treating it as settled
- * would freeze the moved record behind a stale state until a page reload. */
-const SETTLED_OPERATION_STATES: ReadonlySet<string> = new Set(["complete", "failed", "interrupted"]);
-
+/** The host-operation lifecycle owns terminality. An unverified orphan can
+ * still transition, so polling continues until its outcome is known. */
 export function operationStateSettled(state: string): boolean {
-  return SETTLED_OPERATION_STATES.has(state);
+  return lifecycleStateIsTerminal("hostOperation", state);
 }
 
 /** operationNeedsRead reports whether this ref still owes a `operations` read:

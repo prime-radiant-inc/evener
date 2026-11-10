@@ -1,6 +1,10 @@
 package main
 
-import "flag"
+import (
+	"flag"
+
+	"primeradiant.com/evener/agent"
+)
 
 // launchFlags are the flags `evener` and `evener serve` both take to describe
 // the session they launch. One definition keeps their defaults and help text
@@ -41,6 +45,7 @@ type launchFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	commitProvenance            *string
 	apiLog                      *string
 }
 
@@ -57,7 +62,7 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	flags.resume = fs.String("resume", "", "resume a previous session by `id`")
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
 	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (-1=default: unlimited, 0=unlimited)")
-	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2)")
+	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2, 0 disables)")
 	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
 	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
@@ -82,6 +87,19 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.commitProvenance = fs.String("commit-provenance", "", "record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	return flags
+}
+
+// applyMaxSubagentDepth maps the --max-subagent-depth parser value onto cfg:
+// -1 (unset) leaves the session default in place, 0 disables subagents, and a
+// positive value sets the nesting depth.
+func applyMaxSubagentDepth(cfg *agent.SessionConfig, depth int) {
+	switch {
+	case depth == 0:
+		cfg.DisableSubagents = true
+	case depth > 0:
+		cfg.MaxSubagentDepth = depth
+	}
 }

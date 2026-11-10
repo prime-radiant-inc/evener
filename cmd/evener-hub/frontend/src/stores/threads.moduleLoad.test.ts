@@ -3,19 +3,7 @@
 // copy of the module under a production-mode environment, since the default
 // channel factory answers null in test mode.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-class RecordingBroadcastChannel extends EventTarget {
-  static instances: RecordingBroadcastChannel[] = [];
-  constructor(readonly name: string) {
-    super();
-    RecordingBroadcastChannel.instances.push(this);
-  }
-  postMessage(): void {}
-  close(): void {}
-  deliver(message: unknown): void {
-    this.dispatchEvent(new MessageEvent("message", { data: message }));
-  }
-}
+import { RecordingBroadcastChannel } from "./testing/recordingBroadcastChannel";
 
 async function freshThreads() {
   vi.resetModules();

@@ -116,6 +116,11 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.reason == "waiting_on_work" {
+				if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -153,10 +158,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _, _ = sess.ProcessInput(ctx, "hello", nil); close(done) }()
@@ -348,6 +350,11 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
 			}, func(ctx context.Context, sess *Session) {
+				if tc.reason == "waiting_on_work" {
+					if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
 					t.Fatal(err)
 				}
@@ -456,10 +463,7 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	child := newTestSessionForState(t)
 	sess.subagents.mu.Lock()
@@ -582,7 +586,7 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 		}
 	}`)
 	defer sess.Close()
-	sess.RegisterTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return tool.StateResult{Output: "ok", State: communicateEndState{EndReason: "needs_response"}}, nil
 	})
 	// A retiring session refuses the hook context's steering.

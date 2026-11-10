@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/runetrim"
 
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/internal/turnwindow"
@@ -112,12 +113,30 @@ func renderMarkdown(header transcript.Header, entries []transcript.Entry, startS
 	return b.String()
 }
 
+// renderMarkdownFits probes byte size without retaining output or evidence.
+func renderMarkdownFits(header transcript.Header, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	opt.evidence = nil
+	var b strings.Builder
+	writeDocumentHeader(&b, header, opt)
+	return writeEntriesBodyLimited(&b, entries, startSeq, opt, byteLimit)
+}
+
 // writeEntriesBody renders the conversation body for entries[0:] (each at
 // startSeq+i) without the document header: the per-entry markdown plus any
 // trailing "Tool results without a shown call" section. Pairing is built over
 // exactly this slice. Splitting this out of renderMarkdown lets the pinned-turn
 // append (renderOutOfRangePin) reuse the same rendering without a second header.
 func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts) {
+	writeEntriesBodyLimited(b, entries, startSeq, opt, 0)
+}
+
+// writeEntriesBodyLimited shares the full renderer's formatting and pairing.
+// A zero byte limit leaves output unlimited. Once appended output exceeds a
+// positive limit, later entries cannot make it fit, so the probe can stop.
+func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	if byteLimit > 0 && b.Len() > byteLimit {
+		return false
+	}
 	resultTool := effectiveResultToolName(opt)
 	idx := buildResultIndex(entries, startSeq)
 
@@ -137,9 +156,13 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 		if opt.evidence != nil && e.Turn.Kind == schema.TurnUserInput {
 			opt.evidence.spans = append(opt.evidence.spans, transcriptEvidenceSpan{seq, first, b.Len(), complete})
 		}
+		if byteLimit > 0 && b.Len() > byteLimit {
+			return false
+		}
 	}
 
 	writeUnpairedResults(b, &idx, opt)
+	return byteLimit == 0 || b.Len() <= byteLimit
 }
 
 // defaultRangeTurns is the smart-default window: the last N turns when no range
@@ -862,8 +885,7 @@ func budgetedEnd(header transcript.Header, entries []transcript.Entry, start, en
 	}
 	last := end
 	for last > start {
-		body := renderMarkdown(header, entries[start:last+1], start, opt)
-		if len(body) <= convBudgetChars {
+		if renderMarkdownFits(header, entries[start:last+1], start, opt, convBudgetChars) {
 			break
 		}
 		if last <= pinFloor {
@@ -1653,38 +1675,10 @@ func writeResultBody(b *strings.Builder, content any, full bool) {
 // fence at least one backtick longer than the longest backtick run in the body.
 func writeFencedBody(b *strings.Builder, body string, full bool) {
 	body = truncateBody(body, full)
-	fence := bodyFence(body)
+	fence := mdfence.Pick(body)
 	fmt.Fprintf(b, "  %s\n", fence)
 	b.WriteString(body)
 	fmt.Fprintf(b, "  %s\n", fence)
-}
-
-// minFenceBackticks is the minimum fenced-code-block fence length (CommonMark).
-const minFenceBackticks = 3
-
-// bodyFence returns a backtick fence guaranteed not to be closed by any backtick
-// run inside body: one backtick longer than the longest run found, never fewer
-// than minFenceBackticks.
-func bodyFence(body string) string {
-	n := max(longestBacktickRun(body)+1, minFenceBackticks)
-	return strings.Repeat("`", n)
-}
-
-// longestBacktickRun returns the length of the longest run of consecutive
-// backtick characters in s (0 if there are none).
-func longestBacktickRun(s string) int {
-	longest, run := 0, 0
-	for _, r := range s {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-			continue
-		}
-		run = 0
-	}
-	return longest
 }
 
 // truncateBody returns the indented body text for a result code block. Empty

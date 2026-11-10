@@ -25,6 +25,7 @@ import type {
   MutationOutboxState,
   MutationRecoveryRecord,
 } from "./records";
+import { effectiveWireId } from "./records";
 
 // A pure read over `model`'s running turn: true once an identified user
 // message (one carrying its own clientMutationId) has landed in it and
@@ -55,12 +56,18 @@ export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean 
 
 // `ref`'s recovery records, oldest submission first - the order a recovery
 // list renders in.
+// `ref`'s recovery rows, oldest first - and the one association the tray
+// needs beyond the destination: an edited retargeted row's recovery carries
+// the resumed ref as its targetRef while the pane that must keep showing it
+// is the displayed ref it was retargeted from (the strip's own Edit opened
+// the recovery there). Ordinary recovery rows carry no displayedRef, so for
+// them the predicate is exactly the destination, as before.
 export function recoveryEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
   recovery: ReadonlyMap<string, MutationRecoveryRecord<A>>,
   ref: string,
 ): MutationRecoveryRecord<A>[] {
   return [...recovery.values()]
-    .filter((record) => record.targetRef === ref)
+    .filter((record) => record.targetRef === ref || record.displayedRef === ref)
     .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
@@ -70,6 +77,24 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   ref: string,
 ): MutationOutboxRecord<A>[] {
   return outboxEntriesByState(outbox, ref, "blockedUnknown");
+}
+
+// `ref`'s stop-canceled rows, oldest first - the one state a row can be
+// visible under a ref it does not target. A retargeted recovery resend
+// carries the displayed ref it was sent from, and its born-canceled row -
+// keyed to the destination the peer retargeted to - is the composition's
+// only durable copy, so the sending session's canceled strip must match it
+// by displayedRef as well as targetRef, or the composition the fenced toast
+// points at is invisible to its author after any reload. Canceled-specific
+// by design: the other states still project by targetRef alone, exactly as
+// before, so no other consumer's surface changes.
+export function canceledEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+): MutationOutboxRecord<A>[] {
+  return [...outbox.values()]
+    .filter((record) => record.state === "canceled" && (record.targetRef === ref || record.displayedRef === ref))
+    .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
 // `ref`'s outbox records in the given durable state, oldest first - the one
@@ -154,6 +179,13 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   // `submittedHere`. A no-op (no `setState`, `getState()` unchanged) when
   // every discovered id is already known.
   recordSubmittedHere(snapshot: { outbox: MutationOutboxRecord<A>[]; optimistic: MutationOptimisticRecord<A>[] }): void;
+  // Claims a submission dispatched WITHOUT a durable record - the
+  // storage-failure direct send. That send leaves nothing for
+  // `recordSubmittedHere` to discover, yet the daemon's pending projection
+  // still names its clientMutationId; without this the entry reads as another
+  // client's (no ghost, `ownPendingSend` false). Written at the send's success
+  // boundary, never pruned, and a no-op when the id is already known.
+  recordDirectSend(clientMutationId: string, createdAt: number): void;
   // Replaces each of `targets`' outbox, optimistic and recovery records with
   // `snapshot`'s (replaceTargetRecords). A no-op (no `setState`, `getState()`
   // unchanged) when the snapshot holds what the store already does: most
@@ -200,8 +232,17 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     submittedHere: new Map(),
   })) as PendingTurnsStore<A>;
 
-  store.recordSubmittedHere = (snapshot) => {
+  // The one writer of `submittedHere`: durable discovery and the direct
+  // fallback both land their id -> createdAt pairs here in one setState, and
+  // neither publishes when every id is already known.
+  function recordSubmitted(entries: ReadonlyArray<readonly [string, number]>): void {
     const known = store.getState().submittedHere;
+    const discovered = entries.filter(([id]) => !known.has(id));
+    if (discovered.length === 0) return;
+    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+  }
+
+  store.recordSubmittedHere = (snapshot) => {
     // The outbox is shared per origin: another client's records read back
     // out of it are visible here but are not this store's submissions, and
     // claiming them would reroute this store's own routing behind their
@@ -210,10 +251,20 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     // carries none).
     const discovered = [...snapshot.outbox, ...snapshot.optimistic]
       .filter((record) => deps.identity.isOwnMutationRecord(record))
-      .map((record) => [record.clientMutationId, record.createdAt] as const)
-      .filter(([id]) => !known.has(id));
-    if (discovered.length === 0) return;
-    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+      // Key the map by the record's EFFECTIVE WIRE id, not its storage key:
+      // a replacement owns a fresh storage key while traveling under its
+      // predecessor's wire id, and the daemon's feed names the wire id. A
+      // storage-keyed map entry dies with the replacement's durable copy the
+      // moment authoritative reconciliation settles it out of the outbox,
+      // stranding the lineage's ownership trail; the wire id is stable
+      // across every mint. Ordinary rows - wire id === storage key, every
+      // native row and most web rows - keep byte-identical behavior.
+      .map((record) => [effectiveWireId(record), record.createdAt] as const);
+    recordSubmitted(discovered);
+  };
+
+  store.recordDirectSend = (clientMutationId, createdAt) => {
+    recordSubmitted([[clientMutationId, createdAt]]);
   };
 
   store.projectSnapshot = (targets, snapshot) => {

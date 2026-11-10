@@ -76,4 +76,12 @@ type StreamEvent struct {
 
 	// Passthrough
 	Raw map[string]any `json:"raw,omitempty"`
+
+	// ContentBearing marks a PROVIDER_EVENT the adapter knows the caller
+	// observes, so retrying the attempt would republish it: a refusal delta or
+	// an unmappable tool-call fragment, for example. Adapters set it on
+	// passthrough frames carrying model output; control and lifecycle frames
+	// leave it false. A content-bearing passthrough commits the attempt the way
+	// a text delta does: StreamGenerate will not retry after forwarding one.
+	ContentBearing bool `json:"content_bearing,omitempty"`
 }

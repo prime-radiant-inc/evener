@@ -989,6 +989,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
 		IsSubagent:      thread.Evener.Kind == "subagent",
+		ForkLabel:       thread.Evener.ForkLabel,
 		// The row's last message reaches the tree through the meta too, so an
 		// offline host's last-known row, which is not live, keeps it (S1d).
 		LastMessage: thread.Evener.LastMessage,
@@ -1013,12 +1014,14 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 			Model:      thread.ModelProvider,
 			StartedAt:  hubcore.OrderCreatedAt(createdAt, updatedAt),
 		},
-		SessionID: refText,
-		Project:   project,
+		SessionID:        refText,
+		RosterInstanceID: envvars.FirstNonEmpty(thread.Evener.InstanceID, thread.SessionID),
+		Project:          project,
+		Capabilities:     appwire.ThreadCapabilities{AskFence: thread.Evener.Capabilities.AskFence},
 	}
 	// The remote row reads its thread-row facts through the one shared reader,
-	// so it cannot drift from the local probe (#2638). Capabilities and
-	// ActiveFlags stay absent on a remote row; only a local probe answers them.
+	// including ask pageability. Local probe authority and activity flags remain
+	// absent; a remote ask capability does not confer local mutation authority.
 	entry = hubcore.LiveEntryThreadFacts(entry, hubcore.ProbeResultFromThread(thread))
 	return meta, entry, true
 }

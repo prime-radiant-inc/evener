@@ -262,10 +262,9 @@ func TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer(t *testing.T) {
 	dir := t.TempDir()
 	writeTestMarketplace(t, dir)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:       hubcore.NewPastIndex(""),
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		PluginRoot: t.TempDir(),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.MarketplaceAdd(context.Background(), client, appwire.MarketplaceAddParams{

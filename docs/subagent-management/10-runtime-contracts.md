@@ -135,7 +135,7 @@ Tool lifecycle:
 9. tool-start event emits after the call is accepted for execution, or the contract explicitly labels start events as attempted calls if current code emits earlier;
 10. tool executes;
 11. tool-end/failure event emits;
-12. compatibility `PostToolUse` hooks run according to the lifecycle-hooks spec. Failure/batch hook names are reserved until implemented and tiered in the lifecycle-hooks spec.
+12. compatibility `PostToolUse` hooks run when the tool succeeded, `PostToolUseFailure` when it ran and failed, and `PostToolBatch` once per tool-executing round before the next model request — tiered and documented in the lifecycle-hooks spec and [Hooks](../hooks.md#which-events-evener-fires).
 
 Current Evener emits `TOOL_CALL_START` before registry lookup, schema validation, middleware, and execution policy. Until migrated, treat that event as an attempted-call observation and test both current and target ordering during the migration.
 

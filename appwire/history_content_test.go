@@ -83,6 +83,84 @@ func TestThreadContentIndependentCategories(t *testing.T) {
 	}
 }
 
+func TestThreadWindowViewKeyNormalizesEquivalentRequests(t *testing.T) {
+	base := ThreadWindowParams{
+		TurnWindow: &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:  []string{"reasoning", "messages", "reasoning"},
+	}
+	equivalent := ThreadWindowParams{
+		TurnWindow:   &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:    []string{"messages", "reasoning"},
+		PreviewBytes: ThreadWindowPreviewBytesDefault,
+		MessageBytes: ThreadWindowMessageBytesDefault,
+	}
+	baseKey := base.ViewKey(0)
+	if baseKey == "" || equivalent.ViewKey(ThreadWindowItemLimitDefault) != baseKey {
+		t.Fatalf("equivalent normalized window keys differ: %q / %q", baseKey, equivalent.ViewKey(ThreadWindowItemLimitDefault))
+	}
+	for name, changed := range map[string]struct {
+		params    ThreadWindowParams
+		itemLimit int
+	}{
+		"window form": {params: ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Before: &ThreadTurnBoundary{TurnID: "turn_2", Limit: 3}}, ItemTypes: base.ItemTypes}},
+		"boundary":    {params: ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Since: "turn_1", Limit: 3}, ItemTypes: base.ItemTypes}},
+		"types":       {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: []string{"messages"}}},
+		"preview":     {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: base.ItemTypes, PreviewBytes: ThreadWindowPreviewBytesDefault + 1}},
+		"message":     {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: base.ItemTypes, MessageBytes: ThreadWindowMessageBytesDefault + 1}},
+		"item limit":  {params: base, itemLimit: ThreadWindowItemLimitDefault + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := changed.params.ViewKey(changed.itemLimit); got == baseKey {
+				t.Fatalf("changed view reused key %q", got)
+			}
+		})
+	}
+	if got := (ThreadWindowParams{}).ViewKey(0); got != "" {
+		t.Fatalf("legacy window key = %q, want empty", got)
+	}
+}
+
+func TestThreadWindowViewIncarnationFencesNormalizedView(t *testing.T) {
+	base := "index-incarnation"
+	params := ThreadWindowParams{
+		TurnWindow: &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:  []string{"reasoning", "messages", "reasoning"},
+	}
+	equivalent := ThreadWindowParams{
+		TurnWindow:   &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:    []string{"messages", "reasoning"},
+		PreviewBytes: ThreadWindowPreviewBytesDefault,
+		MessageBytes: ThreadWindowMessageBytesDefault,
+	}
+	got := params.ViewIncarnation(base, 0)
+	if got == base || equivalent.ViewIncarnation(base, ThreadWindowItemLimitDefault) != got {
+		t.Fatalf("normalized view incarnations differ or reused base: %q", got)
+	}
+	if changed := (ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Latest: 3}, ItemTypes: params.ItemTypes}).ViewIncarnation(base, 0); changed == got {
+		t.Fatalf("changed window reused incarnation %q", got)
+	}
+	if source, ok := params.SourceIncarnation(got, 0); !ok || source != base {
+		t.Fatalf("source incarnation = %q, %v, want %q, true", source, ok, base)
+	}
+	if got := (ThreadWindowParams{}).ViewIncarnation(base, 0); got != base {
+		t.Fatalf("legacy incarnation = %q, want %q", got, base)
+	}
+}
+
+func TestThreadWindowSourceIncarnationFromFetchIdentity(t *testing.T) {
+	params := ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Latest: 3}, ItemTypes: []string{"messages"}}
+	want := "source-incarnation"
+	view := params.ViewIncarnation(want, 10)
+	if got, ok := ThreadWindowSourceIncarnation(view); !ok || got != want {
+		t.Fatalf("source incarnation = %q, %v; want %q, true", got, ok, want)
+	}
+	for _, invalid := range []string{"source-incarnation", "window1.bad", "window1.bad:", "window1.bad:not-base64"} {
+		if got, ok := ThreadWindowSourceIncarnation(invalid); ok || got != "" {
+			t.Errorf("invalid view %q decoded as %q, %v", invalid, got, ok)
+		}
+	}
+}
+
 func TestThreadContentToolIntentsRetainIdentityWithoutToolPayload(t *testing.T) {
 	t.Parallel()
 	no := false

@@ -52,3 +52,48 @@ func TestThreadSnapshotsCarryTheRestingFailureOnlyWhileFailed(t *testing.T) {
 		t.Fatalf("a working session's row carries the failure %+v", got)
 	}
 }
+
+// A model call waiting out a usage limit keeps its session working, so the
+// failure gate above would hide the wait. A summary that names when the call
+// resumes is shown on a working row too, so the row can say the session waits
+// for quota. The wait's start (MODEL_RETRY) samples it, and the retry that
+// ends it (another MODEL_RETRY, with no delay), the call's next answer
+// (ASSISTANT_TEXT_END) or a model switch re-samples it once the wait is over.
+func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	listed := func() *appwire.ThreadFailure {
+		t.Helper()
+		list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{StatusOnly: true})
+		if err != nil {
+			t.Fatalf("thread/list: %v", err)
+		}
+		return list.Data[0].Evener.Failure
+	}
+	srv.SetState(appwire.ThreadStatusActive)
+
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000}
+	for _, ended := range []events.EventData{
+		// The retry that ends the wait is announced as it goes out, so the
+		// row drops the wait before the retry's response streams.
+		events.ModelRetryData{Attempt: 1},
+		events.AssistantTextEndData{Text: "back at work"},
+		events.ModelChangedData{NewProvider: "openai", NewModel: "gpt-5.4"},
+	} {
+		src.failure = waiting
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventModelRetry, SessionID: "root", Data: events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000}}, nil)
+		if got := listed(); !reflect.DeepEqual(got, waiting) {
+			t.Fatalf("a working session waiting for quota lists %+v, want %+v", got, waiting)
+		}
+		if got := readThreadOverWire(t, srv, "local:root").Evener.Failure; !reflect.DeepEqual(got, waiting) {
+			t.Fatalf("a working session waiting for quota reads %+v, want %+v", got, waiting)
+		}
+
+		src.failure = nil
+		BridgeEvent(srv, events.SessionEvent{Kind: events.KindOf(ended), SessionID: "root", Data: ended}, nil)
+		if got := listed(); got != nil {
+			t.Fatalf("after %s the row still carries the wait %+v", events.KindOf(ended), got)
+		}
+	}
+}

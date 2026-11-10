@@ -516,3 +516,148 @@ func TestTranscript_ResultToolFromMeta(t *testing.T) {
 		t.Error("submit_answer should be flagged as the result tool")
 	}
 }
+
+// firstTurn is the turn number of a result's first row, or -1 when it has
+// none or that row is unnumbered.
+func firstTurn(r TranscriptResult) int {
+	if len(r.Turns) == 0 || r.Turns[0].Turn == nil {
+		return -1
+	}
+	return *r.Turns[0].Turn
+}
+
+// The range selects read_transcript turn numbers with read_transcript's
+// grammar: start:N is the first N turns, N-M is inclusive and clamped.
+func TestTranscriptRange_StartAndSpan(t *testing.T) {
+	base, sid := countFixture(t) // turns 0, 1, 2
+	for _, tc := range []struct {
+		spec           string
+		rendered, from int
+	}{
+		{"start:2", 2, 0},
+		{"1-2", 2, 1},
+		{"1-99", 2, 1},
+		{"last:1", 1, 2},
+		{" 1-2 ", 2, 1},  // surrounding whitespace is ignored, as in read_transcript
+		{"2-1", 0, -1},   // N > M selects nothing
+		{"99-98", 0, -1}, // even past the end
+	} {
+		r, err := Transcript(base, sid, TranscriptOpts{Range: tc.spec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.TurnsRendered != tc.rendered || len(r.Turns) != tc.rendered || firstTurn(r) != tc.from {
+			t.Errorf("%s rendered=%d rows=%d first=%d, want %d rows from turn %d", tc.spec, r.TurnsRendered, len(r.Turns), firstTurn(r), tc.rendered, tc.from)
+		}
+	}
+}
+
+// A malformed range recovers the way read_transcript's does: the whole
+// transcript renders, and the result and its rendering say why.
+func TestTranscriptRange_MalformedSpecFallsBackWithWarning(t *testing.T) {
+	base, sid := countFixture(t)
+	r, err := Transcript(base, sid, TranscriptOpts{Range: "garbage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.RangeWarning == "" || r.TurnsRendered != 3 || len(r.Turns) != 3 {
+		t.Fatalf("garbage range = warning %q, %d rows; want a warning over all 3 turns", r.RangeWarning, len(r.Turns))
+	}
+	if out := RenderTranscript(r, "outline"); !strings.Contains(out, r.RangeWarning) {
+		t.Fatalf("rendered transcript does not surface the warning:\n%s", out)
+	}
+}
+
+// The outline lists each turn's tool results, marking a result with no name
+// and an error result so neither reads as a plain named success.
+func TestRenderTranscript_OutlineToolResults(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("job_watch", "ok", false),
+		}}),
+	}
+	writeRichSession(t, bucket, sidB, turns, nil, schema.SessionMeta{})
+	r, err := Transcript(base, sidB, TranscriptOpts{Format: "outline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := RenderTranscript(r, "outline"); !strings.Contains(out, "job_watch") {
+		t.Errorf("outline should list tool results:\n%s", out)
+	}
+	unnamed := toolResultNames([]ToolResultSummary{{}})
+	unnamedError := toolResultNames([]ToolResultSummary{{IsError: true}})
+	if unnamed == "" || unnamedError == unnamed {
+		t.Errorf("unnamed result = %q, unnamed error = %q; want both marked and distinct", unnamed, unnamedError)
+	}
+}
+
+// The markdown view marks the session's result-tool call apart from an
+// ordinary tool call.
+func TestRenderTranscript_MarkdownResultLabel(t *testing.T) {
+	base, sid := countFixture(t)
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result, other bool
+	for _, turn := range r.Turns {
+		for _, tc := range turn.ToolCalls {
+			result = result || (tc.Name == "communicate" && tc.IsResult)
+			other = other || (tc.Name == "read_file" && !tc.IsResult)
+		}
+	}
+	if !result || !other {
+		t.Fatalf("tool calls flagged result=%v other=%v, want communicate flagged and read_file not", result, other)
+	}
+	marked := RenderTranscript(r, "markdown")
+	for i := range r.Turns {
+		for j := range r.Turns[i].ToolCalls {
+			r.Turns[i].ToolCalls[j].IsResult = false
+		}
+	}
+	if RenderTranscript(r, "markdown") == marked {
+		t.Error("markdown renders the result call the same as an ordinary call")
+	}
+}
+
+// summarizeTurn must skip content parts whose ToolCall/ToolResult pointer is nil.
+func TestSummarizeTurn_SkipsNilParts(t *testing.T) {
+	e := transcript.Entry{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: nil},
+			{Kind: llm.ContentToolResult, ToolResult: nil},
+			{Kind: llm.ContentText, Text: "hi"},
+		},
+	})}
+	ts := summarizeTurn(e, "communicate", DefaultTextMax)
+	if len(ts.ToolCalls) != 0 || len(ts.ToolResults) != 0 {
+		t.Errorf("nil parts should be skipped: %+v", ts)
+	}
+	if ts.Text != "hi" {
+		t.Errorf("text = %q, want hi", ts.Text)
+	}
+}
+
+func TestToolResultContentText_Kinds(t *testing.T) {
+	if got := toolResultContentText(nil); got != "" {
+		t.Errorf("nil = %q, want empty", got)
+	}
+	if got := toolResultContentText("plain"); got != "plain" {
+		t.Errorf("string = %q, want plain", got)
+	}
+	if got := toolResultContentText(map[string]any{"a": 1}); got != `{"a":1}` {
+		t.Errorf("map = %q, want its JSON", got)
+	}
+}
+
+// A count of one renders differently from the same text with any other count.
+func TestRenderCount_Singular(t *testing.T) {
+	one := RenderCount(CountResult{Tool: "read_file", Calls: 1})
+	two := RenderCount(CountResult{Tool: "read_file", Calls: 2})
+	if strings.Replace(two, "2", "1", 1) == one {
+		t.Errorf("one call renders as %q, the plural form with its count swapped", one)
+	}
+}

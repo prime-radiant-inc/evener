@@ -29,7 +29,7 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -85,6 +85,11 @@ export interface ComposerSourceSnapshot {
 export interface ComposerSourceState {
   readonly ref: string;
   readonly alive: boolean;
+  /** The ref an active recovery send must target: the row's durable
+   * destination, which follows a peer retarget once a write of ours has
+   * observed the moved row. The pane may still display this source's own ref
+   * after such a retarget, so this is not necessarily `ref`. */
+  readonly recoveryTargetRef: string;
   readonly attachments: AttachmentStore;
   readonly editor: TextEditor;
   readonly continuity: {
@@ -154,6 +159,19 @@ function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
 /** Original conversation work belongs to its pane, not to an editor mount. */
 const defaultCompositionOwners = new Map<string, string>();
 
+/** The per-ref default composition owner: the owner a composer source minted
+ * without an explicit owner carries. Seeded recovery rows use it so a test's
+ * default-seeded row belongs to the same seat a default mount restores, the
+ * way a real pane's row belongs to that pane. */
+export function defaultCompositionOwner(ref: string): string {
+  let owner = defaultCompositionOwners.get(ref);
+  if (owner === undefined) {
+    owner = createSecureUUID();
+    defaultCompositionOwners.set(ref, owner);
+  }
+  return owner;
+}
+
 /** A recovery whose submission has started is no longer available to an Edit
  * press from a remounted composer. The submission already owns the captured
  * composition; restoring it through a fresh source would write a new revision
@@ -174,9 +192,7 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
-  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
-  if (ownerId === undefined && !defaultCompositionOwners.has(ref))
-    defaultCompositionOwners.set(ref, compositionOwnerId);
+  const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -224,6 +240,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // The last durable shape this pane owned, so a refused write can preserve
   // the local composition under a fresh owner with the same method and target.
   let recoveryBaseRecord: MutationRecoveryRecord | null = null;
+  // The durable destination of the row this source owns, if any. Reconciled
+  // by every write that observes the row's current targetRef, so a peer's
+  // retarget followed by one successful autosave of ours is enough to move it.
+  let recoveryTargetRef = ref;
   let committedRecoveryComposition: string | null = null;
   let refreshVersion = 0;
   let persistenceScheduled = false;
@@ -275,6 +295,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
+  function reconcileRecoveryTarget(targetRef: string): void {
+    recoveryTargetRef = targetRef;
+  }
   function currentDraftText(): string {
     return ownsDraft() ? textRef.current : readComposerDraft(ref).text;
   }
@@ -327,6 +350,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
+    reconcileRecoveryTarget(record?.targetRef ?? ref);
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
@@ -387,12 +411,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextComposerText?: string,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
-    const isEmptyCleanup =
-      nextText.trim() === "" &&
-      nextAttachments.length === 0 &&
-      nextSkillNames.length === 0 &&
-      nextCommandNames.length === 0 &&
-      (nextMentions?.length ?? 0) === 0;
+    const isEmptyCleanup = compositionIsEmpty({
+      text: nextText,
+      attachments: nextAttachments,
+      skillNames: nextSkillNames,
+      commandNames: nextCommandNames,
+      mentions: nextMentions,
+    });
     if (!isEmptyCleanup) cancelCleanupRetry();
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
@@ -411,11 +436,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         )
           return true;
         if (
-          nextText.trim() === "" &&
-          nextAttachments.length === 0 &&
-          nextSkillNames.length === 0 &&
-          nextCommandNames.length === 0 &&
-          (nextMentions?.length ?? 0) === 0
+          compositionIsEmpty({
+            text: nextText,
+            attachments: nextAttachments,
+            skillNames: nextSkillNames,
+            commandNames: nextCommandNames,
+            mentions: nextMentions,
+          })
         ) {
           const lease = recoveryOwnerLeaseRef.current;
           if (!lease || lease.clientMutationId !== clientMutationId) return false;
@@ -507,6 +534,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             compositionRevision: recoveryCompositionRevision(updated),
           };
           recoveryBaseRecord = updated;
+          // The write returned the row's current durable target: a peer may
+          // have retargeted the row without changing its composition revision.
+          reconcileRecoveryTarget(updated.targetRef);
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: nextText,
             attachments: nextAttachments,
@@ -576,7 +606,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       const operation = recoveryWrites
         .catch(() => undefined)
         .then(async () => {
-          if (disposed || operations.hasPending || record.targetRef !== ref) return false;
+          // The record's durable destination may be a resumed ref while the
+          // composer in front of the user is the displayed one the row was
+          // retargeted from - the strip surfaces such rows under the
+          // displayed ref, so the displayed composer must be able to open
+          // its associated record. The row's own targetRef still governs
+          // every durable operation; this gate is association only.
+          const associatedHere = record.targetRef === ref || record.displayedRef === ref;
+          if (disposed || operations.hasPending || !associatedHere) return false;
           if (currentRecoveryId() === record.clientMutationId) return false;
           // Keep this object: the recovery wrapper carries older-record image
           // reference provenance by identity, not in enumerable properties.
@@ -828,6 +865,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     ref,
     get alive() {
       return !disposed;
+    },
+    get recoveryTargetRef() {
+      return recoveryTargetRef;
     },
     attachments,
     editor,

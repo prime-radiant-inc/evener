@@ -230,6 +230,9 @@ function assertResult(result, expectedWidth) {
     if (card.attach !== null && card.attach.width < TAP_MIN_PX - 0.5) {
       failures.push(`the attach button is ${card.attach.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
     }
+    if (card.effort !== null && card.effort.width < TAP_MIN_PX - 0.5) {
+      failures.push(`the effort control is ${card.effort.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
+    }
     // Model AND effort live in the prompt card (composer unification);
     // Plugins is the fifth row.
     if (result.rows.length !== 5) failures.push(`expected 5 mobile setting rows, found ${result.rows.length}`);

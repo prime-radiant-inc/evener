@@ -96,10 +96,14 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 // a note cannot be erased into suppression. The fallback agrees with
 // freshNotes for every note riding an ID's status word - the raw path also
 // carries a notes-only touch for an ID whose batch has no status word at
-// all, hung on the window's state-derived slot; the argument-only fallback
-// has no such slot and no row to hang it on, so that one shape renders only
-// on the raw path, the same degradation as a fresh note on an appended
-// task. Whether a status is RENDERABLE stays updateRows' own filter.
+// all, hung on the window's state-derived slot. The argument-only fallback
+// has no such slot, so the WEB CARD gives that note its own row instead
+// (taskCard.tsx's statuslessNoteRows, Jesse's ruling on #2257) rather than
+// losing it - the same treatment a fresh note on an appended task still
+// lacks, since an appended task has no client-visible id to key it. These
+// mutationRows-derived rows are unchanged, so a mutationRows-only consumer
+// (the phone's step lines) still does not render a status-less note.
+// Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
 // batch ends.
 function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {

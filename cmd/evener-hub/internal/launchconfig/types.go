@@ -23,12 +23,14 @@ type Layer struct {
 	OpenAIResponsesContinuation string            `toml:"openai_responses_continuation,omitempty"`
 	ProviderIdleTimeout         string            `toml:"provider_idle_timeout,omitempty"`
 	Sandbox                     string            `toml:"sandbox,omitempty"`
+	CommitProvenance            string            `toml:"commit_provenance,omitempty"`
 	SandboxNet                  *bool             `toml:"sandbox_net,omitempty"`
 	MaxRounds                   *int              `toml:"max_rounds,omitempty"`
 	MaxSubagentDepth            *int              `toml:"max_subagent_depth,omitempty"`
 	MaxConcurrentDelegateTurns  *int              `toml:"max_concurrent_delegate_turns,omitempty"`
 	MaxRetainedTerminal         *int              `toml:"max_retained_terminal,omitempty"`
 	NonInteractive              *bool             `toml:"non_interactive,omitempty"`
+	MemoryEnabled               *bool             `toml:"memory_enabled,omitempty"`
 	AppReplaySize               *int              `toml:"app_replay_size,omitempty"`
 	SkillsDirs                  []string          `toml:"skills_dirs,omitempty"`
 	PluginDirs                  []string          `toml:"plugin_dirs,omitempty"`
@@ -88,6 +90,11 @@ type Resolved struct {
 	// unconditionally so the child always sees an explicit value — a zero
 	// here means "automatic retirement disabled", never "flag absent".
 	DaemonIdleTimeout time.Duration
+	// Manager starts the daemon as a Manager of the sessions its hub can reach.
+	// Like DaemonIdleTimeout it is a runtime-only launch parameter, never read
+	// from or written to launch.toml: the Hub assigns it from the start request,
+	// and the daemon persists it with the session so a resume keeps it.
+	Manager bool
 }
 
 // TrustState describes the in-repo .evener/launch.toml trust outcome.

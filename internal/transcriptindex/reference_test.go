@@ -239,6 +239,17 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+			for at := len(s.items) - 1; at >= 0; at-- {
+				if s.items[at].Type == "agentMessage" {
+					s.items[at].CallID = entry.Communicate.CallID
+					s.items[at].Observation = &appwire.SessionObservationMetadata{
+						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: entry.Communicate.EndReason,
+						CausalKnown: entry.CausalKnown, Causal: entry.Causal,
+					}
+					s.items[at].Version = uint64(entryIndex)
+					break
+				}
+			}
 			continue
 		}
 		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)
@@ -441,7 +452,9 @@ func allTurns(projection []referenceTurn) []appwire.Turn {
 // referenceCandidates is the reference projection as the chronological
 // candidate list a window read returns: items in position order, each
 // candidate's Turn carrying no items, and HasEarlierItems/HasLaterItems
-// reporting whether the neighbouring item belongs to the same turn.
+// reporting whether any other item of the same logical turn comes before or
+// after it. A turn a later entry reopens is one logical turn across items that
+// are not physically adjacent.
 func referenceCandidates(t testing.TB, path string) []appitempaging.TranscriptItemCandidate {
 	t.Helper()
 	projection, reg := referenceProjectionAndRegistry(t, path)
@@ -472,8 +485,8 @@ func candidatesOf(projection []referenceTurn) []appitempaging.TranscriptItemCand
 	sorted := make([]appitempaging.TranscriptItemCandidate, len(order))
 	for i, at := range order {
 		sorted[i] = candidates[at]
-		sorted[i].HasEarlierItems = i > 0 && turnOf[order[i-1]] == turnOf[at]
-		sorted[i].HasLaterItems = i+1 < len(order) && turnOf[order[i+1]] == turnOf[at]
+		sorted[i].HasEarlierItems = slices.ContainsFunc(order[:i], func(before int) bool { return turnOf[before] == turnOf[at] })
+		sorted[i].HasLaterItems = slices.ContainsFunc(order[i+1:], func(after int) bool { return turnOf[after] == turnOf[at] })
 	}
 	return sorted
 }

@@ -261,7 +261,7 @@ func TestFromGeminiResponseDecoderArms(t *testing.T) {
 			"fc thought_signature":   {`{"functionCall":{"thought_signature":"fsnake"}}`, "fsnake"},
 		} {
 			t.Run(name, func(t *testing.T) {
-				r := fromGeminiResponse(fcRaw(tc.part), "m")
+				r := fromGeminiResponse(fcRaw(tc.part), "m", nil)
 				calls := r.ToolCalls()
 				if len(calls) != 1 || calls[0].ThoughtSignature != tc.want {
 					t.Fatalf("ThoughtSignature = %v, want %q (%+v)", calls, tc.want, r.Message)
@@ -274,7 +274,7 @@ func TestFromGeminiResponseDecoderArms(t *testing.T) {
 		raw := map[string]any{"candidates": []any{map[string]any{
 			"content": map[string]any{"parts": []any{"nope", map[string]any{"text": "hi"}}},
 		}}}
-		r := fromGeminiResponse(raw, "m")
+		r := fromGeminiResponse(raw, "m", nil)
 		if len(r.Message.Content) != 1 || r.Message.Content[0].Text != "hi" {
 			t.Fatalf("content = %#v, want the single decodable text part", r.Message.Content)
 		}
@@ -284,7 +284,7 @@ func TestFromGeminiResponseDecoderArms(t *testing.T) {
 		raw := map[string]any{"candidates": []any{map[string]any{
 			"groundingMetadata": map[string]any{"webSearchQueries": []any{"q1", 42, "q2"}},
 		}}}
-		r := fromGeminiResponse(raw, "m")
+		r := fromGeminiResponse(raw, "m", nil)
 		var web *llm.WebSearchData
 		for _, p := range r.Message.Content {
 			if p.Kind == llm.ContentWebSearch {

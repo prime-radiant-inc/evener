@@ -13,14 +13,20 @@ const teamId = process.env.APPLE_TEAM_ID ?? "";
 // Metro, Android prebuild) loads without it.
 
 const APP_GROUP = "group.com.primeradiant.evener.native";
+const VOICE_PERMISSION =
+	"Talk to your chosen Evener manager while voice is armed, including while the iPhone is locked.";
 
 /** @type {import("expo/config").ExpoConfig} */
 const config = {
 	expo: {
 		name: "Evener",
 		slug: "evener-native",
-		version: "0.3.0",
-		orientation: "portrait",
+		version: "0.3.18",
+		// Landscape is supported on both phones and the Duo. The Board and
+		// conversation inset their content by the left/right safe areas, so the
+		// notch and Dynamic Island stay clear. Expo maps "default" to every
+		// interface orientation.
+		orientation: "default",
 		icon: "./assets/evener-icon.png",
 		userInterfaceStyle: "automatic",
 		backgroundColor: "#0a0a0e",
@@ -32,6 +38,8 @@ const config = {
 				"com.apple.security.application-groups": [APP_GROUP],
 			},
 			infoPlist: {
+				NSMicrophoneUsageDescription: VOICE_PERMISSION,
+				UIBackgroundModes: ["audio"],
 				NSLocalNetworkUsageDescription: "Connect to your Evener hubs on your local network.",
 				NSAppTransportSecurity: {
 					NSAllowsArbitraryLoads: true,
@@ -41,6 +49,7 @@ const config = {
 			},
 		},
 		android: {
+			blockedPermissions: ["android.permission.RECORD_AUDIO"],
 			adaptiveIcon: {
 				backgroundColor: "#E6F4FE",
 				foregroundImage: "./assets/android-icon-foreground.png",
@@ -60,9 +69,6 @@ const config = {
 			[
 				"expo-build-properties",
 				{
-					ios: {
-						enableSceneSupport: true,
-					},
 					android: {
 						usesCleartextTraffic: true,
 					},
@@ -84,8 +90,9 @@ const config = {
 				"expo-image-picker",
 				{
 					photosPermission: "Choose images to attach to your Evener conversations.",
-					cameraPermission: "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
-					microphonePermission: false,
+					cameraPermission:
+						"Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
+					microphonePermission: VOICE_PERMISSION,
 				},
 			],
 			[
@@ -101,16 +108,21 @@ const config = {
 			[
 				"expo-camera",
 				{
-					cameraPermission: "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
-					microphonePermission: false,
+					cameraPermission:
+						"Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
+					microphonePermission: VOICE_PERMISSION,
 					recordAudioAndroid: false,
 				},
 			],
 			// The iOS share extension target (targets/share). It is generated
 			// only when a team id is present, since the plugin refuses without
 			// one and the app's own JS checks (typecheck, bundling) load this
-			// config on machines that never prebuild iOS.
-			...(teamId ? ["@bacons/apple-targets"] : []),
+			// config on machines that never prebuild iOS. The mod before the
+			// generator restores the extension's iPhone-only device family,
+			// which the generator defaults to "1,2" and re-replaces on every
+			// repeat; same-name mods run in reverse registration order, so
+			// earlier registration means it runs after the generator.
+			...(teamId ? ["./plugins/with-share-iphone-only", "@bacons/apple-targets"] : []),
 		],
 		scheme: "evener-native",
 	},

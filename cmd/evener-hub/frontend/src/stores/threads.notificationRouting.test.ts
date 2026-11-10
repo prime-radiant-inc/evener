@@ -7,6 +7,7 @@ import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { emitAtResponseCut, markResponseCut } from "./threadHydrationTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
@@ -52,28 +53,6 @@ function versionedReadResponse(
 
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
-}
-
-function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
-  return {
-    ...response,
-    get olderCursor(): string | undefined {
-      cut.reached = true;
-      return response.olderCursor;
-    },
-  };
-}
-
-async function emitAtResponseCut(
-  cut: { reached: boolean },
-  ref: string,
-  emit: () => void,
-  published: () => boolean = () => threadsStore.getState().threads.has(ref),
-): Promise<void> {
-  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
-  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
-  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
-  emit();
 }
 
 describe("notification routing", () => {

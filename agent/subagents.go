@@ -24,25 +24,28 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
 
-// SubagentStatus tracks the lifecycle of a sub-agent.
-type SubagentStatus string
+// SubagentStatus tracks the lifecycle of a sub-agent run. It is the declared
+// delegate run machine, so the in-memory subagent model and the durable
+// delegate store name the same states.
+type SubagentStatus = appwire.DelegateRunStatus
 
 const (
 	// SubagentRunning indicates the sub-agent is currently executing a run.
-	SubagentRunning SubagentStatus = "running"
+	SubagentRunning = appwire.DelegateRunRunning
 	// SubagentCompleted indicates the sub-agent's run finished without error.
-	SubagentCompleted SubagentStatus = "completed"
+	SubagentCompleted = appwire.DelegateRunCompleted
 	// SubagentFailed indicates the sub-agent's run finished with an error.
-	SubagentFailed SubagentStatus = "failed"
+	SubagentFailed = appwire.DelegateRunFailed
 	// SubagentCancelled indicates the sub-agent's run was cancelled.
-	SubagentCancelled SubagentStatus = "cancelled"
+	SubagentCancelled = appwire.DelegateRunCancelled
 	// SubagentExhausted indicates the sub-agent stopped at a configured budget.
-	SubagentExhausted SubagentStatus = "exhausted"
+	SubagentExhausted = appwire.DelegateRunExhausted
 )
 
 // subagentResult is the structured output from a completed sub-agent.
@@ -95,24 +98,31 @@ type subagent struct {
 	err                   error
 	resultConsumed        bool // true after the first wait returns this run's result
 	endEmitted            bool
-	runProvenance         *provenance.Causal        // immutable causal provenance for the completed run result
-	runStructured         any                       // communicate structured result captured before this run releases its finalization gate
-	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
-	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
-	cancel                context.CancelFunc        // cancels the current run's context
-	cancelRequested       bool                      // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
-	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
-	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
-	agentType             string                    // plugin agent type name; empty for default subagents
-	createdAt             time.Time                 // set once at spawn; never reset on resume
-	startedAt             time.Time                 // set at spawn; re-stamped at each idle-resume
-	endedAt               *time.Time                // set at run finalize; cleared to nil at idle-resume
-	stableDescriptor      *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
-	closed                bool                      // session torn down; record retained as terminal history
-	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
-	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
-	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
-	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
+	runProvenance         *provenance.Causal // immutable causal provenance for the completed run result
+	runStructured         any                // communicate structured result captured before this run releases its finalization gate
+	runStructuredCaptured bool               // runStructured was captured, including an authoritative nil result
+	nudgeEnabled          bool               // true for default subagents that should be nudged to communicate
+	cancel                context.CancelFunc // cancels the current run's context
+	cancelRequested       bool               // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
+	userStopRequested     bool               // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
+	settlementClaimed     bool               // cancellation admission closes after the run's final pre-settlement check
+	// hookStopped is set when a SubagentStop continue:false ended this run. The
+	// terminal packet is then built from the hook's reason alone: the child's own
+	// communicated report belongs to an earlier turn, and both the drain and
+	// captureCommunicateReport would otherwise replace the hook's result with it.
+	hookStopped      bool
+	agentType        string                    // plugin agent type name; empty for default subagents
+	createdAt        time.Time                 // set once at spawn; never reset on resume
+	startedAt        time.Time                 // set at spawn; re-stamped at each idle-resume
+	endedAt          *time.Time                // set at run finalize; cleared to nil at idle-resume
+	stableDescriptor *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
+	closed           bool                      // session torn down; record retained as terminal history
+	closeTimedOut    bool                      // session-close wait exceeded its bound; close not confirmed
+	driving          bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
+	driveCancel      context.CancelFunc        // cancels the drive turn in flight; nil when none is
+	driveStopped     bool                      // a Stop (stopDrive) cancelled the drive turn in flight
+	fatalRunGated    bool                      // terminal run error freezes automatic drives until an explicit resume
+	finalizing       bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -699,6 +709,21 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 	return ""
 }
 
+// subagentHookAgentType is the agent type a SubagentStart/SubagentStop matcher
+// targets and the value the same hooks receive as agent_type input. A plugin
+// agent is named by its catalog key (plugin:agent); an unnamed delegate's
+// descriptor carries the sentinel "default" and must report its resolved name.
+func subagentHookAgentType(requested, agentName string) string {
+	if r := strings.TrimSpace(requested); r != "" && r != "default" {
+		return r
+	}
+	// A legacy frozen descriptor and an unnamed plugin agent can both carry an
+	// empty agent name; the type must still never be empty inside a subagent.
+	if agentName == "" {
+		return "subagent"
+	}
+	return agentName
+}
 func (s *Session) prepareDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
@@ -756,6 +781,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.ForceRealIO = parentCfg.ForceRealIO
 	subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
 	subCfg.spawn.descendantRecorded = parentCfg.spawn.descendantRecorded
+	subCfg.spawn.descendantPublication = parentCfg.spawn.descendantPublication
 	subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
 	subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
 	subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock
@@ -786,6 +812,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if frozen != nil {
 		subCfg = subagentConfigFromFrozenDescriptor(frozen.Config, parentCfg)
 	}
+	// Ordinary children never inherit the parent's session-start role.
+	subCfg.Manager = false
 	subCfg.artifactStore = s.artifactStore
 	subCfg.artifactStoreInherited = true
 	subCfg.MCPConfigFiles = nil
@@ -816,7 +844,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
-	subCfg.spawn.parentSteer = s.SteerWithProvenance
+	subCfg.spawn.parentSteer = s.steerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
@@ -855,6 +883,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 	canonicalGrantTools := s.canonicalizeToolNames(grantTools)
 
 	agentName, rolePrompt := s.applyChildRole(&subCfg, agent, frozen, childCanDelegate)
+	requestedAgentType := agentType
+	if frozen != nil {
+		requestedAgentType = frozen.AgentType
+	}
+	subCfg.spawn.agentType = subagentHookAgentType(requestedAgentType, agentName)
 	if err := s.applyChildSkillPreloads(ctx, &subCfg, agent, frozen); err != nil {
 		return nil, err
 	}
@@ -904,6 +937,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subSess.recordEnvironmentOwnership(subEnv, ownsFreshEnv)
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess)
+	}
+	if err := subSess.mintBootGeneration(); err != nil {
+		disposeUnadopted()
+		return nil, fmt.Errorf("child boot generation: %w", err)
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -1273,7 +1310,7 @@ func (s *Session) seedChildTasks(subSess *Session, agent *plugin.Agent, frozen *
 				return err
 			}
 		} else if current, ok := subStore.CurrentInProgress(); ok {
-			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+			if err := subSess.steerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 				return err
 			}
 		}
@@ -1354,7 +1391,7 @@ func (s *Session) hasSalvageFromFinalRound() bool {
 func (a *subagent) trySetDisposeGate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.running || a.driving {
+	if a.running || a.driving || a.finalizing || a.disposeGated {
 		return false
 	}
 	a.disposeGated = true
@@ -1397,6 +1434,14 @@ var driveRedriveMinInterval = 1 * time.Second
 // in flight per child at a time (the EntryNotification drain loop self-services
 // every queued notification within that single turn, so one launch suffices). No
 // session or jobManager lock is held while ProcessInputKind runs.
+// notificationDriveBlockedLocked reports whether the child is in a state
+// that must refuse a notification drive: gone, closed, busy in a run or a
+// drive, or gated against one. The caller holds a.mu; the nil-session term
+// short-circuits before the committed-send check reads the session id.
+func (a *subagent) notificationDriveBlockedLocked(s *Session) bool {
+	return a.sess == nil || a.closed || a.running || a.driving || a.disposeGated || a.fatalRunGated || a.finalizing || s.childCommittedSendStart(a.sess.id)
+}
+
 // driveSubagentNotificationTurn returns true when it launches a drive turn
 // (a successful handoff) and false when the live/idle guard skips the child
 // (closed, mid-run, or already being driven). The caller uses the handoff result
@@ -1415,8 +1460,40 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			release()
 		}
 	}()
+	// The busy/gated guard runs before the lane revalidation so a closed or
+	// gated child never pays the revalidation's git work — and never
+	// re-locks a lane a concurrent disposer just unlocked. The revalidation
+	// below runs without the guard held, so the guard is re-checked after it
+	// for the claim window.
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
+	blocked := sub.notificationDriveBlockedLocked(s)
+	sub.mu.Unlock()
+	if blocked {
+		return false
+	}
+	if !s.validateDrivenDelegateLane(sub) {
+		s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane failed revalidation before a notification turn")
+		return false
+	}
+	// Admit the drive's turn on the child runtime before marking it driving:
+	// admission and a runtime reclamation's claim decide under one controller
+	// lock, so either the reclamation already holds the runtime and the drive
+	// does not launch, or the turn counts as in flight and no reclamation can
+	// select the runtime (claimableRuntimeSubtreeLocked).
+	sub.mu.Lock()
+	admittedSess := sub.sess
+	sub.mu.Unlock()
+	if admittedSess == nil || !admittedSess.admitIdleRuntimeInput() {
+		return false
+	}
+	inputHandedOff := false
+	defer func() {
+		if !inputHandedOff {
+			admittedSess.inputsInFlight.Add(-1)
+		}
+	}()
+	sub.mu.Lock()
+	if sub.notificationDriveBlockedLocked(s) || sub.sess != admittedSess {
 		sub.mu.Unlock()
 		return false
 	}
@@ -1426,8 +1503,10 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// notification maintenance never starves user fan-out. At capacity the drive
 	// does not launch — return false, the not-launched signal the caller already
 	// honors (no settle), so the child's durable ledger stays queued and the next
-	// loop boundary retries (spec §3).
-	treeSlot, ok := s.reserveDriveSlot()
+	// loop boundary retries (spec §3). A child call waiting out a usage limit
+	// gives the slot back for the wait and takes one again to retry
+	// (driveTurn), so waits that can last days never fill the budget.
+	reserved, ok := s.reserveDriveSlot()
 	if !ok {
 		sub.mu.Unlock()
 		return false
@@ -1443,28 +1522,38 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// and fires the driveCtx.Done() arm of the re-drive select, so sendersWG
 	// drains promptly and the Close comment "already cancelled above" is true
 	// again. The ctx is still independent of the LAUNCHING turn's ctx:
-	// sessionCtx outlives every turn and dies only at Close.
-	driveCtx, driveCancel := context.WithTimeout(s.sessionCtx, driveTurnTimeout)
+	// sessionCtx outlives every turn and dies only at Close. The timeout is
+	// the driveTurn's hung-turn bound: a child turn waiting out a usage limit
+	// inside its model call is not hung, so the bound pauses for the wait.
+	// A Stop of the delegate reaches the drive through sub.driveCancel.
+	driveCtx, driveCancel := context.WithCancel(s.sessionCtx)
+	drive := startDriveTurn(s, sub.sess, reserved, driveTurnTimeout, driveCancel)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		sub.mu.Unlock()
-		treeSlot.release()
+		drive.end()
 		driveCancel()
 		return false
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	sub.driving = true
+	sub.driveCancel = driveCancel
 	childSess := sub.sess
 	sub.mu.Unlock()
+	if hook := s.cfg.testOnly.driveLaunching; hook != nil {
+		hook()
+	}
 
 	launched = true
+	inputHandedOff = true
 	go func() {
 		defer release()
+		defer childSess.inputsInFlight.Add(-1)
 		defer s.sendersWG.Done()
 		defer driveCancel()
-		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
+		// The re-check defer is registered BEFORE drive.end so LIFO runs
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
@@ -1473,9 +1562,16 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			}
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
-		defer treeSlot.release()
-		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
-		if err != nil {
+		defer drive.end()
+		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
+		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
+		// ordinary nonfatal end of a stopped run, so the work the delegate
+		// owns is left alone.
+		sub.mu.Lock()
+		stopped := sub.driveStopped
+		sub.driveCancel, sub.driveStopped = nil, false
+		sub.mu.Unlock()
+		if err != nil && (!stopped || !errors.Is(err, context.Canceled)) {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
 				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
 			}
@@ -1559,6 +1655,10 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.runProvenance = nil
 	sub.runStructured = nil
 	sub.runStructuredCaptured = false
+	// A hook stop belongs to the generation that raised it. A retained child
+	// resumed by a later send whose hook allows completion must drain and
+	// capture its report like any other run.
+	sub.hookStopped = false
 	sub.cancel = cancel
 	sub.cancelRequested = false
 	sub.userStopRequested = false
@@ -1577,8 +1677,138 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 	go func() {
 		defer s.sendersWG.Done()
 		defer runCancel()
+		if stopReason, stop := s.runSubagentStartHook(runCtx, sub, sub.agentTypeName()); stop {
+			// continue:false stops Claude's processing after the hook runs, so the
+			// child never starts: settle the run the way a finished one settles,
+			// closing done and the generation exactly once.
+			s.settleStoppedSubagentRun(runCtx, sub, stopReason)
+			return
+		}
 		sub.run(runCtx, input, inputProvenance)
 	}()
+}
+
+// agentTypeName reports the child's hook-visible agent type: the plugin-scoped
+// catalog key for a plugin agent ("toolsmith:toolsmith"). The spawn config holds
+// subagentHookAgentType's answer, which owns the never-empty fallback; this only
+// reads it. sub.agentType is a different, older field that is empty for unnamed
+// delegates, so it is not the answer here.
+func (a *subagent) agentTypeName() string {
+	if a == nil || a.sess == nil {
+		return ""
+	}
+	a.sess.mu.Lock()
+	name := a.sess.cfg.spawn.agentType
+	a.sess.mu.Unlock()
+	return name
+}
+
+// runSubagentStartHook fires the parent's SubagentStart hooks for one child run
+// launch. additionalContext reaches the child as steering; a copy the child
+// already holds, or one an earlier hook in this same launch already delivered,
+// is not delivered twice. That is what makes an idle-attention drive (a launch
+// on a child that already ran) a no-op when nothing was compacted away. A failed
+// hook must not fail the spawn: its summarized warning goes to the operator and
+// the run continues.
+//
+// SubagentStart has no decision control in Claude — its table lists it with
+// SessionStart under "Context only ... no blocking or decision control" — so a
+// decision:"block" from this event is correctly dropped. Only additionalContext
+// and the universal fields (continue/stopReason, systemMessage, exit code) apply.
+//
+// A true stop means continue:false was honored: the caller must not launch the
+// child. stopReason is the hook's reason, already delivered to the user here.
+//
+// The hook runs on the PARENT's runner — the parent owns the plugin set — but
+// reads the CHILD's identity, which is the value a matcher targets.
+func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agentType string) (stopReason string, stop bool) {
+	if s.hookRunner == nil || sub == nil || sub.sess == nil {
+		return "", false
+	}
+	// subagentHookAgentType owns the never-empty normalization, so the matcher
+	// target and the agent_type input are byte-identical.
+	agentType = subagentHookAgentType(agentType, "")
+	in := s.hookInput(plugin.HookSubagentStart)
+	in.AgentID = sub.sess.ID()
+	in.AgentType = agentType
+	res := s.hookRunner.RunSubagentStartFor(s.apiLogContext(ctx), in, agentType)
+	delivered := make(map[string]bool, len(res.ModelContext))
+	for _, m := range res.ModelContext {
+		if delivered[m] || sub.sess.hookContextAlreadyPresent(m) {
+			continue
+		}
+		delivered[m] = true
+		if err := sub.sess.deliverHookContext(m); err != nil {
+			s.emitDiagnosticWarning(events.WarningData{Message: err.Error()})
+		}
+	}
+	for _, m := range res.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	if !res.Stopped {
+		return "", false
+	}
+	reason := s.hookStopText(res.StopReason, "SubagentStart hook stopped this run")
+	s.deliverHookUserMessage(reason)
+	return reason, true
+}
+
+// settleStoppedSubagentRun settles a child run that a SubagentStart hook's
+// continue:false kept from launching. It hands the SAME finalize tail subagent.run
+// uses (finalizeRun) the hook's reason as the run's result, so the two paths
+// cannot drift: the attention re-arm, the announcements, the single done close,
+// and the idle release all happen exactly as a completed run's do. The stop is an
+// ordinary finish, not a failure — classifyRunEnd reads the nil error and the
+// run's unset cancel flag as SubagentCompleted — so the parent's delegate result
+// reads the hook's reason and the caller returns normally.
+//
+// The finish is hookStoppedFinish's, not subagent.stableDelegateFinish's: that
+// builder reports the child's communicate state, which on a rerun would replace
+// the stop reason with the previous run's reply, and which on a first launch
+// settles a nil-error run with no report as a FAILED ended_without_report. The
+// durable outcome and the local status must agree, so both say Completed.
+func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, stopReason string) {
+	if sub == nil || sub.sess == nil {
+		return
+	}
+	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	_, attentionRun := ctx.Value(delegateAttentionRunContextKey{}).(struct{})
+	sub.finalizeRun(subagentFinalize{
+		result:    stopReason,
+		finish:    sub.hookStoppedFinish(stopReason, nil),
+		lease:     lease,
+		stableRun: stableRun,
+		// An attention-triggered launch consumed its row before the hook could
+		// stop it. Without this the unpresented-trigger recovery is skipped and
+		// the report is neither presented nor left pending.
+		attentionRun: attentionRun,
+		// The launch never reached the model, so the row is unpresented even
+		// though the run itself completed cleanly.
+		attentionUnpresented: true,
+	})
+}
+
+// hookContextAlreadyPresent reports whether the child's current history holds a
+// hook-context steering turn with exactly this text. Claude re-injects a
+// SubagentStart hook's context only when the child no longer carries an earlier
+// copy, so a compaction that discarded the copy re-injects on the next launch
+// with no extra durable state. The scan reads history under s.mu; delivery
+// happens outside the lock, so hooks never run under it.
+func (s *Session) hookContextAlreadyPresent(text string) bool {
+	if s == nil || strings.TrimSpace(text) == "" {
+		return false
+	}
+	wrapped := wrapHookContext(text)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering &&
+			turn.SteeringKind == events.SteeringKindHookContext &&
+			turn.Message.Text() == wrapped {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) getSub(agentID string) *subagent {
@@ -1606,14 +1836,65 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
-		"it cannot see anything else you did. Report your results now."
+		"it cannot see anything else you did. Report your results, or what you are waiting on, now."
+}
+
+// communicateUpdateNudge is the reminder for a subagent that sent its parent a
+// non-terminal update (end_turn=false) and then ended its turn without a
+// result. It must not repeat communicateNudge's false premise that the delegate
+// never called communicate, and it must not read as a new caller instruction to
+// report and stop: the bounded run's work is still allowed to execute, and an
+// automatic retry authorizes no new work (#3734).
+func communicateUpdateNudge(toolName string) string {
+	return "You ended your turn after sending the parent an update with " + toolName + " end_turn=false. " +
+		"The parent received that update; it is not a result. " +
+		delegateContinueAuthorized + ", then call " + toolName + " with end_turn=true and your complete findings. " +
+		"If you are genuinely blocked, report that blocker. " +
+		"This is an automatic runtime reminder, not a new instruction from the parent, and it authorizes no new work."
+}
+
+// delegateContinueAuthorized is the one statement of the reminder's authority
+// boundary, shared by both strings the delegate sees in the recovery turn.
+const delegateContinueAuthorized = "Continue the work you were already authorized to do"
+
+// delegateNudgeText selects the reminder for a delegate that ended its turn
+// without a terminal result: the update-aware one when it already sent its
+// parent an end_turn=false update, else the one for a delegate that never
+// called the result tool.
+func delegateNudgeText(toolName string, updated bool) string {
+	if updated {
+		return communicateUpdateNudge(toolName)
+	}
+	return communicateNudge(toolName)
+}
+
+// deliverCommunicateNudge sends the missing-report reminder. It is queued as a
+// daemon steering turn, not as fresh user input, so the delegate's transcript
+// and request identify it as runtime-authored rather than as something its
+// caller said (#3734); the neutral continuation then starts the turn that reads
+// it. If the session refuses the steer, the reminder is delivered directly so a
+// missing report is still addressed.
+func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance *provenance.Causal) (string, error) {
+	updated := a.sess.communicateUpdate()
+	if hook := a.sess.cfg.testOnly.subagentNudgeSelected; hook != nil {
+		hook(updated)
+	}
+	nudge := delegateNudgeText(a.sess.resultToolName(), updated)
+	accepted, err := a.sess.trySteerEnqueue(wrapHookContext(nudge), nil, nil, "", events.SteeringKindDelegateNudge)
+	if err != nil || !accepted {
+		// The queue refused the steer. Record the reminder directly so recovery
+		// still runs as a runtime entry, never as caller input.
+		a.sess.appendSteeringTurn(wrapHookContext(nudge), events.SteeringKindDelegateNudge)
+	}
+	return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
 	kind := EntryUserInput
-	if _, attention := ctx.Value(delegateAttentionRunContextKey{}).(struct{}); attention {
+	_, attentionRun := ctx.Value(delegateAttentionRunContextKey{}).(struct{})
+	if attentionRun {
 		kind = EntryDelegateAttention
 	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
@@ -1660,16 +1941,17 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
 		} else {
-			needsNudge = !a.sess.Communicated()
+			needsNudge = !a.sess.communicated()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
 			a.nudgeEnabled &&
 			needsNudge &&
+			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
-			res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+			res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
 		if hookAvailable && !cancelRequested && !budgetExhausted {
@@ -1677,10 +1959,18 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
 		restoreParentDriveNotify = nil
-		if err == nil {
+		if a.hookStoppedRun() || a.sess.stopHookReplacedReplyNow() || a.sess.hookStoppedTheInput() {
+			// A hook ended the run or vetoed its reply. drainForFinalization
+			// would return the child's earlier communicated reply in place of
+			// the hook's text. A hook-stopped input is excluded for a second
+			// reason: the drain starts an EntryNotification turn, whose per-turn
+			// reset clears the marker, and the stopped prompt then reaches the
+			// model.
+		} else if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
+			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
 			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
 			if decisionErr != nil {
@@ -1694,7 +1984,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				a.mu.Lock()
 				a.finalizing = false
 				a.mu.Unlock()
-				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+				res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 				a.mu.Lock()
 				cancelRequested = a.cancelRequested
 				a.mu.Unlock()
@@ -1710,7 +2000,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					continue
 				case delegateSupervisionSuppress:
 				}
-				if err == nil {
+				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
 			}
@@ -1815,27 +2105,69 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		break
 	}
+	a.finalizeRun(subagentFinalize{
+		result:                   res,
+		err:                      err,
+		finish:                   finish,
+		lease:                    lease,
+		stableRun:                stableRun,
+		attentionRun:             attentionRun,
+		noActionClaim:            noActionClaim,
+		restoreParentDriveNotify: restoreParentDriveNotify,
+		inputProvenance:          inputProvenance,
+	})
+}
+
+// subagentFinalize is everything a finished child run hands to finalizeRun:
+// what the run produced, how it ended, and which owner it ended under. A run
+// that never called the model (a SubagentStart hook's continue:false) passes the
+// same fields with the hook's reason as its result.
+type subagentFinalize struct {
+	result    string
+	err       error
+	finish    delegateFinish
+	lease     delegateLease
+	stableRun bool
+	// attentionRun marks a run an attention row triggered, so its finalize tail
+	// can reopen an unpresented report instead of leaving the consumed row
+	// stranded.
+	attentionRun bool
+	// attentionUnpresented marks a run that consumed its attention row but never
+	// reached the model (a hook stopped it), so the row is still unpresented
+	// even though the run settled cleanly.
+	attentionUnpresented     bool
+	noActionClaim            *delegateSettlementClaim
+	restoreParentDriveNotify func()
+	inputProvenance          *provenance.Causal
+}
+
+// finalizeRun is a child run's one finalize tail: process-local terminal state,
+// the generation's finish, its announcements, the remaining-attention re-arm,
+// done, and the idle release. subagent.run and the SubagentStart stop path both
+// call it, so neither can drift from the other. a.mu is never held across
+// FinishGeneration or the announcements.
+func (a *subagent) finalizeRun(f subagentFinalize) {
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
 
-	runProvenance := a.followUpProvenance(inputProvenance)
-	runStructured := a.sess.CommunicateStructured()
-	finalizeTime := finish.endedAt
+	runProvenance := a.followUpProvenance(f.inputProvenance)
+	runStructured := a.sess.communicateStructured()
+	finalizeTime := f.finish.endedAt
 	if finalizeTime.IsZero() {
 		finalizeTime = a.sess.sclock().Now()
 	}
 	a.mu.Lock()
 	a.finalizing = true
-	a.result = res
-	a.err = err
+	a.result = f.result
+	a.err = f.err
 	a.runProvenance = provenance.Clone(runProvenance)
 	a.runStructured = runStructured
 	a.runStructuredCaptured = true
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
-	runEnd := classifyRunEnd(err, a.cancelRequested)
+	runEnd := classifyRunEnd(f.err, a.cancelRequested)
 	a.status = runEnd.status
 	// The payload is non-nil exactly when the run published Exhausted
 	// (classifier contract), so its presence alone is the overwrite decision.
@@ -1852,14 +2184,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// result to the parent and any waiting send) wait until the tail's end:
 	// see announceFinishedGeneration.
 	var announcements delegateMutationPlans
-	if stableRun && a.sess.delegateController != nil {
-		finish.endedAt = finalizeTime
+	if f.stableRun && a.sess.delegateController != nil {
+		f.finish.endedAt = finalizeTime
 		var plans delegateMutationPlans
 		var finishErr error
-		if noActionClaim != nil {
-			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+		if f.noActionClaim != nil {
+			plans, finishErr = a.sess.delegateController.FinishNoAction(f.noActionClaim)
 		} else {
-			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+			plans, finishErr = a.sess.delegateController.FinishGeneration(f.lease, f.finish)
 		}
 		announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
 		plans.updates, plans.deliveries = nil, nil
@@ -1870,20 +2202,60 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
-	if restoreParentDriveNotify != nil {
-		a.sess.SetNotifyFunc(restoreParentDriveNotify)
+	if f.restoreParentDriveNotify != nil {
+		a.sess.SetNotifyFunc(f.restoreParentDriveNotify)
 	}
 	a.mu.Lock()
 	a.finalizing = false
+	userStopped := a.userStopRequested
 	a.mu.Unlock()
-	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
+	if f.restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
-	if stableRun && a.sess.delegateController != nil {
+	// The unpresented trigger is reopened BEFORE the generation is announced:
+	// the announce's release wakes the parent's drive, and a drive that wins
+	// that wake can accept another pending row and re-latch the trigger before
+	// the tail below could read it — reopening the live generation's own
+	// trigger as a duplicate while the failed run's trigger stays consumed.
+	// Before the release no drive can reserve this delegate, so the latch the
+	// reopen reads is exactly the failed run's own. FinishGeneration has
+	// already journaled the outcome, so the stop and close guards inside the
+	// reopen still see this run's settled state.
+	if f.stableRun && f.attentionRun && (f.attentionUnpresented || !attentionRunPresentedItsReport(f.err)) {
+		// The presentation turn died before its request could carry the
+		// report, and the accept that started it consumed the row. Reopen
+		// it so the re-arm below wakes a drive that presents it instead of
+		// letting the consumed marker strand the report silently. A
+		// deliberately stopped child, a closing receiver and a closing
+		// tree are not reopened: their teardowns own the discard, and a
+		// fresh row would race it (reopenLatchedDelegateAttention guards).
+		reopenID, reopenErr := a.sess.reopenLatchedDelegateAttention()
+		if reopenErr != nil {
+			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
+		}
+		// A user's stop owns the quiet on the drive's read too: the stopped
+		// generation's commit left the delegate armed for every other
+		// pending row, and that stale armed wake drives without any re-arm,
+		// so the reopened report would ride the next generation it starts.
+		// Hold it from the automatic drives; the rows the stop never touched
+		// keep their presentation, and the arm that later presents them —
+		// or any fresh arm — releases the hold.
+		if userStopped && reopenID != "" {
+			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+		}
+		// The same hold applies to a row a hook stop reopened: re-arming it at
+		// once relaunches SubagentStart, and a hook that keeps refusing would
+		// repeat launches, warnings and durable records without ever presenting
+		// the report.
+		if f.attentionUnpresented && reopenID != "" {
+			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+		}
+	}
+	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
 			hook(a)
 		}
-		a.announceFinishedGeneration(lease, announcements)
+		a.announceFinishedGeneration(f.lease, announcements)
 	}
 	// Remaining attention is re-armed only once the finished generation is
 	// announced and released: a successor generation must not start ahead
@@ -1892,12 +2264,29 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// attention reservation reported, so it lowers the controller's lingering
 	// needs-attention projection itself instead of leaving it for a parent
 	// drive that may never come.
-	if stableRun {
+	if f.stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
-			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
-				a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
+			// A run the user stopped owns the quiet on the drive's read as
+			// well as this tail's write: the reopen above held its report out
+			// of the stale armed wake the stopped generation's commit left
+			// behind, which still drives for the rows the stop never touched,
+			// so the report stays pending and recoverable through a wake from
+			// a new event — a later attention row, a restart reconcile or an
+			// explicit send — never the stale armed one. Re-arming here would
+			// at once drive the generation the user just cancelled.
+			// A row this tail reopened because a hook stopped the launch is
+			// left pending too: re-arming it calls armDelegateAttention, which
+			// releases the hold, so a hook that keeps refusing would relaunch
+			// forever.
+			// The skip applies only when this tail actually reopened the row for
+			// a hook stop. A hook-stopped launch that was not attention-triggered
+			// never runs that reopen, so its remaining row still needs the arm.
+			if !userStopped && (!f.attentionUnpresented || !f.attentionRun) {
+				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
+					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
+				}
 			}
 		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
 			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))
@@ -1906,7 +2295,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if done != nil {
 		close(done)
 	}
-	if stableRun && a.sess.delegateController != nil {
+	if f.stableRun && a.sess.delegateController != nil {
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime
@@ -1917,10 +2306,34 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		// on report success would strand that replacement, which has no
 		// finalize tail of its own. The retention rationale and the fixture
 		// opt-out live on the seam's field comment.
-		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
-			a.sess.scheduleIdleRuntimeRelease(lease.generation)
+		// The seam is runtime-mutable through updateSessionTestConfig, so its
+		// read shares the setter's session mutex.
+		a.sess.mu.Lock()
+		releaseDisabled := a.sess.cfg.testOnly.disableDelegateIdleRelease
+		a.sess.mu.Unlock()
+		if !releaseDisabled {
+			a.sess.scheduleIdleRuntimeRelease(f.lease.generation)
 		}
 	}
+}
+
+// attentionRunPresentedItsReport reports whether an attention-triggered run's
+// outcome proves the model request already carried the report it owed: the
+// model-behavior failures and budget exhaustion happen after the call ran.
+// Every other failure can land before the first request, where the consumed
+// row would otherwise be lost with nothing left to present. The verdict is
+// the run-end taxonomy classifyRunEnd owns, read from its own projections: a
+// run settles ordinarily exactly when it ended nil or on a model-behavior
+// sentinel, and the exhausted status is the budget exhaustion.
+//
+// The 2026-11-09 lifecycle ruling settles the trade this deliberately makes
+// (issue #5674): a report may be presented twice in a narrow window rather
+// than lost. Do not move an unlisted error class into "presented" to reduce
+// duplication; that needs a presented-marker durable across tool rounds and
+// restarts, not a wider verdict here.
+func attentionRunPresentedItsReport(err error) bool {
+	end := classifyRunEnd(err, false)
+	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
 }
 
 // announceFinishedGeneration is a stable run's last step for its finished
@@ -1947,7 +2360,14 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
+	// The drain can hold the generation open for as long as a descendant
+	// runs, after this session's own turn — and its turn ticker — has ended:
+	// a coordinator awaiting a descendant is still active delegate work, and
+	// its lane's marker parent evidence must stay fresh through the wait or
+	// a foreign prune can release the lane mid-finalization.
+	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
+	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
@@ -2036,6 +2456,50 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 	if a == nil || a.sess == nil {
 		return buildDelegateFinish(nil, result, runErr)
 	}
+	a.mu.Lock()
+	hookStopped := a.hookStopped
+	a.mu.Unlock()
+	a.sess.mu.Lock()
+	stopReplacedReply := a.sess.stopHookReplacedReply
+	stoppedInput := a.sess.hookStoppedInput
+	a.sess.mu.Unlock()
+	// A prompt stop on the child's own input is the third way a hook ends this
+	// run, after SubagentStop and Stop. Without it the packet reads
+	// failed/ended_without_report with an empty message while finalizeRun marks
+	// the run completed.
+	if stopReplacedReply || stoppedInput {
+		// A Stop hook vetoed the reply this turn would have delivered, so the
+		// run's result (the hook's text) is the packet's message. Capturing the
+		// communicate report here would hand the parent the vetoed reply.
+		if strings.TrimSpace(result) == "" {
+			a.sess.mu.Lock()
+			if reason := a.sess.hookStopReason; reason != "" {
+				result = reason
+			}
+			a.sess.mu.Unlock()
+		}
+		return a.hookStoppedFinish(result, runErr)
+	}
+	if hookStopped {
+		// The hook ended this run, so its reason IS the result. captureCommunicateReport
+		// would replace it with a report the child made on an earlier turn.
+		return a.hookStoppedFinish(result, runErr)
+	}
+	inputs := a.delegateTerminalRunInputs(result, runErr)
+	inputs.captureCommunicateReport(a.sess)
+	finish := delegateFinishFromRun(inputs)
+	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
+		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
+	}
+	return finish
+}
+
+// delegateTerminalRunInputs snapshots everything a terminal packet reports about
+// this run except its result text: the descriptor, the run's times, usage,
+// worktree and scratch path. It reads no communicate state, so a caller that
+// must not report a previous run's reply (a hook-stopped launch on a child that
+// already reported) can build its own packet from it.
+func (a *subagent) delegateTerminalRunInputs(result string, runErr error) delegateTerminalRunInputs {
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
 	startedAt := a.startedAt
@@ -2056,7 +2520,6 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 		usage:            cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
 		stoppedByUser:    stoppedByUser,
 	}
-	inputs.captureCommunicateReport(a.sess)
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
 		controller.mu.Lock()
@@ -2078,6 +2541,45 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 		inputs.scratchPath = le.SessionScratchDir()
 	}
+	return inputs
+}
+
+// stopHookReplacedReplyNow reports whether a Stop hook vetoed this turn's reply.
+func (s *Session) stopHookReplacedReplyNow() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopHookReplacedReply
+}
+
+// hookStoppedRun reports whether a SubagentStop continue:false ended this run.
+func (a *subagent) hookStoppedRun() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hookStopped
+}
+
+// hookStoppedFinish is the terminal result of a child run a hook's
+// continue:false ended: a SubagentStart stop that kept the launch from
+// starting, a SubagentStop stop, or a Stop that vetoed the reply. The hook's
+// reason IS the run's result.
+//
+// runErr is the run's own error, so a stop that followed a provider failure
+// still settles failed, cancelled or exhausted. Only a hook that ended a
+// healthy run yields a completed outcome.
+//
+// It deliberately does not read the child's communicate state: a resumed child
+// that reported on an earlier run still carries that report, and
+// captureCommunicateReport would replace the stop reason with it. For the same
+// reason it never reports the earlier run's structured result.
+func (a *subagent) hookStoppedFinish(stopReason string, runErr error) delegateFinish {
+	inputs := a.delegateTerminalRunInputs(stopReason, runErr)
+	inputs.completedWithoutReport = true
 	finish := delegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
@@ -2089,10 +2591,15 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 // stable delegate's terminal result. The packet builder consumes this snapshot
 // after the run has finished all provider, transcript, and worktree activity.
 type delegateTerminalRunInputs struct {
-	session                 *Session
-	result                  string
-	runErr                  error
-	communicated            bool
+	session      *Session
+	result       string
+	runErr       error
+	communicated bool
+	// completedWithoutReport marks a run that completed with the result it
+	// carries and no communicate report: a SubagentStart hook's continue:false
+	// ends the run before it launches, and the hook's stop reason is its result.
+	// Without this, a nil-error run with no report reads as ended_without_report.
+	completedWithoutReport  bool
 	structuredResult        any
 	structuredResultPresent bool
 	descriptor              delegatestore.Descriptor
@@ -2155,11 +2662,12 @@ type delegateTerminalPacketMetadata struct {
 }
 
 type delegateTerminalWorktreeReport struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
-	Ahead   int    `json:"ahead"`
-	Dirty   bool   `json:"dirty"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"head_sha"`
+	Ahead        int    `json:"ahead"`
+	Dirty        bool   `json:"dirty"`
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 // delegateFinishFromRun constructs the one immutable packet used by
@@ -2189,12 +2697,14 @@ func delegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
 		endedAt:     inputs.endedAt,
 	}
 	metadata := delegateTerminalMetadataFromRun(inputs)
-	if inputs.runErr == nil && inputs.communicated {
+	if inputs.runErr == nil && (inputs.communicated || inputs.completedWithoutReport) {
 		packet.Kind = delegatestore.PacketReported
 		finish.outcome = delegatestore.OutcomeCompleted
 		finish.disposition = delegatestore.DispositionReported
 		finish.reason = ""
-		captureDelegateStructuredResult(&packet, inputs)
+		if inputs.communicated {
+			captureDelegateStructuredResult(&packet, inputs)
+		}
 	} else if exhaustion, exhausted := budgetExhaustionFromError(inputs.runErr); exhausted {
 		finish.outcome = delegatestore.OutcomeExhausted
 		finish.reason = exhaustion.reason()
@@ -2295,11 +2805,12 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 	}
 	if inputs.worktree != nil {
 		metadata.Worktree = &delegateTerminalWorktreeReport{
-			Path:    inputs.worktree.Path,
-			Branch:  inputs.worktree.Branch,
-			HeadSHA: inputs.worktree.HeadSHA,
-			Ahead:   inputs.worktree.Ahead,
-			Dirty:   inputs.worktree.Dirty,
+			Path:         inputs.worktree.Path,
+			Branch:       inputs.worktree.Branch,
+			HeadSHA:      inputs.worktree.HeadSHA,
+			Ahead:        inputs.worktree.Ahead,
+			Dirty:        inputs.worktree.Dirty,
+			DisposalHint: inputs.worktree.DisposalHint,
 		}
 	}
 	metadata.ScratchPath = inputs.scratchPath
@@ -2316,7 +2827,25 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	} else {
 		input.Reason = "complete"
 	}
-	stopResult := a.sess.hookRunner.RunSubagentStop(a.sess.apiLogContext(ctx), input)
+	// The matcher target and the input's agent_type are the same value: the type
+	// SubagentStart reported for this child, normalized once by
+	// subagentHookAgentType so neither can be empty.
+	agentType := subagentHookAgentType(a.agentTypeName(), "")
+	input.AgentType = agentType
+	// stop_hook_active is always false here. Claude sets it when a Stop-type hook
+	// is dispatched again after its own block; a SubagentStop block is surfaced
+	// as the run's next input from inside this same dispatch (the caller never
+	// dispatches the hook twice), so no continuation dispatch exists to report.
+	// The field is still present, as false, so a hook reading it sees Claude's
+	// type rather than an absence.
+	stopHookActive := false
+	input.StopHookActive = &stopHookActive
+	// last_assistant_message is the child's last ASSISTANT turn, which is what
+	// the child said. The delivered report is not the same thing: a run that
+	// ends on a nudge or an empty result can deliver text that no assistant turn
+	// carries.
+	input.LastAssistantMessage = a.lastAssistantText()
+	stopResult := a.sess.hookRunner.RunSubagentStopFor(a.sess.apiLogContext(ctx), input, agentType)
 	for _, m := range stopResult.ModelContext {
 		if steerErr := a.sess.deliverHookContext(m); steerErr != nil {
 			return res, errors.Join(err, steerErr)
@@ -2324,6 +2853,20 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)
+	}
+	// continue:false ends the child run instead of starting a continuation. A
+	// block asks the child to keep working; a stop says the action itself is
+	// over, so it wins over a block and its reason becomes the run's result —
+	// the same value a completed run reports, so no model turn follows for the
+	// hook's own reason. The run's error is returned unchanged: a stop ends the
+	// run, it does not launder a failed one into a completed one.
+	if stopResult.Stopped {
+		reason := a.sess.hookStopText(stopResult.StopReason, "SubagentStop hook stopped this run")
+		a.sess.deliverHookUserMessage(reason)
+		a.mu.Lock()
+		a.hookStopped = true
+		a.mu.Unlock()
+		return reason, err
 	}
 	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {
 		if lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); stableRun && a.sess.delegateController != nil {
@@ -2335,11 +2878,33 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if !stopResult.Blocked {
 		return res, err
 	}
+	if a.sess.hookStoppedTheInput() {
+		// The continuation below starts a user-input turn, whose per-turn reset
+		// clears the stopped marker, so a SessionStart stop would stop applying
+		// and the original assignment would reach the model.
+		return res, err
+	}
 	reason := strings.TrimSpace(stopResult.BlockReason)
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
 	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
+}
+
+// lastAssistantText is the child's most recent ASSISTANT turn text, or "" when
+// it has none. It is SubagentStop's last_assistant_message.
+func (a *subagent) lastAssistantText() string {
+	if a == nil || a.sess == nil {
+		return ""
+	}
+	a.sess.mu.Lock()
+	defer a.sess.mu.Unlock()
+	for _, turn := range slices.Backward(a.sess.history) {
+		if turn.Kind == schema.TurnAssistant {
+			return turn.Message.Text()
+		}
+	}
+	return ""
 }
 
 func (a *subagent) followUpProvenance(inputProvenance *provenance.Causal) *provenance.Causal {

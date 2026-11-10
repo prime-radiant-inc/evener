@@ -26,7 +26,20 @@ import {
   type ThreadClearResponse,
 } from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
-import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
+import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord, type MutationRecord } from "./records";
+
+// The wire id this row dispatches under: the payload's clientMutationId when
+// it carries one, the record's own otherwise. They are the same id for every
+// row an enqueue minted; a row MINTED from a blockedUnknown predecessor
+// deliberately keeps the predecessor's id inside its payload - the daemon
+// journals client mutations by id and renders a re-submission from that
+// record with disposition "replayed" (a replayed disposition carries the same
+// ids the first execution did) - so a receipt or refusal names the wire id,
+// and the dispatch loop must judge and settle the row by it, while every
+// storage settle stays keyed on the row's own (fresh) id.
+function wireMutationId(record: MutationOutboxRecord): string {
+  return effectiveWireId(record);
+}
 
 // The dispatcher always supplies a target ref, so its lookup requires one.
 // That is deliberately narrower than the outbox's ref-less MutationClientLookup
@@ -107,23 +120,27 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   // Reopen unresolved records beside receipt reconciliation. A live snapshot
   // may omit accepted work, so dispatch preserves each original mutation ID
   // and payload for journal replay and instance-fence validation.
-  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]> {
     const restored = await this.#storage.restoreProvenAbsent(targetRef, authoritativeIds);
     if (restored.length > 0) this.#onStorageChange([targetRef]);
+    return restored;
   }
 
   async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
     const targetRefs = new Set<string>();
     await Promise.all(
       [...new Set(clientMutationIds)].map(async (clientMutationId) => {
-        const record =
-          (await this.#storage.getOutbox(clientMutationId)) ??
-          (await this.#storage.getOptimistic(clientMutationId)) ??
-          (await this.#storage.getRecovery(clientMutationId));
+        // The id an authoritative feed names may be a WIRE identity whose
+        // own durable row is already gone - a requeue's retention bound
+        // retires the original keys, and the surviving generations carry
+        // the id only inside their payloads. The settlement itself resolves
+        // the id to the record it reconciles (the row the id names, else a
+        // wire carrier), so the note acknowledgement reads its answer from
+        // the one home of wire-family resolution and fires only for a
+        // settlement that actually proved the composition applied.
+        const record = await this.#storage.settleApplied(clientMutationId);
         if (record?.method === "notes/human/set") this.#onHumanNoteReconciled(record);
-        if (await this.#storage.settleApplied(clientMutationId)) {
-          if (record) targetRefs.add(record.targetRef);
-        }
+        if (record) targetRefs.add(record.targetRef);
       }),
     );
     if (targetRefs.size > 0) this.#onStorageChange([...targetRefs]);
@@ -199,7 +216,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       const receipt = mutationReceipt(result);
       if (
         !receipt ||
-        receipt.clientMutationId !== record.clientMutationId ||
+        receipt.clientMutationId !== wireMutationId(record) ||
         (receipt.disposition !== "applied" && receipt.disposition !== "replayed")
       ) {
         return "stop";
@@ -236,7 +253,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       return "advance";
     } catch (error) {
       const data = mutationErrorData(error);
-      if (data?.clientMutationId !== record.clientMutationId) {
+      if (data?.clientMutationId !== wireMutationId(record)) {
         // A rejection that names a DIFFERENT mutation is not this record's to
         // judge. One that names none can still be terminal: the appwire
         // client correlates this rejection to THIS request, and an
@@ -248,7 +265,14 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // permanently parked thread. Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
         if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
-          await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
+          // The refusal never reached the daemon - the hub refused the
+          // request's shape before any execution, so the daemon journaled
+          // nothing for the wire and an outstanding attempt of the same wire
+          // can still apply. The recovery carries the uncertainty so its
+          // resend inherits the wire identity and the journal replays.
+          await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data), {
+            wireDeliveryUncertain: true,
+          });
           this.#onStorageChange([record.targetRef]);
           return "advance";
         }
@@ -298,7 +322,19 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {
-        await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
+        // Round-14 polarity: only the daemon's OWN journaled rejections -
+        // positively stamped with the journaledRejection cause at the
+        // rejectClientMutation choke point, so both the in-band response and
+        // a journal replay carry it - are certain for the wire. Every other
+        // named notAccepted is delivery-uncertain by DEFAULT: the producer
+        // set of pre-journal refusals grows with main (server admission, a
+        // daemon-down entry error on any verb), nothing was recorded for the
+        // wire, an outstanding attempt of the same wire can still apply, and
+        // a fresh-id resend would double-deliver (round-6 H). Forgetting to
+        // stamp is harmless now: unmarked means uncertain, inherit, replay.
+        await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data), {
+          wireDeliveryUncertain: data?.cause !== "journaledRejection",
+        });
         this.#onStorageChange([record.targetRef]);
         return "advance";
       }

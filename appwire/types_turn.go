@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type Turn struct {
-	ID        string        `json:"id"`
-	Items     []ThreadItem  `json:"items,omitempty"`
-	ItemsView TurnItemsView `json:"itemsView"`
-	Status    string        `json:"status"`
-	Error     *TurnError    `json:"error,omitempty"`
+	ID        string             `json:"id"`
+	Items     []ThreadItem       `json:"items,omitempty"`
+	ItemsView TurnItemsView      `json:"itemsView"`
+	Elision   *ThreadTurnElision `json:"elision,omitempty"`
+	Status    string             `json:"status"`
+	Error     *TurnError         `json:"error,omitempty"`
 	// Version is the highest contributing entry ordinal + 1 (0 means an
 	// overlay-only turn with no recorded history yet).
 	Version uint64 `json:"version,omitempty"`
@@ -179,22 +181,29 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Authorship           *TranscriptAuthorship `json:"authorship,omitempty"`
-	Type                 string                `json:"type"`
-	ID                   string                `json:"id"`
-	TranscriptKey        string                `json:"transcriptKey,omitempty"`
-	Position             *ThreadItemPosition   `json:"position,omitempty"`
-	TurnID               string                `json:"turnId,omitempty"`
-	TranscriptEntryIndex int                   `json:"transcriptEntryIndex,omitempty"`
-	Text                 string                `json:"text,omitempty"`
-	Delta                string                `json:"delta,omitempty"`
-	Images               []InputItem           `json:"images,omitempty"`
-	ToolName             string                `json:"toolName,omitempty"`
-	CallID               string                `json:"callId,omitempty"`
-	ArgumentsJSON        string                `json:"argumentsJson,omitempty"`
-	Description          string                `json:"description,omitempty"`
-	Output               string                `json:"output,omitempty"`
-	Error                string                `json:"error,omitempty"`
+	ConversationProvenance *ConversationOutputProvenance `json:"conversationProvenance,omitempty"`
+	Actor                  *SessionActor                 `json:"actor,omitempty"`
+	Observation            *SessionObservationMetadata   `json:"observation,omitempty"`
+	Authorship             *TranscriptAuthorship         `json:"authorship,omitempty"`
+	Type                   string                        `json:"type"`
+	ID                     string                        `json:"id"`
+	TranscriptKey          string                        `json:"transcriptKey,omitempty"`
+	Position               *ThreadItemPosition           `json:"position,omitempty"`
+	TurnID                 string                        `json:"turnId,omitempty"`
+	TranscriptEntryIndex   int                           `json:"transcriptEntryIndex,omitempty"`
+	Text                   string                        `json:"text,omitempty"`
+	Delta                  string                        `json:"delta,omitempty"`
+	Images                 []InputItem                   `json:"images,omitempty"`
+	ToolName               string                        `json:"toolName,omitempty"`
+	CallID                 string                        `json:"callId,omitempty"`
+	ArgumentsJSON          string                        `json:"argumentsJson,omitempty"`
+	Description            string                        `json:"description,omitempty"`
+	Output                 string                        `json:"output,omitempty"`
+	Error                  string                        `json:"error,omitempty"`
+	Truncated              bool                          `json:"truncated,omitempty"`
+	TruncatedBytes         int                           `json:"truncatedBytes,omitempty"`
+	InFlight               bool                          `json:"inFlight,omitempty"`
+	FetchCursor            string                        `json:"fetchCursor,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -282,15 +291,16 @@ type InputMention struct {
 }
 
 type InputItem struct {
-	Type      string            `json:"type"`
-	Text      string            `json:"text,omitempty"`
-	Mentions  []InputMention    `json:"mentions,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	MediaType string            `json:"mediaType,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Type              string                    `json:"type"`
+	Text              string                    `json:"text,omitempty"`
+	Mentions          []InputMention            `json:"mentions,omitempty"`
+	URL               string                    `json:"url,omitempty"`
+	MediaType         string                    `json:"mediaType,omitempty"`
+	Data              []byte                    `json:"data,omitempty"`
+	Name              string                    `json:"name,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	VoicePresentation *VoicePresentationContext `json:"voicePresentation,omitempty"`
 }
 
 type ThreadListParams struct {
@@ -324,6 +334,8 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	FetchCursor         string `json:"fetchCursor,omitempty"`
+	ThreadWindowParams
 	// RequestGeneration is the client's own read-request counter, echoed back
 	// on ThreadReadResponse so a client can discard a stale reply that
 	// resolves after a newer request it already issued.
@@ -332,10 +344,82 @@ type ThreadReadParams struct {
 	// from, so the server can answer with HistoryChanges instead of a full
 	// re-read when nothing outside the client's window changed.
 	HeldSnapshot *SnapshotIdentity `json:"heldSnapshot,omitempty"`
+	// LiveOnly requires the response to come from the live source. When the
+	// live read fails, the hub returns that error (retryable transport losses
+	// included) instead of serving saved history. The voice bridge sets it so
+	// an outage reaches its retry logic rather than a daemonless snapshot.
+	LiveOnly bool `json:"liveOnly,omitempty"`
+	// AnswerContinuation requests only a recorded ancestry verdict and its
+	// snapshot identity. It cannot subscribe or include a transcript window.
+	AnswerContinuation *AnswerContinuationQuery `json:"answerContinuation,omitempty"`
+	// A pending-ask page requires the observed pair and an explicit root ref.
+	ExpectedAskRevision       *uint64 `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string  `json:"expectedAskBootGeneration,omitempty"`
+	Offset                    *int    `json:"offset,omitempty"`
+	Limit                     *int    `json:"limit,omitempty"`
+	// WindowTransfer is the resume point inside the turn a windowed transfer
+	// page cut. Only a hub walking a bounded window transfer sets it; a client
+	// never sends it. It is deliberately absent from the generated client
+	// schema (json:"-") and travels as "windowTransfer" through
+	// MarshalJSON/UnmarshalJSON below.
+	WindowTransfer *ThreadWindowTransfer `json:"-"`
+}
+
+// ThreadWindowTransfer names the resume position of a bounded window transfer
+// page inside one turn. A hub sends it only to the daemon it reads from, so it
+// stays out of the client-facing protocol surface.
+type ThreadWindowTransfer struct {
+	TurnID   string             `json:"turnId"`
+	Position ThreadItemPosition `json:"position"`
+	// Before selects the items strictly older than Position; otherwise the
+	// transfer selects the items strictly newer.
+	Before bool `json:"before,omitempty"`
+}
+
+// PendingAskPage enumerates call composites, not questions. A nil NextOffset
+// ends iteration, while CalllessCount names the separate legacy population.
+type PendingAskPage struct {
+	Composites    []PendingAskCall `json:"composites"`
+	Total         int              `json:"total"`
+	NextOffset    *int             `json:"nextOffset,omitempty"`
+	CalllessCount int              `json:"calllessCount"`
+}
+
+type AnswerContinuationQuery struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+}
+
+type AnswerContinuationVerdict struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+	Matches         bool   `json:"matches"`
+}
+
+func (p ThreadReadParams) ValidateAnswerContinuation() error {
+	if q := p.AnswerContinuation; q != nil {
+		if err := ValidateThreadReadParams(p); err != nil {
+			return err
+		}
+		if q.AncestorTurnID == "" || q.CandidateTurnID == "" || p.Subscribe || p.ReplaceSubscription || p.IncludeTurns {
+			return InvalidParams("answerContinuation requires two execution IDs and a non-subscribing, verdict-only read")
+		}
+	}
+	return nil
 }
 
 type ThreadReadResponse struct {
-	Thread Thread `json:"thread"`
+	Thread         Thread                `json:"thread"`
+	PendingAskPage *PendingAskPage       `json:"pendingAskPage,omitempty"`
+	Window         *ThreadWindowResult   `json:"window,omitempty"`
+	Fetch          *SessionFetchResponse `json:"fetch,omitempty"`
+	// TargetSessionToolsSupported reports whether the daemon serving this thread
+	// negotiated session tools. Omission means the serving hub cannot attest it.
+	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
+	// LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+	// regardless of later non-execution history turns.
+	LatestExecutionTurnID string                     `json:"latestExecutionTurnId,omitempty"`
+	AnswerContinuation    *AnswerContinuationVerdict `json:"answerContinuation,omitempty"`
 	// OlderCursor is set when itemLimit truncated the returned items; pass it
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.
@@ -484,13 +568,50 @@ func decodeStrictJSON(data []byte, dst any) error {
 	return decoder.Decode(dst)
 }
 
+// MarshalJSON carries WindowTransfer, which ThreadReadParams keeps out of the
+// generated client schema. Every other field encodes exactly as it would
+// without this method.
+func (p ThreadReadParams) MarshalJSON() ([]byte, error) {
+	type wire ThreadReadParams
+	return json.Marshal(struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer,omitempty"`
+	}{wire: wire(p), WindowTransfer: p.WindowTransfer})
+}
+
 func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 	type wire ThreadReadParams
-	var decoded wire
+	var decoded struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer"`
+	}
 	if err := decodeStrictJSON(data, &decoded); err != nil {
 		return err
 	}
-	*p = ThreadReadParams(decoded)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	page := false
+	for key, value := range fields {
+		switch strings.ToLower(key) {
+		case "expectedaskrevision", "expectedaskbootgeneration", "offset", "limit":
+			page = true
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return InvalidParams("pending ask page fields cannot be null")
+			}
+		}
+	}
+	if page {
+		if decoded.ExpectedAskRevision == nil {
+			return InvalidParams("pending ask pages require an observed ask pair")
+		}
+		if err := ValidateThreadReadParams(ThreadReadParams(decoded.wire)); err != nil {
+			return err
+		}
+	}
+	*p = ThreadReadParams(decoded.wire)
+	p.WindowTransfer = decoded.WindowTransfer
 	return nil
 }
 
@@ -499,6 +620,36 @@ type ThreadUnsubscribeParams struct {
 	Ref      string `json:"ref,omitempty"`
 }
 
+type ThreadTurnBoundary struct {
+	TurnID string `json:"turnId"`
+	Limit  int    `json:"limit"`
+}
+
+type ThreadTurnWindow struct {
+	Latest int                 `json:"latest,omitempty"`
+	Turn   string              `json:"turn,omitempty"`
+	Since  string              `json:"since,omitempty"`
+	Limit  int                 `json:"limit,omitempty"`
+	Before *ThreadTurnBoundary `json:"before,omitempty"`
+}
+
+type ThreadWindowParams struct {
+	TurnWindow        *ThreadTurnWindow `json:"turnWindow,omitempty"`
+	ItemTypes         []string          `json:"itemTypes,omitempty"`
+	PreviewBytes      int               `json:"previewBytes,omitempty"`
+	MessageBytes      int               `json:"messageBytes,omitempty"`
+	WindowBudgetBytes int               `json:"windowBudgetBytes,omitempty"`
+}
+
+const (
+	ThreadWindowPreviewBytesDefault = 2048
+	ThreadWindowMessageBytesDefault = 8192
+	ThreadWindowItemLimitDefault    = 10
+	ThreadWindowBudgetBytesDefault  = 192 << 10
+	ThreadWindowBudgetBytesFloor    = 16 << 10
+	ThreadWindowCursorLineLimit     = 10
+)
+
 type ThreadTurnsListParams struct {
 	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`
@@ -506,6 +657,7 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	ThreadWindowParams
 	// Before, when set, ends the page just before this position. With a
 	// Cursor it moves the cursor's boundary, keeping the cursor's identity
 	// fence; with none the source mints a cursor there under the thread's
@@ -518,8 +670,9 @@ type ThreadTurnsListParams struct {
 // generation: backfill pages accumulate within their snapshot in any arrival
 // order, and only latest-window reads are ordered by generation.
 type ThreadTurnsListResponse struct {
-	Data       []Turn `json:"data"`
-	NextCursor string `json:"nextCursor,omitempty"`
+	Data       []Turn              `json:"data"`
+	NextCursor string              `json:"nextCursor,omitempty"`
+	Window     *ThreadWindowResult `json:"window,omitempty"`
 	// BootGeneration is the serving daemon's boot generation for this thread,
 	// as on ThreadReadResponse. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
@@ -531,6 +684,41 @@ type ThreadTurnsListResponse struct {
 	// Authoritative is true when this page can settle uncertain state; see
 	// ThreadReadResponse.Authoritative.
 	Authoritative bool `json:"authoritative,omitempty"`
+}
+
+type ThreadTurnElision struct {
+	ExcludedByType                     map[string]int `json:"excludedByType,omitempty"`
+	CapWithheld                        int            `json:"capWithheld,omitempty"`
+	TruncatedBeyondCursorLimit         int            `json:"truncatedBeyondCursorLimit,omitempty"`
+	ElidedBeyondCursorLimit            int            `json:"elidedBeyondCursorLimit,omitempty"`
+	ContinuationCursor                 string         `json:"continuationCursor,omitempty"`
+	TypeExcludedRecovery               string         `json:"typeExcludedRecovery,omitempty"`
+	CapWithheldRecovery                string         `json:"capWithheldRecovery,omitempty"`
+	TruncatedBeyondCursorLimitRecovery string         `json:"truncatedBeyondCursorLimitRecovery,omitempty"`
+	ElidedBeyondCursorLimitRecovery    string         `json:"elidedBeyondCursorLimitRecovery,omitempty"`
+}
+
+const (
+	ThreadElisionRecoveryWiderItemTypes = "reread-wider-item-types"
+	ThreadElisionRecoveryContinuation   = "continuation"
+	ThreadElisionRecoveryWiderByteBound = "reread-wider-byte-bound"
+	// ThreadElisionRecoveryRereadSettled names the reread that recovers a
+	// withheld in-flight item: it has no version to fence, so no cursor can
+	// address it until the turn settles.
+	ThreadElisionRecoveryRereadSettled = "reread-after-settle"
+)
+
+type ThreadWindowResult struct {
+	EffectiveBudgetBytes int    `json:"effectiveBudgetBytes"`
+	AppliedBy            string `json:"appliedBy"`
+	ServedTurns          int    `json:"servedTurns"`
+	WithheldTurns        int    `json:"withheldTurns"`
+	FirstServedTurnID    string `json:"firstServedTurnId,omitempty"`
+	LastServedTurnID     string `json:"lastServedTurnId,omitempty"`
+	FirstWithheldTurnID  string `json:"firstWithheldTurnId,omitempty"`
+	LastWithheldTurnID   string `json:"lastWithheldTurnId,omitempty"`
+	TrimmedEnd           string `json:"trimmedEnd,omitempty"`
+	ContinuationCursor   string `json:"continuationCursor,omitempty"`
 }
 
 func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
@@ -651,6 +839,10 @@ type ThreadStartParams struct {
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
 	NonInteractive  *bool              `json:"nonInteractive,omitempty"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+	// Manager starts this session as a Manager of the sessions its hub can
+	// reach. It is a start-time property, not a setting: the daemon persists it
+	// with the session, so a resume keeps it and nothing can turn it off.
+	Manager bool `json:"manager,omitempty"`
 }
 
 type ThreadStartResponse struct {
@@ -709,11 +901,14 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref,omitempty"`
+	ThreadID                  string             `json:"threadId,omitempty"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -729,11 +924,14 @@ type TurnStartResponse struct {
 // can survive thread/clear while its live session instance changes, and a
 // delayed old-generation intent must not run against the replacement.
 type TurnSteerParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref,omitempty"`
+	ThreadID                  string             `json:"threadId,omitempty"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
@@ -750,10 +948,13 @@ type TurnInterruptParams struct {
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	Ref                string      `json:"ref"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 type MutationProjectionState string
@@ -772,6 +973,7 @@ const (
 )
 
 type MutationReceipt struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Disposition      MutationDisposition     `json:"disposition"`
 	ThreadID         string                  `json:"threadId"`
@@ -790,6 +992,7 @@ type MutationReceipt struct {
 }
 
 type PendingMutation struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Method           string                  `json:"method"`
 	Input            []InputItem             `json:"input,omitempty"`
@@ -833,11 +1036,12 @@ type GoalSetResponse struct {
 // them to the in-flight turn as a single STEERING message. Input lets clients
 // atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
-	Ref                   string      `json:"ref"`
-	ClientMutationID      string      `json:"clientMutationId"`
-	ExpectedInstanceID    string      `json:"expectedInstanceId"`
-	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
-	Input                 []InputItem `json:"input,omitempty"`
+	ManagerProof          *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                   string             `json:"ref"`
+	ClientMutationID      string             `json:"clientMutationId"`
+	ExpectedInstanceID    string             `json:"expectedInstanceId"`
+	ExpectedQueueRevision uint64             `json:"expectedQueueRevision"`
+	Input                 []InputItem        `json:"input,omitempty"`
 }
 
 type TurnDrainAsSteerResponse struct {
@@ -859,11 +1063,12 @@ type TurnDrainAsSteerResponse struct {
 // matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
 // parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref                string `json:"ref"`
-	Index              int    `json:"index"`
-	ClientMutationID   string `json:"clientMutationId"`
-	ExpectedInstanceID string `json:"expectedInstanceId"`
-	ExpectedEntryID    string `json:"expectedEntryId"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref"`
+	Index              int                `json:"index"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	ExpectedEntryID    string             `json:"expectedEntryId"`
 }
 
 type TurnPromoteQueuedAsSteerResponse struct {

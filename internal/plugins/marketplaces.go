@@ -216,10 +216,24 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 //
-// There is no refusal for an already-registered name, so calling it again with
-// the same name and a different source re-sources that marketplace in place; a
-// failed save leaves the previously recorded clone as it was.
+// A name that is already registered is refused with ErrMarketplaceExists:
+// before the fetch when name is explicit, and before the clone is installed
+// when the catalog supplies it. ReplaceMarketplace is the explicit re-source
+// path.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, false)
+}
+
+// ReplaceMarketplace is AddMarketplace with an explicit request to re-source
+// an already-registered name. The old clone is renamed aside before the fresh
+// one lands and restored when the save fails, exactly as AddMarketplace's
+// replacement path always did; callers must ask for the replacement on
+// purpose.
+func (m *Manager) ReplaceMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, true)
+}
+
+func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, replace bool) (MarketplaceRef, error) {
 	if err := refuseDirectoryPin(src); err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -246,6 +260,13 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
+	if !replace && name != "" {
+		// Only an explicit name is known before the fetch; a catalog-supplied
+		// one is checked again below, after the fetch resolves it.
+		if err := refuseRegisteredName(mk, name); err != nil {
+			return MarketplaceRef{}, err
+		}
+	}
 
 	// Fetch into a staging dir first so a bad marketplace never half-registers.
 	staging := m.marketplaceDir(stagingCloneName)
@@ -271,11 +292,27 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, err
 	}
+	if !replace {
+		if err := refuseRegisteredName(mk, name); err != nil {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, err
+		}
+	}
+	oldRef, hadOld := mk[name]
 
 	installLoc := src.Path // directory source: in place
 	aside := ""
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
+		// The swap replaces installLoc and then deletes what was there. If
+		// another record still records a directory source beneath it - a
+		// supported legacy shape - that source would go with the old clone, so
+		// refuse before touching it. The record being replaced is excluded:
+		// its own old clone is exactly what the replacement replaces.
+		if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), installLoc); protect {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, fmt.Errorf("marketplace %q: the install location holds a directory source another marketplace records", name)
+		}
 		old, err := m.swapInClone(staging, installLoc)
 		if err != nil {
 			_ = marketplaceRemoveAll(staging)
@@ -305,7 +342,28 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	if aside != "" {
 		_ = marketplaceRemoveAll(aside)
 	}
+	if replace && src.Kind == SourceDirectory && hadOld && oldRef.Source.Kind != SourceDirectory {
+		// The new directory source makes the old git clone redundant, but it
+		// sits under the marketplace's own directory where nothing else will
+		// remove it. Keep any source another record (or the incoming directory
+		// itself) still needs, exactly as EditMarketplace's re-source does.
+		clone := m.marketplaceDir(name)
+		sources := append(marketplaceProtectionPaths(mk, name), src.Path)
+		if present, protect := m.sweepDestroysSource(sources, clone); present && !protect {
+			_ = m.withClone(context.Background(), clone, func() error { return marketplaceRemoveAll(clone) })
+		}
+	}
 	return ref, nil
+}
+
+// refuseRegisteredName refuses a name the marketplace store already records.
+// The add paths call it before the fetch for an explicit name and after the
+// fetch for a catalog-supplied one, so both spell this rule once.
+func refuseRegisteredName(mk Marketplaces, name string) error {
+	if _, exists := mk[name]; exists {
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+	}
+	return nil
 }
 
 // saveFailed scrubs a save failure's absolute plugin-store path -
@@ -1445,7 +1503,12 @@ func resolveForContainment(path string) (string, error) {
 // pathUnder is where under dir a path sits, and whether it is under dir at
 // all. Both are taken as the store recorded them — an install path against
 // the cache directory it was joined from — so neither is resolved here, and a
-// path that is dir itself is under it.
+// path that is dir itself is under it, reporting a relative path of ".".
+//
+// This is the package's one containment test. Every "is this path inside that
+// directory" question goes through it: filepath.Rel plus the two-way ".."
+// check is four lines that had been written out five times, and the copies
+// were already diverging on whether the directory itself counts.
 func pathUnder(dir, path string) (rel string, under bool) {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -1457,11 +1520,8 @@ func pathUnder(dir, path string) (rel string, under bool) {
 // pathWithinDir reports whether candidate is dir itself or sits beneath it.
 // Both must already be resolved.
 func pathWithinDir(dir, candidate string) bool {
-	rel, err := filepath.Rel(dir, candidate)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	_, under := pathUnder(dir, candidate)
+	return under
 }
 
 // recloneMarketplace replaces a marketplace clone whose git pull failed. The

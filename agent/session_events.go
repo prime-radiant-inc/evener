@@ -7,6 +7,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -133,12 +135,12 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // not audit every call site reachable before this function runs. Kata 57j8
 // found and fixed the rest: resumeWorktreeReentry's re-entry-failure notice
 // (resume only, called from RestoreSessionFromMetaWithConfig before
-// initSessionState) AND applyInitInsideWorktreeLock's four warnings (called
+// initSessionState) AND applyInitInsideWorktreeLock's five warnings (called
 // from initSessionState, so reachable on BOTH NewSession and
 // RestoreSessionFromMetaWithConfig — a fresh session launched inside an
-// existing managed worktree lane hits this too, not only a resume). All five
+// existing managed worktree lane hits this too, not only a resume). All six
 // now buffer into pendingTranscriptWarnings, same as the two et0x fixed.
-// Consequence worth knowing: these five sites run before s.hookRunner is
+// Consequence worth knowing: these six sites run before s.hookRunner is
 // assigned, so a direct s.emit there never fired the Notification hook;
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
@@ -147,6 +149,11 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
 	start.SandboxNet = appwire.ClonePointer(s.cfg.SandboxNet)
+	// Construction (including restored worktree re-entry) has installed the
+	// environment before this seed. Do not use the cached launch directory.
+	s.mu.Lock()
+	start.WorkingDir = s.envInfo.WorkingDir
+	s.mu.Unlock()
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication
@@ -194,6 +201,12 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingMCPWarnings = nil
+	// Instruction-doc truncation is a construction-time config diagnostic too:
+	// visible on the stream, no Notification hook (#1048).
+	for _, w := range s.pendingInstructionWarnings {
+		s.emitDiagnosticWarning(w)
+	}
+	s.pendingInstructionWarnings = nil
 	for _, src := range promptSources {
 		s.emit(events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
@@ -250,7 +263,7 @@ func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal
 		s.jobManager.onSessionEvent(ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
-		s.fireNotificationHook(warningHookMessage(data))
+		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -282,8 +295,8 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // carrier-claim's own steer selection failure, is set directly by
 // recordFailedSteeringSelection (session_queue.go) without going through
 // this function, gated by the same answering check.
-func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
-	data.Recorded = s.recordTurnFailure(data, true).Recorded
+func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData, clientMutationID string) {
+	data.Recorded = s.recordTurnFailureWithAsk(data, true, s.clientMutationAskResolution(clientMutationID)).Recorded
 	s.emit(data)
 }
 
@@ -292,6 +305,10 @@ func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 // stored source/title/hint match what the live event carried. It reports the
 // entry's record.
 func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) transcript.Record {
+	return s.recordTurnFailureWithAsk(data, steeringCarrier, nil)
+}
+
+func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrier bool, resolution *schema.AskResolution) transcript.Record {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
 		Message:         strings.TrimSpace(enriched.Error),
@@ -312,6 +329,13 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 	// turn text still show the failure.
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
+	turn.AskResolution = resolution
+	if resolution != nil {
+		s.mu.Lock()
+		activeExecution := s.execution.turnID
+		s.mu.Unlock()
+		turn.AnswerToTurnIDs = askResolutionTurnIDs(resolution, activeExecution)
+	}
 	return s.recordTurn(turn, turn)
 }
 
@@ -546,7 +570,7 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // timeout. A close that has already published its budget supersedes that, and an
 // exhausted deadline of either kind declines the hook rather than launching one
 // nothing is left to wait for.
-func (s *Session) fireNotificationHook(message string) {
+func (s *Session) fireNotificationHook(message, title string) {
 	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
@@ -557,23 +581,56 @@ func (s *Session) fireNotificationHook(message string) {
 	if ctx.Err() != nil {
 		return
 	}
-	s.runNotificationHook(ctx, message)
+	s.runNotificationHook(ctx, message, title)
 }
 
+// warningData is the warning payload an event carries, and whether it carries
+// one at all. A nil *WarningData is "no payload": both readers treat it as not a
+// warning.
+func warningData(data events.EventData) (events.WarningData, bool) {
+	switch v := data.(type) {
+	case events.WarningData:
+		return v, true
+	case *events.WarningData:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return events.WarningData{}, false
+}
+
+// warningHookMessage is the warning's message text, or the event's own printing
+// when the event is not a warning. It is the Notification hook's "message" field.
 func warningHookMessage(data events.EventData) string {
-	if v, ok := data.(events.WarningData); ok {
+	if v, ok := warningData(data); ok {
 		return v.Message
 	}
 	return fmt.Sprint(data)
 }
 
-func (s *Session) runNotificationHook(ctx context.Context, message string) {
+// warningHookTitle is the warning's own title, empty when it carries none. It is
+// the Notification hook's "title" field, so a hook renders the same heading the
+// user sees.
+func warningHookTitle(data events.EventData) string {
+	v, _ := warningData(data)
+	return v.Title
+}
+
+// notificationHookType is the Claude notification_type evener emits. Evener has
+// exactly one user-visible notification kind — a diagnostic warning — so this is
+// evener-native rather than Claude's permission_prompt/idle_prompt vocabulary,
+// and the runner matches on the value the input carries.
+const notificationHookType = "warning"
+
+func (s *Session) runNotificationHook(ctx context.Context, message, title string) {
 	if s.hookRunner == nil {
 		return
 	}
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
+	input.NotificationType = notificationHookType
+	input.Title = title
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
@@ -598,13 +655,46 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	// Effort is empty when no effort has been configured; omitempty silences it.
 	s.mu.Lock()
 	effort := s.cfg.ReasoningEffort
+	// A subagent's hook reports the child's own identity, never the parent's.
+	// Root sessions leave both empty, as Claude does.
+	parentSessionID := s.cfg.spawn.parentSessionID
+	agentType := s.cfg.spawn.agentType
 	s.mu.Unlock()
 	if effort != "" {
-		input.Effort = effort
+		input.Effort = &hooks.Effort{Level: effort}
+	}
+	if parentSessionID != "" {
+		input.AgentID = s.id
+		input.AgentType = agentType
 	}
 	// PermissionMode is intentionally left unset: evener has no permission-mode field
 	// on Session today. Do NOT fabricate a value the hook would act on.
 	return input
+}
+
+// toolHookInput starts an event's hook input with the fields every tool event
+// carries: the Claude tool name, the call id, and the parsed tool_input. A call
+// whose raw arguments were refused keeps its unvalidated bytes out of
+// tool_input, exactly as the event it describes never had them applied. Each
+// caller then sets only its own event-specific fields (tool_response, error,
+// duration_ms, and so on).
+func (s *Session) toolHookInput(event plugin.HookEvent, call llm.ToolCallData, rawRejected bool) hooks.Input {
+	hi := s.hookInput(event)
+	hi.ToolName = toolname.EvenerToClaude(call.Name)
+	hi.ToolUseID = call.ID
+	if !rawRejected && len(call.Arguments) > 0 {
+		// Decode through the registered tool's own decoder, exactly as dispatch
+		// does: a tool that preserves exact integers (uint64 ids, int64 bounds)
+		// must hand the hook the same values it hands the tool, not the float64
+		// a plain json.Unmarshal produces.
+		registered := s.reg.Get(call.Name)
+		if registered == nil {
+			registered = &tool.RegisteredTool{}
+		}
+		hi.UnmarshalToolArguments = registered.UnmarshalArguments
+		_ = registered.UnmarshalArguments(call.Arguments, &hi.ToolInput)
+	}
+	return hi
 }
 
 // settleFailedRound persists what a terminally failed round produced, so the

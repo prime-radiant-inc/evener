@@ -1213,6 +1213,7 @@ test("retrying missing provider setup discovers a local server started afterward
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
+  expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Connect a provider to start");
   const retry = screen.getByRole("button", { name: "Retry provider check" });
   available = true;
   await user.click(retry);
@@ -1430,4 +1431,46 @@ test("credential changes reload the cached model catalog and re-enter setup afte
   configured = false;
   await act(async () => credentialsStore.getState().fetch());
   await screen.findByRole("button", { name: "Connect provider" });
+});
+
+test.each([
+  { name: "left off", choose: false },
+  { name: "chosen", choose: true },
+])("Start as Manager reaches the wire only when chosen ($name)", async ({ choose }) => {
+  const user = setupUser();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({ data: saved ? TEAM_SAVED_MODELS : [] }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+    fake.on("thread/start", () => startResponse("local:boss"));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/boss-scope");
+  await fillPrompt(user, "manage things");
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const toggle = await screen.findByRole("switch", { name: "Start as Manager" });
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  if (choose) {
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  }
+  // The launch draft owns the choice, so a pane remount mid-edit keeps it.
+  expect(spawnDraftsStore.getState().current?.fields.getState().manager).toBe(choose);
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const params = client.calls.find((call) => call.method === "thread/start")?.params as Record<string, unknown>;
+  expect(params.manager).toBe(choose ? true : undefined);
+  expect("manager" in params).toBe(choose);
 });

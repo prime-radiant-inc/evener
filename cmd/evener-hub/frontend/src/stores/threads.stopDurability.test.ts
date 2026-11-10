@@ -16,6 +16,7 @@ import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { IDBUpgradeError } from "./idbConnection";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { blockedUpgradeRequest, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
@@ -85,17 +86,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
 
 // docs/design/stop-cancellation-outbox.md §9 items 2-4: the durability
 // integrations only a full store can express. Units 1-3 pinned the storage

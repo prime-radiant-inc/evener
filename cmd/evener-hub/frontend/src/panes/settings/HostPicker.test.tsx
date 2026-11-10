@@ -6,23 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { hostsStore } from "../../stores/hosts";
+import { hostRow } from "../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { HostPicker } from "./HostPicker";
 
 // The shared picker on the settings route: the local hub plus every configured
 // remote host, writing the one shared selection and the URL.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function connectFakeClient(hosts: HostRow[]): FakeClient {
   const fake = new FakeClient("ready");

@@ -194,6 +194,9 @@ fi
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
+if [ "${EVENER_GATE_KEEP_HUB_INTEGRATION:-0}" != "1" ]; then
+	root_skip="$(gate_shard_skip "$root_skip" "$GATE_HUB_INTEGRATION_RUN")"
+fi
 
 # The caller's argv, preserved as an array and expanded quoted everywhere it
 # reaches a command: evener-dev decides which flags the enumeration also needs, a
@@ -358,7 +361,9 @@ run_go_test_capture() {
 	jsonl="$timing_rows_dir/$slug.jsonl"
 	stderrlog="$timing_rows_dir/$slug.stderr"
 	rows="$timing_rows_dir/$slug.rows"
-	/usr/bin/time -p go test -json "$@" >"$jsonl" 2>"$stderrlog"
+	# test-cpu-exec runs each test binary and adds its CPU time to the
+	# package's stream, which is the number the ratchet budgets.
+	/usr/bin/time -p go test -json -exec "$(timing_go_test_exec)" "$@" >"$jsonl" 2>"$stderrlog"
 	rc=$?
 	# The human log first (it is what the failure dump and the zero-test check
 	# read), then the go command's own stderr (the `real` line and any build

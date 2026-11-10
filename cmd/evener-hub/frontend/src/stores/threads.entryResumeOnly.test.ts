@@ -250,7 +250,8 @@ test.each([false, true])(
       turn: { id: "sent", status: "inProgress", itemsView: "full" },
     }));
     await threadsStore.getState().send(ref, "durable recovery input");
-    expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    // The drive runs beside the parked send; await its request's arrival.
+    await vi.waitFor(() => expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1));
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
     const parked = await storage.listOutbox(ref);
     expect(parked).toHaveLength(1);
@@ -475,6 +476,9 @@ test("resume completion drains after a held lifecycle discovery result", async (
   fake.on("thread/resume", () => failedResume.promise);
   await threadsStore.getState().send(ref, "deliver after the owner releases");
   const failedCompletion = threadsStore.getState().resumeSession(ref);
+  // The drive runs beside the parked send; await its request's arrival so
+  // the staged rejection finds the consumer awaiting it.
+  await vi.waitFor(() => expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1));
   failedResume.reject(new Error("retry this transport failure"));
   await failedCompletion;
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
@@ -590,4 +594,46 @@ test("a Send committed during destination hydration follows the same resume owne
     { ref: destination, expectedInstanceId: "late-resumed-instance", clientMutationId: first?.clientMutationId },
     { ref: destination, expectedInstanceId: "late-resumed-instance", clientMutationId: late?.clientMutationId },
   ]);
+});
+
+// A reconnect retires the outgoing connection's resumeOnlyFoldable bit in the
+// store, because that bit is the PREVIOUS connection's answer. The entry
+// repository keeps its own copy of the model, so a later frame that carries no
+// thread/read information republished the retired bit and re-armed the fence
+// from the connection that has gone. The store's own comment says the rule:
+// only "a fresh read on the current connection restores folding".
+test("a non-read frame does not revive the foldable bit a reconnect retired", async () => {
+  const ref = "local:reconnect-clears-foldable";
+  const fake = connectFakeClient();
+  // The outgoing connection reports the session foldable-only.
+  fake.on("thread/read", (params) => ({
+    ...resumeOnlySnapshot(ref, true),
+    requestGeneration: params.requestGeneration,
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  await settleEntryTranscriptForTests(ref);
+  expect(isResumeOnly(model(ref))).toBe(true);
+  expect(productionEntryTranscriptForTests(ref).model?.resumeOnlyFoldable).toBe(true);
+
+  // Reconnect. Hold the new connection's reads so no fresh answer exists yet:
+  // the bit that remains is the outgoing connection's, and the store retires it.
+  const heldRead = deferred<ThreadReadResponse>();
+  fake.on("thread/read", async (params) => ({
+    ...(await heldRead.promise),
+    requestGeneration: params.requestGeneration,
+  }));
+  act(() => {
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+  expect(model(ref).resumeOnlyFoldable).toBe(false);
+
+  // A frame that carries no read republishes the repository's model, which
+  // still holds the outgoing connection's answer.
+  act(() => publishAgain(fake, ref));
+  expect(model(ref).resumeOnlyFoldable).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
+  // Let the held reads resolve so the test leaves no request pending.
+  heldRead.resolve(resumeOnlySnapshot(ref, false));
+  await settleEntryTranscriptForTests(ref);
 });

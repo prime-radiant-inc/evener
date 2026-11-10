@@ -170,7 +170,7 @@ func TestBuildBodyAssistantDocumentAndAudioRejected(t *testing.T) {
 // media type by extension, the image/png default for an unknown extension),
 // and the read-failure arm against a missing TempDir sibling.
 func TestBuildBodyImageParts(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	png := testPNG(t)
 	dir := t.TempDir()
 	localPNG := filepath.Join(dir, "shot.png")
 	if err := os.WriteFile(localPNG, png, 0o600); err != nil {
@@ -190,9 +190,9 @@ func TestBuildBodyImageParts(t *testing.T) {
 		return contents
 	}
 
-	inline := build(t, &llm.ImageData{Data: []byte{1, 2, 3}})[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	if inline["mimeType"] != "image/png" || inline["data"] != base64.StdEncoding.EncodeToString([]byte{1, 2, 3}) {
-		t.Fatalf("inline data with no media type must default to image/png: %#v", inline)
+	inline := build(t, &llm.ImageData{Data: png})[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
+	if inline["mimeType"] != "image/png" || inline["data"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("inline data with no media type must derive image/png from the bytes: %#v", inline)
 	}
 
 	remote := build(t, &llm.ImageData{URL: "https://h/p.png"})[0]["parts"].([]map[string]any)[0]["fileData"].(map[string]any)

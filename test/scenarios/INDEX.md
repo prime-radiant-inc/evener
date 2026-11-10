@@ -462,11 +462,12 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   at the one canonical `/s/local:<session-id>` ref (the single ref form
   commit `8cea30ca6` settled on), and clicking the same row again does
   not open a second copy of the session beside the first.
-- `sidebar-project-order-lastactivity-feel.md` — a just-touched project
-  surfaces at the top, promptly. The `LastActivity` comparator is
-  already pinned by hubcore fuzz scenarios, so this card covers the
-  layer they cannot see: a completed turn propagating into the navigation
-  projection's memoized `Past.AllMetas()` input.
+- `sidebar-stable-order-feel.md` — projects keep their name order and a
+  project's sessions keep their newest-created-first order through a
+  completed turn. The comparators are already pinned by hubcore fuzz
+  scenarios, so this card covers the layer they cannot see: a turn reaching
+  the navigation projection's memoized `Past.AllMetas()` input without moving
+  either list.
 
 ## Cost display & Display settings (Track C)
 
@@ -571,6 +572,15 @@ model to do the right thing, so they are also where model tiers separate.
   not substring) on evener's shell tool (Claude name `Bash`), runs
   in exec-form (`args`, no shell), and exits 0 without blocking; a
   `"Bas"` matcher does NOT fire (commits `a4685d3d`, `28bd828e`).
+- `hooks-toolsmith-subagent-start.md` — the real installed `toolsmith`
+  plugin loaded via `--plugin-dir` for a live delegate: its
+  `SubagentStart` hook RUNS (matcher `.*`, exit 0), the old
+  `declares a hook for the reserved event "SubagentStart"` warning is
+  gone from both the event stream and the session log, and the hook's
+  `additionalContext` is in the child session's first model request
+  (isolation control: a `SubagentStart`-only copy of the plugin still
+  delivers it). Commits `d454bcfeaf` (events registered),
+  `8a2c8128c9` (fire site).
 
 ## Native app (device only)
 

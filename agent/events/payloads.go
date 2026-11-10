@@ -16,6 +16,7 @@ import (
 
 // SessionStartData is the payload for an EventSessionStart event.
 type SessionStartData struct {
+	WorkingDir        string `json:"working_dir,omitempty"`
 	Profile           string `json:"profile"`
 	Model             string `json:"model"`
 	Restored          bool   `json:"restored,omitempty"`
@@ -375,6 +376,10 @@ const (
 	SteeringKindNotification       = "notification"
 	SteeringKindProviderFailure    = "provider-failure"
 	SteeringKindHumanNote          = "human-note"
+	// SteeringKindDelegateNudge is a subagent's missing-result reminder. It is
+	// a runtime reminder, not the caller speaking, so it must not arrive as
+	// fresh user input (#3734).
+	SteeringKindDelegateNudge = "delegate-nudge"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -400,6 +405,7 @@ var AllSteeringKinds = []string{
 	SteeringKindNotification,
 	SteeringKindProviderFailure,
 	SteeringKindHumanNote,
+	SteeringKindDelegateNudge,
 }
 
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
@@ -637,6 +643,11 @@ const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 // root, so Evener stopped trying until new attention arrives or the daemon
 // restarts. Clients show it at every level.
 const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
+
+// WarningCodeDelegateStartDeliveryReplay identifies the notice that a
+// committed delegate start could not replay an owed delivery. The parcel is
+// requeued and the start continues.
+const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
 
 // WarningCodeAttentionPaused identifies the notice that a permanent provider
 // failure (a dead credential, a spent quota) has paused delivering background

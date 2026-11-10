@@ -47,7 +47,7 @@ packages do not count.
 | `EVENER_RECORD_HTTP` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |
 | `EVENER_FUZZ_RECORD` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `envvars` |
 | `EVENER_FUZZ_CAPTURE_ENV` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-fuzz-harvest` |
-| `EVENER_RUN_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
+| `EVENER_RUN_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `cmd/evener` |
 | `EVENER_SCRATCH_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `EVENER_SESSION_ORIGIN` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent` |
 | `EVENER_STATE_DIR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/doctor`, `cmd/evener`, `cmd/evener-doctor` and 1 more |
@@ -140,8 +140,11 @@ Dev tooling and test rigs declare these themselves.
 
 | Variable | Doc row | Consumer |
 |---|---|---|
-| `BROWSER_GUARD_CONCURRENCY` | none | `cmd/evener-dev` |
+| `BROWSER_GUARD_CONCURRENCY` | [developing-evener/testing.md](../developing-evener/testing.md) | `cmd/evener-dev` |
+| `BROWSER_GUARD_SHARD` | none | `cmd/evener-dev` |
 | `EVENER_FUZZ_PERSIST` | [developing-evener/fuzzing.md](../developing-evener/fuzzing.md) | `fuzz/promoter` |
+| `EVENER_HUB_LIVE_STACK_BIN` | none | `internal/devtool/shardrun` |
+| `EVENER_HUB_LIVE_STACK_WARM` | none | `internal/devtool/shardrun` |
 | `EVENER_HUB_TEST_ENV_ROOT` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_LIVE_TESTS` | none | `agent/internal/liveeval` |
 | `EVENER_SANDBOXTEST_KEPT_TMPDIR` | none | `agent/sandbox/sandboxtest` |

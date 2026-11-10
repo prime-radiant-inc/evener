@@ -3,11 +3,12 @@ package plugins
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 )
+
+var pluginLoad = agentplugin.Load
 
 // validatePluginDir returns nil iff the plugin at dir loads cleanly — manifest
 // plus every component (agents, commands, hooks, mcp, skills) parses. It reuses
@@ -15,7 +16,7 @@ import (
 // runs a plugin around a component file it skips, but installing or upgrading
 // to a revision with one is refused, which keeps the working revision in place.
 func validatePluginDir(dir string) error {
-	instance, err := agentplugin.Load(dir)
+	instance, err := pluginLoad(dir)
 	if err != nil {
 		return err
 	}
@@ -30,7 +31,7 @@ func validatePluginDir(dir string) error {
 // any error or absence), for computeVersion.
 func pluginManifestVersion(dir string) string {
 	for _, mf := range []string{".claude-plugin", ".codex-plugin"} {
-		data, err := os.ReadFile(filepath.Join(dir, mf, "plugin.json"))
+		data, err := readMetadataFile(filepath.Join(dir, mf, "plugin.json"))
 		if err != nil {
 			continue
 		}

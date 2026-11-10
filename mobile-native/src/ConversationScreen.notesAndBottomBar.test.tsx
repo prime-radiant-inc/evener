@@ -895,7 +895,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
 		expect(swipeables).toHaveLength(1);
 		const [swipeable] = swipeables;
-		const tracker = swipeable?.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		const tracker = swipeable?.props.simultaneousWith as PanGestureMock | undefined;
 		expect(swipeable?.props.hitSlop).toEqual({ left: -8 });
 		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
 		expect(transcriptList(tree).props.contentContainerStyle.paddingHorizontal).toBe(16);

@@ -206,6 +206,12 @@ function SessionInfoBody({
 				) : null}
 			</Group>
 
+			{session.manager ? (
+				<Group section="manager">
+					<Row label="Manager" />
+				</Group>
+			) : null}
+
 			{plugins ? (
 				<>
 					<Group section="plugins" label="Plugins">

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,13 +29,91 @@ func (s *Session) Close() {
 // CloseForShutdown closes the session with a terminal lifecycle boundary.
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
+//
+// The close reports Claude's "prompt_input_exit": a daemon shutdown while the
+// user's prompt was up is the one provable form of the user exiting a session.
+// releaseRuntimeOnce downgrades it to "other" when the session still had work in
+// flight (a pending ask, an in-flight turn, a running job or delegate), because
+// then the user did not exit a prompt — the session died under work.
 func (s *Session) CloseForShutdown() {
-	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true, reason: sessionEndPromptInputExit})
+}
+
+// CloseWithReason closes the session and reports the given Claude session end
+// reason to SessionEnd hooks. Evener can prove only "clear" (a thread clear
+// replaced this identity); every other caller passes nothing, which reaches the
+// hooks as Claude's "other". An unrecognized reason is reduced to "other" too,
+// so a hook matched on a reason evener cannot prove never fires on a guess.
+func (s *Session) CloseWithReason(reason string) {
+	s.close(context.Background(), closeOptions{cleanupEnv: true, reason: reason})
 }
 
 type closeOptions struct {
 	cleanupEnv    bool
 	forceTerminal bool
+	// reason is the Claude session end reason ("clear", "resume", "logout",
+	// "prompt_input_exit", "other"). Empty means "other": the normal close paths
+	// can prove no reason, and SessionEnd must not claim one they cannot.
+	reason string
+}
+
+// claudeSessionEndReasons is Claude's closed session end vocabulary. A hook
+// matcher targets exactly one of these words.
+var claudeSessionEndReasons = map[string]bool{
+	"clear":             true,
+	"resume":            true,
+	"logout":            true,
+	"prompt_input_exit": true,
+	"other":             true,
+}
+
+// sessionEndPromptInputExit is Claude's reason for a session the user ended
+// while prompt input was up. The daemon's shutdown close reports it when the
+// session is provably idle.
+const sessionEndPromptInputExit = "prompt_input_exit"
+
+// claudeSessionEndReason maps a caller's reason onto Claude's vocabulary. Evener
+// proves two of these words: "clear" (a thread clear replaced this identity) and
+// "prompt_input_exit" (a shutdown close with the session idle and no work in
+// flight). "resume" and "logout" are accepted here but never sent by any caller,
+// because evener has no resume/logout event to prove them from. An empty or
+// unrecognized reason is "other" rather than a word a hook would act on.
+func claudeSessionEndReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	if claudeSessionEndReasons[trimmed] {
+		return trimmed
+	}
+	return "other"
+}
+
+// idleForPromptExit reports whether the session is idle enough for Claude's
+// "prompt_input_exit" to be true: no in-flight turn, no running job or
+// delegate, and no turn that was just cut short. A pending ask does NOT count —
+// a question on screen is the most literal case of the user exiting while
+// prompt input was visible.
+//
+// It reads every facet before releaseRuntimeOnce mutates any of them.
+func (s *Session) idleForPromptExit() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	// turnInterrupted is the marker that survives the interrupt branch's own
+	// settle: that settle sets SessionIdle and clears the pending ask, so
+	// without this a turn killed mid-stream would read as an idle prompt.
+	idle := s.state != SessionProcessing && !s.closing && !s.turnInterrupted
+	s.mu.Unlock()
+	if !idle {
+		return false
+	}
+	// The gates the idle-runtime release itself applies
+	// (idleReleasePregatesClear), so a claim made here and a release that path
+	// would refuse cannot disagree: a running job, a pending terminal flush, a
+	// watch send still owed, a running child, or an unconsumed delivery, close,
+	// or restore residue all mean the prompt was not the only thing left
+	// standing. Queued input, undelivered notifications, and undealt attention
+	// count too.
+	return s.idleReleasePregatesClear() && !s.sessionWorkPending()
 }
 
 // releaseRuntime runs the session's single one-time teardown under an explicit
@@ -155,6 +234,12 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	budgetCtx, cancelBudget := s.publishCloseBudget(ctx)
 	defer cancelBudget()
+	// Sampled before beginClosing mutates state and closing: a shutdown close may
+	// claim prompt_input_exit only if the session was idle at that instant.
+	sessionEndReason := claudeSessionEndReason(options.reason)
+	if sessionEndReason == sessionEndPromptInputExit && !s.idleForPromptExit() {
+		sessionEndReason = "other"
+	}
 	turns, emitEnd := s.beginClosing(options.forceTerminal, true)
 
 	s.cancelTurnContext()
@@ -252,9 +337,11 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	}
 
 	// SessionEnd hooks (best-effort, bounded timeout).
-	if s.hookRunner != nil {
+	if s.hookRunner != nil && s.hookRunner.Has(plugin.HookSessionEnd) {
 		hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		s.hookRunner.RunSessionEnd(s.apiLogContext(hookCtx), s.hookInput(plugin.HookSessionEnd))
+		in := s.hookInput(plugin.HookSessionEnd)
+		in.Reason = sessionEndReason
+		s.hookRunner.RunSessionEndFor(s.apiLogContext(hookCtx), in, sessionEndReason)
 		hookCancel()
 	}
 	s.announceSessionEnd(budgetCtx, emitEnd, turns)
@@ -281,6 +368,10 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	s.state = SessionClosed
 	s.mu.Unlock()
 	s.closeEventStream(budgetCtx)
+	// The livelock goes last: everything above is worktree-adjacent work a
+	// live process might still owe, and a reporting probe must not read this
+	// one as dead-looking until none of it can run anymore.
+	s.releaseSessionLivelock()
 }
 
 // releaseForRetirement releases only process-local runtime resources and
@@ -333,6 +424,10 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 		releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
 	}
 	s.closeEventStream(budgetCtx)
+	// The livelock goes last, as in the terminal close: a retired root has no
+	// live process, and its free flock is the dead-looking evidence probes
+	// report — with the resumability caution the docs' recipe carries.
+	s.releaseSessionLivelock()
 	return releaseErr
 }
 
@@ -383,6 +478,9 @@ func (s *Session) beginClosing(forceTerminal, markClosed bool) (turns int, emitE
 		s.endTurnLocked() // dying turn's work counts and it ends now
 	}
 	s.closing = true
+	for _, cancel := range s.hubWatchCancels {
+		cancel()
+	}
 	if markClosed {
 		s.state = SessionClosed
 	}

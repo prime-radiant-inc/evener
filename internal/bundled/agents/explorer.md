@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: "Fast workspace scout with a real shell. Reports workspace facts and checks local or network sources when the current environment and sandbox allow it; read-only in effect, it never writes or modifies anything."
+description: "Fast workspace scout with a real shell. Reports workspace facts and checks local or network sources when the current environment and sandbox allow it; read-only in effect, it never writes or modifies anything and has no edit tools; a seat that must write files (including a reviewer that writes its report) uses subagent."
 color: cyan
 tools: [glob, grep, read_file, shell]
 tasks:

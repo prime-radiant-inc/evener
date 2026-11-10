@@ -4,6 +4,8 @@ import (
 	"flag"
 	"io"
 	"testing"
+
+	"primeradiant.com/evener/agent"
 )
 
 // serveFlagSet returns the flag set `evener serve` registers, captured before
@@ -53,5 +55,43 @@ func TestRunAndServeShareOneDefinitionPerLaunchFlag(t *testing.T) {
 	})
 	if shared == 0 {
 		t.Fatal("run and serve share no flags")
+	}
+}
+
+func TestCommitProvenanceFlag(t *testing.T) {
+	fs := flag.NewFlagSet("launch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	flags := registerLaunchFlags(fs)
+	if err := fs.Parse([]string{"--commit-provenance=off"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := *flags.commitProvenance; got != "off" {
+		t.Fatalf("--commit-provenance = %q, want off", got)
+	}
+}
+
+// TestApplyMaxSubagentDepth pins the flag boundary: -1 (unset) leaves the
+// session default in place, 0 becomes the config's explicit disable, and a
+// positive value becomes the nesting depth.
+func TestApplyMaxSubagentDepth(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		depth        int
+		wantDepth    int
+		wantDisabled bool
+	}{
+		{"unset leaves the default", -1, 0, false},
+		{"zero disables", 0, 0, true},
+		{"positive sets the depth", 3, 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var cfg agent.SessionConfig
+			applyMaxSubagentDepth(&cfg, tc.depth)
+			if cfg.MaxSubagentDepth != tc.wantDepth || cfg.DisableSubagents != tc.wantDisabled {
+				t.Fatalf("cfg = depth %d disabled %v, want depth %d disabled %v", cfg.MaxSubagentDepth, cfg.DisableSubagents, tc.wantDepth, tc.wantDisabled)
+			}
+		})
 	}
 }

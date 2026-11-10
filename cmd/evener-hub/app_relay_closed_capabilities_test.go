@@ -282,18 +282,14 @@ func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		StateDir:     t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		StateDir: t.TempDir(),
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize client: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	for _, ref := range []string{rootRef, childRef, missingRef} {
 		if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 			t.Fatalf("subscribe client to %s: %v", ref, err)
@@ -365,11 +361,9 @@ func relayedNotificationClient(
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		StateDir:     t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		StateDir: t.TempDir(),
+	})
 	for _, configureConfig := range configure {
 		configureConfig(&cfg)
 	}

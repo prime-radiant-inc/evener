@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -50,6 +51,39 @@ func TestToChatMessages_AssistantTextWithToolCall(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_ToolCallThoughtSignature preserves Gemini's opaque
+// continuation token in the OpenAI-compatible escape hatch used by shisa.
+func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
+	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: "call_gemini", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
+		}},
+	}}}
+	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := out[0]["tool_calls"].([]map[string]any)
+	if len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+	extra := calls[0]["extra_content"].(map[string]any)
+	google := extra["google"].(map[string]any)
+	if google["thought_signature"] != "sig-1" {
+		t.Fatalf("extra_content = %#v, want the Gemini thought signature", extra)
+	}
+
+	turn[0].Content[0].ToolCall.ThoughtSignature = ""
+	out, err = toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = out[0]["tool_calls"].([]map[string]any)
+	if _, ok := calls[0]["extra_content"]; ok {
+		t.Fatalf("unsigned tool call must not emit provider metadata: %#v", calls[0])
+	}
+}
+
 // TestToChatMessages_ToolResultNonStringContent pins the non-string arm of
 // the tool-result content switch: any non-string value reaches the wire as
 // its JSON encoding.
@@ -96,13 +130,15 @@ func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
 }
 
 // TestToChatMessages_ImagePartShapes pins the multimodal image walk: a nil
-// image part is skipped, inline bytes with no claimed media type default to
-// png, and an image part with neither URL nor data is dropped.
+// image part is skipped, inline bytes with no claimed media type derive their
+// png type from the bytes, and an image part with neither URL nor data is
+// dropped.
 func TestToChatMessages_ImagePartShapes(t *testing.T) {
+	png := testPNG(t)
 	msg := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "look"},
 		{Kind: llm.ContentImage, Image: nil},
-		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1, 2, 3}, MediaType: ""}},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: png}},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{}},
 	}}}
 	out, err := toChatMessages(msg, registry.Caps{}, false)
@@ -117,8 +153,9 @@ func TestToChatMessages_ImagePartShapes(t *testing.T) {
 		t.Fatalf("parts[0] = %v, want the text part first", parts[0])
 	}
 	imageURL, _ := parts[1]["image_url"].(map[string]any)
-	if parts[1]["type"] != "image_url" || imageURL["url"] != "data:image/png;base64,AQID" {
-		t.Fatalf("image part = %v, want a png data URI from the claimed media type default", parts[1])
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if parts[1]["type"] != "image_url" || imageURL["url"] != wantURL {
+		t.Fatalf("image part = %v, want a png data URI derived from the bytes", parts[1])
 	}
 }
 

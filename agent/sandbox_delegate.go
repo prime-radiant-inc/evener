@@ -55,6 +55,21 @@ func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args 
 		return nil
 	}
 	properties, _ := parameters["properties"].(map[string]any)
+	// A hub-creation call never launches the ordinary delegate this guard
+	// protects, so on the composed Manager delegate — the only schema that
+	// declares hub — the hub-branch refusal owns those calls: it names
+	// every rejected argument, placeholders included, and the guard must not
+	// preempt it with the ordinary surface's availability message. A plain
+	// delegate schema declares no hub and has no hub-branch refusal: a hub
+	// object a caller sends there is repair's unknown to drop, and the
+	// confinement request traveling beside it is exactly what this guard
+	// must refuse. A null hub marks an ordinary call on both schemas and
+	// keeps the guard.
+	if _, hubDeclared := properties["hub"]; hubDeclared {
+		if hub, hubCall := args["hub"]; hubCall && hub != nil {
+			return nil
+		}
+	}
 	invalid := make([]string, 0, 2)
 	// sandbox_net is checked even though the combined-enum schema has no such
 	// property: a caller holding the old two-field contract who passes it must

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,4 +202,68 @@ func TestTree_DelegateNameLabel(t *testing.T) {
 	if len(fixtureRootTree.Children) != 1 || fixtureRootTree.Children[0].Name != "" {
 		t.Errorf("unnamed child = %#v, want an empty label", fixtureRootTree.Children)
 	}
+}
+
+// TestWithDelegateReason covers all branches of withDelegateReason.
+func TestWithDelegateReason(t *testing.T) {
+	if got := withDelegateReason("", ""); got != "" {
+		t.Errorf("withDelegateReason(empty, empty) = %q, want empty", got)
+	}
+	if got := withDelegateReason("note", ""); got != "note" {
+		t.Errorf("withDelegateReason(note, empty) = %q, want note", got)
+	}
+	if got := withDelegateReason("", "disposed"); got != "disposed" {
+		t.Errorf("withDelegateReason(empty, disposed) = %q, want disposed", got)
+	}
+	if got := withDelegateReason("note", "disposed"); got != "disposed; note" {
+		t.Errorf("withDelegateReason(note, disposed) = %q, want 'disposed; note'", got)
+	}
+}
+
+// A node whose jobs log cannot be read carries a note saying so instead of
+// failing the tree.
+func TestTree_JobsUnreadable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	if err := writeDirAt(filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Tree(base, sidA, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Note == "" || len(root.Children) != 0 {
+		t.Errorf("root = %+v, want a note and no children", root)
+	}
+}
+
+// A delegate whose child transcript is missing is listed with a note rather
+// than being dropped.
+func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	missing := "01MISSINGCHILDSESSIONXXXXXX"
+	writeDelegateEvents(t, filepath.Join(bucket, "sessions", sidA, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "d1", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID: missing, TranscriptRef: "local:" + missing,
+			OwnerSessionID: sidA, VisibleSessionID: sidA, Task: "inspect missing child",
+			AgentType: "ghost", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+		}}},
+	})
+	root, err := Tree(base, sidA, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 || root.Children[0].SessionID != missing || root.Children[0].Note == "" {
+		t.Errorf("children = %+v, want the missing child listed with a note", root.Children)
+	}
+}
+
+// writeDirAt removes any file at path and creates a directory there, so a
+// subsequent read of that path fails.
+func writeDirAt(path string) error {
+	_ = os.Remove(path)
+	return os.MkdirAll(path, 0o755)
 }

@@ -16,6 +16,7 @@ import {
   contentVectorForConfig,
   type HookExitDetail,
   hidesDaemonSteering,
+  hidesThinkingTraces,
   informationalNoticesVisible,
   normalizeConfig,
   sharedNotesVisible,
@@ -46,12 +47,18 @@ export type ProjectedEntry =
     }
   | {
       /**
-       * A content-free placeholder for a reasoning item that is the turn's
-       * live current thought while the `reasoning` content flag is off. It
-       * carries the source item only so the renderer can estimate a streaming
-       * token count; the thought's text is never rendered from this entry.
+       * A compact trace row for a reasoning item while the `reasoning`
+       * content flag is off: live current thoughts AND settled thoughts at
+       * every level but the chat preset. The renderer derives live (the
+       * pulsing "Thinking…" label, streaming body) vs settled (the collapsed
+       * "Thought · ~N tokens" disclosure) from the item and turn; the
+       * thought's text renders only inside the unfoldable disclosure.
        */
       kind: "thinking";
+      /** The projector's own live rule (isLiveCurrentReasoning: the turn is
+       * in progress, the item is active, and it is the turn's tail), carried
+       * on the entry so every renderer answers from one source. */
+      live: boolean;
       id: string;
       displayKey?: string;
       turnId: string;
@@ -168,7 +175,11 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // settled. The `turn.status` guard matters because a completed turn can still
 // carry a stale `inProgress` reasoning item in a snapshot or a race, and the
 // loader must not pulse for an agent that is no longer thinking.
-function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
+//
+// Exported because it is THE live rule for a reasoning item: the projector
+// stamps it on each "thinking" entry, the web renderer asks it directly, and
+// the phone reads the stamped bit - one function, so the three cannot drift.
+export function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
   return (
     isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && turn.items[turn.items.length - 1] === item
   );
@@ -367,15 +378,18 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
-    // With reasoning off, a live current thought becomes a content-free
-    // placeholder: the reader sees that the agent is thinking without the
-    // stream itself. Only an in-progress turn takes the placeholder - a
-    // terminal turn's agent is not thinking any more - and an in-progress
-    // thought that is NOT the turn's tail is hidden (the renderer would not
-    // stream it either). Failure and terminal-turn visibility stay so a broken
-    // turn still explains itself.
+    // With reasoning off, a live current thought becomes a compact trace
+    // row: a collapsed, reader-unfoldable disclosure whose closed label is
+    // the pulsing "Thinking…" placeholder grammar. Only an in-progress turn
+    // takes the live treatment - a terminal turn's agent is not thinking
+    // any more.
     if (isLiveCurrentReasoning(item, turn)) return "thinking";
-    return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
+    if (hasFailureStatus(item) || isTerminalTurn(turn)) return "critical";
+    // A settled healthy thought stays as a compact trace row at every level
+    // but the chat preset, which stays conversation-only (see
+    // hidesThinkingTraces). The renderer derives live vs settled itself; a
+    // stale inProgress item on a completed turn renders settled.
+    return hidesThinkingTraces(config.content) ? "hidden" : "thinking";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config, vector);
@@ -516,7 +530,15 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       if (decision === "item") {
         entry = itemEntry(item, turn.id, itemSourceIndex, displayKey);
       } else if (decision === "thinking") {
-        entry = { kind: "thinking", id: item.id, displayKey, turnId: turn.id, sourceIndex: itemSourceIndex, item };
+        entry = {
+          kind: "thinking",
+          id: item.id,
+          displayKey,
+          turnId: turn.id,
+          sourceIndex: itemSourceIndex,
+          item,
+          live: isLiveCurrentReasoning(item, turn),
+        };
       } else if (decision === "intent") {
         entry = intentEntry(item, turn.id, itemSourceIndex);
       } else {
@@ -528,7 +550,12 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       projectedIndex += 1;
 
       if (entry.kind === "item" && eligibleDisclosure(item)) {
-        eligibleDisclosureIds.push(item.id);
+        // The renderer keys a disclosure by the entry's display key (a
+        // reasoning row by its round key), so the baseline inventory names
+        // that same key - otherwise the open-everything baseline reaches no
+        // disclosure for the row and a reader's earlier close survives a
+        // level switch.
+        eligibleDisclosureIds.push(entryDisplayKey(entry));
         // A commandExecution item's summary line has its own disclosure state
         // (Task 5's two-level summaryOpen), so its summary key is also
         // eligible for the Full-level baseline. Other eligible types

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
+	"net"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -87,10 +87,10 @@ func (r *serveRetirement) consumeClaim(reqCtx context.Context, claim *agent.Reti
 	drainCancel()
 	var teardownErr error
 	if drainErr != nil {
-		serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
+		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement reader drain failed: %v", drainErr)
 		teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
 	} else if err := agent.ReleaseForRetirement(r.ctx, prepared); err != nil {
-		serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
+		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement release failed: %v", err)
 		teardownErr = fmt.Errorf("retirement release: %w", err)
 	} else {
 		r.observe("released", root.ID())
@@ -243,4 +243,59 @@ func (r *serveRetirement) requestIdleTimeoutSet(_ context.Context, params appwir
 		return appwire.DaemonIdleTimeoutSetResponse{}, err
 	}
 	return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(r.retirement.Snapshot())}, nil
+}
+
+// setupRetirement builds the retirement controller, attaches it to the root
+// session and installs the lifecycle, idle-timeout and admission hooks that
+// drive it. A construction or attach failure closes the session and the
+// listener, as the launch did before this block became a func, and returns the
+// same wrapped error.
+func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv serveServer, sess *agent.Session, listener net.Listener, rvRegistration *rvreg.Registration, daemonIdleTimeout time.Duration, cancel context.CancelFunc) (*serveRetirement, error) {
+	// The retirement controller owns the daemon's idle deadline. Exactly one
+	// consumer drives a claim to process exit; the timer (controller Run) is
+	// the only automatic claimant, and evener/daemon/retire is the manual one.
+	retireClock := deps.retirementClock
+	if retireClock == nil {
+		retireClock = agent.RealRetirementClock()
+	}
+	retirement, err := agent.NewRetirementController(daemonIdleTimeout, retireClock)
+	if err != nil {
+		sess.Close()
+		listener.Close() //nolint:errcheck // returning the construction failure; the close error is not actionable
+		return nil, fmt.Errorf("retirement controller: %w", err)
+	}
+	commitRetirement := deps.retirementCommit
+	if commitRetirement == nil {
+		commitRetirement = func(c *agent.RetirementController, claim *agent.RetirementClaim) error {
+			return c.Commit(claim)
+		}
+	}
+	retiring := &serveRetirement{deps: deps, live: live, retirement: retirement, rvRegistration: rvRegistration, commit: commitRetirement, ctx: ctx, cancel: cancel}
+	if err := retirement.AttachRoot(sess); err != nil {
+		sess.Close()
+		listener.Close() //nolint:errcheck // as above
+		return nil, fmt.Errorf("retirement root: %w", err)
+	}
+	retiring.observe("root_published", sess.ID())
+	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
+		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
+	}, retiring.requestRetirement)
+	srv.SetDaemonIdleTimeoutSet(retiring.requestIdleTimeoutSet)
+	// Install the retirement admission boundary on the router. Every routed
+	// handler is classified by access kind (server/appwire_retirement_admission.go):
+	// a mutation holds a lease for the handler's duration and is refused while
+	// the process is preparing or retiring; a read borrows only for its
+	// in-flight handler access and is refused once retirement commits. Without
+	// this install the router skips admission entirely, DrainReaders can never
+	// wait for a reader, and a mid-retirement mutation is normalized into the
+	// wrong (non-retryable) error shape. The category is the reserved
+	// "admission" blocker, not the raw access kind: BeginMutation's whitelist
+	// does not contain "mutation" and would silently demote it to "unsupported".
+	srv.SetRetirementAdmission(func(_ context.Context, kind string) (func(), error) {
+		if kind == "read" {
+			return retirement.Borrow()
+		}
+		return retirement.BeginMutation(live.session().ID(), "admission")
+	})
+	return retiring, nil
 }

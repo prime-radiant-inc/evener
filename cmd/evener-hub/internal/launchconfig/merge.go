@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/commitprovenance"
 )
 
 // layerOrder is the application order (least → most specific).
@@ -83,12 +84,27 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		mergeScalar(&m, &eff.ProviderIdleTimeout, l.ProviderIdleTimeout, "provider_idle_timeout")
 		mergeScalar(&m, &eff.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, "openai_responses_continuation")
 		mergeScalar(&m, &eff.Sandbox, l.Sandbox, "sandbox")
+		if l.CommitProvenance != "" {
+			if !AllowsLayer(CommitProvenanceField, name) {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: CommitProvenanceField,
+					Message: CommitProvenanceScopeMessage,
+				})
+			} else if mode, err := commitprovenance.Normalize(l.CommitProvenance); err != nil {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: CommitProvenanceField, Message: err.Error(),
+				})
+			} else {
+				mergeScalar(&m, &eff.CommitProvenance, mode, "commit_provenance")
+			}
+		}
 		mergePtr(&m, &eff.SandboxNet, l.SandboxNet, "sandbox_net")
 		mergePtr(&m, &eff.MaxRounds, l.MaxRounds, "max_rounds")
 		mergePtr(&m, &eff.MaxSubagentDepth, l.MaxSubagentDepth, "max_subagent_depth")
 		mergePtr(&m, &eff.MaxConcurrentDelegateTurns, l.MaxConcurrentDelegateTurns, "max_concurrent_delegate_turns")
 		mergePtr(&m, &eff.MaxRetainedTerminal, l.MaxRetainedTerminal, "max_retained_terminal")
 		mergePtr(&m, &eff.NonInteractive, l.NonInteractive, "non_interactive")
+		mergePtr(&m, &eff.MemoryEnabled, l.MemoryEnabled, "memory_enabled")
 		if l.AppReplaySize != nil {
 			if name != LayerGlobal {
 				diags = append(diags, Diagnostic{

@@ -211,6 +211,25 @@ type lookupHit struct {
 	synthesized bool
 }
 
+// altRowID is the alias-target row id a replay matches globs against: the
+// looked-up row when it names a different id than the reference, else "".
+func (h lookupHit) altRowID(refModel string) string {
+	if h.rowID != "" && h.rowID != refModel {
+		return h.rowID
+	}
+	return ""
+}
+
+// aliasAltID fills an empty altID from an alias's target row, so a
+// provider-scoped glob written for the model the alias names matches the
+// same way a glob for a resolved row does.
+func aliasAltID(altID, targetID string) string {
+	if altID == "" {
+		return targetID
+	}
+	return altID
+}
+
 // lookupRow is spec §7.2: exact row, region prefix stripped, dated suffix
 // removed, live listing, else synthesized. Steps 1–2 use the row's wire id;
 // the rest send the reference verbatim.
@@ -377,6 +396,9 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
 	seedFields(&caps, rec.head.Protocol)
+	// A provider-level ladder leaves the instance views rank-ordered like a
+	// row's leaves a model resolve; see rankEffortLadder.
+	caps.EffortValues = rankEffortLadder(caps.EffortValues)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	proto := rec.head.Protocol
 	if presence {
@@ -763,10 +785,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	row.Surface, row.Family, row.Headers = "", "", nil
 
 	caps := Caps{}
-	altID := ""
-	if hit.rowID != "" && hit.rowID != ref.Model {
-		altID = hit.rowID
-	}
+	altID := hit.altRowID(ref.Model)
 	// canonicalRowID names the row the endpoint gate (gateWebSearch,
 	// firstPartyEndpoint) compares transport against. It starts as the
 	// resolved row's own id, but a same-provider alias that imports its
@@ -834,9 +853,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 					row.Hidden = false // spec §4.2: an alias import that supplies a transport un-hides the row
 				}
 			}
-			if altID == "" {
-				altID = target.Model.ID
-			}
+			altID = aliasAltID(altID, target.Model.ID)
 		}
 	}
 	rowProto := row.Protocol
@@ -849,7 +866,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	if includeLive {
 		liveReplay = func() { r.applyLive(&caps, rec, ref.Model, hit, prov) }
 	}
-	r.replayLayerPositions(rec, layerReplay{
+	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{
 		live: liveReplay,
 		provider: func(layer capLayer) {
 			if layer.resetFields {
@@ -861,16 +878,16 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			}
 			mergeCaps(&caps, pc, layer.tag+"/provider", prov)
 		},
-		extras: func(tag string) {
-			r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
-		},
-		rows: func(layer capLayer) {
-			r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref.Model, altID, rowProto, crossProto, prov)
-			if hit.rowID != "" {
-				if lr, ok := layer.rows[hit.rowID]; ok {
-					mergeCaps(&caps, lr.Caps, layer.tag+"/row", prov)
-					applyRowScalars(&row, lr, layer.tag+"/row", prov)
-				}
+		visit: func(step replayStep) {
+			for _, g := range step.globs {
+				r.applyGlobRow(&caps, &row, step.rows[g], step.tag, g, rowProto, crossProto, prov)
+			}
+			if step.exact == "" {
+				return
+			}
+			if lr, ok := step.rows[step.exact]; ok {
+				mergeCaps(&caps, lr.Caps, step.tag+"/row", prov)
+				applyRowScalars(&row, lr, step.tag+"/row", prov)
 			}
 		},
 	})
@@ -916,6 +933,10 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	}
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)
+	// In the caller because derive early-returns for non-anthropic
+	// protocols; the ladder's membership is already settled here.
+	// rankEffortLadder states the ordering contract.
+	caps.EffortValues = rankEffortLadder(caps.EffortValues)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")
@@ -1029,8 +1050,8 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 }
 
 // orderedGlobKeys returns matching glob keys (target first) in spec §4.1 order:
-// shorter patterns first, each pattern at most once. applyGlobs and modelDisabled
-// share it so the two replays cannot disagree about matching order.
+// shorter patterns first, each pattern at most once. Every replay that applies
+// globs finds them through it, so the replays cannot disagree about order.
 func orderedGlobKeys(rows map[string]Model, ref, altID string) []string {
 	var globs []string
 	for k := range rows {
@@ -1060,28 +1081,26 @@ func orderedGlobKeys(rows map[string]Model, ref, altID string) []string {
 // glob at most once. Cross-protocol rows take only Fields keys their own
 // protocol knows.
 func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
-	if len(rows) == 0 {
-		return
-	}
-	apply := func(g string) {
-		gr := rows[g]
-		gc := gr.Caps
-		if crossProto && len(gc.Fields) > 0 {
-			table := prunable[rowProto]
-			filtered := map[string]bool{}
-			for k, v := range gc.Fields {
-				if _, ok := table[k]; ok {
-					filtered[k] = v
-				}
-			}
-			gc.Fields = filtered
-		}
-		mergeCaps(c, gc, tag+"/glob:"+g, prov)
-		applyRowScalars(row, gr, tag+"/glob:"+g, prov)
-	}
 	for _, g := range orderedGlobKeys(rows, ref, altID) {
-		apply(g)
+		r.applyGlobRow(c, row, rows[g], tag, g, rowProto, crossProto, prov)
 	}
+}
+
+// applyGlobRow applies one matching glob row, g, under tag.
+func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto string, crossProto bool, prov map[string]string) {
+	gc := gr.Caps
+	if crossProto && len(gc.Fields) > 0 {
+		table := prunable[rowProto]
+		filtered := map[string]bool{}
+		for k, v := range gc.Fields {
+			if _, ok := table[k]; ok {
+				filtered[k] = v
+			}
+		}
+		gc.Fields = filtered
+	}
+	mergeCaps(c, gc, tag+"/glob:"+g, prov)
+	applyRowScalars(row, gr, tag+"/glob:"+g, prov)
 }
 
 // applyRowScalars overlays a layer row's or glob row's scalars onto the
@@ -1326,34 +1345,55 @@ func (r *Registry) FindModel(id string) []Ref {
 	return out
 }
 
-// layerReplay names what a replay does at each position of the layer order.
+// replayStep is one position of a record's layer replay: a layer tag's
+// top-level glob rows, or a present layer's own rows. globs lists the rows
+// matching the reference in spec §4.1 order, and exact names the exact row
+// the position holds for the reference, "" when it holds none. Every caller
+// applies globs first and exact second, so within a position the exact row
+// wins.
+type replayStep struct {
+	tag   string
+	rows  map[string]Model
+	globs []string
+	exact string
+}
+
+// replayHooks names what a replay does at each position of the layer order.
 // Nil hooks are skipped.
-type layerReplay struct {
+type replayHooks struct {
 	// live applies the live roster facts. It runs once, after the snapshot and
 	// overlay positions and before the config layer.
 	live func()
-	// provider applies one present layer's provider-level caps.
+	// provider applies one present layer's provider-level caps, after live and
+	// before that layer's glob rows.
 	provider func(layer capLayer)
-	// extras applies the top-level glob rows for tag, once per tag with any.
-	extras func(tag string)
-	// rows applies one present layer's glob and exact-row entries.
-	rows func(layer capLayer)
+	// visit applies one position's glob rows and exact row.
+	visit func(step replayStep)
+}
+
+// replayScope names what the replay matches rows against: the reference, the
+// alias-target row id whose globs apply too, and the exact row the reference
+// looks up.
+type replayScope struct {
+	ref   string
+	altID string
+	exact string
 }
 
 // replayLayerOrder is the position of each layer tag in the replay.
 var replayLayerOrder = map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
 
-// replayLayerPositions walks a record's layers in order, calling the hooks of
-// v at each position. Top-level glob rows for a tag that has no layer on the
-// record replay at that tag's true position, interleaved with the present
-// layers: snapshot extras before the first layer, overlay extras before live
-// and before config, config extras after live. An overlay extra never lands
-// after config rows, so curated values cannot overwrite user config; a config
-// extra still lands after live, so user config wins over live facts on
-// implicit records too. A layer's own tag replays its extras after the layer's
-// provider caps and before its rows. Resolve and modelDisabled both walk the
-// layers here, so the cheap Disabled replay cannot drift from the full one.
-func (r *Registry) replayLayerPositions(rec *record, v layerReplay) {
+// replayOrdered walks a record's layers in order, calling the hooks of h at
+// each position. Top-level glob rows for a tag that has no layer on the record
+// replay at that tag's true position, interleaved with the present layers:
+// snapshot extras before the first layer, overlay extras before live and
+// before config, config extras after live. An overlay extra never lands after
+// config rows, so curated values cannot overwrite user config; a config extra
+// still lands after live, so user config wins over live facts on implicit
+// records too. A layer's own tag replays its extras after the layer's provider
+// caps and before its rows. Resolve and modelDisabled both visit the positions
+// here, so the cheap Disabled replay cannot drift from the full one.
+func (r *Registry) replayOrdered(rec *record, scope replayScope, h replayHooks) {
 	seenTag := map[string]bool{}
 	liveApplied := false
 	extrasFor := func(tag string) {
@@ -1361,13 +1401,13 @@ func (r *Registry) replayLayerPositions(rec *record, v layerReplay) {
 			return
 		}
 		seenTag[tag] = true
-		if v.extras != nil && len(r.topGlobs[tag]) > 0 {
-			v.extras(tag)
+		if h.visit != nil && len(r.topGlobs[tag]) > 0 {
+			h.visit(replayStep{tag: tag, rows: r.topGlobs[tag], globs: orderedGlobKeys(r.topGlobs[tag], scope.ref, scope.altID)})
 		}
 	}
 	applyLive := func() {
-		if v.live != nil && !liveApplied {
-			v.live()
+		if h.live != nil && !liveApplied {
+			h.live()
 		}
 		liveApplied = true
 	}
@@ -1380,12 +1420,12 @@ func (r *Registry) replayLayerPositions(rec *record, v layerReplay) {
 		if layer.tag == LayerConfig {
 			applyLive()
 		}
-		if v.provider != nil {
-			v.provider(layer)
+		if h.provider != nil {
+			h.provider(layer)
 		}
 		extrasFor(layer.tag)
-		if v.rows != nil {
-			v.rows(layer)
+		if h.visit != nil {
+			h.visit(replayStep{tag: layer.tag, rows: layer.rows, globs: orderedGlobKeys(layer.rows, scope.ref, scope.altID), exact: scope.exact})
 		}
 	}
 	// Missing snapshot and overlay extras that sort after every present layer
@@ -1396,19 +1436,15 @@ func (r *Registry) replayLayerPositions(rec *record, v layerReplay) {
 	extrasFor(LayerConfig)
 }
 
-// modelDisabled replays just the Disabled flag for a reference: every
-// matching glob in spec §4.1 order (via orderedGlobKeys, the same order
-// applyGlobs replays) then the exact row per layer, later layers after
-// earlier ones, so the last writer wins — the same outcome resolveOn's full
-// replay reaches. Alias rows follow the same rules as there: a same-provider
+// modelDisabled replays just the Disabled flag for a reference at the same
+// positions resolveOn's full replay visits: every matching glob in spec §4.1
+// order then the exact row, later layers after earlier ones, so the last
+// writer wins. Alias rows follow the same rules as there: a same-provider
 // alias takes its target's verdict outright, and a cross-provider alias
 // takes it as the default its own flag overrides. Cheap enough for browse
 // paths like FindModel that must not pay for a full resolve per candidate.
 func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
-	altID := ""
-	if hit.rowID != "" && hit.rowID != ref.Model {
-		altID = hit.rowID
-	}
+	altID := hit.altRowID(ref.Model)
 	// A cross-provider alias carries its own flag on this instance, so the
 	// verdict it inherits from its target is only the default: it stands when
 	// the alias's own rows set nothing in the replay below. Globs replay
@@ -1423,30 +1459,24 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 					return v
 				}
 				inherited = &v
-				if altID == "" {
-					altID = targetID
-				}
+				altID = aliasAltID(altID, targetID)
 			}
 		}
 	}
 	var disabled, set bool
-	setFrom := func(rows map[string]Model, id string) {
-		for _, g := range orderedGlobKeys(rows, ref.Model, altID) {
-			if d := rows[g].Disabled; d != nil {
+	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{visit: func(step replayStep) {
+		for _, g := range step.globs {
+			if d := step.rows[g].Disabled; d != nil {
 				disabled, set = *d, true
 			}
 		}
-		if id == "" {
+		if step.exact == "" {
 			return
 		}
-		if row, ok := rows[id]; ok && row.Disabled != nil {
+		if row, ok := step.rows[step.exact]; ok && row.Disabled != nil {
 			disabled, set = *row.Disabled, true
 		}
-	}
-	r.replayLayerPositions(rec, layerReplay{
-		extras: func(tag string) { setFrom(r.topGlobs[tag], "") },
-		rows:   func(layer capLayer) { setFrom(layer.rows, hit.rowID) },
-	})
+	}})
 	if !set && inherited != nil {
 		return *inherited
 	}

@@ -48,11 +48,34 @@ test("shows only the working dir for a non-local session, without a git lookup",
   expect(client.calls).toHaveLength(0);
 });
 
+// A lookup resolved while the session was local stops displaying the moment
+// locality flips off: a source-backed session's cwd belongs to another host,
+// so the cached local answer must not survive the transition.
+test("a resolved branch stops displaying once the session is not local", async () => {
+  const client = clientReporting({ head: "main", originUrl: "git@github.com:owner/repo.git" });
+  const view = renderLocation("/repo", client, true);
+  await screen.findByTestId("composer-repo-link");
+  view.rerender(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local={false} />
+    </ClientProvider>,
+  );
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/repo");
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+});
+
 test("names the repository as owner/repo#branch and links it to the forge page", async () => {
   const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
   renderLocation("/home/jesse/repo", client);
 
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
+  // The location line links the branch to its forge repo page, so its lookup
+  // is the one form that asks the hub for the origin remote.
+  expect(client.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({
+    cwd: "/home/jesse/repo",
+    includeOrigin: true,
+  });
   const link = await screen.findByTestId("composer-repo-link");
   expect(link.getAttribute("href")).toBe("https://github.com/owner/repo");
   expect(link.getAttribute("target")).toBe("_blank");
@@ -98,6 +121,44 @@ test("shows the branch unlinked when the origin is not a recognized forge", asyn
   expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("main");
   expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(screen.queryByTestId("forge-mark")).toBeNull();
+});
+
+// The phone footer's caption row is below the touch floor, so Session declines
+// the forge anchor there: the branch still shows, but no outbound link sits
+// under a thumb aiming for the chips below.
+test("shows the branch unlinked when the caller declines the forge link", async () => {
+  const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
+  render(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local link={false} />
+    </ClientProvider>,
+  );
+
+  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("feature/x");
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(screen.queryByTestId("forge-mark")).toBeNull();
+});
+
+// The unlinked phone form must yield like the linked ref does, not hold its
+// full width and squeeze the working directory away. It must do that with or
+// without a forge remote: a local-only branch is just as long.
+test("middle-truncates an unlinked branch so it yields to the working dir", async () => {
+  const branch = "feature/a-branch-name-that-is-far-too-long-for-a-phone";
+  for (const answer of [{ head: branch, originUrl: "git@github.com:owner/repo.git" }, { head: branch }]) {
+    const { unmount } = render(
+      <ClientProvider client={clientReporting(answer)}>
+        <RepoLocation cwd="/repo" local link={false} />
+      </ClientProvider>,
+    );
+
+    const rendered = await screen.findByTestId("composer-repo-branch");
+    expect(rendered.children).toHaveLength(2);
+    const head = rendered.children[0]?.textContent ?? "";
+    const tail = rendered.children[1]?.textContent ?? "";
+    expect(head + tail).toBe(branch);
+    expect(tail.endsWith("phone")).toBe(true);
+    unmount();
+  }
 });
 
 test("shows the branch unlinked when the repo has no origin remote", async () => {

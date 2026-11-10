@@ -13,7 +13,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		got[opt.Field] = true
 	}
 	want := []string{
-		"agent", "model", "reasoning_effort", "fast_cheap_model",
+		"agent", "memory_enabled", "model", "reasoning_effort", "fast_cheap_model",
 		"context_strategy", "provider_idle_timeout", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
 		"max_concurrent_delegate_turns", "max_retained_terminal",
 		"non_interactive", "app_replay_size",
@@ -21,7 +21,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "enabled_plugins", "env",
-		"sandbox", "sandbox_net",
+		"sandbox", "sandbox_net", "commit_provenance",
 		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 		"api_log",
 	}

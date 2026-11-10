@@ -10,12 +10,19 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -102,33 +109,62 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 
 func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	daemon := daemonCapabilitiesAtState(t, appwire.ThreadStatusIdle)
+	if !daemon.AskFence {
+		t.Fatal("current daemon fixture does not advertise ask fencing")
+	}
 
 	// The cold set a session with no daemon reads through: send and queue resume
 	// it, and the hub's mutation gates re-verify every action against the daemon
 	// a resume spawns. Steer and Interrupt are withheld because they need a turn
 	// already running and a cold session has none; fork stays advertised because
-	// it is the hub's own operation.
+	// it is the hub's own operation. Voice requires the original daemon's explicit
+	// advertisement, which neither this hub nor a future resume can supply.
 	pastDiffer := map[string]string{
-		"Steer":        "no daemon is running to carry out a steer",
-		"Interrupt":    "no daemon is running to interrupt",
-		"ForkFromTurn": "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
-		"StopSubagent": "a session with no daemon running runs no subagents to stop",
-		"PageBefore":   "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
+		"AskFence":                   "deliberate fail-closed projection policy: no original daemon has advertised ask fencing; an older daemon could silently ignore the fence",
+		"Steer":                      "no daemon is running to carry out a steer",
+		"Interrupt":                  "no daemon is running to interrupt",
+		"ForkFromTurn":               "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
+		"StopSubagent":               "a session with no daemon running runs no subagents to stop",
+		"PageBefore":                 "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
+		"WindowRead":                 "no daemon is running to advertise strict window decoding; saved-index reads are hub-owned and do not need this daemon bit",
+		"VoicePresentationContextV1": "no original daemon has advertised voice support; cold/resume action guarantees are not evidence of that support",
 	}
-	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), pastDiffer, nil)
+	// The hub's own answer, false for a cold session: the daemon never answers
+	// it, so both sides agree on false without the daemon vouching for it.
+	pastAgree := map[string]string{
+		"VoiceArm": "the hub's own answer (hubVoiceArm): false for a cold session, true only for a live, authoritative manager on a hub with a credentialed OpenAI instance",
+	}
+	cold := pastThreadCapabilities()
+	if cold.AskFence {
+		t.Fatal("cold capabilities invent ask fencing without original-daemon evidence")
+	}
+	if cold.VoicePresentationContextV1 {
+		t.Fatal("cold capabilities invent voice support without an original-daemon advertisement")
+	}
+	assertCapabilityParity(t, "pastThreadCapabilities", daemon, cold, pastDiffer, pastAgree)
 
-	// List rows answer exactly what the daemon would: a probed row mirrors
-	// the probe's captured set verbatim, and the fallback for an unprobed row
-	// approximates the daemon's answer at the row's status. Fork differs from
-	// the daemon in no row and in no way: the daemon hardwires it false,
-	// rows mirror that, and applyHubForkCapability is the single owner that
-	// turns it on. These assertions are the pin against status-gating
-	// creeping into either path (the pre-#1375 Queue-folding regression).
+	// A probed row mirrors the probe's captured set verbatim. The fallback for
+	// an unprobed row approximates action capabilities at the row's status, but
+	// cannot infer voice support from the current-daemon oracle. Fork differs
+	// from the daemon in no row and in no way: the daemon hardwires it false,
+	// rows mirror that, and applyHubForkCapability is the single owner that turns
+	// it on. These assertions pin the pre-#1375 Queue-folding regression too.
+	unprobedDiffer := map[string]string{
+		"AskFence":                   "deliberate fail-closed projection policy: no probe has captured the original daemon's ask fencing; an older daemon could silently ignore the fence",
+		"VoicePresentationContextV1": "no probe has captured the original daemon's voice support; a current-daemon oracle cannot vouch for an unprobed daemon",
+		"WindowRead":                 "no probe has captured whether this daemon strict-decodes window parameters",
+	}
 	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)
+		if !daemonAt.AskFence {
+			t.Fatalf("%s daemon fixture does not advertise ask fencing", state)
+		}
 		// Guard the fixture, not the projection: the mirror assertions below
 		// compare against whatever the daemon answered, so a state that did
 		// not take effect would leave them comparing idle against idle.
+		if !daemonAt.VoicePresentationContextV1 {
+			t.Fatalf("%s daemon fixture does not advertise voice support", state)
+		}
 		if state == appwire.ThreadStatusActive && (daemonAt.Send || !daemonAt.Queue) {
 			t.Fatalf("active daemon fixture = %+v, want Send folded out by activity with Queue still advertised", daemonAt)
 		}
@@ -150,15 +186,28 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		for _, thread := range rows {
 			capsBySession[thread.SessionID] = thread.Evener.Capabilities
 		}
-		for projection, session := range map[string]string{
-			"probed list row":   "sess_probed_" + state,
-			"unprobed list row": "sess_unprobed_" + state,
+		for _, projection := range []struct {
+			name, session string
+			probed        bool
+		}{
+			{name: "probed list row", session: "sess_probed_" + state, probed: true},
+			{name: "unprobed list row", session: "sess_unprobed_" + state},
 		} {
-			caps, ok := capsBySession[session]
+			caps, ok := capsBySession[projection.session]
 			if !ok {
-				t.Fatalf("list rows = %+v, want the %s fixture row for %s", rows, projection, state)
+				t.Fatalf("list rows = %+v, want the %s fixture row for %s", rows, projection.name, state)
 			}
-			assertCapabilityParity(t, projection+" at "+state, daemonAt, caps, nil, nil)
+			if caps.VoicePresentationContextV1 != projection.probed {
+				t.Errorf("%s at %s: voice support = %v, want %v from original-daemon evidence", projection.name, state, caps.VoicePresentationContextV1, projection.probed)
+			}
+			if caps.AskFence != projection.probed {
+				t.Errorf("%s at %s: ask fencing = %v, want %v from original-daemon evidence", projection.name, state, caps.AskFence, projection.probed)
+			}
+			var differ map[string]string
+			if !projection.probed {
+				differ = unprobedDiffer
+			}
+			assertCapabilityParity(t, projection.name+" at "+state, daemonAt, caps, differ, nil)
 		}
 	}
 
@@ -176,7 +225,92 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		if _, listed := pastDiffer[name]; listed {
 			continue
 		}
+		if _, listed := pastAgree[name]; listed {
+			continue
+		}
 		t.Errorf("daemon oracle answers %s = false with no ledger entry anywhere — wire its seam in hubtest.WireCapabilitySeams, or record why every projection legitimately answers false", name)
+	}
+}
+
+// A successful probe does not prove that an older daemon supports voice.
+// Exercise the real websocket, roster, and source projections with all three
+// wire representations; even an initialize feature claim cannot substitute for
+// the original daemon's per-thread capability claim.
+func TestCapabilityProjectionsPreserveDaemonVoiceAdvertisement(t *testing.T) {
+	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
+		for _, tc := range []struct {
+			name      string
+			voiceJSON string
+			wantVoice bool
+		}{
+			{name: "omitted"},
+			{name: "explicit_false", voiceJSON: `,"voicePresentationContextV1":false`},
+			{name: "explicit_true", voiceJSON: `,"voicePresentationContextV1":true`, wantVoice: true},
+		} {
+			t.Run(state+"/"+tc.name, func(t *testing.T) {
+				const sessionID = "th_voice_evidence"
+				// Raw JSON preserves explicit false, which a Go capability struct's
+				// omitempty tag would collapse into the omitted case before transport.
+				threadJSON := fmt.Sprintf(`{"id":%q,"sessionId":%q,"status":{"type":%q},"evener":{"capabilities":{"send":true,"queue":true%s}}}`, sessionID, sessionID, state, tc.voiceJSON)
+				rpc := appserver.NewServer(appserver.ServerConfig{
+					ServerName: "voice-capability-test", SourceID: "local",
+					Features: appwire.FeatureSet{VoicePresentationContextV1: true},
+				})
+				appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (json.RawMessage, error) {
+					return json.RawMessage(`{"data":[` + threadJSON + `]}`), nil
+				})
+				appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (json.RawMessage, error) {
+					return json.RawMessage(`{"thread":` + threadJSON + `}`), nil
+				})
+				httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+				t.Cleanup(httpSrv.Close)
+				t.Cleanup(func() { _ = rpc.Shutdown(context.Background()) })
+				runDir := t.TempDir()
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: 1, Protocol: appwire.ProtocolVersion,
+					Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
+					SourceID: "local", ThreadID: sessionID, SessionID: sessionID,
+				})
+				roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).SetProcessAlive(func(int) bool { return true })
+				if err := roster.RefreshAndWait(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				live, ok := roster.Find(sessionID)
+				if !ok || !live.CapabilitiesKnown || live.Status != state {
+					t.Fatalf("roster entry = %+v, found=%v, want a successfully probed %s row", live, ok, state)
+				}
+				source, ok := newHubSourceRegistry(hubcore.WebConfig{Roster: roster}).Source("local")
+				if !ok {
+					t.Fatal("local source missing")
+				}
+				listed, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(listed.Data) != 1 || listed.Data[0].SessionID != sessionID || listed.Data[0].Status.Type != state {
+					t.Fatalf("list rows = %+v, want the %s fixture row", listed.Data, state)
+				}
+				read, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if read.Thread.SessionID != sessionID || read.Thread.Status.Type != state {
+					t.Fatalf("read thread = %+v, want the %s fixture row", read.Thread, state)
+				}
+				// Compare the entire sparse set, not just voice: falling back to
+				// current-daemon defaults must not invent other capabilities either.
+				want := appwire.ThreadCapabilities{VoicePresentationContextV1: tc.wantVoice, Send: true, Queue: true}
+				for projection, got := range map[string]appwire.ThreadCapabilities{
+					"roster": live.Capabilities,
+					"list":   listed.Data[0].Evener.Capabilities,
+					"read":   read.Thread.Evener.Capabilities,
+				} {
+					if got != want {
+						t.Errorf("%s capabilities = %+v, want the original daemon's advertised set %+v", projection, got, want)
+					}
+				}
+			})
+		}
 	}
 }
 

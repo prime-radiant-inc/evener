@@ -452,6 +452,26 @@ test("forward gap paging holds the loaded side through a controls-only page", as
   expect(screen.getAllByText(/^FORWARD_ADJACENT_/).length).toBeGreaterThan(0);
 });
 
+// #4825: the forward counterpart of the stranded backward wheel. The last
+// loaded row before the gap ends 20px below the viewport bottom, so the
+// unloaded marker below it is off-screen and the reader has not crossed the
+// gap; only the forward geometric boundary can request the next page.
+test("a forward wheel stranded before the loaded boundary pages from the hidden marker", async () => {
+  vi.useFakeTimers();
+  const scroller = await separatedWindows(false);
+  expect(peer.requests("evener/jobs/output")).toHaveLength(3);
+  // 2048 rows of 20px put the unloaded marker at 40960; this scrollTop leaves
+  // the last loaded row's bottom (the marker's top) 20px below the 100px port.
+  await act(async () => scroll(scroller, 40840));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(4);
+  const request = await peer.request("evener/jobs/output", 3);
+  expect(request.params).toMatchObject({ ref: "ref_root", jobId: "job_x", maxBytes: 65536 });
+  expect(request.params.beforeBytes).toBeGreaterThan(589824);
+  // A geometric boundary is already at the edge; demanding it must not move
+  // the reader.
+  expect(scroller.scrollTop).toBe(40840);
+});
+
 test("scrolling during a measured remount keeps the unread gap reachable", async () => {
   vi.useFakeTimers();
   await separatedWindows(false);
@@ -502,6 +522,81 @@ test("backward gap paging requests the live-adjacent bytes and keeps its indepen
   const unloaded = scroller.querySelector('[data-joblog-kind="unloaded"]');
   expect(unloaded?.getAttribute("data-source-start")).toBe("458752");
   expect(unloaded?.getAttribute("data-source-end")).toBe("917504");
+});
+
+// #4770: a backward wheel can reach the loaded window's start and still issue
+// no history read. TanStack Virtual measures the rows the wheel scrolled past
+// and applies their height corrections to scrollTop, replacing the wheel's
+// target, so the "Output not loaded" marker ends up just above the viewport.
+// Demand inspection must page from the geometric boundary instead: the first
+// loaded row is fully above the viewport top.
+test("a backward wheel stranded past the loaded boundary pages from the hidden marker", async () => {
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  // Live rows start at 100, so the single unloaded marker covers bytes 0-100.
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  // One backward wheel from the tail leaves the wheel's target past the first
+  // loaded row: its bottom is 20px above the viewport top and the marker is
+  // 40px above, so only the geometric boundary can find the gap.
+  await act(async () => scroll(scroller, 60));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
+test("a geometric boundary demand leaves the viewport where the reader put it", async () => {
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  // The boundary row ends 90px above the viewport top: inside the one-viewport
+  // allowance, but far enough that scrolling to the gap would jump the reader
+  // most of a screen.
+  await act(async () => scroll(scroller, 130));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  expect(scroller.scrollTop).toBe(130);
+  const first = scroller.querySelector<HTMLElement>('[data-joblog-kind="output"][data-source-start="120"]');
+  expect(first?.getBoundingClientRect().top).toBe(-10);
+});
+
+test("a fast backward jump pages from the boundary row before it renders", async () => {
+  // A viewport taller than the overscan band is what lets the boundary row sit
+  // fully above the viewport yet outside the rendered window.
+  restoreGeometry();
+  restoreGeometry = installJobLogGeometry(500, 20);
+  mountJob();
+  const data = Array.from({ length: 100 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 500, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  expect(scroller.querySelector('[data-source-start="100"]')).toBeNull();
+  // The boundary row (index 1) ends 200px above the viewport top, well outside
+  // the six-row overscan, so the rendered window does not contain it when the
+  // scroll event inspects. The demand's own scroll to the gap then mounts it.
+  await act(async () => scroll(scroller, 240));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
+test("measures the boundary row in the viewport's client space when the scroller is offset", async () => {
+  // The scroll port starts 150px down the window. A boundary row 80px above the
+  // viewport top must still be within the one-viewport boundary allowance.
+  restoreGeometry();
+  restoreGeometry = installJobLogGeometry(100, 20, 150);
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  await act(async () => scroll(scroller, 120));
+  await act(async () => scroll(scroller, 90));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
 });
 
 test("a real inactive DockHost tab remounts the later-page byte row at the same pixel", async () => {

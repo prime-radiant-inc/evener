@@ -522,12 +522,14 @@ function renderedOutputExpr(ref) {
 // waitForTargetRunning observes the actual running state of the target's own
 // turn (an in-progress turn or a live overlay), not merely finished text.
 async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     const d = await readTargetDomain(driver, ref);
     last = d;
     if (d && (d.turns.some((t) => (t.status ?? "").toLowerCase().includes("progress")) || d.overlayKeys.length > 0)) {
+      driver.reactions.observe(Date.now() - startedAt);
       return true;
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -538,11 +540,15 @@ async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
 // waitForRenderedOutput waits for the shell OUTPUT region (the CodeBlock that
 // owns the "Copy output" control) to show the produced literal.
 async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await evaluate(driver.send, renderedOutputExpr(ref)).catch(() => null);
-    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) return last;
+    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -561,7 +567,8 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
   // wait (the observed failure was driver.click finding no element at its own
   // box lookup, not a wrong selector). Wait until the control is present AND
   // has a non-zero box before clicking; never click into the void.
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let clicked = false;
   while (Date.now() < deadline && !clicked) {
     const ready = await evaluate(
@@ -578,6 +585,7 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
       try {
         await driver.click(toggleSelector);
         clicked = true;
+        driver.reactions.observe(Date.now() - startedAt);
       } catch {
         await delay(100);
       }
@@ -681,16 +689,65 @@ function domainContent(domain) {
   return domain.items.map((i) => (i.text ?? "") + (i.output ?? "")).join("\n");
 }
 
+// composeReconnectWindow folds the reads the connection that owns the applied
+// model issued into the one window the model applied. A connection change
+// means the socket reconnected again: the new connection's first read replaces
+// the model's history, so composition restarts (clearing turns/byTurn) rather
+// than merging the previous connection's turns, which the model no longer
+// holds. Within one connection, the first read that returned turns is the
+// reconnect's initial replacement: its turns and recorded items are the base.
+// A later read on the same connection is a merge into what the model already
+// holds: applyReadResponse (appwire-client/typescript/transcriptHistory.ts) is
+// the authority, and it keeps the reader's older edge, joins items to their
+// turn by identity, and lets a later copy of a shared item supersede the
+// base's. A window-capped read can stop in the middle of a turn, so one turn's
+// items legitimately arrive from two reads. It returns the composed turns and
+// the reads of the connection they belong to, so the caller's edge-read search
+// uses the same grouping.
+function composeReconnectWindow(newConnectionReads) {
+  let connection;
+  let composedFrom = 0;
+  const turns = [];
+  const byTurn = new Map();
+  for (const [readIndex, read] of newConnectionReads.entries()) {
+    if (read.connection !== connection) {
+      connection = read.connection;
+      composedFrom = readIndex;
+      turns.length = 0;
+      byTurn.clear();
+    }
+    if (!Array.isArray(read.window) || read.window.length === 0) continue;
+    for (const responseTurn of read.window) {
+      const turnId = responseTurn.turnId ?? null;
+      let turn = byTurn.get(turnId);
+      if (!turn) {
+        turn = { turnId, items: [] };
+        byTurn.set(turnId, turn);
+        turns.push(turn);
+      }
+      for (const item of responseTurn.items ?? []) {
+        const index = turn.items.findIndex((held) => held.id === item.id && held.type === item.type);
+        if (index === -1) turn.items.push(item);
+        else turn.items[index] = item;
+      }
+    }
+  }
+  return { turns, reads: newConnectionReads.slice(composedFrom) };
+}
+
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
-// must arrive on a connection NOT seen before, and the applied model window
-// (cursor) must match that read's response. A same-connection refresh is not a
-// reconnect.
+// must arrive on a connection NOT seen before, and the applied model must hold
+// that read's window and cursor — or, when a same-connection follow-up
+// replaced it, the follow-up read's window and cursor (see below). A
+// same-connection refresh alone is not a reconnect.
 function reconnectValidator(before, evidence, applied = {}) {
   const beforeConnections = new Set(before?.connections ?? []);
   const reads = (evidence?.readConnections ?? []).map((connection, index) => ({
     connection,
     olderCursor: (evidence?.readResponseCursors ?? [])[index] ?? "",
     window: (evidence?.readResponseWindows ?? [])[index] ?? null,
+    snapshotLength: (evidence?.readResponseSnapshotLengths ?? [])[index] ?? null,
+    generation: (evidence?.readResponseGenerations ?? [])[index] ?? null,
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
@@ -709,33 +766,137 @@ function reconnectValidator(before, evidence, applied = {}) {
   //
   // The new connection may read the thread again after the reconnect read (a
   // follow-up refresh). The model keeps the older edge it already holds, so its
-  // cursor and window stay the reconnect read's: the applied model matches the
-  // new connection's read that carries them, not necessarily the last one.
+  // cursor stays the edge read's, but a window-capped read can stop in the
+  // middle of a turn: the follow-up then supplies the rest of that same turn,
+  // and the applied window is the ordered union of the reads on that
+  // connection, not any one read's window. If the socket drops again, the next
+  // connection's reads replace that history, so composition restarts there and
+  // the cursor must be an edge read on the latest connection. Compose the union
+  // and compare the applied model against it turn by turn.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const appliedBy = (read) =>
-    read.olderCursor === appliedCursor &&
-    Array.isArray(read.window) &&
-    read.window.length > 0 &&
-    Array.isArray(appliedWindow) &&
-    read.window.every((responseTurn) => {
-      const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
-      return (
-        appliedTurn !== undefined &&
-        orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
+  const { turns: expectedWindow, reads: composedReads } = composeReconnectWindow(newConnectionReads);
+  // Per returned turn, require the read's RECORDED items, in order, to be
+  // exactly the applied model's items for that turn. The model may also carry
+  // held turns outside the read's window (the reader's older pages, or the
+  // replayed tail of a replacement); extra recorded items INSIDE a returned
+  // turn are still a mismatch.
+  const windowMatchesRead = (window) => {
+    if (!Array.isArray(appliedWindow)) return false;
+    let lastIndex = -1;
+    return window.every((expectedTurn) => {
+      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
+      if (appliedIndex === -1 || appliedIndex <= lastIndex) return false;
+      lastIndex = appliedIndex;
+      return orderedHistoryEqual(
+        recordedItems(expectedTurn.items),
+        recordedItems(appliedWindow[appliedIndex].items),
       );
     });
-  const appliedRead = newConnectionReads.find(appliedBy);
-  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
+  };
+  const edgeRead =
+    expectedWindow.length === 0
+      ? undefined
+      : composedReads.find(
+          (read) =>
+            Array.isArray(read.window) &&
+            read.window.length > 0 &&
+            (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
+            read.olderCursor === appliedCursor,
+        );
+  const windowMatches = edgeRead !== undefined && windowMatchesRead(expectedWindow);
+  // A same-connection follow-up does not always MERGE. applyCacheGapRule
+  // (stores/cacheLifetime.ts) replaces the loaded pages when a reconciling
+  // read's window starts above the cached shell's captured anchor, and
+  // readDisposition replaces on an invalidated history. The model then carries
+  // THAT read's cursor and exactly its (narrower, newest-edge-capped) window,
+  // and the composed union is not what the product applied. Identify that read
+  // by the product's own ordering: readDisposition DISCARDS a response whose
+  // request generation is older than the newest issued one, and within one
+  // incarnation it discards a response with a SHORTER snapshot length. So the
+  // applied read is the window-bearing read with the greatest request
+  // generation, and the greatest snapshot length within that generation (the
+  // later read wins a tie; synthetic evidence with neither falls back to the
+  // last read). Accept the model when that read's cursor is the model's and the
+  // model holds its window; the exact per-turn comparison still rejects a model
+  // that lost, changed, or reordered the read's recorded content, and the union
+  // above still covers the merge case. This cannot tell a cache-gap replace
+  // from a merge that dropped the older edge; the later paged-back-sentinel
+  // phase re-fetches and proves that retained range. An incarnation/epoch
+  // change at the same request generation would still need those identity
+  // fields; this journey does not recreate the target's history, so the
+  // reconnect connection keeps one incarnation.
+  let replacementCandidate;
+  if (!windowMatches) {
+    let maxGeneration = -1;
+    const generationReads = [];
+    for (const read of composedReads) {
+      if (!Array.isArray(read.window) || read.window.length === 0) continue;
+      const generation = typeof read.generation === "number" ? read.generation : -1;
+      if (generation > maxGeneration) {
+        maxGeneration = generation;
+        generationReads.length = 0;
+      }
+      if (generation === maxGeneration) generationReads.push(read);
+    }
+    for (const read of generationReads) {
+      if (
+        replacementCandidate === undefined ||
+        (read.snapshotLength ?? -1) >= (replacementCandidate.snapshotLength ?? -1)
+      ) {
+        replacementCandidate = read;
+      }
+    }
+  }
+  const replacementRead =
+    replacementCandidate !== undefined &&
+    replacementCandidate.olderCursor === appliedCursor &&
+    windowMatchesRead(replacementCandidate.window)
+      ? replacementCandidate
+      : undefined;
+  const appliedMatches = windowMatches || replacementRead !== undefined;
+  const reported = appliedMatches
+    ? replacementRead ?? edgeRead
+    : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
     newConnectionReads: newConnectionReads.length,
     responseCursor: reported?.olderCursor ?? "",
     responseWindow: reported?.window ?? null,
+    expectedWindow,
     appliedWindow,
     appliedCursor,
-    appliedMatches: appliedRead !== undefined,
+    appliedMatches,
   };
+}
+
+// waitForReconnectApplied polls the target's applied model against the
+// reconnect trace until they agree. The trace is re-read on every poll: the new
+// connection can issue its follow-up read after waitForNewTargetRead returned,
+// and a frozen snapshot would keep composeReconnectWindow at the reconnect
+// read's window while the model already holds the merged turn, so the check
+// would fail for the whole wait.
+async function waitForReconnectApplied({
+  before,
+  readEvidence,
+  readDomain,
+  deadlineMs,
+  pollMs = 150,
+  now = Date.now,
+  sleep = delay,
+}) {
+  const startedAt = now();
+  const deadline = startedAt + deadlineMs;
+  let evidence = readEvidence();
+  let domain = await readDomain();
+  let check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  while (!check.appliedMatches && now() < deadline) {
+    await sleep(pollMs);
+    evidence = readEvidence();
+    domain = await readDomain();
+    check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  }
+  return { evidence, domain, check, waitedMs: now() - startedAt };
 }
 
 // observedConnection reads the app's own connection state through the dev
@@ -756,10 +917,14 @@ async function observedConnection(driver) {
 // waitForDisconnected waits for the app's own connection state to leave the
 // connected state, not navigator.onLine alone.
 async function waitForDisconnected(driver, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   while (Date.now() < deadline) {
     const { appState } = await observedConnection(driver);
-    if (appState !== null && appState !== undefined && appState !== "ready") return true;
+    if (appState !== null && appState !== undefined && appState !== "ready") {
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -1419,17 +1584,26 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   const liveTabs = await runLiveTwoTabs(driver, harnessUrl);
   await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
-  const completed = await waitForNativeEntryEvidence(
+  // The completed live turn is the fixed point the comparison is about; wait for
+  // it once, then let the comparison loop poll the store inside its own bound.
+  const liveEvidence = await waitForNativeEntryEvidence(
     driver,
     (value) =>
       value.rows.some((row) => row.item?.text?.includes(AFTER)) &&
       value.rows.some((row) => row.item?.output?.includes(TOOL_OUTPUT)),
     "completed recorded transcript in native entry storage",
   );
-  const target = await readTargetDomain(driver, SESSION_B);
+  const comparison = await waitForEntryComparison({
+    readEvidence: async () =>
+      (await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_B))) ?? liveEvidence,
+    readTarget: () => readTargetDomain(driver, SESSION_B),
+    deadline: Date.now() + driver.reactions.deadline(30000),
+  });
+  const completed = comparison.completed;
+  const target = comparison.target;
   const outputRegion = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
   const outputText = outputRegion?.outputs?.[0] ?? "";
-  const rendererItems = target?.items ?? [];
+  const rendererItems = comparison.rendererItems;
   const renderedSentinelRows = await evaluate(driver.send, renderedSentinelRowsExpr(SESSION_B));
   driver.milestone("two-tab-live", {
     tabs: [
@@ -1442,36 +1616,15 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       liveTabs.sibling,
     ],
   });
-  const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+  const recordedRendererItems = comparison.recordedRendererItems;
   const renderedToolItems = recordedRendererItems.filter((item) => item.output.includes(TOOL_OUTPUT));
-  const nativeItems = completed.rows.map((row) => ({
-    transcriptKey: row.transcriptKey,
-    position: row.position,
-    item: row.item,
-  }));
+  const nativeItems = comparison.nativeItems;
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
-  const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeItems.filter(
-      (row) => row.transcriptKey === item.transcriptKey && row.item?.id === item.id && row.item?.turnId === item.turnId,
-    );
-    const native = matches[0] ?? null;
-    const identityMatches =
-      native !== null &&
-      native.item.type === item.type &&
-      (native.item.text ?? "") === item.text &&
-      (native.item.output ?? "") === item.output &&
-      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
-      native.item.status === item.status &&
-      (native.item.callId ?? null) === item.callId &&
-      native.position.entry === item.position.entry &&
-      native.position.item === item.position.item &&
-      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
-      native.item.version === item.version;
-    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
-  });
+  const rendererToNative = comparison.rendererToNative;
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  const unmatchedRendererItems = comparison.unmatchedRendererItems;
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -1526,6 +1679,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     nativeTurns,
     nativeCoverage,
     rendererToNative,
+    unmatchedRendererItems,
     nativeCoverageMatches,
     itemTurnMatches,
   };
@@ -1537,7 +1691,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     shellRows: outputRegion?.shellRows ?? 0,
     renderedOutputText: outputText,
     renderedToolItemCount: renderedToolItems.length,
-    rendererToNativeMatches: rendererToNative.every((match) => match.matches === 1 && match.identityMatches),
+    rendererToNativeMatches: unmatchedRendererItems.length === 0,
     itemTurnMatches,
     producerItemsCovered:
       producerCoverage.length === 2 && producerCoverage.every((match) => match.coveringRows.length > 0),
@@ -1565,8 +1719,10 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       );
     }
   }
-  if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
-    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+  if (unmatchedRendererItems.length !== 0) {
+    throw new Error(
+      `renderer items do not map one-to-one to native entry items: ${JSON.stringify({ rendererToNative, unmatchedRendererItems })}`,
+    );
   }
   if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
     throw new Error(
@@ -1768,22 +1924,20 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
-  const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
+  await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
   const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
-  const appliedDeadline = Date.now() + 20000;
-  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
-  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-    cursor: reconnectDomain?.cursor ?? "",
-    domain: reconnectDomain,
+  const applied = await waitForReconnectApplied({
+    before: reconnectBefore,
+    readEvidence: () => targetPagingEvidence(SESSION_B),
+    readDomain: () => readTargetDomain(driver, SESSION_B),
+    deadlineMs: driver.reactions.deadline(20000),
   });
-  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
-    await delay(150);
-    reconnectDomain = await readTargetDomain(driver, SESSION_B);
-    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-      cursor: reconnectDomain?.cursor ?? "",
-      domain: reconnectDomain,
-    });
-  }
+  // The trace was re-read on every poll, so these are the final read set: a
+  // follow-up read that landed after the first snapshot is composed here too.
+  const reconnect = applied.evidence;
+  const reconnectDomain = applied.domain;
+  const reconnectCheck = applied.check;
+  if (reconnectCheck.appliedMatches) driver.reactions.observe(applied.waitedMs);
   const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
@@ -1906,7 +2060,34 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   driver.milestone("done", { mode: "entry-production" });
 }
 
-function nativeEntryEvidenceExpression(ref = SESSION_B) {
+// selectTranscriptMeta is embedded in nativeEntryEvidenceExpression via
+// toString(), so it must close over nothing. transcriptMeta is keyed by
+// historyKey: a ref can own more than one metadata row (an earlier history
+// after a Clear, or a new incarnation), and the guard must read the rows of the
+// history the renderer's route currently uses. Exported for the unit test.
+export function selectTranscriptMeta(rows, ref, clientId, historyKey) {
+  const matching = (rows ?? []).filter((row) =>
+    row.resolvedIdentity?.clientId === clientId &&
+    row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === clientId),
+  );
+  // The route's own key is the history the renderer is showing. When it is not
+  // exposed yet, fall back to the closest matching row by savedAt (production's
+  // getSessionForRequestedRef also applies its cache TTL; the guard has no TTL
+  // contract, and this branch only runs before the route exposes a key). When
+  // the key is exposed but its row is not written yet, return nothing so the
+  // caller's wait keeps polling instead of joining the renderer against a stale
+  // history.
+  if (historyKey) {
+    return matching.find((row) => row.historyKey === historyKey);
+  }
+  let selected;
+  for (const row of matching) {
+    if (selected === undefined || (row.savedAt ?? 0) > (selected.savedAt ?? 0)) selected = row;
+  }
+  return selected;
+}
+
+export function nativeEntryEvidenceExpression(ref = SESSION_B) {
   return `(async () => {
     const evidence = window.backgroundTranscriptEvidence;
     const databaseName = evidence.entryCacheDatabase;
@@ -1930,7 +2111,9 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     })));
-    const metadata = values[3].find((row) => row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === location.origin));
+    ${selectTranscriptMeta.toString()}
+    const route = evidence.entryRoute?.(ref);
+    const metadata = selectTranscriptMeta(values[3], ref, location.origin, route?.historyKey ?? null);
     if (!metadata) { db.close(); return null; }
     const historyKey = metadata.historyKey;
     const rows = values[0].filter((row) => row.historyKey === historyKey);
@@ -1947,13 +2130,112 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
 }
 
 async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSION_B) {
-  const deadline = Date.now() + 30000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(30000);
   while (Date.now() < deadline) {
     const value = await evaluate(driver.send, nativeEntryEvidenceExpression(ref));
-    if (value && predicate(value)) return value;
+    if (value && predicate(value)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return value;
+    }
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+// joinRendererToNative joins the display's recorded items to the native entry
+// rows by identity (transcriptKey, id, turnId). Index the native rows once so
+// the join is linear, and keep every row per identity: a duplicate native row
+// must still read as two matches.
+function joinRendererToNative(recordedRendererItems, nativeItems) {
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
+  const rendererToNative = recordedRendererItems.map((item) => {
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
+    const native = matches[0] ?? null;
+    const identityMatches =
+      native !== null &&
+      native.item.type === item.type &&
+      (native.item.text ?? "") === item.text &&
+      (native.item.output ?? "") === item.output &&
+      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
+      native.item.status === item.status &&
+      (native.item.callId ?? null) === item.callId &&
+      native.position.entry === item.position.entry &&
+      native.position.item === item.position.item &&
+      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
+      native.item.version === item.version;
+    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
+  });
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
+  return { rendererToNative, unmatchedRendererItems };
+}
+
+// waitForEntryComparison reads the display and the durable entry store until
+// every recorded renderer item has its one-to-one native row, bounded by
+// deadline. The two views publish on different boundaries: an item reaches the
+// pane as soon as its model is published, while the entry repository commits it
+// through its own write-behind task. A single sample of each can be a few
+// writes apart under load - a throttled main thread makes that plain (#5024) -
+// so the comparison waits for the store to catch up with the display rather
+// than reading one instant of each. A row that never lands still returns the
+// unmatched item, and the journey's assertion fails exactly as before.
+async function waitForEntryComparison({
+  readEvidence,
+  readTarget,
+  deadline,
+  sleep = delay,
+}) {
+  for (;;) {
+    const completed = await readEvidence();
+    const target = await readTarget();
+    const rendererItems = target?.items ?? [];
+    const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+    const nativeItems = completed.rows.map((row) => ({
+      transcriptKey: row.transcriptKey,
+      position: row.position,
+      item: row.item,
+    }));
+    const { rendererToNative, unmatchedRendererItems } = joinRendererToNative(recordedRendererItems, nativeItems);
+    if (unmatchedRendererItems.length === 0 || Date.now() >= deadline) {
+      return {
+        completed,
+        nativeItems,
+        target,
+        rendererItems,
+        recordedRendererItems,
+        rendererToNative,
+        unmatchedRendererItems,
+      };
+    }
+    await sleep(100);
+  }
 }
 
 // waitForPaneText waits until the named pane's own text carries the marker.
@@ -1977,11 +2259,15 @@ async function scrollSentinelIntoView(driver, ref, wanted, rounds = 8) {
 // restore that needed the wire still shows up as a read/page in the caller's
 // trace window.
 async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await readTargetDomain(driver, ref).catch(() => null);
-    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) return last;
+    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await delay(150);
   }
   return last;
@@ -2037,12 +2323,16 @@ async function openSessionInCurrentShell(driver, ref) {
 // waitForNewTargetRead waits for the target's read count to advance past its
 // pre-gap value, returning refreshed evidence (the reconnect's authoritative
 // read on a new connection).
-async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForNewTargetRead(driver, ref, beforeReads, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let ev = targetPagingEvidence(ref);
   while (Date.now() < deadline) {
     ev = targetPagingEvidence(ref);
-    if (ev.readResponses > beforeReads) return ev;
+    if (ev.readResponses > beforeReads) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return ev;
+    }
     await new Promise((r) => setTimeout(r, 150));
   }
   return ev;
@@ -2138,7 +2428,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
       throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
     }
-    const suppressDeadline = Date.now() + 15000;
+    const suppressDeadline = Date.now() + driver.reactions.deadline(15000);
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
       await delay(100);
@@ -2147,7 +2437,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const aAfter = await fence(driver.send, ref);
     // The durable heal is asynchronous (deleteCachedRefs), so poll for the rows
     // to leave the shared IndexedDB rather than reading one instant.
-    const removeDeadline = Date.now() + 15000;
+    const removeDeadline = Date.now() + driver.reactions.deadline(15000);
     let removed = await durable(tab.send, ref);
     while (removed && removed.rows.length > 0 && Date.now() < removeDeadline) {
       await delay(100);
@@ -2183,7 +2473,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     // appears. Poll the real condition (the ref acquired no route) rather than
     // sleeping a fixed interval.
     await call(tab.send, "open", ref);
-    const refusalDeadline = Date.now() + 15000;
+    const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
     let routePresent = await evaluate(
       tab.send,
       `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
@@ -2199,7 +2489,16 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
     driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
     if (routePresent === true) {
-      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+      // Name the route state that survived the refusal: which open status it
+      // reported, whether a store model exists, and its history key distinguish
+      // a resurrected repository from a route object that never had one.
+      const route = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+      );
+      throw new Error(
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+      );
     }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
@@ -2207,7 +2506,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
     await driver.openSession(SESSION_B);
-    const armDeadline = Date.now() + 15000;
+    const armDeadline = Date.now() + driver.reactions.deadline(15000);
     let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
@@ -2220,7 +2519,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!cleared.committed) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
-    const clearDeadline = Date.now() + 15000;
+    const clearDeadline = Date.now() + driver.reactions.deadline(15000);
     let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
@@ -2255,12 +2554,20 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
 }
 
 async function waitForEvidenceGlobal(driver) {
-  const deadline = Date.now() + 90000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(90000);
   while (Date.now() < deadline) {
     const present = await evaluate(driver.send, "typeof window.backgroundTranscriptEvidence !== 'undefined'").catch(
       () => false,
     );
-    if (present) return true;
+    if (present) {
+      // The page boot is this run's first observed reaction. Recording it
+      // sizes every later wait from the machine this guard actually got,
+      // instead of leaving the first composer and display waits at a floor
+      // a loaded runner can miss.
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
@@ -2421,6 +2728,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
   const readConnections = [];
   const readResponseCursors = [];
   const readResponseWindows = [];
+  const readResponseSnapshotLengths = [];
+  const readResponseGenerations = [];
   const pending = new Map();
   for (const { connection, direction, frame } of frames) {
     if (frame?.method && frame.id !== undefined) {
@@ -2449,6 +2758,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
       readConnections.push(connection);
       readResponseCursors.push(cursor);
       readResponseWindows.push(normalizeWindowFromWire(frame.result.thread?.turns));
+      readResponseSnapshotLengths.push(frame.result.snapshot?.length ?? null);
+      readResponseGenerations.push(frame.result.requestGeneration ?? null);
     } else if (held.frame.method === "thread/turns/list") {
       pageCursors.push(frame.result.nextCursor ?? "");
     }
@@ -2461,6 +2772,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
     readConnections,
     readResponseCursors,
     readResponseWindows,
+    readResponseSnapshotLengths,
+    readResponseGenerations,
     pageCursors,
     pages: pageCursors.length,
     lastCursor: pageCursors.length > 0 ? pageCursors[pageCursors.length - 1] : "",
@@ -2887,6 +3200,7 @@ export {
   furtherHistoryValidator,
   holderSnapshot,
   holderValidator,
+  joinRendererToNative,
   narrowViewportContentPreserved,
   observedConnection,
   producerOperationApplied,
@@ -2899,10 +3213,13 @@ export {
   renderedOutputExpr,
   retainedHistoryValidator,
   samplePeaksOnce,
+  targetDomainExpr,
   targetPagingEvidence,
   traceBytes,
   transcriptState,
+  waitForEntryComparison,
   waitForDisconnected,
   waitForProducerOperationApplied,
+  waitForReconnectApplied,
   waitForRenderedOutput,
 };

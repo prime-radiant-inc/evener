@@ -30,6 +30,9 @@ type Window struct {
 	// the length only grows; a rebuild mints a new incarnation.
 	Incarnation string
 	Length      int64
+	// LatestExecutionTurnID is the newest recorded execution span at this
+	// window's snapshot, even when later gap or delivery spans exist.
+	LatestExecutionTurnID string
 }
 
 // Latest returns the newest limit items (see appwire.NormalizeTranscriptItemLimit).
@@ -45,8 +48,52 @@ func (x *Index) Latest(limit int) (Window, error) {
 		if err != nil {
 			return Window{}, err
 		}
-		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		window, err := x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window.LatestExecutionTurnID, err = x.latestExecutionTurnID()
+		return window, err
 	})
+}
+
+// latestExecutionTurnID reads the exact summary named by committed metadata;
+// it does not scan transcript bodies or trailing non-execution summaries.
+func (x *Index) latestExecutionTurnID() (string, error) {
+	record, found, err := latestExecutionRecord(x.meta.LatestExecutionTurnSlot, x.turns.n, func(slot uint64) (turnRecord, error) {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			return turnRecord{}, err
+		}
+		return decodeTurn(buf), nil
+	})
+	if err != nil || !found {
+		return "", err
+	}
+	id, err := x.strings.get(record.ID)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+// latestExecutionRecord validates the one-based locator and invokes read once
+// regardless of how many non-execution summaries trail the execution.
+func latestExecutionRecord(slot, turnCount uint64, read func(uint64) (turnRecord, error)) (turnRecord, bool, error) {
+	if slot == 0 {
+		return turnRecord{}, false, nil
+	}
+	if slot > turnCount {
+		return turnRecord{}, false, fmt.Errorf("locator %d exceeds %d turn records", slot, turnCount)
+	}
+	record, err := read(slot - 1)
+	if err != nil {
+		return turnRecord{}, false, err
+	}
+	if record.Kind != turnKindExecution || record.ID.Len == 0 {
+		return turnRecord{}, false, fmt.Errorf("slot %d is not an identified execution record", slot)
+	}
+	return record, true, nil
 }
 
 // ErrDerivedTotalsUnavailable reports that the sidecar cannot answer the
@@ -148,7 +195,12 @@ func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *
 		if ferr != nil {
 			return Window{}, ferr
 		}
-		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		window, err := x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window.LatestExecutionTurnID, err = x.latestExecutionTurnID()
+		return window, err
 	})
 	if err != nil || held.Incarnation != x.meta.Incarnation {
 		return window, nil, err
@@ -197,6 +249,34 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 		}
 		return x.window(r, rank, limit, flush)
 	})
+}
+
+// CandidateAt returns the complete item at position from this index view.
+func (x *Index) CandidateAt(position appwire.ThreadItemPosition) (appitempaging.TranscriptItemCandidate, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	window, err := x.readWindow(func(r *reader) (Window, error) {
+		flush, err := x.pendingFlush(r)
+		if err != nil {
+			return Window{}, err
+		}
+		rank, err := x.rank(position, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window, err := x.window(r, rank+1, 1, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		if len(window.Candidates) != 1 || window.Candidates[0].Position != position {
+			return Window{}, appwire.TranscriptItemCursorStale()
+		}
+		return window, nil
+	})
+	if err != nil {
+		return appitempaging.TranscriptItemCandidate{}, err
+	}
+	return window.Candidates[0], nil
 }
 
 // readWindow runs compute under a shared lock, the common case for a read.
@@ -319,22 +399,22 @@ func (x *Index) window(r *reader, end uint64, limit int, flush []appitempaging.T
 	return window, nil
 }
 
-// span projects item records [lo, hi).
+// span projects item records [lo, hi). Each candidate's HasEarlierItems and
+// HasLaterItems follow the item's ordinal within its logical turn, so a turn a
+// later entry reopens (whose fragments are not physically adjacent) reports
+// completeness at its fragment boundaries.
 func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCandidate, error) {
-	// One read covers the records plus a neighbour on each side, which say
-	// whether the edge items' turns continue past the span.
-	first, last := lo-min(lo, 1), min(hi+1, x.items.n)
-	buf, err := x.items.read(first, int(last-first))
+	buf, err := x.items.read(lo, int(hi-lo))
 	if err != nil {
 		return nil, x.fail(err)
 	}
-	records := make([]itemRecord, last-first)
+	records := make([]itemRecord, hi-lo)
 	for i := range records {
 		records[i] = decodeItem(buf[i*itemRecordSize:])
 	}
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0, hi-lo)
 	for slot := lo; slot < hi; slot++ {
-		record := records[slot-first]
+		record := records[slot-lo]
 		stamped, err := r.turn(record.Turn)
 		if err != nil {
 			return nil, x.fail(err)
@@ -350,8 +430,8 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 			Turn:            turn,
 			Item:            item,
 			Position:        *item.Position,
-			HasEarlierItems: slot > 0 && records[slot-1-first].Turn == record.Turn,
-			HasLaterItems:   slot+1 < x.items.n && records[slot+1-first].Turn == record.Turn,
+			HasEarlierItems: record.ItemIndex > 0,
+			HasLaterItems:   uint64(record.ItemIndex)+1 < uint64(stamped.count),
 			Model:           stamped.model,
 		})
 	}
@@ -708,6 +788,9 @@ type reader struct {
 type stampedTurn struct {
 	turn  appwire.Turn
 	model string
+	// count is the turn's recorded item count across all its fragments, so an
+	// item inside a reopened turn can report whether later items follow it.
+	count uint32
 }
 
 // projectionKey is one projection of an entry: its seed is the tool name of
@@ -805,7 +888,7 @@ func (r *reader) turn(slot uint32) (stampedTurn, error) {
 		CacheReadTokens: &cacheRead,
 		TotalTokens:     int(record.Usage[3]),
 	})
-	stamped := stampedTurn{turn: turn, model: string(model)}
+	stamped := stampedTurn{turn: turn, model: string(model), count: record.ItemCount}
 	r.turns[slot] = stamped
 	return stamped, nil
 }
@@ -845,6 +928,7 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		return appwire.ThreadItem{}, fmt.Errorf("%w: entry %d projects no item at part %d", errCorrupt, record.Entry-1, record.Part)
 	}
 	item := items[at]
+	openerID, openerRoundID := item.ID, item.RoundID
 	if callID != "" {
 		opener, err := r.entry(record.Opener.Offset, record.Opener.Length)
 		if err != nil {
@@ -867,11 +951,43 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		if record.Completer.Length > 0 {
 			contributors = append(contributors, record.Completer)
 		}
+		var echoes []appwire.ThreadItem
 		var completedAtEntry uint64
 		for _, c := range contributors {
 			entry, err := r.entry(c.Offset, c.Length)
 			if err != nil {
 				return appwire.ThreadItem{}, err
+			}
+			if entry.Kind == schema.TurnCommunicate && item.Type == "agentMessage" {
+				projected, _, err := r.project(c, callID, turnID)
+				if err != nil {
+					return appwire.ThreadItem{}, err
+				}
+				for _, communication := range projected {
+					if communication.Observation != nil {
+						echoes = append(echoes, communication)
+					}
+				}
+				continue
+			}
+			if len(echoes) > 0 && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
+				for i := range echoes {
+					if echoes[i].Observation.EndTurn {
+						if accepted := apptranscript.CommunicateTerminalAccepted(*entry, echoes[i].CallID); accepted != nil {
+							echoes[i].Observation.TerminalAccepted = accepted
+						}
+					}
+				}
+				continue
+			}
+			if item.Observation != nil && item.Observation.EndTurn && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
+				if accepted := apptranscript.CommunicateTerminalAccepted(*entry, callID); accepted != nil {
+					item.Observation.TerminalAccepted = accepted
+				}
+				// The communicate message is not a tool item. Its result can
+				// change observation evidence, but must not fold its output
+				// into the displayed message or change the item type.
+				continue
 			}
 			switch entry.Kind {
 			case schema.TurnCompletion:
@@ -888,11 +1004,25 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			}
 			item = foldCall(item, items, callID)
 		}
+		if len(echoes) > 0 {
+			winner := echoes[0]
+			for _, echo := range echoes {
+				if accepted := echo.Observation.TerminalAccepted; echo.Observation.EndTurn && accepted != nil && *accepted {
+					winner = echo
+					break
+				}
+			}
+			item.CallID, item.Observation = winner.CallID, winner.Observation
+		}
 		item.CompletedAtEntry = completedAtEntry
 		// A new-format item that spans entries keeps its opener's identity.
 		if identity {
-			item.ID, item.RoundID = items[at].ID, items[at].RoundID
+			item.ID, item.RoundID = openerID, openerRoundID
 		}
+	}
+	if item.ConversationProvenance != nil {
+		item.ConversationProvenance = appwire.ClonePointer(item.ConversationProvenance)
+		item.ConversationProvenance.SourceItemID = item.ID
 	}
 	item.TurnID = turnID
 	position := appwire.ThreadItemPosition{Entry: record.Entry, Item: record.Part}

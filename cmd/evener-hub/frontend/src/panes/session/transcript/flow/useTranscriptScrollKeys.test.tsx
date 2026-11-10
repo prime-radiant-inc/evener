@@ -12,7 +12,7 @@ import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/re
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
-import { resetMobileViewportForTests } from "../../../../shell/useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "../../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { mountReaderScene } from "../transcriptReaderTestUtils";
@@ -274,7 +274,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

@@ -258,7 +258,7 @@ assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
 assert.equal(client.pickableModelRows(pickerRows).length, 1);
 assert.deepEqual(client.buildPickerRows(null, ""), []);
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
-assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "medium", "high"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
 const envInstance = {
   name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
@@ -321,7 +321,10 @@ const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level
 assert.equal(client.advancedEnabledCount(displayConfig), 1);
 assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
 assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
-assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+assert.deepEqual(
+  client.contentVectorForConfig(client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+  { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+);
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
@@ -343,7 +346,7 @@ assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label
 const archivedLists = client.createArchivedListStore({ request: async () => ({ sessions: [], total: 0 }) });
 archivedLists.refresh("projects", "p").then(() => { const { rows, loaded, error } = archivedLists.getState().lists[client.archivedListKey("projects", "p")]; assert.deepEqual({ rows, loaded, error }, { rows: [], loaded: true, error: null }); });
 const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });
-hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } }, mcpDiscovered: { servers: [] }, agents: [] }));
+hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }));
 // The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
 const keybindingParser = (keybinding) => keybinding.split(" ").map((press) => { const parts = press.split("+"); return [parts.slice(0, -1), [], parts[parts.length - 1]]; });
 assert.equal(client.ACTIONS.paletteOpen, "palette.open");
@@ -461,7 +464,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   unmarkAttempted: () => Promise.resolve(false),
   markUnknown: () => Promise.resolve(false),
   settleReceipt: () => Promise.resolve(false),
-  settleApplied: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(undefined),
   restoreProvenAbsent: () => Promise.resolve([]),
   transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
@@ -1020,6 +1023,10 @@ memoryOutbox
   // decision that it stays internal; an entry a specifier starts to re-export,
   // or one the build stops shipping, fails below so the list cannot go stale.
   const internalModules = [
+    // The generated ladder is an implementation detail: surfaces consume the
+    // rank table and FALLBACK_EFFORT_LEVELS through reasoningEffort's
+    // re-exports, never the generated arrays directly.
+    "reasoningEffort.gen",
     "state/extensions/keyedRevision",
     "state/extensions/listRevision",
     "state/extensions/storeLifecycle",

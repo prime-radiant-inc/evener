@@ -29,10 +29,9 @@ import (
 // the publicly published snapshot release only ever reflects main and this
 // feature has not merged there yet -- a downloaded "current snapshot" would
 // have no evener/update/apply route to call. Building the branch locally
-// with -X buildinfo.Channel=snapshot makes it a non-dev build (so self-update
-// isn't refused) whose version differs from whatever main last published,
-// which is what lets the post-update /api/health read back a different
-// version and prove the exec actually swapped binaries.
+// with -X buildinfo.Channel=snapshot makes its version differ from whatever
+// main last published, which is what lets the post-update /api/health read
+// back a different version and prove the exec actually swapped binaries.
 //
 //	EVENER_UPDATE_E2E=1 go test ./cmd/evener-hub/ -run TestUpdateApplyEndToEnd -v
 func TestUpdateApplyEndToEnd(t *testing.T) {

@@ -1,10 +1,11 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { ComicConversationBody } from "../../comic/ComicConversationBody";
 import { focusedSessionRef } from "../../shell/focusedSession";
+import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
@@ -27,12 +28,12 @@ import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
-import { NextNeedsYou } from "./NextNeedsYou";
+import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
-import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
@@ -74,6 +75,10 @@ export interface ConversationSeat {
   focused: boolean;
   // Seat-level policy for mount autofocus, independent of the shared editor.
   mountAutofocus?: boolean;
+  // The seat's own chrome already renders this conversation's activity
+  // counts (a cascade column's ScopeActivityControls), so the composer's
+  // phone row must not duplicate them.
+  ownsActivityCounts?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -128,7 +133,7 @@ export function ConversationBody({
   seat: ConversationSeat;
   render: (parts: ConversationParts) => React.ReactNode;
 }) {
-  useThreadClaim(ref);
+  useThreadClaim(ref, seat.readView ?? undefined);
 
   // Opening a conversation marks its session seen on the hub, so the
   // session's blue dot clears on the phone too.
@@ -150,29 +155,14 @@ export function ConversationBody({
     hasOtherReaders: (sourceRef) => otherRetainedViewOf(sourceRef, seat.viewFallbackId),
   });
 
-  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const renderParts = (parts: ConversationParts) =>
     render({
       ...parts,
-      footer:
-        parts.state !== "live" && seat.sessionMenu ? (
-          <UnavailablePresentationControl />
-        ) : presentation === "comic" && parts.state === "live" ? (
-          <>
-            <ConversationRecoveryNotices sessionRef={ref} />
-            {parts.footer}
-          </>
-        ) : (
-          parts.footer
-        ),
+      footer: parts.state !== "live" && seat.sessionMenu ? <UnavailablePresentationControl /> : parts.footer,
     });
   return (
     <SandboxEscalationOwner key={ref} sessionRef={ref}>
-      {presentation === "comic" ? (
-        <ComicConversationBody ref={ref} seat={seat} render={renderParts} />
-      ) : (
-        <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
-      )}
+      <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
     </SandboxEscalationOwner>
   );
 }
@@ -214,6 +204,7 @@ function StandardConversationBody({
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
+  const isMobile = useIsMobile();
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -247,10 +238,10 @@ function StandardConversationBody({
   }, [attentionOwner]);
   const attentionHidden = editing || askPending || approvalPending;
   // Production panes borrow the shell's shared owner; a bare conversation
-  // fixture outside AppShell has no floating control.
-  const attentionOverlay = attentionOwner ? (
-    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
-  ) : undefined;
+  // fixture outside AppShell has no floating control. The mount flag is one
+  // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
+  // the small control, not this whole pane.
+  const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
   const queueStripIds = useQueueStripMutationIds(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
@@ -334,6 +325,35 @@ function StandardConversationBody({
     onPositioningCommand: seat.readView?.supersedePositioning,
   });
 
+  // Each floating slot mounts only while its control would actually render
+  // (the pill through its shared gate, Next through its shared predicate), so
+  // an empty control never pads the stack; with both hidden the stack and
+  // the transcript-end clearance it reserves disappear entirely.
+  const pillWouldRender = newContentPillVisible({
+    visible: flow.pillVisible,
+    count: flow.pillCount,
+    error: flow.pillError,
+  });
+  const attentionMounted = attentionOwner && nextNeedsYouMounts;
+  const attentionOverlay = attentionMounted ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
+
+  // The mount gate owns the control's suppression contract. While the control
+  // stayed mounted through a visible-to-hidden flip, its own effect cancelled
+  // the controller's deferred navigation so a late reply could not act; the
+  // flip now unmounts it, so the gate performs the cancellation. Focus loss
+  // needs none: the controller's reader guard drops a deferred navigation
+  // when the focused reader changes.
+  const attentionController = useOptionalNeedsYouController();
+  const wasAttentionMountedRef = useRef(attentionMounted);
+  useLayoutEffect(() => {
+    const wasMounted = wasAttentionMountedRef.current;
+    wasAttentionMountedRef.current = attentionMounted;
+    if (!wasMounted || attentionMounted || !attentionOwner) return;
+    attentionController?.cancel();
+  }, [attentionMounted, attentionOwner, attentionController]);
+
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   const seenDividerTurnId = useSeenDivider(ref, model);
 
@@ -400,14 +420,16 @@ function StandardConversationBody({
           )
         }
         liveOverlay={
-          <NewContentPill
-            count={flow.pillCount}
-            visible={flow.pillVisible}
-            needsYou={flow.pillNeedsYou}
-            error={flow.pillError}
-            pillArrowDirection={flow.pillArrowDirection}
-            onClick={flow.jumpToBottom}
-          />
+          pillWouldRender ? (
+            <NewContentPill
+              count={flow.pillCount}
+              visible={flow.pillVisible}
+              needsYou={flow.pillNeedsYou}
+              error={flow.pillError}
+              pillArrowDirection={flow.pillArrowDirection}
+              onClick={flow.jumpToBottom}
+            />
+          ) : undefined
         }
         attentionOverlay={attentionOverlay}
         onOverlayHeightChange={handleOverlayHeightChange}
@@ -469,11 +491,15 @@ function StandardConversationBody({
         />
         <ConversationRecoveryNotices sessionRef={ref} />
         {/* Recovery keeps the composer and its menu mounted. Retain the
-            fallback only for other local snapshots with no Send surface;
-            owner-retained sessions direct recovery to their owner. */}
+            fallback for other local snapshots with no Send surface, and for
+            remote ones on a phone: the composer never mounts for a
+            notLoaded remote share, the phone layout has no status bar to
+            carry the menu, and a single-pane phone hides the rail, so this
+            menu is the only remaining way into Overview and About.
+            Owner-retained sessions still direct recovery to their owner. */}
         {model.status.type === "notLoaded" &&
           !recoveryOwnerRef &&
-          ref.startsWith("local:") &&
+          (ref.startsWith("local:") || isMobile) &&
           !restartPending &&
           !controlsFor(model).send &&
           seat.sessionMenu && (
@@ -487,6 +513,7 @@ function StandardConversationBody({
             source={seat.composerSource}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
+            ownsActivityCounts={seat.ownsActivityCounts}
             onEditingChange={handleEditingChange}
           />
         )}

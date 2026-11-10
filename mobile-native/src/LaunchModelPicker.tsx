@@ -69,7 +69,7 @@ export function LaunchModelPicker({
 			ListEmptyComponent={
 				client && !state.loading && !state.error ? (
 					<Copy muted>{query.trim() ? "No models match your search." : "No models are available from this hub."}</Copy>
-				) : null
+				) : undefined
 			}
 			renderItem={({ item }) => {
 				if (item.kind === "group")

@@ -26,7 +26,10 @@ import (
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
-	BeforeReadThread           func()
+	BeforeReadThread func()
+	// ReadThreadFailure is a test-only seam that fails a relay read with the
+	// returned error before it reaches the source. Production leaves it nil.
+	ReadThreadFailure          func(context.Context, appwire.ThreadReadParams) error
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error
@@ -90,6 +93,7 @@ type WebConfig struct {
 	Favorite    *FavoriteStore    // favorite decision store; nil when not configured
 	PinSections *PinSectionStore  // named pin-section store; nil when not configured
 	SessionSeen *SessionSeenStore // per-session seen-through markers (S4); nil when not configured
+	HubID       string            // this hub's durable nonsecret peer identity from HubIdentityStore; empty disables session-tools bindings
 	// MessageSearch is the message-text search index (S14); nil when it is not
 	// configured or search.db could not be opened, and search then finds
 	// sessions by title and prompt only.
@@ -290,6 +294,9 @@ type SpawnRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+	// Manager starts this session as a Manager. Assigned from the start request,
+	// never from launch config, and persisted by the daemon with the session.
+	Manager bool
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.

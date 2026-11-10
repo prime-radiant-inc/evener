@@ -662,31 +662,6 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
 
-// A daemon that raises a recovery flag while staying idle changes what the hub
-// may offer for that session — the fork capability is projected from these
-// flags — so the fingerprint has to move, or onChange never invalidates
-// navigation and clients keep an action the fork RPC would refuse. Order is not
-// part of the signal: a daemon that reports the same flags in a different order
-// has not changed anything.
-func TestRosterFingerprintIncludesStatusFlagsRegardlessOfOrder(t *testing.T) {
-	base := map[string]LiveEntry{"parent": {Status: "idle"}}
-	flagged := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired"}}}
-	if rosterFingerprint(base) == rosterFingerprint(flagged) {
-		t.Fatal("roster fingerprint must change when a daemon raises a status flag without changing status")
-	}
-	two := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired", "compacting"}}}
-	reordered := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"compacting", "resumeRequired"}}}
-	if rosterFingerprint(two) != rosterFingerprint(reordered) {
-		t.Fatal("roster fingerprint must not change when a daemon reports the same status flags in another order")
-	}
-	if rosterFingerprint(two) == rosterFingerprint(flagged) {
-		t.Fatal("roster fingerprint must change when a status flag is added")
-	}
-	if got := two["parent"].ActiveFlags; !slices.Equal(got, []string{"resumeRequired", "compacting"}) {
-		t.Fatalf("fingerprinting reordered its caller's flags in place: %v", got)
-	}
-}
-
 // An unanswered ask or a blocked escalation arriving or resolving changes
 // what the hub may offer for the session — the list-row fallback folds both
 // flags out of Clear, matching the daemon's clear gate — so each must move
@@ -1944,17 +1919,15 @@ func TestRosterOwnershipErrorRequiresNewerCompleteScan(t *testing.T) {
 
 // ReadSpawnedThread publishes a freshly spawned daemon from the caller's own
 // read rather than from a scan, so it is the one path into the roster that does
-// not go through the prober. Everything the roster carries about a daemon's
-// status has to survive it, the recovery flags included: the hub projects and
-// enforces the fork capability from those flags, so a confirmation that dropped
-// them would advertise fork for a daemon reporting resumeRequired until the
-// next full scan.
-func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
+// not go through the prober. The status the roster carries has to survive it,
+// or a confirmation that dropped it would leave a stale status until the next
+// full scan.
+func TestRosterReadSpawnedThreadPublishesStatus(t *testing.T) {
 	r, entry := newSpawnedRoster(t)
 	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: "01SPAWNED", SessionID: "01SPAWNED",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 		}}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -1965,13 +1938,6 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 	}
 	if live.Status != appwire.ThreadStatusIdle {
 		t.Fatalf("published status = %q, want idle", live.Status)
-	}
-	if !slices.Contains(live.ActiveFlags, "resumeRequired") {
-		t.Fatalf("published entry = %+v, want the status flags the daemon reported", live)
-	}
-	live.ActiveFlags[0] = "mutated"
-	if again, _ := r.Find("01SPAWNED"); !slices.Contains(again.ActiveFlags, "resumeRequired") {
-		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
 	}
 }
 
@@ -2430,5 +2396,13 @@ func TestRosterConfirmedReplacementOnAPIDAnnouncesTheOldSessionGone(t *testing.T
 	roster.Refresh()
 	if len(announced) != 1 {
 		t.Fatalf("the next refresh announced the departure again: %v", announced)
+	}
+}
+
+// An empty session ID names no child, so SubagentState never reports it live.
+func TestRosterSubagentStateEmptyID(t *testing.T) {
+	r := NewRoster("", nil)
+	if state, ok := r.SubagentState(""); ok || state != "" {
+		t.Fatalf("SubagentState(\"\") = %q, %v, want empty and not live", state, ok)
 	}
 }

@@ -9,7 +9,6 @@ import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activ
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
@@ -43,6 +42,7 @@ import * as ComposerModule from "./composer/Composer";
 import { readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { RECOVERY_HINT_DELAY_MS } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -53,34 +53,11 @@ import {
   emitDaemonGoneResync,
   readResponse,
   resumeViaSend,
+  seedPendingSend,
   setNavigationTitle,
+  stubSessionSlots,
   versionedReadResponse,
 } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -200,21 +177,6 @@ afterEach(() => {
   }
 });
 
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
-
 test("offers explicit resume after restart even without pending messages", async () => {
   const fake = connectReadyFakeClient();
   const resumeTransport = vi.spyOn(fake, "resumeThread");
@@ -270,6 +232,9 @@ test.each(["success", "refused"])(
     await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, RECOVERY_HINT_DELAY_MS + 50));
+    });
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
@@ -455,7 +420,7 @@ test.each(["notLoaded", "active", "idle"])(
     );
     await screen.findByRole("alert");
     await act(async () => {
-      mutationId = await seedPendingSend();
+      mutationId = await seedPendingSend(mutationStorage);
       await mutationStorage.markUnknown(mutationId, "blockedUnknown");
       await refreshPendingTurnsProjection("ref_a");
     });
@@ -612,7 +577,7 @@ test.each(["active", "idle"])("a retained %s child with nothing uncertain shows 
 
 test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
-  const mutationId = await seedPendingSend("local:retained-child");
+  const mutationId = await seedPendingSend(mutationStorage, "local:retained-child");
   await mutationStorage.markUnknown(mutationId, "blockedUnknown");
   const fake = connectReadyFakeClient();
   let resumed = false;
@@ -803,12 +768,15 @@ test.each(["pending", "failed"])(
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       expect(sendResumesModel(ref)).toBe(true);
       await resumeViaSend(ref);
-      expect(daemonStarted).toBe(true);
+      // The drive runs beside the pressed send; await its request reaching
+      // the resumed daemon read the fixture holds.
+      await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
-        act(() => rejectRead(new Error("resumed daemon read failed")));
-        await waitFor(() =>
-          expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("resumed daemon read failed"),
-        );
+        // A generated opaque sentinel: the assertion checks the record
+        // carries this staged rejection, never any particular phrasing.
+        const readFailedToken = `probe-read-failed-${crypto.randomUUID()}`;
+        act(() => rejectRead(new Error(readFailedToken)));
+        await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(readFailedToken));
       } else {
         // The resumed daemon read is still in flight: the pane keeps the Send
         // surface it drives recovery from.

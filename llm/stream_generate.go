@@ -179,6 +179,17 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 		toolRoundsUsed := 0
 		var steps []StepResult
 		totalUsage := Usage{Raw: map[string]any{}}
+		// Completed rounds survive a later error or cancellation. Publish the
+		// locals before done closes; only a successful final step sets res.final.
+		defer func() {
+			if res.final != nil {
+				return
+			}
+			res.mu.Lock()
+			res.steps = steps
+			res.totalUsage = totalUsage
+			res.mu.Unlock()
+		}()
 
 		for {
 			if sctx.Err() != nil {
@@ -193,8 +204,9 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 			// openAndConsumeStream opens one stream attempt and drains it.
 			// Returns (finishEv, acc, hasPartialOutput, streamErr).
-			// hasPartialOutput is true once any text delta has been forwarded
-			// to outStream; that flag gates whether the caller may retry.
+			// hasPartialOutput is true once any text delta or content-bearing
+			// passthrough has been forwarded to outStream; that flag gates
+			// whether the caller may retry.
 			openAndConsumeStream := func() (finishEv *StreamEvent, acc *StreamAccumulator, hasPartialOutput bool, streamErr error) {
 				var st Stream
 				st, streamErr = gs.client.Stream(callCtx, req)
@@ -240,7 +252,10 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						outStream.Send(ev)
 					default:
 						outStream.Send(ev)
-						if ev.Type == StreamEventTextDelta {
+						// A published nonempty normalized payload, or a
+						// content-bearing passthrough, commits the attempt:
+						// a retry would duplicate it (#4941, SC-1).
+						if streamEventCommitsAttempt(ev) {
 							hasPartialOutput = true
 						}
 					}
@@ -356,4 +371,26 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 	}()
 
 	return res, nil
+}
+
+// streamEventCommitsAttempt reports whether forwarding ev published a payload
+// the caller observes, so a retry would repeat it. Empty and control-only
+// frames commit nothing: text and reasoning need a nonempty delta, tool calls
+// need arguments on start, delta, or end, object deltas need a nonnil payload,
+// and a provider passthrough must declare itself content-bearing (#4941).
+func streamEventCommitsAttempt(ev StreamEvent) bool {
+	switch ev.Type {
+	case StreamEventTextDelta:
+		return ev.Delta != ""
+	case StreamEventReasoningDelta:
+		return ev.ReasoningDelta != ""
+	case StreamEventToolCallStart, StreamEventToolCallDelta, StreamEventToolCallEnd:
+		return ev.ToolCall != nil && len(ev.ToolCall.Arguments) > 0
+	case StreamEventObjectDelta:
+		return ev.ObjectDelta != nil
+	case StreamEventProviderEvent:
+		return ev.ContentBearing
+	default:
+		return false
+	}
 }

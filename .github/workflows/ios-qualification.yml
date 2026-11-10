@@ -1,0 +1,93 @@
+name: iOS qualification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile-native/**"
+      - "appwire-client/typescript/**"
+      - "scripts/native/**"
+      - "scripts/lib/scratch-lib.sh"
+      - "scripts/lib/e2e-lib.sh"
+      - "scripts/ops/build-runtime-pair.sh"
+      - "Makefile"
+      - "make/**"
+      # The lane runs `make build-runtime` on macOS; the required CI lanes run
+      # the same recipes only on Linux, so a macOS-only recipe break is
+      # otherwise unguarded. Hub and daemon Go sources stay out deliberately:
+      # every Go lane builds and gates them, and this lane exists to qualify
+      # native and shared-client changes.
+      - "test/e2e/fakellm/**"
+      - "internal/devtool/procgroup/**"
+      - "execsupport/procgroup/**"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/ios-qualification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator-build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Set the run-owned diagnostic output path
+        run: printf 'QUALIFICATION_OUTPUT=%s/ios-qualification-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out the tested head without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Select Xcode 26.6
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app
+      - name: Set up Go from repository policy
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+          # No Go or npm cache: this workflow runs only on pull requests,
+          # whose saves serve only themselves (see "CI Caches" in
+          # docs/developing-evener/testing.md).
+          cache: false
+      - name: Set up Node 22.13.1
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22.13.1"
+      - name: Set up Ruby 3.3.6 and locked gems
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        with:
+          ruby-version: "3.3.6"
+          bundler: "2.7.2"
+          working-directory: mobile-native
+          bundler-cache: true
+      - name: Install committed JavaScript dependencies
+        run: |
+          npm ci --prefix mobile-native
+          npm ci --prefix appwire-client/typescript
+      - name: Test qualification policy
+        run: go test ./scripts/native/ios/qualification
+      - name: Build, inspect and qualify the real host and share extension
+        run: bash scripts/native/ios/build-simulator.sh --output "$QUALIFICATION_OUTPUT" --with-ui
+      - name: Upload public qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.QUALIFICATION_OUTPUT }}/*.log
+            ${{ env.QUALIFICATION_OUTPUT }}/*.json
+            ${{ env.QUALIFICATION_OUTPUT }}/*.plist
+            ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.candidate
+            ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.diff
+            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.log
+            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.json
+            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.exit
+            ${{ env.QUALIFICATION_OUTPUT }}/ui/ui.xcresult
+          if-no-files-found: warn

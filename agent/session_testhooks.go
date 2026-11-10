@@ -39,6 +39,21 @@ type testConfig struct {
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
+	// subagentNudgeSelected observes the missing-report reminder's selection
+	// before delivery: updated reports whether the delegate had sent a
+	// non-terminal update. Nil in production.
+	subagentNudgeSelected func(updated bool)
+	// beforeModelSwitchPublish observes a committed switch's publication
+	// phase at its start - after the profile swap released s.mu, before the
+	// marker record and the EventModelChanged emit. It is the window a
+	// concurrent at-rest pick can commit and publish in, so it is the only
+	// place a test can make that interleaving deterministic. Nil in production.
+	beforeModelSwitchPublish func()
+	// driveLaunching observes a notification drive on a parent at the point
+	// its child is marked driving and the drive's turn has not started: the
+	// window a concurrent runtime reclamation could select the child in.
+	// Nil in production.
+	driveLaunching func()
 	// steeringCarrierClaimed observes the drain ladder claiming a steering
 	// carrier turn, before that turn is accepted -- the window a Stop or a
 	// write fault can land in. Nil in production.
@@ -59,6 +74,11 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// interruptSampled observes an accepted interrupt after it sampled the
+	// running execution and the session state, before it reserves the fence.
+	// Tests use it to move the active turn across that window. Nil in
+	// production.
+	interruptSampled func()
 	// failTurnBeforeRecording, when set, makes a turn fail before its user entry
 	// is recorded. It is the one seam that reaches the pre-incorporation,
 	// non-transcript failure the start path's give-back keys on: an integration
@@ -126,6 +146,10 @@ type testConfig struct {
 	// Tests use it to drive the child before it is resolved and assert the
 	// id-keyed claim refuses a second turn.
 	delegateSendStartClaimed func(childSessionID string)
+	// delegateSendRollbackBeforeRedrive observes a failed send's rollback after
+	// every failed-send step has run and before the rollback releases the child
+	// claim and re-drives the claimed child. Nil in production.
+	delegateSendRollbackBeforeRedrive func(childSessionID string)
 	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
 	// delivery commits leave the pending map and before any transcript write.
 	delegateDeliveryCommitsTaken func()
@@ -169,6 +193,32 @@ type testConfig struct {
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionCommitStartFault, when set, is consulted just before
+	// the attention drive commits a presentation start; a non-nil error stands
+	// in for a commit the controller refused — a busy-class error also aborts
+	// the start, mirroring the reservation a real busy commit released, so
+	// tests can pin the busy arm's recovery deterministically without racing
+	// a real busy. Nil in production.
+	delegateAttentionCommitStartFault func() error
+	// delegateAttentionArmFault, when set, is consulted at the top of
+	// armDelegateAttention; a non-nil error stands in for an arm the
+	// controller refused, so a test can pin the hold-release paths that do
+	// not run through a successful arm. A faulted arm is retained for the
+	// paced retry exactly as a real refusal is, and the retry re-arms
+	// through armDelegateAttentionOnce, bypassing the fault — a refused arm
+	// whose paced retry later succeeds. Nil in production.
+	delegateAttentionArmFault func() error
+	// delegateAttentionHoldReleased, when set, observes each release of the
+	// automatic drives' holds: the site names the wake that ended them — a
+	// committed child delivery or a successful arm — with the ids that
+	// release dropped. A release that dropped nothing observes nothing.
+	// Nil in production.
+	delegateAttentionHoldReleased func(site delegateHoldReleaseSite, released []string)
+	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
+	// durable append is about to land, after every teardown guard has run.
+	// Tests pause it there so a stop admitted into the guard-to-append window
+	// can be pinned. Nil in production.
+	delegateAttentionBeforeReopenAppend func()
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in
@@ -192,6 +242,11 @@ type testConfig struct {
 	// released. An inline result can be acknowledged while this seam is held.
 	// Nil in production.
 	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// jobTreeDrainParked observes a session's job-tree drain as it parks: it
+	// has finished a pass over its subtree, and the work it waits on is still
+	// outstanding. It receives the parking session, since child sessions
+	// inherit the hook. Nil in production.
+	jobTreeDrainParked func(*Session)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
@@ -251,6 +306,12 @@ type testConfig struct {
 	// runs its last-write-wins side effects. Tests use it only to place a
 	// deterministic newer publication in that window. Nil in production.
 	afterFoldSupersessionCheck func()
+
+	// afterFoldSideEffectsFlush observes a winning fold's flush at the point
+	// its PostCompact hook would fire, after every other deferred side effect
+	// and outside both locks. Tests use it only to prove where that hook sits
+	// relative to the publish transaction. Nil in production.
+	afterFoldSideEffectsFlush func()
 
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
@@ -313,6 +374,19 @@ type testConfig struct {
 	// window. Nil keeps the production default. Inherited by child configs
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
+
+	// disableRestoredDelegateNotifyDrive suppresses the parent-drive notify
+	// edge a cold-restored delegate runtime installs at restore time (see
+	// restoreIdle): that edge lets the owner present the restored delegate's
+	// armed reports without waiting for its own next pass, and it fires from
+	// inside the restore — before any test-side SetNotifyFunc(nil) disarm can
+	// reach it. A fixture whose tests script the delegate's presentation
+	// drives themselves sets this on the root, so a report arming while the
+	// fixture's send is still settling stays pending until the test's own loop
+	// drives it. False in production: the edge is how a restored delegate's
+	// reports reach the model without waiting for the owner's next pass.
+	// Inherited by child configs like every testOnly field.
+	disableRestoredDelegateNotifyDrive bool
 
 	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
 	// tests; zero rests awaiting at the settle itself. Nil keeps the
@@ -505,4 +579,15 @@ type testConfig struct {
 	// classified cap-shaped by a clock op that has nothing to do with the
 	// stream.
 	contentWindowClock func() time.Time
+
+	// hubWatchRetryDelay overrides the rebind loop's failed-state-read retry
+	// base delay (hubWatchRetryDelay) for tests, so a binding-outage scenario
+	// runs in milliseconds instead of seconds. Zero keeps the production delay.
+	hubWatchRetryDelay time.Duration
+
+	// hubWatchStateOutageBudget overrides how long the rebind loop keeps a
+	// watch armed through consecutive failed state reads
+	// (hubWatchStateOutageBudget) for tests. Zero keeps the production
+	// budget.
+	hubWatchStateOutageBudget time.Duration
 }

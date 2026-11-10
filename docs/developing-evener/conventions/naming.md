@@ -27,8 +27,8 @@ Anthropic (`has_more`, `last_id`), Ollama, and OpenRouter. Only Google
 Gemini uses camelCase (`displayName`). Evener transcripts and audit
 logs sit right next to those provider responses; matching snake_case
 keeps the eye honest when reading raw JSON. The codebase already
-leans this way: camelCase JSON is confined to the AppWire packages, the
-Google adapter, and the upstream `mcpServers` key.
+leans this way: camelCase JSON is confined to AppWire/device voice contracts,
+the Google adapter, and the upstream `mcpServers` key.
 
 TOML matches JSON so the same conceptual field reads identically in a
 session save file and a launch config. Only the CLI diverges, because
@@ -43,8 +43,9 @@ collectively outnumber AppWire fields. This revision backs off.
 | Surface | Where | Casing |
 |---|---|---|
 | AppWire protocol | `appwire/`, `cmd/evener-hub/internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (wire compatibility) |
+| Device voice controls, journal and presentation projections | Explicit voice files/fields listed in `.golangci-appwire.yml` | camelCase (wire and persisted-record contract) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
-| Hub REST/SSE JSON | `cmd/evener-hub/`, `hubapi/`, `server/` | snake_case |
+| Other hub REST/SSE JSON | `cmd/evener-hub/`, `hubapi/`, `server/` | snake_case |
 | Rendezvous files (`~/.local/state/evener/run/*.json`) | `rendezvous/` | snake_case |
 | Session save files | `agent/session.go`, `agent/transcript/` | snake_case |
 | Hub config (`~/.config/evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
@@ -80,7 +81,7 @@ it reads naturally in both surfaces.
 
 ## Exceptions
 
-Two carve-outs, each forced by an upstream we don't own:
+Wire contracts have narrowly scoped exceptions:
 
 - **AppWire protocol code is camelCase.** Any implementation that
   participates in the AppWire protocol uses camelCase,
@@ -95,6 +96,16 @@ Two carve-outs, each forced by an upstream we don't own:
     threads AppWire payloads through the hub.
   Casing here is non-negotiable: changing it breaks wire compatibility
   with AppWire clients.
+- **Device voice controls, journal records and presentation projections are
+  camelCase.** The exact hub files are `voice_bridge.go`, `voice_http.go`,
+  `voice_http_test.go`, `e2e_voice_presentation_test.go`,
+  `internal/hubcore/voice_journal.go` and
+  `internal/hubcore/voice_journal_presentation_test.go`, all under
+  `cmd/evener-hub/`. The agent's `session_voice_presentation.go` and its
+  ordinary/live tests project `inputId` with the same contract. The live
+  test's tool-result fields remain snake_case, as do upstream provider
+  frames in `cmd/evener-hub/voice_realtime.go`. Do not change persisted or
+  wire fields just to satisfy the default package-level naming rule.
 - **`llm/providers/*/` follows each provider's wire format.** OpenAI,
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
@@ -126,11 +137,13 @@ Two standard gates enforce the convention:
   the casing). A single field can opt out with a trailing
   `//nolint:tagliatelle // <reason>` comment.
 
-  `server/appwire_*.go` is camelCase too, but it shares package `server`
-  with snake_case code, and tagliatelle's overrides are per-package. That
-  half lives in `.golangci-appwire.yml`, a second config that flips the
-  package to camelCase and discards every finding outside those files;
-  `make lint-golangci` runs it after the main sweep. The build-tagged
+  `server/appwire_*.go` and the listed voice shapes are camelCase too, but
+  share packages with snake_case code, and tagliatelle's overrides are
+  per-package. That half lives in `.golangci-appwire.yml`, a second config
+  that checks camelCase only in the delegated files/fields;
+  `make lint-golangci` runs it after the main sweep. The live presentation
+  test's three snake_case tool-result fields remain under the main pass.
+  The build-tagged
   sources (`//go:build evenerfuzz` / `eval`) are linted the same way, by a
   tagliatelle pass under each tag inside `make lint-evenerfuzz` /
   `make lint-eval` — the tag-free run does not compile them, so it cannot
@@ -138,6 +151,15 @@ Two standard gates enforce the convention:
 - **TOML data files** — `cmd/evener-tomlcheck` checks every TOML key and
   table name for snake_case. A single key can opt out with a
   `# evener:naming-ignore` marker on the immediately preceding line.
+
+A `cmd/evener-*` directory other than `cmd/evener`, `cmd/evener-hub` and
+`cmd/evener-doctor` is a library package, not a program: it exports a `Run`, and
+a `main` elsewhere dispatches it. The dev tools (tomlcheck, internalcheck,
+fuzzcov, fuzzregistry, transcript-v2-upgrade, the dev binary itself) are
+dispatched by `cmd/evener-dev/bin`; `cmd/evener-migrate` is reached as
+`evener migrate`, dispatched by `cmd/evener/main.go`. So
+`go run ./cmd/evener-tomlcheck` fails with "is not a main package"; run
+`go run ./cmd/evener-dev/bin tomlcheck` instead, or the covering `make` target.
 
 Run locally:
 

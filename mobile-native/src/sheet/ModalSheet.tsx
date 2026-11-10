@@ -6,6 +6,7 @@ import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "../alerts/HoldingModal";
 import { useColors } from "../ui";
+import { ModalFrameInsetContext } from "./modalFrameInset";
 import { Sheet, type SheetProps } from "./Sheet";
 
 /** The modal a sheet opens in: a page sheet that slides up on the canvas.
@@ -29,7 +30,7 @@ export function ModalFrame({
 	return (
 		<HoldingModal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onRequestClose}>
 			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
-				{children}
+				<ModalFrameInsetContext.Provider value>{children}</ModalFrameInsetContext.Provider>
 				{privacyCover ? (
 					<View
 						testID="privacy-cover"

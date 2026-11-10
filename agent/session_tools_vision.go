@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -49,6 +49,10 @@ type visionSideChannelResult struct {
 	elapsed     time.Duration
 	usage       llm.Usage
 	outcome     visionSideChannelOutcome
+	// failureCause is structured provider metadata (provider, status, code),
+	// never the provider's response text: it is safe to send to the session's
+	// own provider in steering. Empty for an untyped error.
+	failureCause string
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -92,14 +96,47 @@ func visionUnavailableSteering(path string) string {
 }
 
 func visionFailureSteering(path string, result visionSideChannelResult) string {
-	if result.outcome == visionSideChannelProviderFailure {
-		if path == "" {
-			return "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
-		}
-		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
+	if result.outcome != visionSideChannelProviderFailure {
+		return visionUnavailableSteering(path)
 	}
-	return visionUnavailableSteering(path)
+	subject := "Vision is unavailable"
+	if path != "" {
+		subject += " for " + strconv.Quote(path)
+	}
+	cause := ""
+	if result.failureCause != "" {
+		cause = " (" + result.failureCause + ")"
+	}
+	return subject + " because the vision provider failed" + cause + ". Use OCR or inspect the source data, or continue without vision."
 }
+
+// visionFailureCause renders the diagnosable cause of a vision side-channel
+// failure from a typed llm.Error's structured fields only — provider, status
+// and error code. The provider's response text is deliberately excluded: a
+// rejection can echo request or credential material, and this string rides
+// steering into the session's own provider. An untyped error yields "", so
+// arbitrary transport details stay suppressed too.
+func visionFailureCause(err error) string {
+	var le llm.Error
+	if !errors.As(err, &le) {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if provider := strings.TrimSpace(le.Provider()); provider != "" {
+		parts = append(parts, provider)
+	}
+	if status := le.StatusCode(); status > 0 {
+		parts = append(parts, "status "+strconv.Itoa(status))
+	}
+	if code := runetrim.OneLine(strings.TrimSpace(le.ErrorCode())); code != "" {
+		parts = append(parts, "code "+runetrim.Cut(code, visionFailureCodeLimit))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// visionFailureCodeLimit bounds the provider's error code in steering; a code
+// is normally a short token, but it is provider-supplied text.
+const visionFailureCodeLimit = 64
 
 func formatVisionSideChannelStats(result visionSideChannelResult) string {
 	stats := visionSideChannelStats{
@@ -434,10 +471,16 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			outcome = visionSideChannelOwnedTimeout
 		}
 		if outcome != visionSideChannelParentCanceled {
-			// Provider errors can contain request URLs, bodies, IDs, or credentials.
-			// The user-facing steering below is deliberately sanitized, so keep the
-			// warning sanitized too rather than reintroducing the raw adapter error.
-			s.emit(events.WarningData{Message: "vision side-channel unavailable"})
+			// Provider response text can echo request or credential material, so the
+			// warning stays label-only and classifies the error through the shared
+			// bare form (the same rule model-call warnings follow); only structured
+			// provider metadata reaches steering.
+			providerCause := ""
+			if outcome == visionSideChannelProviderFailure {
+				providerCause = visionFailureCause(err)
+			}
+			s.emit(bareWarningDataFromError("vision side-channel unavailable", err))
+			return visionSideChannelResult{elapsed: elapsed, outcome: outcome, failureCause: providerCause}
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}

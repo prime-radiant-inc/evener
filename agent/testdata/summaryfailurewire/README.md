@@ -5,10 +5,10 @@
 installs a summary and completes a later model turn. Provider responses are
 scripted at the LLM boundary; API body logging remains disabled.
 
-The corpus contains safe warning fields and recovery counts only. Provider
-errors, prompts, human messages and generated summary text are checked for
-absence before recording. Shared-client, browser, native, CLI and TUI tests
-consume this file rather than rebuilding warning copy.
+The corpus contains safe warning fields and recovery counts only. Prompts,
+human messages and generated summary text are checked for absence before
+recording. Shared-client, browser, native, CLI and TUI tests consume this file
+rather than rebuilding warning copy.
 
 Verify without changing the fixture:
 

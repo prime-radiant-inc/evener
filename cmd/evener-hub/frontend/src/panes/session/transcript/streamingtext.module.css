@@ -18,7 +18,7 @@
    * it settles. --prose-ink follows the same pattern for callers that need
    * a quieter live stream; ordinary callers retain the --ink-hi default. */
   font-size: var(--prose-font-size, var(--font-size-body));
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
   color: var(--prose-ink, var(--ink-hi));
 }
 

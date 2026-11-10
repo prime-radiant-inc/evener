@@ -1,3 +1,4 @@
+import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { useConnectionStore } from "../../../stores/connection";
 import { hubUpdateStore, RESTART_TIMEOUT_MS, type UpdateChannel, useHubUpdateStore } from "../../../stores/hubUpdate";
@@ -5,7 +6,7 @@ import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, ConfirmDialog, InlineNotice, Loader, RadioGroup } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubUpdates.module.css";
-import { Code, FieldDim } from "./settingsField";
+import { FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hubUpdates.module.css", "root"),
@@ -23,6 +24,14 @@ function isChannel(value: string | undefined): value is UpdateChannel {
   return value === "release" || value === "snapshot";
 }
 
+function defaultChannel(buildChannel: string | undefined): UpdateChannel | null {
+  if (isChannel(buildChannel)) return buildChannel;
+  // A local build has no channel of its own; Release matches the hub's own
+  // default for an empty channel request.
+  if (buildChannel === "dev") return "release";
+  return null;
+}
+
 function displayBuild(version: string | undefined): string {
   if (version === undefined || version === "") return "unknown";
   const dirty = version.endsWith("-dirty");
@@ -30,11 +39,22 @@ function displayBuild(version: string | undefined): string {
   return sha.slice(0, 7) + (dirty ? "-dirty" : "");
 }
 
+function updateStatusText(check: UpdateCheckResponse, localBuild: boolean): string {
+  if (check.updateAvailable) {
+    return `Update available: ${check.channel} ${displayBuild(check.latestCommit)}, running ${displayBuild(check.currentVersion)}`;
+  }
+  if (localBuild && check.installAvailable) {
+    return `Local build at ${check.channel} ${displayBuild(check.latestCommit)}. Install the published build.`;
+  }
+  return `Up to date on ${check.channel} (${displayBuild(check.latestCommit)})`;
+}
+
 /**
  * Settings -> Hub -> Updates. Install and Restart are separate actions:
  * Install writes a verified artifact without touching the running process;
- * Restart execs the binary already on disk. A dev build has no Install
- * control, because its binary comes from an explicit local build.
+ * Restart execs the binary already on disk. A locally built hub shows the
+ * same controls; Install replaces its binary with the selected channel's
+ * published build.
  *
  * The check carries the on-disk build, the process incarnation, and whether
  * this hub supports restart. The host confirms a restart by comparing the
@@ -57,15 +77,16 @@ export function HubUpdates() {
   const [confirming, setConfirming] = useState(false);
 
   const buildChannel = hub?.buildChannel;
-  const isDev = buildChannel === "dev";
+  const localBuild = buildChannel === "dev";
   const connectionState = useConnectionStore((s) => s.state);
+  const seededChannel = defaultChannel(buildChannel);
 
   // Seed the selector from the running binary once the overview is here.
   useEffect(() => {
-    if (channel === null && isChannel(buildChannel)) {
-      hubUpdateStore.getState().setChannel(buildChannel);
+    if (channel === null && seededChannel !== null) {
+      hubUpdateStore.getState().setChannel(seededChannel);
     }
-  }, [channel, buildChannel]);
+  }, [channel, seededChannel]);
 
   // Check whenever a channel is selected (mount and every change), and when
   // the connection becomes ready again: the cached answer belongs to the
@@ -73,17 +94,6 @@ export function HubUpdates() {
   useEffect(() => {
     if (channel !== null && connectionState === "ready") void hubUpdateStore.getState().runCheck();
   }, [channel, connectionState]);
-
-  // Dev builds have no channel, but the check is still what reports the
-  // on-disk build and whether restart is available. Retry when the
-  // connection becomes ready after a failed check: a check that died with
-  // the socket leaves check null, and the dev UI would otherwise show
-  // neither Restart nor the failure.
-  useEffect(() => {
-    if (hub && buildChannel === "dev" && connectionState === "ready") {
-      void hubUpdateStore.getState().runCheck();
-    }
-  }, [hub, buildChannel, connectionState]);
 
   // A lost install response is reconciled once the socket is ready again.
   useEffect(() => {
@@ -176,20 +186,13 @@ export function HubUpdates() {
         </InlineNotice>
       )}
 
-      {isDev && (
+      {localBuild && (
         <p className={CLASS.status} data-testid="hub-update-dev-note">
-          <FieldDim>
-            Dev build. Rebuild with <Code>make build-hub</Code>, then restart.
-          </FieldDim>
+          <FieldDim>Local build. Install replaces it with the selected channel's published build.</FieldDim>
         </p>
       )}
-      {isDev && checkError !== null && (
-        <InlineNotice tone="danger" data-testid="hub-dev-check-error">
-          Couldn't read the hub's build: {checkError}
-        </InlineNotice>
-      )}
 
-      {!isDev && channel !== null && (
+      {channel !== null && (
         <>
           <RadioGroup
             label="Channel"
@@ -219,9 +222,7 @@ export function HubUpdates() {
               checkError === null &&
               channelError === null &&
               check !== null &&
-              (check.updateAvailable
-                ? `Update available: ${check.channel} ${displayBuild(check.latestCommit ?? "")}, running ${displayBuild(check.currentVersion)}`
-                : `Up to date on ${check.channel} (${displayBuild(check.latestCommit ?? "")})`)}
+              updateStatusText(check, localBuild)}
           </InlineNotice>
           {installing && <Loader label="Installing update" />}
           {installError !== null && <InlineNotice tone="danger">Install failed: {installError}</InlineNotice>}
@@ -253,36 +254,6 @@ export function HubUpdates() {
               </>
             )}
           </div>
-        </>
-      )}
-
-      {isDev && (
-        <>
-          <div className={CLASS.actions}>
-            <Button size="sm" onClick={() => void hubUpdateStore.getState().runCheck()} disabled={busy}>
-              Check again
-            </Button>
-            {restartSupported && (
-              <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
-                Restart hub
-              </Button>
-            )}
-          </div>
-          {restarting && (
-            <div data-testid="hub-dev-restarting">
-              <Loader label="Restarting hub" />
-            </div>
-          )}
-          {!restarting && restartTimedOut && (
-            <InlineNotice tone="danger" data-testid="hub-dev-restart-timeout">
-              The hub didn't come back within {RESTART_TIMEOUT_MS / 1000}s. Check its logs.
-            </InlineNotice>
-          )}
-          {restartError !== null && (
-            <InlineNotice tone="danger" data-testid="hub-dev-restart-error">
-              Restart failed: {restartError}
-            </InlineNotice>
-          )}
         </>
       )}
 

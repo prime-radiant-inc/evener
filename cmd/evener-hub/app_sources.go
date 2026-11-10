@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -31,7 +32,7 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	}
 	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
-		return nil, errors.New("source not found: local")
+		return nil, fmt.Errorf("%w: %s", appsource.ErrSourceNotFound, appwire.LocalSourceID)
 	}
 	if threadID == "" {
 		return source, nil
@@ -224,21 +225,44 @@ func (lookup deletionTargetLookup) fenceError(cfg hubcore.WebConfig, ref, thread
 // follows. Reading only the typed shape would let a real deletion be wrapped as
 // an unknown mutation outcome instead of reported as the deletion it is.
 func isTargetDeletedError(err error) bool {
+	data, ok := typedWireErrorData(err)
+	if !ok {
+		return false
+	}
+	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+}
+
+// isOlderPeerWindowRefusal reports whether a peer refused the window request
+// itself. A peer that knows the feature bit answers with the typed
+// window-unsupported error; a peer whose request decoder predates the window
+// fields refuses them as invalid params. Both mean the same thing here: this
+// peer cannot serve a window, so the controller may rebuild one from its
+// legacy pages.
+func isOlderPeerWindowRefusal(err error) bool {
+	wireErr, ok := wireErrorFromError(err)
+	return ok && wireErr.Code == appwire.CodeInvalidParams
+}
+
+// typedWireErrorData returns the error data carried by a wire error. The wire
+// client decodes Data as the typed appwire.ErrorData on some paths and as
+// map[string]any on others, so a shape that is not already typed is
+// re-marshaled rather than asserted.
+func typedWireErrorData(err error) (appwire.ErrorData, bool) {
 	wireErr, ok := wireErrorFromError(err)
 	if !ok || wireErr.Data == nil {
-		return false
+		return appwire.ErrorData{}, false
 	}
 	data, ok := wireErr.Data.(appwire.ErrorData)
 	if !ok {
 		raw, merr := json.Marshal(wireErr.Data)
 		if merr != nil {
-			return false
+			return appwire.ErrorData{}, false
 		}
 		if json.Unmarshal(raw, &data) != nil {
-			return false
+			return appwire.ErrorData{}, false
 		}
 	}
-	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+	return data, true
 }
 
 func deletionThreadID(ref, threadID string) string {
@@ -452,6 +476,16 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 			return ctx
 		}
 		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
+	case appwire.MethodEvenerJobsStop:
+		var request appwire.SessionStopRequest
+		if json.Unmarshal(message.Request.Params, &request) != nil {
+			return ctx
+		}
+		if request.Job != nil {
+			rawRef = request.Job.Ref
+		} else if request.OwnedDelegate != nil {
+			rawRef = request.OwnedDelegate.Ref
+		}
 	case appwire.MethodThreadFork, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet,
 		appwire.MethodThreadReasoningEffortSet, appwire.MethodThreadCompactStart,
 		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -70,6 +69,34 @@ func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cos
 	return costFor(cfg.Registry, entry.Meta.ProfileID, entry.Meta.Model)
 }
 
+// pastEntryReasoningFacts is the daemonless read's reasoning trio: the effort
+// level the session's saved Config persisted (SetReasoningEffort flushes
+// meta.json, and resume reads it back, so a cold read reporting it is the
+// same fact the resumed daemon would serve), plus the ladder and
+// supportsReasoning the session's own ProfileID/Model resolve to at facts
+// depth — the depth the live envelope's Profile.ReasoningEffortLevels and
+// SupportsReasoning already answer from, so both projections agree on the
+// ladder for the same row. A row the registry cannot resolve reports an
+// empty ladder and no support claim rather than a guess.
+func pastEntryReasoningFacts(cfg hubcore.WebConfig, entry hubcore.PastEntry) (effort string, levels []string, supportsReasoning bool) {
+	effort = entry.Meta.Config.ReasoningEffort
+	if cfg.Registry == nil {
+		return effort, nil, false
+	}
+	r := cfg.Registry.Get()
+	if r == nil {
+		return effort, nil, false
+	}
+	res, err := r.ResolveInstanceModelFacts(entry.Meta.ProfileID, entry.Meta.Model)
+	if err != nil {
+		return effort, nil, false
+	}
+	// The live profile answers SupportsReasoning with !Caps.ReasoningDisabled()
+	// (agent/provider/profile.go), so an unstated verdict is supported, not
+	// unsupported: an uncatalogued row on a custom gateway keeps its picker.
+	return effort, res.Caps.EffortValues, !res.Caps.ReasoningDisabled()
+}
+
 func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
@@ -94,6 +121,22 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, nil)
+}
+
+func unavailableThreadReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	sources *appsource.Registry,
+	params appwire.ThreadReadParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
+	if params.LiveOnly {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, false, err
+	}
 	var entry hubcore.PastEntry
 	var hasPast bool
 	if params.Subscribe {
@@ -141,7 +184,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 		entry, hasPast = pastEntryForRead(cfg, params)
 	}
 	if hasPast {
-		response, ok, err := pastEntryItemReadResponse(ctx, cfg, params, entry)
+		response, ok, err := pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
 		return response, ok, daemonlessReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -161,6 +204,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
+			thread = annotateThreadProject(thread)
 			thread = applyHubCapabilities(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
@@ -183,14 +227,60 @@ func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params a
 }
 
 func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
+	return pastThreadTurnsListOwned(ctx, cfg, params, nil)
+}
+
+func pastThreadTurnsListOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadTurnsListParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
 	entry, ok := pastEntryForRead(cfg, readParams)
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
+	}
+	if params.TurnWindow != nil {
+		loaded, _, err := resolveTranscriptWindowContinuation(ctx, params, itemLimit, func(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+			page, loadErr := pastEntryTurnWindowItems(ctx, entry, *selector, false)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			result := page.candidateResult()
+			result.History = page.history()
+			return transcriptWindowLoadedRange{Result: result, Thread: transcriptWindowThreadFromResult(result)}, nil
+		})
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+		candidates := loaded.Result
+		base := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir}
+		options := transcriptWindowOptionsFor(
+			candidates, params.ThreadWindowParams, itemLimit,
+			transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
+		)
+		options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+			return canonicalizeTranscriptItemCandidatesWith(base, candidates, func(thread appwire.Thread) appwire.Thread {
+				return stampItemPageTurns(cfg, entry, thread)
+			})
+		}
+		if configureWindow != nil {
+			configureWindow(&options)
+		}
+		configureTranscriptWindowResponseFit(&options, params)
+		packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+			stampPastTurnCosts(pastEntryCost(cfg, entry), response.Data)
+			return response, nil
+		}, options)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+		return candidates.History.StampPage(packed), true, nil
 	}
 	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {
@@ -209,19 +299,50 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 }
 
 func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	return pastThreadItemReadResponseOwned(ctx, cfg, params, nil)
+}
+
+func pastThreadItemReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadReadParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
-	return pastEntryItemReadResponse(ctx, cfg, params, entry)
+	return pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
 }
 
-func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
+func pastEntryItemReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadReadParams,
+	entry hubcore.PastEntry,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
 	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
+	if query := params.AnswerContinuation; query != nil {
+		verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
+		var snapshot appwire.SnapshotIdentity
+		err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+			var err error
+			verdict.Matches, snapshot, err = index.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+			return err
+		})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, true, err
+		}
+		return appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &snapshot, Authoritative: true, AnswerContinuation: &verdict}, true, nil
+	}
 	if !params.IncludeTurns {
 		return appwire.ThreadReadResponse{
 			Thread:            stampDerivedTotals(cfg, entry, thread),
@@ -229,21 +350,53 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 			BootGeneration:    appwire.DaemonlessBootGeneration,
 		}, true, nil
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	page, err := pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot, true)
+	var page pastItemPage
+	if params.TurnWindow != nil {
+		page, err = pastEntryTurnWindowItems(ctx, entry, *params.TurnWindow, true)
+	} else {
+		page, err = pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot, true)
+	}
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	packed, packErr := packThreadReadItemCandidates(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+	pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
+		if params.TurnWindow != nil {
+			options := transcriptWindowOptionsFor(
+				candidates, params.ThreadWindowParams, itemLimit,
+				transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
+			)
+			options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+				return canonicalizeTranscriptItemCandidatesWith(thread, candidates, func(candidateThread appwire.Thread) appwire.Thread {
+					return stampItemPageTurns(cfg, entry, candidateThread)
+				})
+			}
+			if configureWindow != nil {
+				configureWindow(&options)
+			}
+			configureTranscriptWindowResponseFit(&options, transcriptTurnsListParamsFromRead(params))
+			return packThreadReadWindowItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+				thread.Turns = response.Thread.Turns
+				stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)
+				thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
+				response.Thread = thread
+				response.LatestExecutionTurnID = page.LatestExecutionTurnID
+				return response, nil
+			}, options)
+		}
+		return packThreadReadItemCandidates(candidates, enrich, itemLimit)
+	}
+	packed, packErr := pack(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 		thread.Turns = response.Thread.Turns
 		thread = stampItemPageTurns(cfg, entry, thread)
 		thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
 		response.Thread = thread
+		response.LatestExecutionTurnID = page.LatestExecutionTurnID
 		return response, nil
-	}, itemLimit)
+	})
 	if packErr != nil {
 		return appwire.ThreadReadResponse{}, true, packErr
 	}
@@ -266,10 +419,12 @@ var pastTranscriptIndexes = transcriptindex.NewCacheWithOpen(transcriptindex.Def
 // pastItemPage is one window of a daemonless session's history, read from its
 // transcript index.
 type pastItemPage struct {
-	Candidates []appitempaging.TranscriptItemCandidate
-	Identity   appitempaging.CursorIdentity
-	Exhausted  bool
-	Snapshot   appwire.SnapshotIdentity
+	Candidates            []appitempaging.TranscriptItemCandidate
+	TurnIDs               []string
+	LatestExecutionTurnID string
+	Identity              appitempaging.CursorIdentity
+	Exhausted             bool
+	Snapshot              appwire.SnapshotIdentity
 	// Changes is what changed since the client's held snapshot, when the
 	// index could answer for it; nil sends the window as a full replacement.
 	Changes *transcriptindex.Changes
@@ -290,6 +445,7 @@ type pastDerivedTotals struct {
 func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
 	return transcriptItemCandidateResult{
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: p.Candidates},
+		TurnIDs:    p.TurnIDs,
 		Identity:   p.Identity,
 		Exhausted:  p.Exhausted,
 	}
@@ -303,10 +459,11 @@ func (p pastItemPage) history() appsource.HistoryIdentity {
 
 func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Window) pastItemPage {
 	return pastItemPage{
-		Candidates: window.Candidates,
-		Identity:   pastCursorIdentity(entry, window.Incarnation),
-		Exhausted:  !window.HasOlder,
-		Snapshot:   appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
+		Candidates:            window.Candidates,
+		LatestExecutionTurnID: window.LatestExecutionTurnID,
+		Identity:              pastCursorIdentity(entry, window.Incarnation),
+		Exhausted:             !window.HasOlder,
+		Snapshot:              appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
 	}
 }
 
@@ -435,6 +592,36 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 			page.Derived = pastIndexDerivedTotals(index, entry)
 		}
 		page.Changes = changes
+		return nil
+	})
+	return page, err
+}
+
+func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, selector appwire.ThreadTurnWindow, includeTotals bool) (pastItemPage, error) {
+	var page pastItemPage
+	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		resolved, err := index.ResolveTurnWindow(selector)
+		if err != nil {
+			if missing, ok := errors.AsType[*transcriptindex.TurnNotFoundError](err); ok {
+				return appwire.TranscriptTurnNotFound(missing.TurnID, missing.Frontier.OldestTurnID, missing.Frontier.NewestTurnID, missing.Frontier.TurnCount)
+			}
+			return err
+		}
+		latest, err := index.Latest(1)
+		if err != nil {
+			return err
+		}
+		page = pastItemPage{
+			Candidates:            resolved.Candidates,
+			TurnIDs:               resolved.TurnIDs,
+			LatestExecutionTurnID: latest.LatestExecutionTurnID,
+			Identity:              pastCursorIdentity(entry, resolved.Incarnation),
+			Exhausted:             true,
+			Snapshot:              appwire.SnapshotIdentity{Incarnation: resolved.Incarnation, Length: resolved.Length},
+		}
+		if includeTotals {
+			page.Derived = pastIndexDerivedTotals(index, entry)
+		}
 		return nil
 	})
 	return page, err
@@ -637,8 +824,17 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Ref == "" {
 		live.Evener.Ref = past.Evener.Ref
 	}
+	if live.Evener.ParentRef == "" {
+		live.Evener.ParentRef = past.Evener.ParentRef
+	}
+	if live.Evener.Kind == "" {
+		live.Evener.Kind = past.Evener.Kind
+	}
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
+	}
+	if live.Evener.ForkLabel == "" {
+		live.Evener.ForkLabel = past.Evener.ForkLabel
 	}
 	if live.Evener.Tasks == nil {
 		live.Evener.Tasks = past.Evener.Tasks
@@ -775,25 +971,18 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
 }
 
-// resumeRequiredActiveFlag is the ThreadStatus.ActiveFlags entry that says a
-// session's own daemon is holding it behind recovery.
-//
-// NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_thread_projection.go's
-// appCapabilities path, internal/appprojector's threadStatus), and appwire
-// defines no constant for it, so this spelling has one side. It is named here
-// rather than left as a literal so the hub's own uses cannot be spelled apart,
-// and so a producer added later has one name to match.
-//
-// The hub-side recovery signal this complements — the one that does have a
-// producer — is cfg.ResumeLocks.RecoveryState, which hubForkRecoveryFencedNow
-// consults beside this predicate.
-const resumeRequiredActiveFlag = "resumeRequired"
-
+// hubForkRecoveryFenced reads the recovery signals that have a producer: the
+// hub's own Evener.ResumeRequired stamp and the restart-required status a
+// daemon publishes when it cannot serve. ThreadStatus.ActiveFlags carries no
+// recovery entry from any daemon in the tree, so it is not a fence.
 func hubForkRecoveryFenced(thread appwire.Thread) bool {
-	return thread.Evener.ResumeRequired ||
-		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
-		slices.Contains(thread.Status.ActiveFlags, resumeRequiredActiveFlag)
+	return thread.Evener.ResumeRequired || hubForkStatusFenced(thread.Status)
+}
+
+// hubForkStatusFenced is the status half of the fence, shared with callers
+// that hold a status without a whole thread.
+func hubForkStatusFenced(status appwire.ThreadStatus) bool {
+	return status.Type == appwire.ThreadStatusRestartRequired
 }
 
 // hubForkRecoveryFencedNow fences the alias the client is holding against
@@ -821,13 +1010,13 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 // signal stays its own shared predicate, hubForkLiveDelegateFenced, because an
 // explicit thread/resume cannot clear it and so it carries its own refusal.
 //
-// A daemon's recovery flags reach the hub only through the roster: the local
-// source builds its listed threads from roster entries that carry no status
-// flags, and a live thread/read is answered by the daemon itself, whose response
-// has never carried them either. Asking the roster is what keeps this projection
-// and fork admission on one answer. owner is the roster's answer for threadID,
-// resolved by the caller so a pass that needs it more than once asks the roster
-// once; the predicate itself never probes a daemon.
+// A daemon's recovery status is on the wire thread whenever the projection
+// reads one, but a fork also touches identities that are not in that
+// projection: the alias a client named and the session it resolves to. The
+// roster is the hub's one answer for those identities, so admission asks it
+// the same question the projection does. owner is the roster's answer for
+// threadID, resolved by the caller so a pass that needs it more than once asks
+// the roster once; the predicate itself never probes a daemon.
 func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) bool {
 	if owner.statusFenced() {
 		return true
@@ -841,14 +1030,68 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 
 // applyHubCapabilities stamps the capability bits the hub owns, not the
 // daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
-// (hubPagesBefore), plus the session's retained artifacts directory. Every
-// path that serves a thread applies it, so a session reads the same from
-// thread/list and thread/read (#1840).
+// (hubPagesBefore), plus the session's retained artifacts and scratch
+// directories. Every path that serves a thread applies it, so a session reads
+// the same from thread/list and thread/read (#1840).
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
+	thread = stampHubThreadKind(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	thread.Evener.Capabilities.VoiceArm = hubVoiceArm(cfg, thread)
 	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
+	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
 	return thread
+}
+
+// stampHubThreadKind names a live fork child or subagent from the hub's own
+// session metadata when the serving daemon's projection omits the kind. A
+// fork child's transcript opens with a verbatim copy of the parent's prefix,
+// so clients need the kind to avoid charging that inherited spend to the
+// child. Saved reads already name it (pastEntryThread); this is the live-path
+// counterpart, applied at the one seam every hub-served read passes through.
+func stampHubThreadKind(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	if thread.Evener.Kind != "" || cfg.Past == nil {
+		return thread
+	}
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
+		return thread
+	}
+	entry, ok := cfg.Past.Find(ref.ThreadID)
+	if !ok {
+		return thread
+	}
+	switch {
+	case entry.Meta.IsSubagent:
+		thread.Evener.Kind = "subagent"
+	case entry.Meta.ParentSessionID != "":
+		thread.Evener.Kind = "fork"
+	}
+	return thread
+}
+
+// hubVoiceArm is the hub's answer to ThreadCapabilities.VoiceArm. It combines
+// the admission Arm applies to a session with this hub's OpenAI voice instance,
+// so every read carries the verdict a client would otherwise have to ask for
+// with a separate preflight. The provider list is only consulted once a session
+// passes admission, so the saved rows of a list pay one predicate walk.
+func hubVoiceArm(cfg hubcore.WebConfig, thread appwire.Thread) bool {
+	return voiceSessionRefusal(thread.Evener, thread.Evener.InstanceID) == "" && hubHasOpenAIVoice(cfg)
+}
+
+// hubHasOpenAIVoice reports whether this hub has an OpenAI voice instance that
+// can reach the Realtime endpoint.
+func hubHasOpenAIVoice(cfg hubcore.WebConfig) bool {
+	if cfg.Registry == nil {
+		return false
+	}
+	r := cfg.Registry.Get()
+	if r == nil {
+		return false
+	}
+	defaultName, _, _ := r.DefaultInstance()
+	_, err := pickOpenAIVoiceProvider(defaultName, r.Instances())
+	return err == nil
 }
 
 // hubArtifactsDir is the session's retained artifacts directory, announced on
@@ -859,6 +1102,15 @@ func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.
 // this hub and stays empty.
 func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
 	return sessionArtifactsRoot(context.Background(), cfg, ref)
+}
+
+// hubScratchDir is the session's named scratch directory, announced on the
+// thread beside ArtifactsDir. It answers from sessionScratchRoot
+// (scratch_serve.go), the same resolver the doc routes serve from, so the
+// advertised directory and the served one cannot drift apart. A remote or
+// unparseable ref names nothing on this hub and stays empty.
+func hubScratchDir(cfg hubcore.WebConfig, ref string) string {
+	return sessionScratchRoot(context.Background(), cfg, ref)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
@@ -1131,6 +1383,16 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	// single-thread read paths recover the figure from the transcript instead —
 	// see stampDerivedTotals.
 	cumulativeUsage := evenerUsageFromCumulative(entry.Meta.CumulativeUsage)
+	// The reasoning trio mirrors the live envelope (cmd/evener/serve.go's
+	// liveThreadEnvelopeSource.ReasoningInfo): the current effort is the
+	// session's own persisted setting (Config.ReasoningEffort, written by
+	// Session.SetReasoningEffort and read back on resume), and the ladder plus
+	// supportsReasoning resolve at facts depth from the row the session's own
+	// ProfileID/Model name — the same no-credential read costFor prices through
+	// (spec §10.1), so the web footer's effort control renders beside the model
+	// picker on a cold session too. A row the registry cannot resolve stays
+	// honestly absent: no fabricated ladder, no invented capability.
+	reasoningEffort, reasoningEffortLevels, supportsReasoning := pastEntryReasoningFacts(cfg, entry)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -1149,19 +1411,24 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		// the hub advertises forkFromTurn on these sessions, so the wire must carry
 		// one. AskPending stays false: a past session has no live ask to be pending.
 		Evener: appwire.EvenerThread{
-			Ref:          ref,
-			InstanceID:   entry.Meta.ID,
-			ParentRef:    parentRef,
-			Kind:         kind,
-			Profile:      entry.Meta.ProfileID,
-			Goal:         persistedGoalState(entry.Meta.Goal),
-			HumanNote:    entry.Meta.HumanNote,
-			AgentNote:    agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
-			SessionURLs:  persistedSessionURLs(entry.Meta.SessionURLs),
-			Capabilities: pastThreadCapabilities(),
-			WorkMillis:   entry.Meta.WorkMillis,
-			Usage:        cumulativeUsage,
-			Cost:         appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
+			Ref:                   ref,
+			InstanceID:            entry.Meta.ID,
+			Manager:               entry.Meta.Manager,
+			ParentRef:             parentRef,
+			Kind:                  kind,
+			ForkLabel:             entry.Meta.ForkLabel,
+			Profile:               entry.Meta.ProfileID,
+			Goal:                  persistedGoalState(entry.Meta.Goal),
+			HumanNote:             entry.Meta.HumanNote,
+			AgentNote:             agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
+			SessionURLs:           persistedSessionURLs(entry.Meta.SessionURLs),
+			Capabilities:          pastThreadCapabilities(),
+			WorkMillis:            entry.Meta.WorkMillis,
+			Usage:                 cumulativeUsage,
+			Cost:                  appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
+			ReasoningEffort:       reasoningEffort,
+			ReasoningEffortLevels: reasoningEffortLevels,
+			SupportsReasoning:     supportsReasoning,
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},
@@ -1190,13 +1457,20 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			thread.Evener.ArtifactsDir = dir
 		}
 	}
+	// The scratch directory is the same kind of place, and the saved entry's
+	// own meta already carries what resolves it, so an unavailable daemon
+	// changes nothing either.
+	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
+	if thread.Evener.ScratchDir == "" {
+		thread.Evener.ScratchDir = scratchDirFromMeta(entry.Meta)
+	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
 	return thread, nil
 }
 
 func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
-	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
+	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true, projects: true})
 }
 
 // A live merge requests only missing fields. In particular, reconstructing
@@ -1206,6 +1480,12 @@ type pastEntryThreadProjection struct {
 	turns       bool
 	tasks       bool
 	diagnostics bool
+	// projects asks for the hub's canonical project identity. It is an axis
+	// beside the others because only a caller that hands the thread to a client
+	// can use it: the live merge (mergePastThreadForRead) never copies
+	// ProjectID/ProjectPath, so resolving it there was work whose answer was
+	// discarded (#4692).
+	projects bool
 }
 
 func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, projection pastEntryThreadProjection) (appwire.Thread, error) {
@@ -1247,9 +1527,9 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		}
 		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
-	annotated := []appwire.Thread{thread}
-	annotateThreadProjects(annotated)
-	thread = annotated[0]
+	if projection.projects {
+		thread = annotateThreadProject(thread)
+	}
 	return thread, nil
 }
 
@@ -1265,7 +1545,7 @@ func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]ag
 	if schema.ValidateSessionID(rootID) != nil {
 		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
 	}
-	path := filepath.Join(entry.StateDir, "sessions", rootID, "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(entry.StateDir, rootID)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil

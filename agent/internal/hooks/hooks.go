@@ -16,37 +16,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// Input is the JSON payload piped to command hooks via stdin.
-type Input struct {
-	SessionID     string         `json:"session_id"`
-	CWD           string         `json:"cwd"`
-	HookEventName string         `json:"hook_event_name"`
-	ToolName      string         `json:"tool_name,omitempty"`
-	ToolInput     map[string]any `json:"tool_input,omitempty"`
-	Message       string         `json:"message,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-
-	// Official Claude-compatible fields (claude-compatible-subset).
-	// These are additive; hooks may read them when present.
-	TranscriptPath string `json:"transcript_path,omitempty"`
-	PermissionMode string `json:"permission_mode,omitempty"`
-	ToolUseID      string `json:"tool_use_id,omitempty"`
-	ToolResponse   string `json:"tool_response,omitempty"`
-	AgentID        string `json:"agent_id,omitempty"`
-	AgentType      string `json:"agent_type,omitempty"`
-	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
-	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
-	Effort string `json:"effort,omitempty"`
-	// Prompt is the official Claude UserPromptSubmit field. It carries the same
-	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
-	Prompt string `json:"prompt,omitempty"`
-
-	// Legacy Evener aliases retained during migration.
-	// tool_result = tool_response; user_prompt = prompt.
-	ToolResult string `json:"tool_result,omitempty"`
-	UserPrompt string `json:"user_prompt,omitempty"`
-}
-
 // hookResult captures the output of a hook execution.
 type hookResult struct {
 	Stdout   string
@@ -187,14 +156,15 @@ func newRunner(client promptHookClient, model string) *Runner {
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
-// excluded. Events with zero runnable hooks are omitted. This backs the AppWire
+// excluded. An event without a matcher (see eventUsesMatcher) consults only its
+// handler type. Events with zero runnable hooks are omitted. This backs the AppWire
 // "active supported hooks" count.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
 		n := 0
 		for _, hook := range hooks {
-			if hookCanRun(hook) {
+			if hookCanRun(event, hook) {
 				n++
 			}
 		}
@@ -217,17 +187,44 @@ var supportedHandlerTypes = map[string]bool{
 // type is supported and its matcher compiles. It mirrors the two places that
 // silently skip a hook — runHook (unsupported type) and MatchHooks (invalid
 // matcher) — so diagnostics do not advertise a hook that can never run.
-func hookCanRun(hook plugin.RegisteredHook) bool {
+// An event without a matcher (see eventUsesMatcher) never probes one: any value,
+// valid regex or not, still fires.
+func hookCanRun(event plugin.HookEvent, hook plugin.RegisteredHook) bool {
 	if !supportedHandlerTypes[hook.Type] {
 		return false
+	}
+	if !eventUsesMatcher(event) {
+		return true
 	}
 	_, err := matchTarget(hook.Matcher, "")
 	return err == nil
 }
 
+// eventUsesMatcher reports whether dispatch consults an event's configured
+// matcher. Claude's matcher table lists Stop, UserPromptSubmit and PostToolBatch
+// without one, and the runners for those events execute every registered hook
+// rather than matching a target that does not exist. Validate and hookCanRun
+// must ask the same question dispatch does: a matcher that is never consulted
+// can neither skip a hook nor make it "will not fire".
+func eventUsesMatcher(event plugin.HookEvent) bool {
+	switch event {
+	case plugin.HookStop, plugin.HookUserPromptSubmit, plugin.HookPostToolBatch:
+		return false
+	default:
+		return true
+	}
+}
+
 // Add registers hooks for an event.
 func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
+}
+
+// Has reports whether any hook is registered for the event, so a dispatch site
+// can skip building an input and parsing a round of tool calls that no hook will
+// read.
+func (r *Runner) Has(event plugin.HookEvent) bool {
+	return len(r.hooks[event]) > 0
 }
 
 // InvalidMatcherDiagnostic describes a registered hook whose matcher is not a
@@ -250,6 +247,12 @@ func (r *Runner) Validate() []InvalidMatcherDiagnostic {
 	var diags []InvalidMatcherDiagnostic
 	for event, hooks := range r.hooks {
 		for _, hook := range hooks {
+			// An event without a matcher never consults its matcher, so an
+			// uncompilable one does not skip the hook and "will not fire" would
+			// be false.
+			if !eventUsesMatcher(event) {
+				continue
+			}
 			if _, err := matchTarget(hook.Matcher, ""); err != nil {
 				diags = append(diags, InvalidMatcherDiagnostic{
 					PluginName: hook.PluginName,
@@ -297,6 +300,12 @@ func invalidMatcherWarning(pluginName, event, matcher string) string {
 
 // RunResult contains the aggregated output from running hooks.
 type RunResult struct {
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it, or that the event's runner treated a hook output as blocking
+	// the action (PostToolBatch on exit 2 or decision:"block"). StopReason
+	// carries the resulting reason, reduced to one line.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -311,6 +320,10 @@ type RunResult struct {
 type PreToolUseResult struct {
 	Denied      bool
 	DenyMessage string
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it; StopReason carries its stopReason verbatim.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	UpdatedInput      map[string]any
@@ -326,6 +339,10 @@ type PreToolUseResult struct {
 type StopResult struct {
 	Blocked     bool
 	BlockReason string
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it; StopReason carries its stopReason verbatim.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -338,14 +355,17 @@ type StopResult struct {
 
 // parsedHookOutput is the structured interpretation of a hook's stdout and exit code.
 type parsedHookOutput struct {
+	// Continue is the top-level JSON continue field (default true), and
+	// StopReason is its stopReason partner. applyStopped consumes both.
 	Continue          bool
+	StopReason        string
 	SuppressOutput    bool
 	SystemMessage     string
 	AdditionalContext string
 	TerminalSequence  string
 	UpdatedInput      map[string]any
 	// Blocked is the top-level JSON decision:"block" signal. It is consumed by
-	// Stop/SubagentStop (runStopEvent); PreToolUse uses PermissionDecision instead
+	// Stop/SubagentStop (runStopEventFor); PreToolUse uses PermissionDecision instead
 	// (the deprecated block->deny mapping sets PermissionDecision, not this flag).
 	Blocked     bool
 	BlockReason string
@@ -367,12 +387,42 @@ type parsedHookOutput struct {
 	UserFacing bool
 }
 
+// decodeHookUpdatedInput leaves ordinary envelope decoding and fallback in
+// charge. Only a successfully decoded, opted-in update leaves the default view.
+func decodeHookUpdatedInput(raw []byte, unmarshalArgs func([]byte, *map[string]any) error) ([]byte, map[string]any) {
+	if unmarshalArgs == nil {
+		return raw, nil
+	}
+	var envelope, fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return raw, nil
+	}
+	if err := json.Unmarshal(envelope["hookSpecificOutput"], &fields); err != nil {
+		return raw, nil
+	}
+	var updated map[string]any
+	if err := unmarshalArgs(fields["updatedInput"], &updated); err != nil || updated == nil {
+		return raw, nil
+	}
+	delete(fields, "updatedInput")
+	hookRaw, err := json.Marshal(fields)
+	if err != nil {
+		return raw, nil
+	}
+	envelope["hookSpecificOutput"] = hookRaw
+	ordinaryRaw, err := json.Marshal(envelope)
+	if err != nil {
+		return raw, nil
+	}
+	return ordinaryRaw, updated
+}
+
 // parseHookOutput interprets hook stdout and exit code into structured output.
 // For command hooks, JSON is parsed only when exitCode == 0; on exit 2 the
 // caller should pass the stderr content as stdout and JSON is not attempted.
 // This function is event-agnostic: blocking decisions are made by the callers
 // that consult exitBehavior(event).BlockOnExit2.
-func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
+func parseHookOutput(stdout string, exitCode int, unmarshalArgs func([]byte, *map[string]any) error) parsedHookOutput {
 	result := parsedHookOutput{Continue: true, RawExitCode: exitCode}
 
 	if exitCode != 0 {
@@ -387,16 +437,23 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	}
 
 	// Try JSON parse
+	ordinaryRaw, updated := decodeHookUpdatedInput([]byte(stdout), unmarshalArgs)
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+	if err := json.Unmarshal(ordinaryRaw, &parsed); err != nil {
 		// Plain text: treat as system message
 		result.SystemMessage = stdout
 		return result
+	}
+	if updated != nil {
+		parsed["hookSpecificOutput"].(map[string]any)["updatedInput"] = updated
 	}
 
 	// Extract standard fields
 	if b, ok := parsed["continue"].(bool); ok {
 		result.Continue = b
+	}
+	if s, ok := parsed["stopReason"].(string); ok {
+		result.StopReason = s
 	}
 	if b, ok := parsed["suppressOutput"].(bool); ok {
 		result.SuppressOutput = b
@@ -470,8 +527,8 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	}
 
 	if err != nil {
-		if event == plugin.HookSessionStart {
-			return sessionStartFailureWarning(hook, err.Error(), -1)
+		if summarizesHookFailure(event) {
+			return hookFailureWarning(event, hook, err.Error(), -1)
 		}
 		return parsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
 	}
@@ -483,30 +540,43 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	if hr.ExitCode != 0 && strings.TrimSpace(hr.Stderr) != "" {
 		output = hr.Stderr
 	}
-	// A SessionStart hook's output is the session's FIRST steering input, so a
-	// FAILED one must not deliver its raw shell stderr to the model — the model
-	// cannot act on a permission denial or a broken script, and a wall of stderr as
-	// opening context is worse than no context. Summarize it into one operator-
-	// facing warning line instead. Every other event keeps the Claude-compatible
-	// contract that a non-zero hook's stderr reaches the model (07 §Exit-code
-	// semantics), which is how a tool-event hook corrects the model.
-	if event == plugin.HookSessionStart && hr.ExitCode != 0 {
-		return sessionStartFailureWarning(hook, output, hr.ExitCode)
+	// A SessionStart/SubagentStart hook's output is the session's (or child's)
+	// FIRST steering input, so a FAILED one must not deliver its raw shell stderr
+	// to the model — the model cannot act on a permission denial or a broken
+	// script, and a wall of stderr as opening context is worse than no context.
+	// Summarize it into one operator-facing warning line instead. Every other
+	// event keeps the Claude-compatible contract that a non-zero hook's stderr
+	// reaches the model (07 §Exit-code semantics), which is how a tool-event hook
+	// corrects the model.
+	if summarizesHookFailure(event) && hr.ExitCode != 0 {
+		return hookFailureWarning(event, hook, output, hr.ExitCode)
 	}
-	return parseHookOutput(output, hr.ExitCode)
+	return parseHookOutput(output, hr.ExitCode, input.UnmarshalToolArguments)
 }
 
-// maxHookFailureDetail bounds the excerpt of a failed SessionStart hook's output
-// carried on the warning line, so the summary stays one readable line.
+// maxHookFailureDetail bounds the excerpt of a failed hook's output carried on
+// the warning line, so the summary stays one readable line.
 const maxHookFailureDetail = 160
 
-// sessionStartFailureWarning renders a failed SessionStart hook as ONE user-facing
-// warning line: the event, the hook's configured identity, and its exit code,
-// optionally followed by the first line of its output so the operator can see WHY
-// without the model ever seeing it. exitCode < 0 means the hook never produced one
-// (a spawn failure or a timeout kill), in which case detail is the error text.
-func sessionStartFailureWarning(hook plugin.RegisteredHook, detail string, exitCode int) parsedHookOutput {
-	line := strings.Join(append([]string{"SessionStart hook"}, hookIdentityParts(hook)...), " ")
+// summarizesHookFailure reports whether a FAILED hook's output belongs to the
+// operator rather than the model. SessionStart's output is the session's first
+// steering input, and SubagentStart's is the child's; neither can act on shell
+// stderr, so both arrive as one summarized warning line. PostCompact's stdout is
+// discarded by contract, so a failure is all it has to show — and it must name
+// the hook, because a raw "context deadline exceeded" says nothing about which
+// plugin timed out.
+func summarizesHookFailure(event plugin.HookEvent) bool {
+	return event == plugin.HookSessionStart || event == plugin.HookSubagentStart ||
+		event == plugin.HookPostCompact
+}
+
+// hookFailureWarning renders a failed hook as ONE user-facing warning line: the
+// event, the hook's configured identity, and its exit code, optionally followed
+// by the first line of its output so the operator can see WHY without the model
+// ever seeing it. exitCode < 0 means the hook never produced one (a spawn
+// failure or a timeout kill), in which case detail is the error text.
+func hookFailureWarning(event plugin.HookEvent, hook plugin.RegisteredHook, detail string, exitCode int) parsedHookOutput {
+	line := strings.Join(append([]string{string(event) + " hook"}, hookIdentityParts(hook)...), " ")
 	if exitCode < 0 {
 		line += " failed to run"
 	} else {
@@ -557,14 +627,48 @@ func firstLine(text string) string {
 	return ""
 }
 
-// runAll executes all matched hooks in parallel and returns their parsed outputs.
-func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input Input) []parsedHookOutput {
-	claudeName := toolname.EvenerToClaude(toolName)
-	matched := r.MatchHooks(event, claudeName)
+// matchesToolName reports whether an event's matcher target is a tool name.
+// Only these targets are translated from evener's name to Claude's: every other
+// event matches on a value with no evener spelling — an agent type, a trigger, a
+// reason — so translating it would rewrite, say, a subagent named "shell" to
+// "Bash" and skip the hook aimed at it.
+func matchesToolName(event plugin.HookEvent) bool {
+	switch event {
+	case plugin.HookPreToolUse, plugin.HookPostToolUse, plugin.HookPostToolUseFailure, plugin.HookPostToolBatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// runAll matches the event's hooks against target and executes them.
+func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, target string, input Input) []parsedHookOutput {
+	if matchesToolName(event) {
+		target = toolname.EvenerToClaude(target)
+	}
+	return r.runMatched(ctx, event, r.MatchHooks(event, target), input)
+}
+
+// runEvent dispatches an event's registered hooks, consulting the matcher only
+// when the event has one. It is the single dispatch decision behind
+// eventUsesMatcher, so the runner cannot disagree with Validate and
+// SupportedSummary about which events match.
+func (r *Runner) runEvent(ctx context.Context, event plugin.HookEvent, target string, input Input) []parsedHookOutput {
+	if !eventUsesMatcher(event) {
+		return r.runMatched(ctx, event, r.hooks[event], input)
+	}
+	return r.runAll(ctx, event, target, input)
+}
+
+// runMatched executes the given hooks in parallel and returns their parsed
+// outputs. Matching is the caller's job: runAll matches through MatchHooks, and
+// runEvent passes the event's registered hooks directly for an event Claude
+// documents without a matcher. Both share the HOOK_START/HOOK_END
+// announcements, so they fire either way.
+func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched []plugin.RegisteredHook, input Input) []parsedHookOutput {
 	if len(matched) == 0 {
 		return nil
 	}
-
 	results := make([]parsedHookOutput, len(matched))
 	var wg sync.WaitGroup
 	wg.Add(len(matched))
@@ -600,15 +704,27 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
 	return results
 }
 
+// collectTerminalSequences gathers the non-empty terminalSequence each output
+// carried, in dispatch order. Every collector that reports one uses this, so a
+// sequence cannot be dropped by one event's aggregation and delivered by
+// another's.
+func collectTerminalSequences(outputs []parsedHookOutput) []string {
+	var seqs []string
+	for _, o := range outputs {
+		if o.TerminalSequence != "" {
+			seqs = append(seqs, o.TerminalSequence)
+		}
+	}
+	return seqs
+}
+
 // RunPreToolUse dispatches PreToolUse hooks and aggregates results.
 // Any deny from any hook means denied.
 func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResult {
 	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
-	var result PreToolUseResult
+	result := PreToolUseResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
+		applyStopped(plugin.HookPreToolUse, o, &result.Stopped, &result.StopReason)
 		denied := false
 		switch o.PermissionDecision {
 		case "deny":
@@ -667,24 +783,49 @@ func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 	return collectSystemMessages(plugin.HookPostToolUse, outputs)
 }
 
+// RunPostToolBatch dispatches PostToolBatch hooks. Claude documents no matcher
+// for this event, so a configured matcher never narrows it: the registered
+// hooks go straight to execution rather than through MatchHooks.
+func (r *Runner) RunPostToolBatch(ctx context.Context, input Input) RunResult {
+	outputs := r.runEvent(ctx, plugin.HookPostToolBatch, "", input)
+	return collectPostToolBatchMessages(outputs)
+}
+
+// RunPostToolUseFailure dispatches PostToolUseFailure hooks and aggregates
+// system messages. Claude fires this event instead of PostToolUse when the
+// tool ran and failed; a call refused before execution fires neither.
+func (r *Runner) RunPostToolUseFailure(ctx context.Context, input Input) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPostToolUseFailure, input.ToolName, input)
+	return collectSystemMessages(plugin.HookPostToolUseFailure, outputs)
+}
+
 // RunStop dispatches Stop hooks and aggregates results.
 // Any block from any hook means blocked.
 func (r *Runner) RunStop(ctx context.Context, input Input) StopResult {
-	return r.runStopEvent(ctx, plugin.HookStop, input)
+	return r.runStopEventFor(ctx, plugin.HookStop, input, "")
 }
 
-// RunSubagentStop dispatches SubagentStop hooks and aggregates results.
-func (r *Runner) RunSubagentStop(ctx context.Context, input Input) StopResult {
-	return r.runStopEvent(ctx, plugin.HookSubagentStop, input)
+// RunSubagentStopFor dispatches SubagentStop hooks for one child run and matches
+// them on the child's agent type — the same value SubagentStart matches on, so a
+// hook aimed at a plugin agent hears both ends of its run. The dispatch site
+// passes the already-normalized type (subagentHookAgentType owns the never-empty
+// fallback) in both input.AgentType and the target.
+func (r *Runner) RunSubagentStopFor(ctx context.Context, input Input, agentType string) StopResult {
+	return r.runStopEventFor(ctx, plugin.HookSubagentStop, input, strings.TrimSpace(agentType))
 }
 
-func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input Input) StopResult {
-	outputs := r.runAll(ctx, event, input.ToolName, input)
-	var result StopResult
+// runStopEventFor dispatches a blocking event's hooks and aggregates their
+// results. Stop has no matcher in Claude — its table lists the event with
+// "(none)" — so a configured matcher never narrows it, exactly as
+// RunPostToolBatch treats its own matcher: eventUsesMatcher sends the
+// registered hooks straight to execution. (At a turn boundary there is no tool
+// name to match against, so consulting a matcher would silently skip every hook
+// whose matcher was not "*"/empty.) SubagentStop targets the child's agent type.
+func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, input Input, target string) StopResult {
+	outputs := r.runEvent(ctx, event, target, input)
+	result := StopResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
+		applyStopped(event, o, &result.Stopped, &result.StopReason)
 		if o.Blocked || (exitBehavior(event).BlockOnExit2 && o.RawExitCode == 2) {
 			result.Blocked = true
 			if result.BlockReason == "" {
@@ -696,9 +837,11 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 	return result
 }
 
-// RunUserPromptSubmit dispatches UserPromptSubmit hooks.
+// RunUserPromptSubmit dispatches UserPromptSubmit hooks. Claude's table lists the
+// event without a matcher, so a configured matcher never narrows it: adding one
+// is silently ignored, and the registered hooks go straight to execution.
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
+	outputs := r.runEvent(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(plugin.HookUserPromptSubmit, outputs)
 }
 
@@ -712,21 +855,77 @@ func (r *Runner) RunSessionStartFor(ctx context.Context, input Input, kind plugi
 	return collectSystemMessages(plugin.HookSessionStart, outputs)
 }
 
-// RunSessionEnd dispatches SessionEnd hooks. No return value needed.
-func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
-	r.runAll(ctx, plugin.HookSessionEnd, "", input)
+// RunSubagentStartFor dispatches SubagentStart hooks for a specific child agent
+// type. The agent type is both the matcher target and the input's agent_type:
+// a plugin agent is named by its catalog key ("plugin:agent"), and an unnamed
+// delegate reports "subagent". The never-empty fallback belongs to
+// subagentHookAgentType, so the dispatch site passes an already-normalized value.
+func (r *Runner) RunSubagentStartFor(ctx context.Context, input Input, agentType string) RunResult {
+	target := strings.TrimSpace(agentType)
+	outputs := r.runAll(ctx, plugin.HookSubagentStart, target, input)
+	return collectSystemMessages(plugin.HookSubagentStart, outputs)
 }
 
-// RunPreCompact dispatches PreCompact hooks.
-func (r *Runner) RunPreCompact(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookPreCompact, "", input)
+// RunSessionEndFor dispatches SessionEnd hooks and matches them on the Claude
+// session end reason ("clear", "resume", "logout", "prompt_input_exit", "other").
+// The target is the same value the input's reason carries, so a hook reading
+// either sees one answer. A matcher that names no reason is unreachable here,
+// which is what Claude's "reason" matcher promises.
+func (r *Runner) RunSessionEndFor(ctx context.Context, input Input, reason string) {
+	r.runAll(ctx, plugin.HookSessionEnd, strings.TrimSpace(reason), input)
+}
+
+// RunPreCompactFor dispatches PreCompact hooks and matches them on the fold's
+// trigger ("manual" for /compact, "auto" for every other publisher), the same
+// value the input carries. There is deliberately no target-less wrapper: an
+// empty trigger matches every hook, so one would let a caller bypass the
+// manual/auto contract silently.
+func (r *Runner) RunPreCompactFor(ctx context.Context, input Input, trigger string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPreCompact, trigger, input)
 	return collectSystemMessages(plugin.HookPreCompact, outputs)
 }
 
-// RunNotification dispatches Notification hooks.
+// RunPostCompactFor dispatches PostCompact hooks and matches them on the fold's
+// trigger. Claude gives this event no decision control: systemMessage,
+// additionalContext, and continue:false are all discarded, so a hook's stdout
+// never reaches the model or the operator. A FAILED hook is the exception the
+// event's contract keeps: its summarized warning line (event, hook identity,
+// exit code, first output line — see summarizesHookFailure) is shown to the
+// user only. terminalSequence is still parsed by the shared output parser and
+// carried for a delivery site PostCompact does not yet have.
+func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPostCompact, trigger, input)
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
+	for _, o := range outputs {
+		if o.IsError {
+			if o.SystemMessage != "" {
+				result.UserMessages = append(result.UserMessages, o.SystemMessage)
+			}
+		}
+	}
+	return result
+}
+
+// RunNotification dispatches Notification hooks and matches them on the
+// notification type the input carries (Claude's "notification_type"). Evener
+// emits one kind, a diagnostic warning, so the type is "warning"; the runner
+// reads it from the input for the same reason the tool events read tool_name
+// from theirs — the value a hook receives and the value its matcher targets are
+// one field and cannot disagree.
 func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookNotification, "", input)
+	outputs := r.runAll(ctx, plugin.HookNotification, input.NotificationType, input)
 	return collectSystemMessages(plugin.HookNotification, outputs)
+}
+
+// RunStopFailureFor dispatches StopFailure hooks and matches them on the Claude
+// error name (rate_limit, server_error, unknown, ...). The event is
+// observability only: each hook's output, its exit code, and continue:false are
+// discarded, so the result never reports a stop and carries no model context or
+// user messages. terminalSequence is still parsed by the shared output parser;
+// it is carried for a delivery site StopFailure does not yet have.
+func (r *Runner) RunStopFailureFor(ctx context.Context, input Input, errorName string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookStopFailure, errorName, input)
+	return RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 }
 
 // routeOutput places one parsed hook output into the model/user buckets for the
@@ -755,15 +954,72 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 	}
 }
 
+// applyStopped records a hook's continue:false on an event that honors it. A
+// stop takes precedence over the event-specific decision its caller aggregates,
+// so every aggregating runner calls this before routing; the dispatch site,
+// once wired, delivers StopReason as a user-visible warning and ends the
+// action. The first non-empty reason wins, matching Claude's single-stop
+// semantics.
+//
+// The reason is stopReason, or the JSON reason field when a hook set only that
+// (spec §4.4: the block message comes from JSON reason/stopReason). It is
+// reduced to its first line and bounded, because it becomes a user warning and
+// a steering turn verbatim — a multi-line shell stderr must not dump a wall
+// into the transcript.
+func applyStopped(event plugin.HookEvent, o parsedHookOutput, stopped *bool, stopReason *string) {
+	if o.Continue || !HonorsContinue(event) {
+		return
+	}
+	*stopped = true
+	if *stopReason == "" {
+		reason := o.StopReason
+		if reason == "" {
+			reason = o.BlockReason
+		}
+		*stopReason = firstLine(reason)
+	}
+}
+
 // collectSystemMessages aggregates system messages, additional context, and terminal
 // sequences from parsed outputs, and routes into ModelContext/UserMessages buckets.
 func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) RunResult {
-	var result RunResult
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
+		applyStopped(event, o, &result.Stopped, &result.StopReason)
 		routeOutput(event, o, &result.ModelContext, &result.UserMessages)
+	}
+	return result
+}
+
+// collectPostToolBatchMessages aggregates PostToolBatch output. It is
+// collectSystemMessages plus the event's block contract: exit 2 or a top-level
+// decision:"block" stops the round loop. The reason is the JSON reason, else the
+// exit-2 stderr, and it becomes StopReason. A blocking output's error stderr is
+// that reason rather than model context, so it is not routed twice; every other
+// field still routes normally.
+func collectPostToolBatchMessages(outputs []parsedHookOutput) RunResult {
+	blockOnExit2 := exitBehavior(plugin.HookPostToolBatch).BlockOnExit2
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
+	for _, o := range outputs {
+		applyStopped(plugin.HookPostToolBatch, o, &result.Stopped, &result.StopReason)
+		blocked := o.Blocked || (blockOnExit2 && o.RawExitCode == 2)
+		if blocked {
+			result.Stopped = true
+			if result.StopReason == "" {
+				// A JSON block carries its reason; exit 2 carries its stderr,
+				// which parseHookOutput parked in SystemMessage. Either becomes
+				// a user warning and a steering turn downstream, so it is
+				// reduced to its first line and bounded here.
+				if o.BlockReason != "" {
+					result.StopReason = firstLine(o.BlockReason)
+				} else if o.IsError {
+					result.StopReason = firstLine(o.SystemMessage)
+				}
+			}
+		}
+		if !blocked || !o.IsError {
+			routeOutput(plugin.HookPostToolBatch, o, &result.ModelContext, &result.UserMessages)
+		}
 	}
 	return result
 }

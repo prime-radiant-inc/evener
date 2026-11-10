@@ -46,9 +46,7 @@ func TestLaunchPreviewRPCMissingCWDCleansProbe(t *testing.T) {
 				defer hub.Close()
 				client := dialHubRPC(t, hub)
 				defer client.Close()
-				if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-					t.Fatal(err)
-				}
+				mustInitializeHubClient(t, client)
 				target := filepath.Join(ancestor, "new-parent", "new-session")
 				var response any
 				err := client.Request(context.Background(), method, map[string]string{"cwd": target}, &response)

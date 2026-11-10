@@ -18,6 +18,7 @@ type GatewayArchitecture struct {
 type GatewayCapabilities struct {
 	Vision    *bool `json:"vision"`
 	Reasoning *bool `json:"reasoning"`
+	Tools     *bool `json:"tools"`
 }
 
 // GatewayClientCompat is the per-model compatibility block some gateways
@@ -42,13 +43,19 @@ type GatewayPiCompat struct {
 }
 
 // ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
-// caps: the reasoning verdict and effort ladder, then the wire-shaping dialect
-// and output-limit spelling the gateway states for that model. Both /models
+// caps: the reasoning verdict and effort ladder, the tools verdict, then the
+// wire-shaping dialect and output-limit spelling the gateway states for that
+// model. Both /models
 // readers share it so they cannot disagree about the precedence — the gateway
 // knows per model what a listing's provider-wide parameters only infer, and a
 // fact it does not state leaves what the caller inferred in place.
 func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
 	applyGatewayReasoning(caps, capsFacts, compat)
+	// The per-model verdict wins over the provider-wide inference; silence
+	// leaves it alone.
+	if capsFacts.Tools != nil {
+		caps.Tools = capsFacts.Tools
+	}
 	if pi := compat.Pi; pi != nil {
 		// A value outside the registry's vocabulary is dropped rather than
 		// carried: an unknown dialect writes no reasoning control at all, and

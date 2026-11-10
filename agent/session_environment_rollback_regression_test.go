@@ -422,7 +422,7 @@ func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
 	}
 	// Turn completion returns an unincorporated claim even when the first
 	// rollback failed. The original input remains available for a later retry.
-	if sess.QueueDepth() != 1 || len(snapshot.InputQueue) != 1 {
+	if sess.queueDepth() != 1 || len(snapshot.InputQueue) != 1 {
 		t.Fatal("turn completion did not restore the claimed queue entry")
 	}
 	entry := snapshot.InputQueue[0]
@@ -460,7 +460,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 	if _, pending := snapshot.PendingExecutions[mutationID]; pending {
 		t.Fatal("returned claim still has a pending execution")
 	}
-	if sess.QueueDepth() != 1 || len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != mutationID {
+	if sess.queueDepth() != 1 || len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != mutationID {
 		t.Fatalf("returned queue=%+v, want original runnable mutation", snapshot.InputQueue)
 	}
 	if wakes.Load() == 0 {
@@ -472,7 +472,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 		t.Fatalf("queued retry ran=%v error=%v, want accepted retry", ran, err)
 	}
 	snapshot = sess.clientMutations.snapshot()
-	if sess.QueueDepth() != 0 || snapshot.ActiveTurnID != "" || snapshot.Journal[mutationID].StableTurnID != stableTurnID {
+	if sess.queueDepth() != 0 || snapshot.ActiveTurnID != "" || snapshot.Journal[mutationID].StableTurnID != stableTurnID {
 		t.Fatal("retry did not settle the original queued identity")
 	}
 	if count := countEnvironmentTurns(sess); count != 1 {
@@ -894,7 +894,7 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want the queued message never to have run", got)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 	// The message this refusal kept is work still pending, so the session is not
@@ -1034,7 +1034,7 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("queued message against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 }
@@ -1084,7 +1084,7 @@ func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	poisonSessionTranscript(t, sess)
-	if got := sess.QueueDepth(); got != 0 {
+	if got := sess.queueDepth(); got != 0 {
 		t.Fatalf("setup: queue depth = %d, want nothing queued", got)
 	}
 
@@ -1103,7 +1103,7 @@ func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	poisonSessionTranscript(t, sess)
 	sess.SteerFromUser("waits for the restart")
-	if got := sess.QueueDepth(); got != 0 {
+	if got := sess.queueDepth(); got != 0 {
 		t.Fatalf("setup: queue depth = %d, want the steering to be the only work", got)
 	}
 
@@ -1150,7 +1150,7 @@ func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
 	if result != "" || ran || err != nil {
 		t.Fatalf("wake over parked queued work = (%q, %v, %v), want a quiet stand-down", result, ran, err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the stand-down = %d, want the parked message untouched", got)
 	}
 	if !sess.clientMutations.queueHeld() {
@@ -1257,7 +1257,7 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("interrupted turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 }

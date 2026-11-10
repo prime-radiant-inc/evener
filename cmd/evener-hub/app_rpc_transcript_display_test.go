@@ -50,9 +50,7 @@ func TestHubRPCTranscriptDisplayPatchBroadcastsCanonicalValue(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
@@ -96,9 +94,7 @@ func TestHubRPCTranscriptDisplayPatchPostApplyErrorStillBroadcasts(t *testing.T)
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
@@ -172,9 +168,7 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	defaults := appwire.TranscriptDisplayShippedDefaults()
@@ -328,9 +322,7 @@ func TestHubRPCTranscriptDisplayMalformedStateUsesFallbackAndRemainsReadOnly(t *
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	var got appwire.TranscriptDisplayDefaults
 	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayGet, appwire.EmptyParams{}, &got); err != nil {

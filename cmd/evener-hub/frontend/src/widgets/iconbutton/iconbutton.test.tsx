@@ -5,6 +5,8 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp } from "../../styles/cssBlock";
 import { SHOW_DELAY_MS } from "../hovercard/useFloatingLabel";
 import { IconButton, type IconButtonProps } from "./index";
 
@@ -260,8 +262,10 @@ test("without a badge the button carries no count", () => {
 // width/height, so the desktop squares above stay the desktop rule.
 test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(mobile, "iconbutton.module.css must have a max-width:899px media block").not.toBeNull();
+  const mobile = css.match(
+    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`),
+  );
+  expect(mobile, "iconbutton.module.css must have a mobile media block").not.toBeNull();
   for (const size of ["squareXs", "squareSm", "squareMd"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
     expect(rule, `mobile media block must override .${size}`).not.toBeNull();

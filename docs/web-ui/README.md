@@ -4,9 +4,6 @@ Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
-- **[Comic Chat](../product/comic-chat.md)**: whole-conversation presentation
-  selected in Verbosity, literal panels and inline child readers, bundled Comic
-  Sans, and existing workspace connection and composer/recovery ownership.
 - **[Message recovery](../product/message-recovery.md)** — local queue Edit/Remove,
   durable composer ownership, offline recovery and Stop races.
 - **[Session activity](../product/session-activity.md)** — ownership of scoped
@@ -16,7 +13,7 @@ Design documentation for the web hub (`cmd/evener-hub`).
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.
   It records behavioral consequences, tradeoffs and review questions, then tokens,
-  the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
+  the editorial system (cool neutral paper/ink, serif reading, flat structure), inline tool/delegate
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
@@ -86,6 +83,9 @@ Settings groups controls by task:
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
+Session defaults and the New session form include a **Commit provenance**
+control for recording the Evener version, model, host and session ID in commit
+messages the model writes.
 Phone density opens Appearance; desktop or mobile layout opens Conversation
 display; desktop notifications or quiet opens Notifications. Pairing still opens Devices.
 Appearance is the default. Explicit unknown or retired `general`, `display`
@@ -103,6 +103,11 @@ inspection failures do not prevent editing local overrides.
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
 Use the shared default clears only the selected layout's browser-local override.
+Thinking traces render as unfoldable disclosures at every level — collapsed to
+their placeholder grammar when the Reasoning content switch is off, with the
+Chat preset staying conversation-only — and "Thinking open by default" controls
+whether they start open, broken-turn thoughts included, whose neutral label
+always remains the summary.
 Scope and the local-override action appear before the editor. Editing a shared
 default keeps both browser-local layout choices. **Use the shared default** clears
 only the selected layout's browser-local override, without writing shared defaults.
@@ -295,10 +300,24 @@ committed height becomes end clearance inside the virtual list, so the last
 transcript row can scroll clear of both controls and stays readable. A dormant or
 empty transcript floats the same control above the composer in its own dock.
 
+Each stack slot mounts only while its control would actually render — the New
+Content pill exactly when its own gate would show it, Next only while its
+visibility predicate holds — and the stack, with the end clearance it reserves,
+disappears entirely while neither would. Nothing floats over the transcript's
+bottom edge, and no clearance band pads its end, until there is something to
+float.
+
 The control hides while an IME composition is in progress, while a question or
 approval is pending in the focused conversation, or while the command palette or
 another blocking modal owns interaction. It returns when that state ends. Editor
-focus and a saved draft never hide it.
+focus and a saved draft never hide it. Because that suppression unmounts the
+control rather than leaving it mounted-but-hidden, the mounting gate owns the
+cancellation the control performed on its own visible-to-hidden transition: a
+needs-you navigation armed before suppression began is dropped, so a delayed
+reply cannot navigate the reader's pane away mid-edit. Losing focus unmounts the
+control without that cancellation — the shared controller's reader guard drops a
+deferred navigation when the focused reader changes, so nothing armed survives a
+pane the reader has left.
 
 Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
 command share the shell's one needs-you controller. The palette renders each row
@@ -324,7 +343,7 @@ details through the shared Details renderer and adds no footer counter.
 `/status` opens About and keeps it open on repeated use. Its completion reads
 “Show session details in Overview” and remains searchable by details and info.
 Saved standalone Details panes remain available. `/tasks` retains its existing
-standalone pane toggle. Desktop footer counters still focus their owning pane
+standalone pane toggle. Footer counters still focus their owning pane
 before selecting their category. A checked desktop session-menu Overview action
 closes that session's sidebar; the rail action opens the requested session.
 

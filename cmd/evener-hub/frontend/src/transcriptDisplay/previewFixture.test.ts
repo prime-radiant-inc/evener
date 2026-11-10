@@ -143,6 +143,7 @@ describe("deterministic transcript preview fixture", () => {
         toolCalls: false,
         reasoning: true,
         expandByDefault: true,
+        thinkingOpenByDefault: true,
       },
       { systemEvents: true, promptEvents: true, hookExits: "successful" },
     );

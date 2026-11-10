@@ -7,12 +7,12 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./shell/workspace";
+import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
-import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "./stores/transcriptDisplay";
+import { resetTranscriptDisplayStoreForTests } from "./stores/transcriptDisplay";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -228,24 +228,6 @@ test.each(["/comic", "/comic/s/remote%3Ahost%2Fsession"])(
     expect(allCreatedClients.size).toBe(1);
   },
 );
-
-test("presentation changes preserve the workspace, URL and connection owner", async () => {
-  await act(async () => {
-    render(<App />);
-  });
-  const panes = workspaceStore.getState().panes;
-  const client = connectionStore.getState().client;
-  const url = window.location.href;
-  expect(panes).toHaveLength(1);
-  expect(client).toBeInstanceOf(AppwireClient);
-  for (const mode of ["comic", "standard"] as const) {
-    await act(async () => transcriptDisplayStore.getState().setPresentation("desktop", mode));
-    expect(workspaceStore.getState().panes).toBe(panes);
-    expect(window.location.href).toBe(url);
-    expect(connectionStore.getState().client).toBe(client);
-    expect(allCreatedClients.size).toBe(1);
-  }
-});
 
 test("initiates and settles the welcome navigation load without an error", async () => {
   const client = new FakeClient("ready");

@@ -28,10 +28,7 @@ func newRelayTestServer(t *testing.T, source appsource.Source) *httptest.Server 
 	t.Helper()
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	t.Cleanup(hub.Close)
 	return hub
@@ -207,7 +204,7 @@ func TestHubRelayCanonicalEndsWithItsServer(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -264,13 +261,11 @@ func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	idleDeletes := make(chan string, 2)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
 		RelayHooks: hubcore.RelayLifecycleHooks{
 			AfterIdleDelete: func(threadID string) { idleDeletes <- threadID },
 		},
-	}, sources)
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
@@ -279,9 +274,7 @@ func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -389,9 +382,7 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) 
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -468,9 +459,7 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -548,11 +537,9 @@ func TestHubRelayPublicationGuardTimeoutBroadcastsResync(t *testing.T) {
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	locks := hubcore.NewResumeLocks()
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-		ResumeLocks:  locks,
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		ResumeLocks: locks,
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -671,9 +658,7 @@ func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -744,6 +729,7 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 type subscribedHub struct {
 	runDir string
 	roster *hubcore.Roster
+	wire   *httptest.Server
 	client *appwire.Client
 }
 
@@ -751,6 +737,13 @@ type subscribedHub struct {
 // hub over a roster of it (with identity, if given, standing in for the
 // host's process inspection), and subscribes a client to sessionID.
 func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity) subscribedHub {
+	t.Helper()
+	return openSubscribedHubWithSetup(ctx, t, entry, sessionID, identity, nil)
+}
+
+// openSubscribedHubWithSetup is openSubscribedHub with a hook that runs on the
+// hub's AppWire server before it serves a connection.
+func openSubscribedHubWithSetup(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity, setup func(*appserver.Server)) subscribedHub {
 	t.Helper()
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, entry)
@@ -763,7 +756,10 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 		t.Fatalf("the daemon %q was not confirmed into the roster", sessionID)
 	}
 	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	server := newHubAppServer(testWebConfig(t, hubcore.WebConfig{Roster: roster}), sources)
+	if setup != nil {
+		setup(server)
+	}
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
@@ -774,7 +770,7 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
-	return subscribedHub{runDir: runDir, roster: roster, client: client}
+	return subscribedHub{runDir: runDir, roster: roster, wire: wire, client: client}
 }
 
 // The daemon-gone announcement is addressed to every subscriber of the
@@ -819,9 +815,7 @@ func TestHubRelayDaemonGoneReachesARouteBoundDuringTheFanOut(t *testing.T) {
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -904,10 +898,7 @@ func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *te
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	// The gate fires right before each subscription registers; armed for the
 	// child's read only, it holds that read in the publish-to-subscribe
 	// window while the departure is announced.
@@ -926,9 +917,7 @@ func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *te
 	child := dialHubRPC(t, hub)
 	defer child.Close()
 	for _, client := range []*appwire.Client{root, child} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("root ThreadRead: %v", err)
@@ -959,6 +948,277 @@ func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *te
 		t.Fatalf("child ThreadRead: %v", err)
 	}
 	awaitRelayResync(t, child.Notifications(), "gap-child", childRef, 5*time.Second)
+}
+
+// A departure announced while a second client is joining the same route must
+// reach that client once its subscription lands. Counting a route served on
+// its subscriber count alone hands the announcement to the incumbent and
+// loses it for the subscriber still binding.
+func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) {
+	const sessionID = "same-route"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	// The retained delivery proves the real daemon's departure reached the
+	// fan-out while the joining read still held its command owner, which is
+	// the ordering this test needs before it releases that read.
+	departureRetained := make(chan struct{})
+	var retainedOnce sync.Once
+	pendingObservation := func(n int) {
+		if n >= 1 {
+			retainedOnce.Do(func() { close(departureRetained) })
+		}
+	}
+	t.Cleanup(installAtomicObserver(&observeHubRelayPending, pendingObservation))
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
+	})
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	select {
+	case <-departureRetained:
+	case <-ctx.Done():
+		t.Fatal("the daemon-gone delivery never reached the relay fan-out")
+	}
+	gateRelease()
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	// The joining subscriber hears the departure after its own response, and
+	// the subscriber that was already on the route still hears it.
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
+}
+
+// parkDaemonGoneRetention parks the fan-out at its first retention decision
+// until release is called, after reporting that the decision was reached.
+func parkDaemonGoneRetention(ctx context.Context, t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(installAtomicObserver(&observeHubRelayDaemonGoneRetention, func() {
+		once.Do(func() {
+			close(reached)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		})
+	}))
+	return reached, sync.OnceFunc(func() { close(release) })
+}
+
+// The fan-out decides retention after its per-route target pass. A joining
+// read that releases between the route's command check and that retention
+// decision must not let the delivery be dropped for the whole route: the
+// deferral itself has to keep the delivery pending.
+func TestHubRelayDaemonGoneRetainsDeferredRouteAfterJoiningReadReleases(t *testing.T) {
+	const sessionID = "release-before-retention"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	t.Cleanup(func() { observeHubRelay = previousObserveRelay })
+
+	// Park the fan-out after it deferred the joining route and before it
+	// reads retention, then release the read's command owner while parked.
+	retentionReached, releaseRetention := parkDaemonGoneRetention(ctx, t)
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
+	})
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitActivityRelaySignal(ctx, t, retentionReached, "fan-out did not defer the joining route")
+	gateRelease()
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(rootRef) == 0
+	}, "joining read did not release its command owner")
+	releaseRetention()
+	// Both the incumbent and the released joining subscriber still hear the
+	// departure once the deferred route is served.
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+}
+
+// A route whose first subscriber is still binding has no incumbent to hear a
+// departure early. The pass sees no subscriber and the read's command owner,
+// and the read releases before retention is decided, so routesPending() alone
+// is already false at that decision: only the route's own deferral keeps the
+// delivery pending for the joiner. A second route with no subscriber and no
+// read in flight is closed: skipping it must not defer, or the delivery stayed
+// pending to hand a later first subscriber a stale resync.
+func TestHubRelayDaemonGoneRetainsRouteAwaitingItsFirstSubscriber(t *testing.T) {
+	const (
+		rootRef   = "local:first-subscriber-root"
+		childRef  = "local:first-subscriber-child"
+		closedRef = "local:first-subscriber-closed"
+	)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	previousIdleInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousIdleInterval })
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	t.Cleanup(func() { observeHubRelay = previousObserveRelay })
+
+	var retained atomic.Int64
+	t.Cleanup(installAtomicObserver(&observeHubRelayPending, func(n int) {
+		retained.Store(int64(n))
+	}))
+
+	// Park the fan-out after it deferred the child route and before it reads
+	// retention, then release the child's read while parked.
+	retentionReached, releaseRetention := parkDaemonGoneRetention(ctx, t)
+
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
+	gateArmed, gateEntered, gateRelease := installRelayProgressGate(ctx, appServer)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	// Bind a child route, then drop its only subscriber. The route survives
+	// with no subscriber and no read in flight, the closed shape this test
+	// needs beside the route whose first subscriber is still binding.
+	if _, err := child.ThreadRead(ctx, appwire.ThreadReadParams{Ref: closedRef, Subscribe: true}); err != nil {
+		t.Fatalf("closed route ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: closedRef}); err != nil {
+		t.Fatalf("closed route ThreadUnsubscribe: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return appServer.SubscriberCount(closedRef) == 0 && relays.relayCommandCount(closedRef) == 0
+	}, "closed route did not drain its subscriber and command owner")
+	gateArmed.Store(true)
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "child read did not reach the subscription gate")
+
+	// The child route has no incumbent: this pass must defer on the read's
+	// command owner alone, with no subscriber count to justify it.
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+	}
+	awaitActivityRelaySignal(ctx, t, retentionReached, "fan-out did not reach the retention decision")
+
+	gateRelease()
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(childRef) == 0
+	}, "child read did not release its command owner")
+	releaseRetention()
+	awaitRelayResync(t, child.Notifications(), "first-subscriber-child", childRef, 10*time.Second)
+	// The closed route kept nobody waiting for the departure, so the delivery
+	// is complete and released rather than parked until an unrelated route
+	// change.
+	settleCtx, settleCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer settleCancel()
+	awaitActivityRelayCondition(settleCtx, t, func() bool {
+		return retained.Load() == 0
+	}, "daemon-gone delivery stayed pending for a route with no read in flight")
 }
 
 // A legacy rendezvous entry names no session; the probe resolves one and the
@@ -1021,10 +1281,7 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -1178,10 +1435,7 @@ func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotPrepare(t *te
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
@@ -1521,9 +1775,7 @@ func TestHubRelayIdleRetirementYieldsToSubscriptionAtCaptureBoundary(t *testing.
 	idleEntered := make(chan struct{})
 	releaseIdle := make(chan struct{})
 	var idleOnce sync.Once
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
 		RelayHooks: hubcore.RelayLifecycleHooks{
 			IdleExit: func(string) {
 				idleOnce.Do(func() {
@@ -1532,14 +1784,12 @@ func TestHubRelayIdleRetirementYieldsToSubscriptionAtCaptureBoundary(t *testing.
 				})
 			},
 		},
-	}, sources)
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
 	initial := dialHubRPC(t, hub)
-	if _, err := initial.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initial Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, initial)
 	if _, err := initial.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}); err != nil {
 		t.Fatalf("initial ThreadRead: %v", err)
 	}
@@ -1559,9 +1809,7 @@ func TestHubRelayIdleRetirementYieldsToSubscriptionAtCaptureBoundary(t *testing.
 	})
 	rejoin := dialHubRPC(t, hub)
 	defer rejoin.Close()
-	if _, err := rejoin.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("rejoin Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, rejoin)
 	rejoinResult := make(chan error, 1)
 	go func() {
 		_, err := rejoin.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true})
@@ -1805,7 +2053,7 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	oldFanoutLookedUp := make(chan struct{})
 	releaseOldFanout := make(chan struct{})
 	var parkOnce sync.Once
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg := testWebConfig(t, hubcore.WebConfig{})
 	cfg.RelayHooks.BeforeCanonicalPublish = func(_ string, notification appwire.Notification) {
 		var params appwire.OverlayDeltaParams
 		if json.Unmarshal(notification.Params, &params) != nil || params.Delta != "stale old publication" {
@@ -1960,9 +2208,8 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	resolveMu.Unlock()
 	drainWait := make(chan struct{})
 	var drainOnce sync.Once
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { drainOnce.Do(func() { close(drainWait) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { drainOnce.Do(func() { close(drainWait) }) })
+	t.Cleanup(restoreWait)
 	readCtx, cancelRead := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 	go func() {
@@ -2065,9 +2312,8 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 	resolveMu.Lock()
 	resolved = canonicalNew
 	resolveMu.Unlock()
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { panic("route drain observer panic") }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { panic("route drain observer panic") })
+	t.Cleanup(restoreWait)
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }()
@@ -2077,7 +2323,7 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 		close(releasePublication)
 		t.Fatal("replacement route callback did not re-panic")
 	}
-	observeHubRelayWait = previousWait
+	restoreWait()
 	if got := relays.relayCommandCount(relayKey); got != 0 {
 		close(releasePublication)
 		t.Fatalf("hub command ownership leaked after route callback panic: %d", got)
@@ -2260,9 +2506,8 @@ func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) 
 	<-secondEntered
 	waitEntered := make(chan struct{})
 	var waitOnce sync.Once
-	previous := observeHubRelayWait
-	observeHubRelayWait = func() { waitOnce.Do(func() { close(waitEntered) }) }
-	t.Cleanup(func() { observeHubRelayWait = previous })
+	restoreWait := installObserveHubRelayWait(func() { waitOnce.Do(func() { close(waitEntered) }) })
+	t.Cleanup(restoreWait)
 	unknownAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: []byte(`{"ref":"local:foreign"}`)},
@@ -2542,7 +2787,7 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -2554,9 +2799,8 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	resolveMu.Unlock()
 	replacementResult := make(chan error, 1)
 	deliveryPending := make(chan struct{})
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { close(deliveryPending) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { close(deliveryPending) })
+	t.Cleanup(restoreWait)
 	go func() {
 		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 			Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
@@ -2693,7 +2937,7 @@ func TestHubRelayRemapDoesNotStealSiblingRouteCollision(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	sibling := dialHubRPC(t, hub)
@@ -2701,9 +2945,7 @@ func TestHubRelayRemapDoesNotStealSiblingRouteCollision(t *testing.T) {
 	remap := dialHubRPC(t, hub)
 	defer remap.Close()
 	for _, client := range []*appwire.Client{sibling, remap} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	if _, err := sibling.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: siblingRef, Subscribe: true}); err != nil {
 		t.Fatalf("sibling ThreadRead: %v", err)
@@ -2975,12 +3217,10 @@ func TestHubAtomicRejoinExcludesDeletionAtHandoffPrepareBoundary(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot:  t.TempDir(),
-		Past:          hubcore.NewPastIndex(""),
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
 		DeletionStore: store,
 		ResumeLocks:   resumeLocks,
-	}, sources)
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -3026,12 +3266,10 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot:  t.TempDir(),
-		Past:          hubcore.NewPastIndex(""),
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
 		DeletionStore: store,
 		ResumeLocks:   hubcore.NewResumeLocks(),
-	}, sources)
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -3100,12 +3338,10 @@ func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	locks := hubcore.NewResumeLocks()
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot:  t.TempDir(),
-		Past:          hubcore.NewPastIndex(""),
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
 		DeletionStore: store,
 		ResumeLocks:   locks,
-	}, sources)
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -3502,7 +3738,7 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
@@ -3518,14 +3754,13 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	parked := make(chan struct{})
 	resumeListener := make(chan struct{})
 	var parkOnce sync.Once
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() {
+	restoreWait := installObserveHubRelayWait(func() {
 		parkOnce.Do(func() {
 			close(parked)
 			<-resumeListener
 		})
-	}
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	})
+	t.Cleanup(restoreWait)
 
 	replacementResult := make(chan error, 1)
 	go func() {

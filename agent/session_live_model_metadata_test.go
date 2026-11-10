@@ -126,7 +126,7 @@ func TestNewSessionAppliesRegistryModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want the registry's 1000000", got)
 	}
-	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+	if got := sess.contextMetrics().Window; got != 1_000_000 {
 		t.Fatalf("context manager window via ContextMetrics = %d, want 1000000", got)
 	}
 }
@@ -142,10 +142,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 		}},
 	}, adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
 	if err := sess.SetModel("gpt-5.5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
@@ -157,7 +154,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want the registry's 1000000", got)
 	}
-	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+	if got := sess.contextMetrics().Window; got != 1_000_000 {
 		t.Fatalf("context manager window via ContextMetrics = %d, want 1000000", got)
 	}
 }
@@ -173,10 +170,7 @@ func TestSessionSetModelListsExactlyOnce(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
 	// Discard the init-time listing; count only the ones SetModel triggers.
 	adapter.listCalls = 0

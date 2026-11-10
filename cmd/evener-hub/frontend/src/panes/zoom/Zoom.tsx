@@ -8,11 +8,11 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
-import { useIsMobile } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
+import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
@@ -122,6 +122,10 @@ function ScopeConversation({
       // autofocuses its composer — the user taps in, or the pane's own
       // focus plumbing acts.
       focused: false,
+      // CascadeColumn renders this scope's activity controls below the
+      // conversation footer, so the composer's phone row adds no second
+      // set of chips beside the status chrome.
+      ownsActivityCounts: true,
       // A resumed conversation replaces its path entry in place; a cascade
       // column has no route of its own to navigate. The seat declares the
       // fallback session menu so the conversation's own gate can render it in
@@ -230,7 +234,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   );
   const params = pane?.params as SessionZoomParams | undefined;
   const { snapshot } = useSessionActivity(params?.ref ?? null);
-  const mobile = useIsMobile();
+  const mobile = useTranscriptDisplayStore((state) => state.viewport === "mobile");
   const reducedMotion = useReducedMotion();
   const track = useRef<HTMLDivElement>(null);
   const userTransition = params !== undefined && hasCascadeUserTransition(params);

@@ -23,9 +23,10 @@ type queuedInputDrainContextKey struct{}
 type queuedClientMutationContextKey struct{}
 
 type queuedClientMutationIdentity struct {
-	ClientMutationID string
-	StableTurnID     string
-	QueueEntryID     string
+	VoicePresentation *appwire.VoicePresentationContext
+	ClientMutationID  string
+	StableTurnID      string
+	QueueEntryID      string
 	// SteeringCarrier marks the synthetic entry claimSteeringCarrierInput
 	// builds for pending user steering: ClientMutationID is the steer's,
 	// StableTurnID the id it reserved, and there is no content of its own.
@@ -65,10 +66,11 @@ func (s *Session) announceClaimedInput(announce func(), giveBack func() error) e
 // queued input, for a caller that holds the input rather than the context.
 func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
 	return queuedClientMutationIdentity{
-		ClientMutationID: queued.ClientMutationID,
-		StableTurnID:     queued.StableTurnID,
-		QueueEntryID:     queued.ID,
-		SteeringCarrier:  queued.SteeringCarrier,
+		VoicePresentation: appwire.CloneVoicePresentation(queued.VoicePresentation),
+		ClientMutationID:  queued.ClientMutationID,
+		StableTurnID:      queued.StableTurnID,
+		QueueEntryID:      queued.ID,
+		SteeringCarrier:   queued.SteeringCarrier,
 	}
 }
 
@@ -110,8 +112,10 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // watch origin (nil for human/system-authored steering) so consuming the
 // message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Text   string            `json:"text,omitempty"`
-	Images []ImageAttachment `json:"images,omitempty"`
+	VoicePresentation *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	Actor             schema.SessionActor               `json:"actor,omitzero"`
+	Text              string                            `json:"text,omitempty"`
+	Images            []ImageAttachment                 `json:"images,omitempty"`
 	// SkillNames carries the canonical skill identities a durable client
 	// steering input selected. Identities only, never bodies: the complete
 	// instructions load from the recorded sources at consumption.
@@ -213,17 +217,17 @@ func (s *Session) Steer(msg string) error {
 	return err
 }
 
-// SteerKind queues a text-only steering message naming what it is
+// steerKind queues a text-only steering message naming what it is
 // (events.SteeringKind*). Prefer it over Steer at every daemon injection site:
 // the kind is what a reader's label is built from, and only the site knows it.
-func (s *Session) SteerKind(msg, kind string) error {
+func (s *Session) steerKind(msg, kind string) error {
 	_, err := s.trySteerEnqueue(msg, nil, nil, "", kind)
 	return err
 }
 
-// SteerTaskCompletion queues tasks-done steering with its blocking delegate
+// steerTaskCompletion queues tasks-done steering with its blocking delegate
 // dependencies available as typed data as well as rendered model context.
-func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) error {
+func (s *Session) steerTaskCompletion(msg string, blockingDelegateIDs []string) error {
 	completion := taskCompletionSteeringData(blockingDelegateIDs)
 	_, err := s.trySteerMessage(steeringMessage{
 		Text:           msg,
@@ -265,11 +269,11 @@ func (s *Session) trySteer(msg string) (bool, error) {
 	return s.trySteerWithImages(msg, nil)
 }
 
-// SteerWithProvenance queues a text-only steering message carrying the causal
+// steerWithProvenance queues a text-only steering message carrying the causal
 // watch provenance that produced it (nil for human/system-authored steering).
 // kind names what was injected (events.SteeringKind*), "" when the caller did
 // not say.
-func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal, kind string) error {
+func (s *Session) steerWithProvenance(msg string, p *provenance.Causal, kind string) error {
 	_, err := s.trySteerWithProvenance(msg, p, kind)
 	return err
 }
@@ -315,7 +319,7 @@ func (s *Session) trySteerMessage(entry steeringMessage) (bool, error) {
 	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
 }
 
-// steerKindForFold is SteerKind for a fold flush's last-write-wins steering
+// steerKindForFold is steerKind for a fold flush's last-write-wins steering
 // (the task-list and transcript reminders): the steering is refused, at the
 // moment it would be enqueued, once a newer fold has published.
 func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) error {
@@ -372,7 +376,7 @@ func (s *Session) deliverHookContext(text string) error {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	return s.SteerKind(wrapHookContext(text), events.SteeringKindHookContext)
+	return s.steerKind(wrapHookContext(text), events.SteeringKindHookContext)
 }
 
 // deliverHookUserMessage surfaces a hook's user-visible message via the
@@ -385,6 +389,17 @@ func (s *Session) deliverHookUserMessage(text string) {
 	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
+// hookStopText trims a hook's stop reason and supplies the event's fallback when
+// it is empty, so every site that ends an action on continue:false reports it
+// the same way. It does not deliver: the call sites need the text as well as the
+// warning.
+func (s *Session) hookStopText(reason, fallback string) string {
+	if trimmed := strings.TrimSpace(reason); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
 // queuedInput is one entry on the per-session input queue. Text and Images
 // are forwarded together when the entry is drained as a fresh user turn.
 // Provenance carries the causal watch origin (nil for human-typed input) so a
@@ -393,11 +408,12 @@ func (s *Session) deliverHookUserMessage(text string) {
 // queue snapshot so a promote-by-index request can verify the entry it meant
 // is still the entry at that index (review F1, issue #22).
 type queuedInput struct {
-	ID               string            `json:"id"`
-	ClientMutationID string            `json:"client_mutation_id,omitempty"`
-	StableTurnID     string            `json:"stable_turn_id,omitempty"`
-	Text             string            `json:"text,omitempty"`
-	Images           []ImageAttachment `json:"images,omitempty"`
+	VoicePresentation *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	ID                string                            `json:"id"`
+	ClientMutationID  string                            `json:"client_mutation_id,omitempty"`
+	StableTurnID      string                            `json:"stable_turn_id,omitempty"`
+	Text              string                            `json:"text,omitempty"`
+	Images            []ImageAttachment                 `json:"images,omitempty"`
 	// SkillNames carries the canonical skill identities this durable input
 	// selected. Identities only, never bodies: the complete instructions load
 	// from the recorded sources at actual consumption.
@@ -424,26 +440,26 @@ func newQueueEntryID() string {
 	return fmt.Sprintf("q_%d_%s", seq, hex.EncodeToString(b[:]))
 }
 
-// QueueDepth returns the number of messages currently in the input queue.
-func (s *Session) QueueDepth() int {
+// queueDepth returns the number of messages currently in the input queue.
+func (s *Session) queueDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.inputQueue)
 }
 
-// pendingQueueDepth is QueueDepth for the purpose of "is this session
+// pendingQueueDepth is queueDepth for the purpose of "is this session
 // working": it reports zero for a queue parked by a Stop, because parked
 // messages are not work in progress -- nothing will run them until the user
 // asks.
 //
-// QueueDepth itself still counts them. The messages ARE there and the queue
+// queueDepth itself still counts them. The messages ARE there and the queue
 // strip must keep showing them; what changes is only whether their presence
 // makes the session claim to be busy (kata wms7).
 func (s *Session) pendingQueueDepth() int {
 	if s.clientMutations != nil && s.clientMutations.queueHeld() {
 		return 0
 	}
-	return s.QueueDepth()
+	return s.queueDepth()
 }
 
 // firstQueueLine returns the first newline-terminated line of msg with a
@@ -626,6 +642,10 @@ func (s *Session) pushQueueHead(entry queuedInput) error {
 			snapshot.Journal[entry.ClientMutationID] = record
 			delete(snapshot.PendingExecutions, entry.ClientMutationID)
 			snapshot.InputQueue = append([]clientMutationQueueEntry{{
+				// Promotion reads the queue entry's author, so a claim
+				// returned to the queue must keep it (journal record is the
+				// durable source, as in returnClaimedQueuedMutation).
+				Actor:            record.Actor,
 				ID:               entry.ID,
 				ClientMutationID: entry.ClientMutationID,
 				Input:            clientMutationInputWithMentions(entry.Text, entry.Images, entry.SkillNames, entry.Mentions, entry.CommandNames),
@@ -731,6 +751,7 @@ func (cfg queuedInputDrainConfig) nextTurnContext() context.Context {
 }
 func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()
+	s.noteSteeringDrainLocked()
 	if len(s.steeringQueue) == 0 {
 		s.mu.Unlock()
 		return nil
@@ -987,17 +1008,38 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	}
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
+	attachVoicePresentation(&t, msg.VoicePresentation, msg.ClientMutationID)
+	if msg.ClientMutationID != "" || msg.Source == events.SteeringSourceUser {
+		t.ConversationInputIDs = s.conversationInputIDs(msg.ClientMutationID)
+	}
+	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
+	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
+		t.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
+		// PlaceSession joins this steering entry to the current execution when
+		// one is active. That execution cannot be its own predecessor.
+		s.mu.Lock()
+		activeExecution := s.execution.turnID
+		s.mu.Unlock()
+		if t.AskResolution != nil {
+			t.AnswerToTurnIDs = askResolutionTurnIDs(t.AskResolution, activeExecution)
+		} else {
+			t.AnswerToTurnIDs = s.pendingAskTurnIDs()
+			if s.clientMutations != nil && msg.ClientMutationID != "" {
+				record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
+				t.AnswerToTurnIDs = appendAnswerTurnIDs(t.AnswerToTurnIDs, record.AnswerToTurnIDs...)
+			}
+			if activeExecution != "" {
+				t.AnswerToTurnIDs = slices.DeleteFunc(t.AnswerToTurnIDs, func(id string) bool { return id == activeExecution })
+			}
+		}
+	}
 	if len(msg.SkillNames) > 0 {
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
 	}
 	if s.clientMutations != nil {
-		// ActiveTurnID is the actual logical owner at delivery time. For an
-		// inline steer it is the already-running turn; for a carrier it is the
-		// carrier's reserved mutation turn. Both identities must be durable so
-		// replay can distinguish the two boundaries. System steering uses the
-		// same active turn when it is drained by a named daemon turn.
-		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+		// Own by the execution that is actually running; see activeTurnOwner.
+		t.OwningTurnID = s.activeTurnOwner()
 	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
@@ -1063,12 +1105,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 // shape prepareSelectedInput consumes, keeping the durable ownership identity.
 func queuedInputFromSteering(msg steeringMessage) queuedInput {
 	return queuedInput{
-		ClientMutationID: msg.ClientMutationID,
-		StableTurnID:     msg.StableTurnID,
-		Text:             msg.Text,
-		Images:           msg.Images,
-		SkillNames:       msg.SkillNames,
-		CommandNames:     msg.CommandNames,
+		VoicePresentation: appwire.CloneVoicePresentation(msg.VoicePresentation),
+		ClientMutationID:  msg.ClientMutationID,
+		StableTurnID:      msg.StableTurnID,
+		Text:              msg.Text,
+		Images:            msg.Images,
+		SkillNames:        msg.SkillNames,
+		CommandNames:      msg.CommandNames,
 	}
 }
 
@@ -1127,6 +1170,15 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn.Error = &schema.TurnFailureInfo{
 		Message:         cause.Error(),
 		SteeringCarrier: steeringCarrier,
+	}
+	if steeringCarrier {
+		turn.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
+		if turn.AskResolution != nil {
+			s.mu.Lock()
+			activeExecution := s.execution.turnID
+			s.mu.Unlock()
+			turn.AnswerToTurnIDs = askResolutionTurnIDs(turn.AskResolution, activeExecution)
+		}
 	}
 	if len(input.SkillNames) > 0 {
 		turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
@@ -1188,7 +1240,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 // reader reloading the session sees the same label the live transcript
 // showed. For the sites that reach history directly — loop detection, task
 // reminders, hook context, the interrupt marker — rather than through the
-// steering queue's SteerKind/consumeSteeringMessage path, which already
+// steering queue's steerKind/consumeSteeringMessage path, which already
 // persists its own kind.
 func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
@@ -1198,9 +1250,28 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	s.emit(events.SteeringInjectedData{Text: text, Kind: kind})
 }
 
+// activeTurnOwner names the turn that owns a steering entry recorded now.
+//
+// The running execution is authoritative: a goal continuation that could not
+// mint a durable name still runs under a fresh execution id while the durable
+// slot names another mutation's accepted-but-unrun turn (#4599), and an entry
+// owned by that other turn would be grouped with a turn that is not running.
+// While an execution runs, its id is the owner both for an inline steer (the
+// already-running turn) and for a carrier (the carrier's reserved mutation
+// turn); that id is durable, so replay can distinguish the boundaries. Only
+// when no execution runs does the durable active turn answer.
 func (s *Session) activeTurnOwner() string {
+	// A session no daemon serves keeps the pre-existing ownerless steering
+	// entries: its transcript has no client-mutation opener for a fresh
+	// execution id to join, and inventing one changes cold-projection grouping.
 	if s.clientMutations == nil {
 		return ""
+	}
+	s.mu.Lock()
+	execution := s.execution
+	s.mu.Unlock()
+	if execution.running {
+		return execution.turnID
 	}
 	return s.clientMutations.snapshot().ActiveTurnID
 }

@@ -1383,8 +1383,9 @@ test.each([
   expectContentFreeRejection(key, snapshotWithSessionField("question", question));
 });
 
-// A Failed row says why (S1c): a nested value record of the failure's title and
-// its cause's kind, provider and status. The codec keeps it, drops a key
+// A Failed row says why (S1c): a nested value record of the failure's title,
+// its cause's kind, provider and status, and when a quota wait resumes. The
+// codec keeps it, drops a key
 // inside it that it does not know, and holds it to the hub schema's bounds
 // (navigation_schema.go navigationFailureValid).
 test("codec keeps a row's failure summary and drops keys inside it that it does not know", () => {
@@ -1396,6 +1397,7 @@ test("codec keeps a row's failure summary and drops keys inside it that it does 
   expect(rows[0]?.failure).toEqual(failure);
   for (const kept of [
     { cause_kind: "crashed" },
+    { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: "2026-11-07T14:30:00Z" },
     {
       title: "😀".repeat(80),
       cause_kind: "k".repeat(1024),
@@ -1421,6 +1423,8 @@ test.each([
   ["an over-long provider", { cause_kind: "provider", provider: "p".repeat(1025) }],
   ["a negative status", { cause_kind: "provider", status: -1 }],
   ["a string status", { cause_kind: "provider", status: "401" }],
+  ["a resume time that is not a timestamp", { cause_kind: "provider", resumes_at: "soon" }],
+  ["a numeric resume time", { cause_kind: "provider", resumes_at: 1785258150000 }],
 ] as const)("codec refuses a failure summary with %s", (_name, failure) => {
   expectContentFreeRejection(key, snapshotWithSessionField("failure", failure));
 });

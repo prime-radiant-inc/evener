@@ -102,6 +102,18 @@
   flex: none;
 }
 
+/* An unrecognized status (a newer daemon's word) has no glyph or vocabulary
+ * of its own: the row shows that word as written beside the neutral box, in
+ * the same quiet caption as the row's time. */
+.statusWord {
+  composes: time;
+  /* The word is untrusted and unbounded: cap it rather than let it squeeze
+   * the description and time out of the row. */
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .latest {
   display: flex;
   gap: var(--space-2);

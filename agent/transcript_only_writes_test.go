@@ -156,7 +156,7 @@ func TestCommunicateToolSucceedsWhenNotRecordedAndUnserved(t *testing.T) {
 
 func TestToolRepairIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
+	s.registerTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
 	adapter.script(respond(agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)})))
 	if _, err := s.ProcessInput(context.Background(), "call widget", nil); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestToolRepairIsRecordedAsANotice(t *testing.T) {
 func TestTurnLimitIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
 	s.cfg.MaxToolRoundsPerInput = 1
-	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
+	s.registerTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
 	adapter.script(respond(agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"file_path":"/x"}`)})))
 	if _, err := s.ProcessInput(context.Background(), "loop", nil); err == nil {
 		t.Fatal("the tool-round cap did not end the input")

@@ -36,7 +36,7 @@ import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
 import { openTopLevelSession } from "./sessionPlacement";
-import { resetMobileViewportForTests } from "./useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "./useIsMobile";
 import {
   consumePaneFocus,
   documentPaneState,
@@ -906,7 +906,13 @@ test("a primary replacement removes stale panels from the live DockHost", async 
   const replacementId = await act(async () => workspace.replacePrimary("session", { ref: "local:session-b" }));
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+    {
+      id: replacementId,
+      type: "session",
+      params: { ref: "local:session-b" },
+      slot: "main",
+      composerSeatId: expect.any(String),
+    },
   ]);
   expect(await screen.findAllByText("local:session-b")).toBeTruthy();
   expect(screen.queryByText(/local:session-a/)).toBeNull();
@@ -2258,7 +2264,7 @@ test.each(["session", "explicit settings route"])(
       component: lazy(() => Promise.resolve({ default: DocFixture })),
     });
     vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: query === "(max-width: 899px)",
+      matches: query === MOBILE_QUERY,
       media: query,
       onchange: null,
       addListener: () => {},

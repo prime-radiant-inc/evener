@@ -1,21 +1,8 @@
-import type { InstanceEntry } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
+import { instance } from "./credentialsTestUtils";
 import { InstanceRow } from "./InstanceRow";
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 // The row's credential state (configured, keyless, missing, error), the chips it
 // carries by kind, and its heading dot's state, read from markers rather than

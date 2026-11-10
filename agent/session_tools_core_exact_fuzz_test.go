@@ -199,7 +199,7 @@ func stceCompaction(t *testing.T) {
 		t.Fatal("nil context manager compact succeeded")
 	}
 	s.contextMgr = mgr
-	if records, _ := s.runPreCompactHook(context.Background(), nil); records != nil {
+	if records, _ := s.runPreCompactHook(context.Background(), nil, triggerAuto, ""); records != nil {
 		t.Fatalf("nil history records = %#v", records)
 	}
 	history := []schema.Turn{}
@@ -219,7 +219,7 @@ func stceCompaction(t *testing.T) {
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "compact"})
 	s.hookRunner = runner
-	s.runPreCompactHook(context.Background(), &history)
+	s.runPreCompactHook(context.Background(), &history, triggerAuto, "")
 
 	_, emit, flush, _ := s.compactionEmitFunc(context.Background(), &history)
 	emit(events.EventWarning, events.WarningData{Message: "unrelated"})
@@ -257,13 +257,13 @@ func stceRegistryAndHelpers(t *testing.T) {
 		t.Fatalf("canceled skipped result = %#v", got)
 	}
 	var call llm.ToolCallData
-	if err := applyUpdatedToolInput(nil, map[string]any{"x": 1}); err != nil {
+	if err := applyUpdatedToolInput(nil, tool.RegisteredTool{}, map[string]any{"x": 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUpdatedToolInput(&call, nil); err != nil {
+	if err := applyUpdatedToolInput(&call, tool.RegisteredTool{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUpdatedToolInput(&call, map[string]any{"x": func() {}}); err == nil {
+	if err := applyUpdatedToolInput(&call, tool.RegisteredTool{}, map[string]any{"x": func() {}}); err == nil {
 		t.Fatal("unmarshalable update succeeded")
 	}
 	if got := optionalIntArg(map[string]any{"n": "bad"}, "n"); got != nil {
@@ -362,7 +362,7 @@ func stceExecToolBranches(t *testing.T) {
 	t.Helper()
 	newSession := func() *Session {
 		s, _, _ := stmNewSession(t, []byte("exec"))
-		s.RegisterTool("probe", "probe", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return "ok", nil })
+		s.registerTool("probe", "probe", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return "ok", nil })
 		return s
 	}
 	setClosing := func(s *Session) { s.mu.Lock(); s.closing = true; s.mu.Unlock() }

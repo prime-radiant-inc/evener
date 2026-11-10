@@ -36,8 +36,8 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 				PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 					return phase4DIContinuationPlan(req), nil
 				},
-				Steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }},
 			}
+			adapter.SetSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }})
 			client := llm.NewClient()
 			client.Register(adapter)
 			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

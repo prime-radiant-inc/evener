@@ -162,7 +162,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 			// under one mutex, so blocking here would deadlock the delegate's own
 			// turn), so poll with a cheap real tool round instead.
 			if !wedge.isWedged() {
-				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "sleep 0.05"))
+				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "ls >/dev/null"))
 			}
 			id := wedgeDelegateIDPattern.FindString(text)
 			if id == "" {
@@ -193,11 +193,12 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, runConfig{
-			prompt:  rootPrompt + ": delegate the read and answer " + finalMsg,
-			model:   "openai/gpt-test",
-			workDir: t.TempDir(),
-			stdout:  &stdout,
-			stderr:  &stderr,
+			prompt:           rootPrompt + ": delegate the read and answer " + finalMsg,
+			model:            "openai/gpt-test",
+			workDir:          t.TempDir(),
+			maxSubagentDepth: -1,
+			stdout:           &stdout,
+			stderr:           &stderr,
 		})
 	}()
 
@@ -350,11 +351,12 @@ func TestRunExitsWithALiveDelegateItNeverStopped(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, runConfig{
-			prompt:  rootPrompt + ": delegate an advisory review and answer " + finalMsg,
-			model:   "openai/gpt-test",
-			workDir: t.TempDir(),
-			stdout:  &stdout,
-			stderr:  &stderr,
+			prompt:           rootPrompt + ": delegate an advisory review and answer " + finalMsg,
+			model:            "openai/gpt-test",
+			workDir:          t.TempDir(),
+			maxSubagentDepth: -1,
+			stdout:           &stdout,
+			stderr:           &stderr,
 		})
 	}()
 

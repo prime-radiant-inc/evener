@@ -179,16 +179,19 @@ type NavigationResourceKey = navigationResourceKey
 // single hub. Its source capture and pure projection are separated so a changed
 // source can never publish an incoherent projection under an older key.
 type NavigationService struct {
-	mu sync.Mutex
+	// Shared by the attention loop and this hub's bound Manager operations.
+	roster attentionBroker
+	mu     sync.Mutex
 
-	source       navigationSource
-	generation   string
-	genErr       error
-	now          func() time.Time
-	newTimer     func(time.Duration) navigationTimer
-	buildTimeout time.Duration
-	retryAfter   time.Duration
-	history      *navigationHistory
+	source        navigationSource
+	deleteSession sessionDeleteHandler
+	generation    string
+	genErr        error
+	now           func() time.Time
+	newTimer      func(time.Duration) navigationTimer
+	buildTimeout  time.Duration
+	retryAfter    time.Duration
+	history       *navigationHistory
 	// subagentParent is the alias resolver's hop function; nil disables it.
 	subagentParent func(context.Context, string) (string, string, error)
 	// aliasServed remembers, per location key that is not a present row, the

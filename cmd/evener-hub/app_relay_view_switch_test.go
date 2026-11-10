@@ -45,18 +45,14 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 
 	clientA := dialHubRPC(t, hub)
 	defer clientA.Close()
-	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize A: %v", err)
-	}
+	mustInitializeHubClient(t, clientA)
 	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread read A: %v", err)
 	}
 
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
-	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize B: %v", err)
-	}
+	mustInitializeHubClient(t, clientB)
 	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread read B: %v", err)
 	}
@@ -146,9 +142,7 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 	// view-re-entry shape) and a third block streams.
 	clientC := dialHubRPC(t, hub)
 	defer clientC.Close()
-	if _, err := clientC.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize C: %v", err)
-	}
+	mustInitializeHubClient(t, clientC)
 	if _, err := clientC.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread read C: %v", err)
 	}

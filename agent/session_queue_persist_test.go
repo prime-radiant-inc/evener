@@ -131,7 +131,7 @@ func TestQueuePersist_TaskCompletionMachinePayloadSurvivesRestartToLLM(t *testin
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
 	blockingDelegateIDs := []string{"dlg_opaque_waiter_7Qx"}
-	sess.SteerTaskCompletion(
+	sess.steerTaskCompletion(
 		taskReminderAllDoneWhileDelegatesRun("communicate", blockingDelegateIDs),
 		blockingDelegateIDs,
 	)
@@ -228,7 +228,7 @@ func TestQueuePersist_DrainAsSteer_SurvivesRestart(t *testing.T) {
 	if err := sess.DrainAsSteer(ctx); err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("test setup: QueueDepth after drain = %d, want 0", depth)
 	}
 	wantSteering := sess.SteeringQueueSnapshot()
@@ -240,7 +240,7 @@ func TestQueuePersist_DrainAsSteer_SurvivesRestart(t *testing.T) {
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
 
-	if depth := restored.QueueDepth(); depth != 0 {
+	if depth := restored.queueDepth(); depth != 0 {
 		t.Fatalf("restored QueueDepth = %d, want 0 (drained before restart)", depth)
 	}
 	if got := restored.SteeringQueueSnapshot(); !reflect.DeepEqual(got, wantSteering) {
@@ -358,7 +358,7 @@ func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
-	if depth := restored.QueueDepth(); depth != 1 {
+	if depth := restored.queueDepth(); depth != 1 {
 		t.Fatalf("restored QueueDepth = %d, want 1 (claimed input returns runnable)", depth)
 	}
 }

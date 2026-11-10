@@ -3,6 +3,7 @@
 // Depends on `transcriptItems`; knows nothing of versioned history.
 
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { withOlderFrontier } from "./olderFrontier";
 import {
   copyItemTextPresence,
   freshSuppliedNullishFallbackFields,
@@ -434,6 +435,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
       ...older,
       ...newer,
       authorship: newer.authorship ?? older.authorship,
+      ...((newer.actor ?? older.actor) ? { actor: newer.actor ?? older.actor } : {}),
       text: textSource.text,
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,
@@ -1591,11 +1593,7 @@ export function mergeOlderItemPageWithFolds(model: ThreadModel, resp: ThreadTurn
       : merged.turns;
 
   return {
-    model: {
-      ...model,
-      turns,
-      olderCursor: resp.nextCursor,
-    },
+    model: { ...withOlderFrontier(model, resp.nextCursor), turns },
     // The no-op branch re-coalesces the same inputs under the same context,
     // so the membership the first pass recorded still names the inputs the
     // returned items fold from.

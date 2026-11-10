@@ -4,8 +4,7 @@ import {
   type TranscriptDisplayConfigV1,
   type ViewportClass,
 } from "@evener/appwire-client";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ConversationPresentation } from "./transcriptDisplay";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
@@ -39,6 +38,7 @@ function channelFixture(createChannel?: (name: string) => BroadcastChannel | nul
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("versioned channel", () => {
@@ -173,7 +173,6 @@ describe("source ids", () => {
 
 function browserFixture() {
   const local: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>> = {};
-  const presentation: Record<ViewportClass, ConversationPresentation> = { desktop: "standard", mobile: "standard" };
   const applyLocal = vi.fn((layout: ViewportClass, config: TranscriptDisplayConfigV1 | undefined) => {
     local[layout] = config;
   });
@@ -181,17 +180,20 @@ function browserFixture() {
   const sync = createBrowserSync({
     channelName: "evener.transcript-display.v1",
     localKeys: { desktop: "display.desktop", mobile: "display.mobile" },
-    getState: () => ({ local, presentation }),
+    getState: () => ({ local }),
     applyLocal,
-    applyPresentation: (layout, value) => {
-      presentation[layout] = value;
-    },
     onDetach,
   });
   return { sync, local, applyLocal, onDetach };
 }
 
 describe("transcript display channel compatibility", () => {
+  beforeEach(() => {
+    // These cases exercise the production default factory; test mode
+    // deliberately creates no channel.
+    vi.stubEnv("MODE", "production");
+  });
+
   it("keeps the five-field envelope, strict validation and per-attachment source ids", () => {
     const transports: TestChannel[] = [];
     vi.stubGlobal(

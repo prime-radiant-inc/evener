@@ -1,7 +1,7 @@
 // How a task's state reads on the phone, the same wherever a task shows: the
 // Tasks sheet and a task_list step's checklist.
 import type { SFSymbol } from "expo-symbols";
-import type { TaskStatus } from "@evener/appwire-client";
+import { isKnownTaskStatus, type TaskStatus, type TaskStatusValue } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { useColors } from "./ui";
 
@@ -22,13 +22,27 @@ export const TASK_STATUS_MARK: Record<TaskStatus, { name: SFSymbol; tint: TaskSt
 	cancelled: { name: "xmark.circle.fill", tint: "inkLow" },
 };
 
+/** The word a task's state reads as. A status outside the enum reads exactly
+ * as written: the daemon still counts the task, so the list must not hide or
+ * rename it (issue #2256). */
+export function taskStatusLabel(status: TaskStatusValue): string {
+	return isKnownTaskStatus(status) ? TASK_STATUS_LABEL[status] : status;
+}
+
+/** The mark before a task's description. An unrecognized status takes open's
+ * neutral unfilled circle: no check or x claims a state the daemon did not
+ * report. */
+export function taskStatusMark(status: TaskStatusValue): { name: SFSymbol; tint: TaskStatusTint } {
+	return isKnownTaskStatus(status) ? TASK_STATUS_MARK[status] : TASK_STATUS_MARK.open;
+}
+
 export type TaskStatusTint = "inkMid" | "inkLow" | "accentInk";
 
 /** The state's mark itself, a tinted SF Symbol sized to its row: the Tasks
  * sheet and a task_list step's checklist draw the same one beside a task's
  * description. The composed label around it reads the state in words. */
-export function TaskStatusMark({ status, size, style }: { status: TaskStatus; size: number; style?: object }) {
+export function TaskStatusMark({ status, size, style }: { status: TaskStatusValue; size: number; style?: object }) {
 	const { palette } = useColors();
-	const mark = TASK_STATUS_MARK[status];
+	const mark = taskStatusMark(status);
 	return <SymbolView name={mark.name} tintColor={palette[mark.tint]} size={size} style={style} />;
 }

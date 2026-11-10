@@ -30,10 +30,12 @@ import {
   installCanvasStubs,
   mountComposer,
   mountComposerWithHandle,
+  notAcceptedError,
   PAST_THREAD_CAPABILITIES,
   routedCalls,
   seedRejectedRecovery,
   seedRejectedRecoveryWithAttachment,
+  stampRecoveryOwner,
   steerButton,
   stopButton,
   submitButton,
@@ -43,6 +45,7 @@ import { readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
+import { defaultCompositionOwner } from "./sourceState";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
 beforeAll(async () => {
@@ -194,6 +197,19 @@ test.each(["automatic", "Edit message"] as const)(
       });
       const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
       if (!recovered) throw new Error("failed to seed selected recovery");
+      const stamped = await storage.updateRecoveryInput(
+        outbox.clientMutationId,
+        input,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        defaultCompositionOwner("ref_a"),
+      );
+      if (!stamped) throw new Error("failed to own the seeded selected recovery");
       const user = userEvent.setup();
       const fake = await mountComposer("ref_a", {
         evener: {
@@ -356,9 +372,9 @@ test("a losing cross-tab recovered send does not issue a second request", async 
     [],
     undefined,
     undefined,
-    0,
+    1,
   );
-  expect(selected?.compositionRevision).toBe(1);
+  expect(selected?.compositionRevision).toBe(2);
   const source = createTestComposerSource("ref_a");
   const user = userEvent.setup();
   const { fake } = await mountComposerWithHandle(
@@ -461,9 +477,9 @@ test("a recovery Send refused after a peer revision keeps the composer and sourc
     [],
     undefined,
     undefined,
-    0,
+    1,
   );
-  expect(selected?.compositionRevision).toBe(1);
+  expect(selected?.compositionRevision).toBe(2);
   const source = createTestComposerSource("ref_a");
   const user = userEvent.setup();
   const { fake } = await mountComposerWithHandle(
@@ -500,6 +516,11 @@ test("a recovery Send refused after a peer revision keeps the composer and sourc
       [],
       undefined,
       current.compositionRevision ?? 0,
+      undefined,
+      // A real peer edits through its own pane, whose seat becomes the row's
+      // owner; the local pane's same-owner resend fast path must not forgive
+      // this revision drift.
+      "seat-peer-tab",
     );
     expect(advanced?.compositionRevision).toBe((current.compositionRevision ?? 0) + 1);
     peerRevision = advanced?.compositionRevision;
@@ -572,6 +593,169 @@ test("the mount helper returns only after the mount's projection refresh has set
   expect(textarea().textContent).toBe("slow to arrive");
 });
 
+test("mount restore only adopts rows this pane's seat owns", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Pane A's send bounced: the row carries pane A's durable composer seat as
+  // its composition owner. Pane B mounts the same conversation with its own
+  // seat and must not adopt pane A's work.
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "pane A's text", {}, "seat-a");
+  const source = createTestComposerSource("ref_a", "seat-b");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  expect(textarea().textContent).toBe("");
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+});
+
+test("mount restore adopts a row the same seat owns", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // The authoring pane remounts under the same seat: its own bounced work
+  // comes back (the one-tap restore).
+  await seedRejectedRecovery(storage, "ref_a", "my own text", {}, "seat-a");
+  const source = createTestComposerSource("ref_a", "seat-a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  expect(source.getSnapshot().activeRecoveryId).not.toBeNull();
+  expect(textarea().textContent).toBe("my own text");
+});
+
+test("mount restore never injects a row an explicit Edit claimed", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Edit's claim converts the row out of the rejected kind mount restore
+  // requires, even when this pane's seat owns it: an editing row is reached
+  // only through its editor, never injected into a fresh pane.
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "under edit" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "under edit" }] },
+  });
+  const editing = await storage.transferToRecovery(outbox.clientMutationId, "editing");
+  if (!editing) throw new Error("failed to claim the row for editing");
+  await stampRecoveryOwner(storage, editing, "seat-a");
+  const source = createTestComposerSource("ref_a", "seat-a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  expect(textarea().textContent).toBe("");
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(screen.getByText("under edit")).toBeDefined();
+});
+
+test("a refused recovery resend keeps the replacement row owned by this pane's seat", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  await seedRejectedRecovery(storage, "ref_a", "retry me", {}, seat);
+  const source = createTestComposerSource("ref_a", seat);
+  const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  fake.on("turn/start", (params) => {
+    throw notAcceptedError(params.clientMutationId);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+  const user = userEvent.setup();
+  await user.click(submitButton());
+  // The refusal bounces a REPLACEMENT recovery row. It must carry this
+  // pane's seat, or the pane that just resent its own work cannot restore
+  // it - not even on the same tick.
+  await waitFor(async () => {
+    const rows = await storage.listRecovery("ref_a");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.compositionOwnerId).toBe(seat);
+  });
+  await waitFor(() => expect(textarea().textContent).toBe("retry me"));
+});
+
+test("this pane's bounced send restores to its next mount under the same seat", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  const source = createTestComposerSource("ref_a", seat);
+  const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  fake.on("turn/start", (params) => {
+    throw notAcceptedError(params.clientMutationId);
+  });
+  const user = userEvent.setup();
+  await user.type(textarea(), "my send");
+  // The flush runs after the outer act, never inside it (issue #2599).
+  await act(async () => {
+    fireEvent.click(submitButton());
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The same-tick failure path of this pane's own send: the bounced row
+  // returns to the composer immediately.
+  await waitFor(() => expect(textarea().textContent).toBe("my send"));
+  const bounced = (await storage.listRecovery("ref_a"))[0];
+  if (!bounced) throw new Error("the refused send left no recovery row");
+  // The bounced row carries this pane's seat, so a reload that remounts the
+  // same conversation under the same seat restores it - and only it.
+  expect(bounced.compositionOwnerId).toBe(seat);
+  cleanup();
+  const remountSource = createTestComposerSource("ref_a", seat);
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
+  await flushPendingTurnsProjectionForTests();
+  expect(remountSource.getSnapshot().activeRecoveryId).toBe(bounced.clientMutationId);
+  expect(textarea().textContent).toBe("my send");
+});
+
+test("mount restore picks the newest rejected row the seat owns", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  await seedRejectedRecovery(storage, "ref_a", "older attempt", {}, seat);
+  await seedRejectedRecovery(storage, "ref_a", "newer attempt", {}, seat);
+  const source = createTestComposerSource("ref_a", seat);
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  // Both rows are this pane's own bounced work; the newest composition is
+  // the work to restore, not the oldest.
+  expect(textarea().textContent).toBe("newer attempt");
+});
+
+test("an empty rejected drain is a notice, not a restored draft", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/drainAsSteer",
+    payload: { ref: "ref_a", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+  });
+  const rejected = await storage.transferToRecovery(outbox.clientMutationId, "rejected", "queue revision changed");
+  if (!rejected) throw new Error("failed to seed the empty drain recovery");
+  await stampRecoveryOwner(storage, rejected, seat);
+
+  const source = createTestComposerSource("ref_a", seat);
+  const persistence = vi.spyOn(source, "queueRecoveryPersistence");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+
+  // Activating it would load an empty composer only to discard it again. The
+  // ruling makes the refusal a notice instead: the strip keeps the row and
+  // its reason, and nothing is restored or re-persisted.
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(textarea().textContent).toBe("");
+  expect(persistence).not.toHaveBeenCalled();
+  expect(screen.getByText(/queue revision changed/)).toBeDefined();
+});
+
+test("mount restore leaves an ownerless legacy row to the queue strip", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Rows written before composition owners existed carry no seat. Automatic
+  // restoration must not inject them into a fresh pane; the queue strip's
+  // explicit Edit still reaches them.
+  await seedRejectedRecovery(storage, "ref_a", "legacy text", {}, null);
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("");
+  expect(screen.getByText("legacy text")).toBeDefined();
+});
+
 test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
@@ -637,7 +821,7 @@ test.each([
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   const written = hold.reached;
   try {
     fireEvent.click(submitButton());
@@ -696,6 +880,74 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   expect(rows.at(-1)?.payload).toMatchObject({ input: [{ type: "text", text: "replacement" }] });
   expect(textarea().textContent).toBe("");
   expect(readDraft("ref_a")).toBe("");
+});
+
+// Round-8 review High: a byte-identical replay of a delivery-uncertain wire
+// keeps the wire's identity AS A UNIT - id, method, and payload, the three
+// fields the daemon's journal replays together. destinationSendRoute rerouted
+// a Send pressed while the destination was busy (busy with the wire's OWN
+// outstanding sibling attempt) into a QUEUE, and the rebuilt intent's
+// turn/queue method broke byte-identity on the method half - a fresh id for
+// a composition whose sibling RPC could still apply: double delivery, the
+// harm this endpoint exists to kill, reached through a client-side route
+// choice. The replay submits under the ORIGINAL method and the inherited
+// wire id; the route cannot mint a second wire for the same composition.
+test("a rerouted Send of an unchanged delivery-uncertain replay keeps the original method and wire identity", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Wire W: an attempted turn/start whose response never came back.
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    // The payload exactly as a real submit builds it: the replay's
+    // byte-identity is judged against this frozen composition.
+    payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  // Retry settles the predecessor superseded and mints the replacement with
+  // the inherited wire id; its attempt is the outstanding sibling RPC that
+  // makes the destination busy.
+  const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+  const replacement = await storage.mintRetryFromRow(original.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!replacement) throw new Error("mint failed");
+  expect(replacement.payload.clientMutationId).toBe(original.clientMutationId);
+  await storage.markAttempted(replacement.clientMutationId);
+  // The predecessor's late PRE-DAEMON refusal leaves the wire's composition
+  // in recovery, delivery-uncertain, with the frozen original method.
+  const recovery = await storage.transferToRecovery(original.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The seeded row must carry this pane's seat for the composer to adopt it.
+  await stampRecoveryOwner(storage, recovery);
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+  // The Send press routes as a queue behind the wire's own outstanding
+  // attempt - but the composition is unchanged, so the resend is a REPLAY.
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(async () => expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined());
+  const resent = (await storage.listOutbox("ref_a")).find(
+    (row) => row.clientMutationId !== replacement.clientMutationId,
+  );
+  if (!resent) throw new Error("no resent row");
+  // The replay keeps the ORIGINAL method and the inherited wire id: the
+  // daemon's journal dedupes it against the sibling's outstanding attempt
+  // instead of applying the composition twice under two ids.
+  expect(resent.method).toBe("turn/start");
+  expect(resent.payload.clientMutationId).toBe(original.clientMutationId);
 });
 
 test("a failed /queue resend keeps the invocation as the recovery composer text", async () => {

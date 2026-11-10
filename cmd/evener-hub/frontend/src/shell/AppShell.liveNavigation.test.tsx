@@ -1,10 +1,6 @@
-import type {
-  NavigationReadParams,
-  NavigationReadResponse,
-  NavigationSessionLocation,
-  NavigationSessionSummary,
-} from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import type { NavigationStoreState } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -21,235 +17,20 @@ import { resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsHostForTests } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
-import { LIVE_CYCLE_B, rail } from "./appShellTestUtils";
+import {
+  EMPTY_NAV_RESPONSE,
+  installLocationForRoute,
+  LIVE_CYCLE_A,
+  LIVE_CYCLE_B,
+  navClientWithLive,
+  navigationRead,
+  rail,
+  retypeMainToCascade,
+  warmRoute,
+} from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-const TREE_SESSION = {
-  row_id: "project:proj1:local:s1",
-  ref: "local:s1",
-  host_id: "local",
-  session_id: "s1",
-  title: "Session one",
-  project: "prime-radiant",
-  state: "idle",
-  kind: "session",
-  live: true,
-  children: [],
-};
-
-let stoppedTreeSession = false;
-
-const EMPTY_NAV_RESPONSE = {
-  generation_id: "generation_test",
-  revision: 1,
-  sources: [],
-  attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-  catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-};
-
-function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const treeSession = stoppedTreeSession ? { ...TREE_SESSION, state: "ended", live: false } : TREE_SESSION;
-  switch (params.resource) {
-    case "manifest":
-      return wireSnapshot(params, EMPTY_NAV_RESPONSE, '"test"');
-    case "section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: params.section === "live" ? [treeSession] : [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "pin_catalog":
-      return wireSnapshot(params, { pin_sections: [], remaining: 0 }, '"test"');
-    case "pin_section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "catalog":
-      return wireSnapshot(
-        params,
-        {
-          projects:
-            params.catalog === "projects"
-              ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
-              : [],
-          remaining: 0,
-        },
-        '"test"',
-      );
-    case "project":
-      return wireSnapshot(
-        params,
-        {
-          key: "proj1",
-          current: { sessions: [treeSession], remaining: 0 },
-          recent: { sessions: [], remaining: 0 },
-          archived: { sessions: [], remaining: 0 },
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "project_page":
-      return wireSnapshot(
-        params,
-        {
-          key: params.projectKey,
-          tier: params.tier,
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "location":
-      return wireSnapshot(
-        params,
-        {
-          ref: params.ref,
-          top_level_ref: params.ref,
-          top_level: true,
-          session: { ...treeSession, ref: params.ref, session_id: params.ref },
-        },
-        '"test"',
-      );
-    case "subagents":
-      // Session activity surfaces can demand the scope's subagents page;
-      // answer with an empty one (tests that need rows install them into the
-      // store directly).
-      return wireSnapshot(
-        params,
-        {
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-  }
-  throw new Error(`unsupported navigation resource: ${params.resource}`);
-}
-
-function installLocation(location: NavigationSessionLocation): void {
-  const key = { kind: "location", ref: location.ref } as const;
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(key), {
-    key,
-    data: location,
-    loadedRevision: location.revision,
-    targetRevision: null,
-    forceToken: 0,
-    etag: '"test"',
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: location.generation_id,
-  });
-  navigationStore.setState({
-    mode: "v3",
-    clientGenerationID: location.generation_id,
-    resources,
-  });
-}
-
-function installLocationForRoute(ref: string, ownerRef?: string): void {
-  const owner = ownerRef ?? (ref === "local:child" ? "local:owner" : ref === "local:sub1" ? "local:s1" : ref);
-  installLocation({
-    generation_id: "generation_test",
-    revision: 1,
-    ref,
-    top_level_ref: owner,
-    top_level: owner === ref,
-    tier: "current",
-    session: {
-      ref,
-      host_id: "local",
-      session_id: ref,
-      title: ref,
-      project: "test-project",
-      state: "idle",
-      kind: owner === ref ? "session" : "subagent",
-      live: false,
-      children: [],
-    },
-  });
-}
-
-// Renders a route to completion so both halves of its lazy-loading cost are
-// already paid by the time a test measures it. The module cache is only the
-// first half: React.lazy keeps a payload of its own that stays uninitialized
-// until React first RENDERS the component, so a warm module cache still
-// leaves the first render suspending. The welcome route crosses two nested
-// boundaries (AppShell's lazy DockHost, then PaneHost's lazy Welcome); each
-// other pane crosses one more of its own. Rendering inside an awaited act
-// lets each reveal commit as soon as its already-imported chunk resolves;
-// outside act, react-dom holds every reveal for FALLBACK_THROTTLE_MS (300ms,
-// react-dom 19.2) on a real timer. Mirrors App.test.tsx's own warmRoute.
-//
-// The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
-// default. That default is an assertion window - it exists to hold a test to a
-// responsiveness bar - and a warm-up has no such bar to hold, so the deadline
-// here is a tripwire for a hung render.
-const WARM_ROUTE_TRIPWIRE_MS = 10_000;
-
-async function warmRoute(
-  path: string,
-  findLandmark: (options: { timeout: number }) => Promise<unknown>,
-): Promise<void> {
-  window.history.pushState({}, "", path);
-  if (path.startsWith("/s/")) {
-    const ref = decodeURIComponent(path.slice("/s/".length));
-    installLocation({
-      generation_id: "generation_test",
-      revision: 1,
-      ref,
-      top_level_ref: ref,
-      top_level: true,
-      session: {
-        ref,
-        host_id: "local",
-        session_id: ref,
-        title: ref,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: false,
-        children: [],
-      },
-    });
-  }
-  await act(async () => {
-    render(<AppShell client={new FakeClient("ready")} />);
-  });
-  await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
-  // Unmounting also clears DockHost's pending debounced layout save (its own
-  // effect cleanup), so no warm render leaks a write into a later test.
-  cleanup();
-  resetWorkspaceStoreForTests();
-  // The /settings/hub warm route mounts the real HubSection, whose
-  // mount effect calls settingsOverviewStore.getState().fetch() for real
-  // against this warm-up's own FakeClient (no handler scripted for
-  // "evener/settings/overview", so it settles into a scripted-looking
-  // "no handler" error) - settingsOverviewStore is a module singleton, so
-  // that leftover error/inflight bookkeeping must not survive into this
-  // file's own tests.
-  resetSettingsOverviewStoreForTests();
-  localStorage.clear();
-  window.history.pushState({}, "", "/");
-}
 
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
@@ -269,7 +50,7 @@ beforeAll(async () => {
   await import("./DockHost");
 
   // Then render each pane once, for the React.lazy half of the cost - see
-  // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
+  // warmRoute (appShellTestUtils). Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
   await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
@@ -278,7 +59,6 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  stoppedTreeSession = false;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -317,31 +97,10 @@ afterEach(() => {
   paletteStore.setState({ open: false, query: "" });
   // Several tests below navigate to /settings/* and mount the real
   // HubSection, whose mount effect touches settingsOverviewStore for
-  // real - same module-singleton reasoning as warmRoute's own reset above.
+  // real - same module-singleton reasoning as warmRoute's own reset (appShellTestUtils).
   resetSettingsOverviewStoreForTests();
   vi.unstubAllGlobals();
 });
-
-// The zoom system promotes a session pane into a cascade by retyping it in
-// place (panes/zoom/actions.ts) - same pane id, same slot - so this is the
-// exact main a saved layout restores. Edges are the saved cascade path.
-function retypeMainToCascade(
-  sourceRef: string,
-  leafRef: string,
-  edges: { ownerRef: string; childRef: string; delegateId: string }[] = [],
-): void {
-  const main = workspaceStore.getState().mainPane();
-  if (!main) throw new Error("no main pane to zoom");
-  if (
-    !workspaceStore.getState().retypePane(main, "sessionZoom", {
-      ref: leafRef,
-      source: { type: "session", params: { ref: sourceRef } },
-      edges,
-    })
-  ) {
-    throw new Error("cascade promotion failed");
-  }
-}
 
 // --- Alt+Shift+ArrowRight/Left live-session navigation
 //
@@ -350,38 +109,6 @@ function retypeMainToCascade(
 // in server order through shell/rail/liveSessionCycle.ts. These tests pin
 // the WIRING (real dispatcher, real defaults, real shell); the cycling
 // order/wrap/no-op semantics themselves are liveSessionCycle.test.ts's.
-
-const LIVE_CYCLE_A: NavigationSessionSummary = {
-  ref: "local:live-a",
-  host_id: "local",
-  session_id: "live-a",
-  title: "Live A",
-  project: "prime-radiant",
-  state: "idle",
-  kind: "session",
-  live: true,
-  children: [],
-};
-
-// navClient, but with a two-row live section: everything else delegates to
-// the shared navigationRead.
-function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
-  const client = new FakeClient("ready");
-  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
-    if (params.resource === "section" && params.section === "live") {
-      return wireSnapshot(params, { sessions, remaining: 0, truncated: false }, '"test"');
-    }
-    return navigationRead(params);
-  });
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v4",
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
-  }));
-  return client;
-}
 
 // The rail's live section paginates (limit 50 per page). At the last LOADED
 // live session, next must demand-load the following page and continue into
@@ -454,23 +181,77 @@ function navClientWithDeferredLivePageTwo(script: {
 }
 
 test("live-next demand-load retries after the page request fails", async () => {
-  let pageTwoAttempts = 0;
+  // #4688: this scenario must not assert an exact GLOBAL count of page-two
+  // wire requests. The background Live roster owner paced-retries a failed
+  // page on a real 250ms timer, so under load its second attempt could land
+  // between the count gate and the press and the press's read registered as
+  // one attempt too many ("expected 3 to be 2"). Two properties make the
+  // scenario machine-timing-independent instead:
+  //  - page-two wire reads are HELD until this test settles them - no reader
+  //    can outrun the test, and a concurrent reader (the background owner's
+  //    paced retry) dedupes onto the very request the test settles. A HELD
+  //    read is not the last word, though: a FORCED retry landing on an
+  //    in-flight read marks the revalidator entry for a chained rerun, and
+  //    the load promise only settles once that rerun's NEW request lands
+  //    (revalidator.ts raise/start). Arming a phase before each settle makes
+  //    a chained rerun settle the same way at once instead of being held
+  //    forever, so the demand's awaited reads always complete;
+  //  - the chord's own reads are counted at their store boundary
+  //    (loadSection("live", offset > 0)), which the background owner's
+  //    background page lease never touches, so no retry schedule can perturb
+  //    the fail/fail/succeed sequence the presses drive.
+  let demandLoads = 0;
+  const demandPages: ReturnType<NavigationStoreState["loadSection"]>[] = [];
+  type PageTwoPhase = "hold" | "fail" | "succeed";
+  let pageTwoPhase: PageTwoPhase = "hold";
+  const held: {
+    params: NavigationReadParams | null;
+    resolve: ((response: NavigationReadResponse) => void) | null;
+    reject: ((reason?: unknown) => void) | null;
+  } = { params: null, resolve: null, reject: null };
+  const firstRead = deferred<void>();
   const client = navClientWithDeferredLivePageTwo({
     onPageTwo: (params) => {
-      pageTwoAttempts++;
-      // The background Live roster owner discovers the complete roster and
-      // spends the first attempt; the chord's first demand spends the second,
-      // and its retry is the third.
-      if (pageTwoAttempts <= 2) throw new Error("transient read failure");
-      return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      if (pageTwoPhase === "fail") throw new Error("transient read failure");
+      if (pageTwoPhase === "succeed") {
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return new Promise<NavigationReadResponse>((resolve, reject) => {
+        held.params = params;
+        held.resolve = resolve;
+        held.reject = reject;
+        firstRead.resolve();
+      });
     },
+  });
+  // The chord's demand reads page two through loadSection; the background
+  // roster owner reads through its own background page lease instead, so
+  // wrapping the state's action counts the chord's reads alone.
+  const navigationState = navigationStore.getState();
+  const loadSection = navigationState.loadSection;
+  const demandSpy = vi.spyOn(navigationState, "loadSection");
+  onTestFinished(() => demandSpy.mockRestore());
+  demandSpy.mockImplementation((...args) => {
+    const page = loadSection(...args);
+    if (args[0] === "live" && (args[1] ?? 0) > 0) {
+      demandLoads += 1;
+      demandPages.push(page);
+    }
+    return page;
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
   await rail().findByText("Live A");
-  // Page two was already read once (and failed) by background discovery.
-  await waitFor(() => expect(pageTwoAttempts).toBe(1));
-
+  // Page two's first read - background discovery's - is in flight; settle it
+  // as a failure, so the page has failed once before any press.
+  await firstRead.promise;
+  const firstReject = held.reject;
+  if (!firstReject) throw new Error("page-two request was not issued");
+  pageTwoPhase = "fail";
+  await act(async () => {
+    firstReject(new Error("transient read failure"));
+  });
+  pageTwoPhase = "hold";
   await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
@@ -479,12 +260,46 @@ test("live-next demand-load retries after the page request fails", async () => {
   // The first demand re-requests the failed page and fails again; the view
   // stays and no navigation happens.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(2));
+  expect(demandLoads).toBe(1);
+  // While the demand's page-two read is in flight, inject a targeted section
+  // invalidation — not the per-page forced refresh the background owner's
+  // paced retry issues through lease.refresh: the revalidator marks the
+  // in-flight entry for a rerun and chains a NEW request onto the load
+  // promise once it lands. The fail phase armed below must settle that
+  // chained request too, or the awaited demand read never completes.
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/navigation/invalidated",
+      params: {
+        generationId: "generation_test",
+        sequence: 1,
+        targets: [{ kind: "section", section: "live" }],
+      },
+    });
+  });
+  const demandReject = held.reject;
+  if (!demandReject) throw new Error("page-two request was not issued");
+  pageTwoPhase = "fail";
+  await act(async () => {
+    demandReject(new Error("transient read failure"));
+  });
+  const firstDemandPage = await demandPages[0]!;
+  expect(firstDemandPage.error).not.toBeNull();
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  pageTwoPhase = "hold";
 
   // A cached "already demanded" entry must not brick the retry.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(3));
+  expect(demandLoads).toBe(2);
+  const params = held.params;
+  const resolve = held.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  pageTwoPhase = "succeed";
+  await act(async () => {
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  const secondDemandPage = await demandPages[1]!;
+  expect(secondDemandPage.error).toBeNull();
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
 

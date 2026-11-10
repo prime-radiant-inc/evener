@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -36,11 +37,12 @@ import (
 // first and then stops pprof, the reverse of the order they started in. On
 // error nothing is left running.
 func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTrace, func(), error) {
+	log := componentlog.NewWriter("hub", stderr)
 	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+		log.Info(fmt.Sprintf(format, args...))
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return nil, nil, err
 	}
 	if opts.appwireTrace == "" {
@@ -49,19 +51,19 @@ func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTr
 	tracePath, absErr := filepath.Abs(opts.appwireTrace)
 	if absErr != nil {
 		stopPprof()
-		_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
+		log.Info(fmt.Sprintf("appwire trace path: %v", absErr))
 		return nil, nil, fmt.Errorf("resolve appwire trace path: %w", absErr)
 	}
 	trace, err := appserver.NewWebSocketTrace(tracePath)
 	if err != nil {
 		stopPprof()
-		_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
+		log.Info(fmt.Sprintf("appwire trace: %v", err))
 		return nil, nil, fmt.Errorf("create appwire trace: %w", err)
 	}
-	_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
+	log.Info(fmt.Sprintf("recording raw browser AppWire frames at %s; this file contains sensitive data", tracePath))
 	return trace, func() {
 		if closeErr := trace.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
+			log.Info(fmt.Sprintf("close appwire trace: %v", closeErr))
 		}
 		stopPprof()
 	}, nil
@@ -101,20 +103,21 @@ func publishEndpoint(web *WebServer, endpoint EndpointConfig, configIdentity, hu
 
 // announceHub tells the operator where the hub is listening and how to sign in.
 func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRoot, authToken string) {
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, record.BoundAddr, runDir)
-	_, _ = fmt.Fprintf(stderr, "[hub] configured listener: %s (%s)\n", record.RequestedListenAddr, record.ListenSource)
+	log := componentlog.NewWriter("hub", stderr)
+	log.Info(fmt.Sprintf("evener-hub %s listening on %s (run_dir=%s)", Version, record.BoundAddr, runDir))
+	log.Info(fmt.Sprintf("configured listener: %s (%s)", record.RequestedListenAddr, record.ListenSource))
 	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
+		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
-			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
+			log.Info("Private sign-in link (treat as a password): " + link)
 		}
 	} else {
-		_, _ = fmt.Fprintf(stderr, "[hub] cannot advertise browser origin: %v\n", originErr)
+		log.Info(fmt.Sprintf("cannot advertise browser origin: %v", originErr))
 	}
-	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintln(stderr, "[hub] retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
-	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	log.Info("Keep this terminal running while you use Evener in the browser.")
+	log.Info("retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
+	log.Info(fmt.Sprintf("Auth token file: %s (use as Authorization: Bearer ... for scripted clients)", filepath.Join(hubStateRoot, hubedge.TokenFileName)))
 }
 
 // hubRuntime is the state the startup phases share. Each phase reads what an
@@ -129,15 +132,16 @@ type hubRuntime struct {
 	endpoint       EndpointConfig
 	configIdentity string
 
-	runDir       string
-	stateGlob    string
-	pastIndexDB  string
-	hubStateRoot string
-	stateDir     string
-	authToken    string
-	hubToken     string
-	boundAddr    string
-	pluginRoot   string
+	runDir            string
+	stateGlob         string
+	pastIndexDB       string
+	hubStateRoot      string
+	stateDir          string
+	authToken         string
+	hubToken          string
+	sessionToolsHubID string
+	boundAddr         string
+	pluginRoot        string
 
 	roster           *hubcore.Roster
 	past             *hubcore.PastIndex
@@ -204,19 +208,31 @@ type hubRuntime struct {
 }
 
 func (r *hubRuntime) logf(format string, args ...any) {
-	_, _ = fmt.Fprintf(r.stderr, "[hub] "+format+"\n", args...)
+	componentlog.NewWriter("hub", r.stderr).Info(fmt.Sprintf(format, args...))
 }
 
 func (r *hubRuntime) bump() { r.inputs.Bump() }
 
 func (r *hubRuntime) pokeAttention() {
 	r.inputs.Bump()
-	select {
-	case r.attentionPoke <- struct{}{}:
-	default:
-	}
+	r.pokeAttentionWatcher()
+	r.pokeRemoteRefresher()
+}
+
+// pokeRemoteRefresher nudges the remote-thread cache's refresher.
+func (r *hubRuntime) pokeRemoteRefresher() {
 	select {
 	case r.remotePoke <- struct{}{}:
+	default:
+	}
+}
+
+// pokeAttentionWatcher nudges only the attention watcher. A local roster change
+// is not a remote-source change, so feeding it to remotePoke would make the
+// ~30s remote refresher walk every attached host for nothing.
+func (r *hubRuntime) pokeAttentionWatcher() {
+	select {
+	case r.attentionPoke <- struct{}{}:
 	default:
 	}
 }
@@ -336,6 +352,12 @@ func (r *hubRuntime) openStores() (func(), error) {
 	r.favorite = hubcore.NewFavoriteStore(r.pastIndexDB)
 	r.pinSections = hubcore.NewPinSectionStore(r.pastIndexDB)
 	r.sessionSeen = hubcore.NewSessionSeenStore(r.pastIndexDB)
+	// Resolve the durable peer identity before any listener is published.
+	var err error
+	r.sessionToolsHubID, err = hubcore.NewHubIdentityStore(r.pastIndexDB).HubID()
+	if err != nil {
+		return nil, fmt.Errorf("session tools hub identity: %w", err)
+	}
 
 	hubToken, err := r.deps.newToken()
 	if err != nil {
@@ -510,13 +532,14 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 		newSSHManager = sshconn.New
 	}
 	r.sshManager = newSSHManager(r.hostRegistry, sshconn.Options{
-		Logger:         r.logf,
-		BuildBinary:    deploy.buildBinary,
-		BuildSource:    deploy.buildSource,
-		OwnExecutable:  deploy.ownExecutable,
-		DeployDisabled: deploy.disabled,
-		DeployHelp:     deploy.help,
-		OnEvent:        r.onSSHEvent,
+		SessionToolsHubID: r.sessionToolsHubID,
+		Logger:            r.logf,
+		BuildBinary:       deploy.buildBinary,
+		BuildSource:       deploy.buildSource,
+		OwnExecutable:     deploy.ownExecutable,
+		DeployDisabled:    deploy.disabled,
+		DeployHelp:        deploy.help,
+		OnEvent:           r.onSSHEvent,
 	})
 	closeSSH := func() { _ = r.sshManager.Close() }
 
@@ -559,13 +582,10 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 		// attached-only), so its threads stay absent from the navigation tree
 		// until the next ~30s tick. Poke the remote-thread refresher on the
 		// same transition so an explicit evener/host/attach populates the tree
-		// immediately. remotePoke is buffered 1 and this send is non-blocking,
-		// so the sshconn event loop never blocks on a refresh already pending.
+		// immediately. The poke is non-blocking, so the sshconn event loop
+		// never blocks on a refresh already pending.
 		func(host string) {
-			select {
-			case r.remotePoke <- struct{}{}:
-			default:
-			}
+			r.pokeRemoteRefresher()
 			// The same transition wakes the host-notification fan-out: a
 			// fan-out sleeping in backoff would otherwise wait up to 30s
 			// before subscribing while the new client's notification buffer
@@ -617,6 +637,7 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		Favorite:                  r.favorite,
 		PinSections:               r.pinSections,
 		SessionSeen:               r.sessionSeen,
+		HubID:                     r.sessionToolsHubID,
 		MessageSearch:             r.messageSearch,
 		Spawner:                   r.spawner,
 		APILogDefault:             cfg.APILog,
@@ -743,11 +764,28 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	r.roster.SetOnChange(func() {
 		bump()
 		web.navigation.Invalidate(navigationChangeHint{})
+		// The attention watcher derives needs-you/working and the Manager's
+		// roster from this same snapshot, but its own loop only recomputes on a
+		// five-second tick unless something pokes it. Without this, a daemon
+		// appearing, leaving, or reporting a pending ask reached the sidebar at
+		// once (Invalidate) while attention and every armed Manager roster watch
+		// waited out the tick, up to five seconds behind the state they
+		// describe.
+		r.pokeAttentionWatcher()
 		observeSessionCredentials()
+		reconcileSessionTools(web.sources)
 	})
 	r.archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	r.favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	r.remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	r.remoteCache.SetOnChange(func() {
+		bump()
+		web.navigation.Invalidate(navigationChangeHint{Sources: true})
+		// Same attention-freshness rule as the roster hook above: remote asks
+		// and approvals reach the watcher only through this cache. The change
+		// was published by the refresher or pruned by a host removal, so poke
+		// the watcher and not the refresher.
+		r.pokeAttentionWatcher()
+	})
 	// A connection-state transition flips sshconn.Manager.Attached, which is the
 	// online signal every remote row's liveness and the manifest's
 	// sources[].online are derived from. Roster/PastIndex/remoteCache hooks do not
@@ -793,6 +831,7 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// this awaited group and only the context gates starting one.
 	transcriptIndexRepairs.wire(ctx)
 	r.sessionCredentials.start(ctx, goBackground)
+	startSessionTools(ctx, web.sources, goBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of

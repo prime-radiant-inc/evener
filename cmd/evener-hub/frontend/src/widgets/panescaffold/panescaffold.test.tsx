@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { readModuleCss } from "../../styles/cssBlock";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -260,7 +261,21 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   );
   // The phone keeps only keyboard-aware safe-area clearance below the card.
   expect(css).toMatch(
-    /@media \(max-width: 899px\) \{[\s\S]*?\.footer \{[^}]*padding: var\(--space-3\) var\(--space-4\);[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footer \\{[^}]*padding: var\\(--space-3\\) var\\(--space-4\\);[^}]*padding-bottom: max\\(0px, env\\(safe-area-inset-bottom\\) - var\\(--keyboard-inset, 0px\\)\\)`,
+    ),
+  );
+  // A flush edge footer below this one (the session status bar) is the pane's
+  // bottom edge and owns the band, so the dock must not reserve it twice.
+  expect(css).toMatch(
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footerBeforeEdge \\{[^}]*padding-bottom: var\\(--space-3\\)`,
+    ),
+  );
+  // While the composer is focused the status bar hides, so the dock takes
+  // the home-indicator band back (focus can outlive the keyboard).
+  expect(css).toMatch(
+    /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
   );
 });
 
@@ -320,7 +335,7 @@ test("clears the chrome store title on unmount", async () => {
 test("mobile: the pane sheds its border and radius to sit flush against the screen edges", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
   const paneRule = mobile![1]!.match(/\.pane \{([^}]*)\}/);
   expect(paneRule).not.toBeNull();
@@ -331,7 +346,7 @@ test("mobile: the pane sheds its border and radius to sit flush against the scre
 test("mobile: the in-pane header is hidden - the title lives in the top bar", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   const headerRule = mobile![1]!.match(/\.header \{([^}]*)\}/);
   expect(headerRule).not.toBeNull();
   expect(headerRule![1]).toContain("display: none");

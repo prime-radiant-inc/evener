@@ -39,6 +39,7 @@ import "./index";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
+import { installMobileViewport } from "./testing/mobileViewport";
 import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
 import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
@@ -46,32 +47,7 @@ import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
-import { readResponse } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
+import { readResponse, stubSessionSlots } from "./sessionTestUtils";
 
 stubSessionSlots();
 
@@ -1193,33 +1169,52 @@ test("same-session pane menus open Overview from their own instance", async ({ o
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
 });
 
-test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
+test("mobile keeps the session's activity chips in the composer's control row, with no footer strip", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(StatusBarModule.StatusBar).mockRestore();
   onTestFinished(stubSessionSlots);
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((media: string) => ({
-      media,
-      matches: media === "(max-width: 899px)",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    })),
-  );
+  onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
-  fake.on("evener/git/head", () => ({ head: "mobile-branch", originUrl: "git@github.com:owner/repo.git" }));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
+  }));
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
     </ClientProvider>,
   );
 
-  await screen.findByTestId("composer-input-card");
-  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
-  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
-  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  // No status strip below the composer on a phone: the pane renders no
+  // edge footer, so the composer's own control row is the bottom surface.
   expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
+
+  const user = userEvent.setup();
+  // Engaging the editor brings the full row: attach and the activity chips
+  // ride in it.
+  await user.click(editor);
+  const form = screen.getByTestId("composer-form");
+  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy());
+
+  // A resting editor sheds the chips and attach; Send stays, so the
+  // resting card is still a usable one-line composer. A real blur() moves
+  // focus off the editor, which the engagement reconcile reads.
+  act(() => {
+    editor.blur();
+  });
+  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+
+  // Re-engaged, a chip is the phone's one-tap way into the Overview list.
+  await user.click(editor);
+  await user.click(await screen.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(

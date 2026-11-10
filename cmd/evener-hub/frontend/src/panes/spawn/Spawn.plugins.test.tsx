@@ -66,6 +66,27 @@ test("desktop plugin summary remains mounted with exact loading and error status
   expect(within(screen.getByTestId("spawn-plugin-summary")).getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
+test("an explicit plugin preview names the loading wait, then the selection issue", async () => {
+  const user = setupUser();
+  const pending = deferred<PluginPreviewResponse>();
+  let holdPreview = false;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => (holdPreview ? pending.promise : SPAWN_PLUGIN_PREVIEW));
+  });
+  renderSpawn(fake);
+  await settled();
+  await openDesktopPluginSelection(user);
+  holdPreview = true;
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Waiting for the host"));
+
+  await act(async () =>
+    pending.resolve({ ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] }),
+  );
+  await waitForPluginPreviewState("ready");
+  expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Resolve the plugin selection");
+});
+
 test("desktop plugin summary lists the configured plugin names", async () => {
   const user = setupUser();
   const fake = readyClient((f) => {

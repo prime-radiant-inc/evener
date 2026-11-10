@@ -14,12 +14,45 @@ import {
 import {
   applyReadModel,
   applyReadResponse,
+  frontierFromCursor,
   hydrateThread,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
+  olderFrontierOf,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
 import type { ThreadReadResponse } from "./types.gen";
+
+// A v6 read response for the standard test thread. `olderCursor` absent is a
+// source read that named no older history; a value is the opaque continuation.
+function historyRead(olderCursor?: string): ThreadReadResponse {
+  return {
+    thread: testThread(),
+    bootGeneration: "",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    ...(olderCursor === undefined ? {} : { olderCursor }),
+  } as ThreadReadResponse;
+}
+
+test("hydrateThread records a real read's older-frontier provenance (#5585)", () => {
+  const cursorless = hydrateThread(historyRead(), "ref_t", 1000);
+  expect(cursorless.olderCursor).toBeUndefined();
+  // A source read with no cursor names the end of older history; it is not
+  // the same state as a cache seed that never asked.
+  expect(cursorless.olderFrontier).toBe("none");
+
+  const windowed = hydrateThread(historyRead("cursor-1"), "ref_t", 1000);
+  expect(windowed.olderCursor).toBe("cursor-1");
+  expect(windowed.olderFrontier).toBe("cursor-1");
+});
+
+test("a model that never recorded a frontier is unknown, never source-named none (#5585)", () => {
+  expect(olderFrontierOf({})).toBe("unknown");
+  expect(olderFrontierOf({ olderFrontier: "none" })).toBe("none");
+  expect(frontierFromCursor({})).toBe("none");
+  expect(frontierFromCursor({ olderCursor: "c9" })).toBe("c9");
+});
 
 test("versioned entry merge rejects older input and preserves richer equal-version text", () => {
   const held: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "known text" };
@@ -670,6 +703,13 @@ test("hydrateThread maps evener.pendingEscalations verbatim into pendingEscalati
   expect(model.pendingEscalations).toEqual([escalation]);
 });
 
+// EvenerThread.kind is how a past read names a fork child. The token
+// fallback reads it to avoid charging the child's inherited prefix.
+test("hydrateThread carries the wire's thread kind", () => {
+  expect(testHydrate({ evener: { kind: "fork" } }).kind).toBe("fork");
+  expect(testHydrate().kind).toBeUndefined();
+});
+
 test("hydrateThread defaults pendingEscalations to an empty array when evener.pendingEscalations is absent", () => {
   const model = testHydrate();
   expect(model.pendingEscalations).toEqual([]);
@@ -866,4 +906,24 @@ test("hydrateThread clears artifactsDir when a snapshot omits it", () => {
     2000,
   );
   expect(withdrawn.artifactsDir).toBeUndefined();
+});
+
+// The scratch directory is snapshot state with the same withdraw rule as the
+// artifacts directory: it must reach the model from a read, and a fresh read
+// that withdraws it must clear it, not keep the previous one.
+test("a read carries scratchDir into the model and a withdrawn root clears it", () => {
+  expect(testHydrate({ evener: {} }).scratchDir).toBeUndefined();
+  const withRoot = testHydrate({ evener: { scratchDir: "/tmp/evener-scratch-a/a" } });
+  expect(withRoot.scratchDir).toBe("/tmp/evener-scratch-a/a");
+  expect(applyReadModel(withRoot, testHydrate({ evener: {} })).scratchDir).toBeUndefined();
+  const wire = testThread({ evener: {} });
+  const withdrawn = applyReadResponse(
+    withRoot,
+    {
+      thread: wire,
+      requestGeneration: 1,
+    } as ThreadReadResponse,
+    2000,
+  );
+  expect(withdrawn.scratchDir).toBeUndefined();
 });

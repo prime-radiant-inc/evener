@@ -32,8 +32,8 @@ One tool, seven operations, selected by `operation`:
 | `switch` | Enters an existing worktree without creating one. | `name` (a worktree this tool manages) or `path` (any worktree git already knows about, including hand-made ones) |
 | `exit` | Leaves the current worktree and returns to where the session was before, without touching the worktree itself. | none |
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
-| `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
-| `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | none |
+| `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (retire this session's own retained-idle children under the lane and allow unverified branch deletion), `force_dirty` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
+| `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | `orphaned_delegate_days` (optional; also release delegate-lane locks whose parent session provably cannot act — default 0 keeps the locked-lane rule absolute) |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
 
 Because entering or leaving a worktree changes where every later tool call runs,
@@ -46,6 +46,27 @@ Without it, a session that entered a worktree would have no way to read anything
 outside it — worktree file access is confined to the worktree itself. The typical
 loop is: `create` → work → commit → `exit` → review/merge from the main checkout →
 `remove`.
+
+## Finishing a merged task
+
+The [default system prompt](../../agent/prompts/system.md.tmpl) asks the model to
+remove its local task worktree and branch after verifying that all work at the
+current tip landed upstream, unless its human partner asked to keep them. The
+model checks for uncommitted or untracked work, later commits, running work and
+required deliverables, moves to a surviving checkout, and verifies both removals.
+Anything still needed or not captured upstream stays, with the reason reported.
+Shared branches, remote branches and other sessions' work are outside this cleanup.
+
+Managed task lanes use `remove` with `delete_branch=true`; a parent retires its
+finished delegates' isolation lanes with `dispose`. An isolated delegate reports
+its own lane ready for the parent rather than removing it. Squash/rebase merge
+evidence may justify `force=true`, but cleanup keeps `force_dirty=false` and honors
+live-work protections. These are model instructions, not new automatic collectors.
+
+The same finishing guidance asks the model to list its scratch directory and remove
+unneeded temporary files, logs, copies and generated artifacts before reporting.
+It preserves needed files and reports why, leaving runtime-owned and other
+sessions' files alone. A link in the report is not itself a retention reason.
 
 ## Lock semantics
 
@@ -66,24 +87,43 @@ What this means day to day:
   earlier crash left behind on a worktree the session never got back into is gone once
   the session closes cleanly.
 - `force` never overrides a lock. Locks and dirty-tree safety are different
-  protections: `force` skips the "are there uncommitted changes here" check on
+  protections: `force_dirty` skips the "are there uncommitted changes here" check on
   `remove`; unlocking someone else's worktree is a deliberate act (`git worktree
-  unlock`), never a tool flag.
+  unlock`), never a tool flag — with one operator-directed exception: `prune`'s
+  `orphaned_delegate_days`, below.
 - If a session or delegate dies without a clean shutdown — a crash, a kill — its lock
   is left behind. This is intentional fail-safe behavior: a stale lock just means
   nobody has confirmed the work is abandoned yet. The lock names its former owner, so
   a human (or an agent that has verified the owner is really gone) can clear it with
-  `git worktree unlock` and let `prune` collect it afterward. If the same session
+  `git worktree unlock` and let `prune` collect it afterward — and for a delegate
+  marker, `prune`'s skip reason now carries the owner-liveness verdict that makes the
+  "verified the owner is really gone" step evidence-based (see the recovery recipe in
+  the limitations below). If the same session
   resumes later, it recognizes its own lock and picks the worktree back up rather than
   erroring. A session's *own* marker on a lane it is not occupying is the one piece of
   that residue evener can attribute with certainty: it does not block a `prune`
   candidate, so `prune` reclaims that lane and releases the marker as it does.
-  Another session's marker is never taken on the sweeper's guess.
+  Another session's marker is never taken on the sweeper's guess. The one
+  foreign lock `prune` will release is a delegate lane whose parent provably
+  cannot act, and only when the caller passes `orphaned_delegate_days`: the
+  parent's store records the delegate's isolation disposal, or the parent
+  session is gone or has been inactive at least that many days with no live
+  process proven to host its tree — and none that cannot be ruled out. A
+  held livelock proves the owner live; where no livelock answers (a daemon
+  from before livelock support), so does a live owner the liveness oracle
+  proves through its rendezvous entry — and where that identity cannot be
+  verified, the unresolved doubt of one. A proven-live owner, or one that
+  cannot be ruled out, outranks the transcript clock: a daemon from before
+  the activity refresh leaves a live tree's evidence stale for a whole long
+  command's run, so a live owner never loses its lane to the inactivity
+  clock. The released
+  lane still has to pass the ordinary removal gates, and a lane holding
+  unmerged work is unlocked but kept.
 
 ## Disposal: `remove`, `prune`, and `dispose`
 
 `remove` deletes one named worktree. Before it does, it checks that removal is safe:
-uncommitted changes block it unless you pass `force`; commits that were never merged
+uncommitted changes block it unless you pass `force_dirty`; commits that were never merged
 anywhere block *branch* deletion even with `delete_branch: true`, unless you also pass
 `force` (deleting the worktree and abandoning the branch — orphaned but not gone — are
 different levels of destructive). If you ask it to delete the branch too, it only does
@@ -92,15 +132,32 @@ never diverged) — it does not trust git's own "already merged" check, because 
 check is relative to whatever the main checkout happens to have checked out right now,
 which can be misleading (e.g. a detached-HEAD review).
 
+`remove --force` also retires the caller's own retained-idle **shared-workspace**
+children whose recorded working directory is under the lane — the default-isolation
+delegates that have no lane of their own, which used to dead-end a clean lane's
+removal. It closes their durable resumability (`workspace_lane_removed`) before
+tearing the resident runtime down, refuses while an armed or pending watch targets
+one, and refuses a child that starts a notification drive or finalizer at the moment
+of effect. Every other live-work blocker still fails closed.
+
 `prune` is the "clean up everything that's safe to clean up" call — the one-shot
 alternative to remembering to `remove` every finished lane by hand. It walks every
 managed worktree and removes the ones that are simultaneously: unlocked, not currently
 in use by any live shell job or delegate under this session, clean (no uncommitted
 changes), and either untouched since creation or already merged into the branch it
 was created from. Everything else is reported with a reason instead of being touched —
-locked, dirty, unmerged, checked out somewhere else, or too new to judge yet. `prune`
+locked, dirty, unmerged, checked out somewhere else, or too new to judge yet; a locked
+*delegate* lane's reason also carries the owner-liveness verdict (`owner-live`,
+`owner-dead-looking`, `owner-unverifiable`) — the evidence for the manual unlock
+recipe in the limitations below, never a collection trigger. `prune`
 never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
-unlock.
+  unlock. With `orphaned_delegate_days` it also releases the lock of a delegate
+  lane whose parent provably cannot act — the parent's isolation disposal
+  already ran, or the parent session is gone or long-inactive with no live
+  process proven to host its tree, and none that cannot be ruled out — and
+  then judges
+  the lane by these same gates; a work-holding orphan is unlocked and reported
+  kept.
 
 `dispose` retires one finished **delegate isolation lane** by its delegate id — the
 synchronous move a live session makes the moment it finishes a lane's work, rather
@@ -251,8 +308,31 @@ These are documented trade-offs, not bugs:
   session's *own* marker on a lane it is not occupying: that marker does not block a
   `prune` candidate, so `prune` reclaims the lane and releases it — the session itself
   is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
-  skips keeps its lock, and another session's marker has no liveness signal at all and
-  still needs a deliberate unlock.
+  skips keeps its lock. For a *delegate* marker — a lane owned by another session's
+  tree — the skip reason reports the owner-liveness verdict prune can prove:
+  `owner-live` (the tree's root process holds its process livelock, or a
+  rendezvous entry of one of the tree's sessions — the root's own, or an
+  independently resumed coordinator's — names a pid verified to still be the
+  daemon that registered it), `owner-dead-looking` (the root's livelock file
+  exists but the flock is free — the OS released it at process death — and no
+  verified rendezvous pid is live), or `owner-unverifiable` (the root cannot
+  be resolved, predates livelocks, or a rendezvous entry's daemon identity
+  cannot be established). The verdict never collects anything by itself.
+  The one-time bulk recovery recipe for a dead-owner pile:
+  1. Run `manage_worktree prune` and read the skipped list: every
+     `owner-dead-looking` lane is a candidate; every `owner-live` lane is not.
+  2. Before unlocking, confirm each dead-looking root is really finished and not
+     merely *idle*: an idle-retired, resumable root also releases its livelock and
+     looks dead-looking, and unlocking its delegates' lanes would expose preserved,
+     resumable work to collection. A root is safe to unlock for when you know its
+     session will not be resumed — a one-shot tree long finished, or a session you
+     have decided to abandon.
+  3. Unlock the confirmed lanes' markers: `git worktree unlock <lane-path>` from the
+     main checkout, once per lane (the skip reason's marker names the delegate id and
+     the owner session id for the audit trail).
+  4. Run `manage_worktree prune` again: the now-unlocked, clean, merged-or-unchanged
+     lanes are collected like any other residue; anything still not disposable is
+     reported with its reason and stays for `remove` or a human.
 - **A session whose working directory is deleted out from under it refuses honestly.**
   If the lane a session is standing in is removed from the main checkout while the
   session keeps running, the session's working directory no longer exists, and every

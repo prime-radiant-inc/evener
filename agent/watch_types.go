@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -110,10 +111,10 @@ var (
 )
 
 // quietWatchdogMessage is the owner-notification reason a quiet running delegate
-// triggers. It names the actual window so the text stays truthful when tests
-// scale the window down (the production window renders as "10m").
-func quietWatchdogMessage(window time.Duration, lastActivity time.Time) string {
-	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietWindow(window), lastActivity.Format(time.RFC3339Nano))
+// triggers. quiet is the silence the wake reports: the first wake names the
+// window, and each repeat of one silent stretch names the ongoing total.
+func quietWatchdogMessage(quiet time.Duration, lastActivity time.Time) string {
+	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietDuration(quiet), lastActivity.Format(time.RFC3339Nano))
 }
 
 // formatQuietWindow renders a quiet window for the notification text. A
@@ -125,6 +126,26 @@ func formatQuietWindow(window time.Duration) string {
 		return fmt.Sprintf("%dm", window/time.Minute)
 	}
 	return window.String()
+}
+
+// formatQuietDuration renders a measured quiet silence, floored to whole
+// minutes — it only ever understates, by under a minute — where the exact
+// formatQuietWindow never floors a configured threshold. A silence past an
+// hour reads as hours:minutes; below a minute the default duration string
+// keeps a test-scaled window truthful (e.g. "50ms").
+func formatQuietDuration(d time.Duration) string {
+	if d < time.Minute {
+		return d.String()
+	}
+	minutes := int(d / time.Minute)
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := minutes / 60
+	if minutes%60 == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, minutes%60)
 }
 
 // watchEndedUnfiredMessage is the single end-notice text a watch delivers on its
@@ -207,6 +228,20 @@ type watchConfig struct {
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
+	hubRef             string
+	hubInstance        string
+	hubGeneration      string
+	hubCaller          string
+	hubCompletion      bool
+	hubTurnBound       bool
+	hubTurnID          string
+	hubSeen            map[string]bool
+	hubSuspended       bool
+	rosterRevision     uint64
+	rosterBaseline     map[string]appwire.AttentionEntry
+	rosterBound        bool
+	rosterNeedsResync  bool
+	rosterConsumerDone chan struct{}
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -240,8 +275,11 @@ type watchConfig struct {
 	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
 	settledOrder      []jobstore.WatchSendKey
 	rejectingDelivery bool
-	nextUpdateSeq     uint64
-	progressStop      chan struct{}
+	// terminalDeliveryPending keeps detached eligibility alive while endHubWatch
+	// records its final send outside jm.mu.
+	terminalDeliveryPending bool
+	nextUpdateSeq           uint64
+	progressStop            chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
 	// caller frames + delivered sidecar sends + no-send watch notifications +
 	// periodic progress ticks). It is the volume job_list reports, not the
@@ -424,6 +462,9 @@ type watchSendDelivery struct {
 	watchTarget              string
 	watchedIdentity          string
 	trigger                  string
+	rosterPayload            string
+	rosterInitial            bool
+	rosterResync             bool
 	triggerProvenance        *provenance.Causal
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a

@@ -79,6 +79,13 @@ Each command owns its flags. Run `evener COMMAND --help` before scripting a subc
 
 For client startup and authentication, see [Integrations](integrations.md). `serve` also accepts daemon-specific options such as `--run-dir`, `--app-replay-size` (default 1000), `--non-interactive`, `--model-fallback` (repeatable) and `--daemon-idle-timeout` (default 0, automatic retirement disabled). It does not accept every one-shot option, including `--timeout` or `--ask-responder`.
 
+`serve --manager` starts this session as a Manager of the sessions its hub can
+reach. It is a start-time property, not a setting: the daemon persists it with
+the session, and nothing turns it off. The same flag is what the hub passes for
+a session launched with the web form's Start as Manager switch; `evener run`
+has no Manager mode because a one-shot run session has no hub connection to
+manage through.
+
 ## Upgrade binaries
 
 Syntax: `evener upgrade [flags] [release|snapshot|vTAG]`. Put flags before the
@@ -102,6 +109,11 @@ evener doctor jobs SESSION_ID
 ```
 
 Replace `SESSION_ID` with an ID from `sessions`, or copy its full session ref.
+With `--since`, `sessions` reads only sessions whose transcript changed in the window, so a
+large state root is not parsed in full. The CLI has no default window; the
+`doctor_evener` tool defaults to the last 168 hours (7 days) and honors Stop.
+A corrupt transcript outside the window is not reported as unreadable, because it
+is never opened.
 The selector grammar is:
 
 | Form | Resolution |
@@ -163,10 +175,12 @@ not necessarily the value the session uses. For a new one-shot session:
 - `--max-rounds`: omitted `-1` resolves to **unlimited**, as does explicit `0`.
   A positive value sets a cap. The [conversion](../cmdutil/cmdutil.go) and
   [session defaults](../agent/session_config.go) define the current behavior.
-- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**.
+- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**;
+  explicit `0` disables subagents entirely, and a positive value caps nesting.
+  A resumed session keeps the depth persisted in its metadata; the flag selects
+  the depth for a new session.
 - `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.
-  For these two delegation limits, explicit `0` also selects the default; it
-  does not mean unlimited or disabled.
+  Explicit `0` also selects the default; it does not mean unlimited or disabled.
 - `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
   retained terminal delegate records per session.
 - `--vision-model`: omitted `""` uses the **active session model** for image
@@ -181,7 +195,7 @@ runtime meaning across flags.
 | `--fast-cheap-model` | `""` | auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider |
 | `--vision-model` | `""` | vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model) |
 | `--dir` | `""` | working directory (default: current directory) |
-| `--system-prompt` | `""` | path to a custom system prompt file |
+| `--system-prompt` | `""` | path to a custom system prompt file, replacing only the persona block of the system prompt; tool documentation, global AGENTS.md guidance and the skill catalog are still appended after it |
 | `--state-dir` | `""` | override runtime state directory (default: XDG-computed) |
 | `--disable-memory` | `false` | disable native memory for this session, including on resume |
 | `--resume` | `""` | resume a previous session by id |
@@ -189,7 +203,7 @@ runtime meaning across flags.
 | `--resume-last` | `false` | resume the most recent session |
 | `--list-sessions` | `false` | list saved sessions and exit |
 | `--max-rounds` | `-1` | max tool rounds per input (0=unlimited, effective default: unlimited) |
-| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2) |
+| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2, 0 disables) |
 | `--max-concurrent-delegates` | `-1` | max concurrently running delegate turns per session tree (default: 50) |
 | `--max-retained-terminal` | `-1` | max retained terminal delegate records per session (default: 2048) |
 | `--share-task-store` | `false` | share task list between parent and child sessions |
@@ -215,6 +229,7 @@ runtime meaning across flags.
 | `--system-prompt-append` | `omitted` | path to append to system prompt file (repeatable) |
 | `--sandbox` | `"off"` | sandbox mode: off (default), read-only, workspace-write, or restricted |
 | `--sandbox-net` | `"on"` | sandbox network egress on\|off (default on; only applies with a non-off --sandbox mode) |
+| `--commit-provenance` | `""` | record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor) |
 | `--api-log` | `"off"` | durable API request logging on\|off (default off; on records every provider request and response to `<state-dir>/sessions/<id>.api.jsonl`) |
 | `--timeout` | `0` | overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback) |
 | `--ask-responder` | `""` | Command run through sh -c to answer ask_user, questions JSON on stdin and reply on stdout. Enables interactive behavior, with at most three responder rounds per input. |

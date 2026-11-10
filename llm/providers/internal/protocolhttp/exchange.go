@@ -110,13 +110,13 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 // decode maps that object to the Response, and Complete then stamps the
 // endpoint URL and the response's rate-limit headers on it. A body that is
 // not a JSON object fails under the call's operation name.
-func Complete(ctx context.Context, c *Call, decode func(raw map[string]any) (llm.Response, error)) (llm.Response, error) {
+func Complete(ctx context.Context, c *Call, decode func(r *Result) (llm.Response, error)) (llm.Response, error) {
 	var out llm.Response
 	err := Do(ctx, c, func(r *Result) (*llm.Response, error) {
 		if r.Raw == nil {
 			return nil, errors.New(c.Operation + ": response is not a JSON object")
 		}
-		resp, err := decode(r.Raw)
+		resp, err := decode(r)
 		if err != nil {
 			return nil, err
 		}

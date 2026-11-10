@@ -133,6 +133,7 @@ agent/session_poisoned_wake_gate_test.go	1
 agent/session_queue_cancel_test.go	1
 agent/session_queue_promote_test.go	2
 agent/session_resolve_profile_test.go	1
+agent/session_set_model_test.go	1
 agent/session_surface_behavior_test.go	1
 agent/session_tool_repair_issue621_test.go	13
 agent/session_tool_repair_oneof_multimatch_test.go	3
@@ -187,7 +188,6 @@ cmd/evener-hub/internal/fspaths/app_paths_test.go	12
 cmd/evener-hub/internal/hostlock/hostlock_test.go	1
 cmd/evener-hub/internal/hostops/ops_test.go	1
 cmd/evener-hub/internal/hostops/retention_test.go	1
-cmd/evener-hub/internal/hubcore/pin_section_retry_test.go	5
 cmd/evener-hub/internal/hubedge/auth_token_test.go	2
 cmd/evener-hub/internal/launchconfig/coverage_test.go	2
 cmd/evener-hub/internal/launchconfig/io_test.go	4
@@ -205,7 +205,6 @@ cmd/evener-internalcheck/coverage_test.go	1
 cmd/evener/internal/launchcheck/coverage_test.go	4
 cmd/evener/internal/launchcheck/launchcheck_test.go	8
 cmd/evener/internal/rvreg/rvreg_test.go	3
-cmd/evener/memharness_test.go	1
 cmd/evener/run_ask_responder_test.go	1
 cmd/evener/run_drain_wedged_delegate_test.go	1
 cmd/evener/serve_test.go	1

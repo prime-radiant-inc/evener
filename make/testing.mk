@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-race check-mermaid-freshness merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -24,7 +24,8 @@ test-web: web-preflight build-dev
 # The gate (`evener-dev dev web-browser-guards`, run from the prebuilt evener-dev
 # binary so an interrupt reaches it) runs every guard so one missing browser or
 # failing case does not hide the remaining guard's verdict; exit status is the
-# first nonzero one.
+# first nonzero one. BROWSER_GUARD_SHARD=<shard> runs one shard of the guards
+# instead, as each CI web-browser runner does.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard,
 ## retirementguard, mermaidguard) plus the
@@ -50,12 +51,44 @@ test-web: web-preflight build-dev
 test-web-browser: build-web build-dev
 	@scripts/web/test-web-browser.sh
 
+# The hub's runner-bound integration tests, outside the timing ratchet. The
+# default gate and the timing ratchet skip this exact set; the target runs it
+# with the gate-surface list so the two cannot drift.
+## The hub's runner-bound integration tests, outside the timing ratchet.
+## proves: The hub's daemon-retirement, host-deploy, live-stack E2E, and
+##   remote-hub source-budget tests pass with the full stack.
+## trigger: Required CI hub-integration job; local `make merge-approval-gate`.
+## requires: Go and the live-stack binaries built by TestMain; an enforcing
+##   bwrap sandbox on CI. The default gate skips this exact set.
+## fails-when: Any selected test fails, or the pattern matches no test.
+test-hub-integration:
+	@. scripts/lib/gate-surface-lib.sh; \
+	if ! list=$$(EVENER_HUB_LIVE_STACK_WARM=1 go test ./cmd/evener-hub -list "$$GATE_HUB_INTEGRATION_RUN" 2>&1); then \
+		printf '%s\n' "$$list" >&2; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$list" | grep -q '^Test'; then \
+		echo "test-hub-integration: GATE_HUB_INTEGRATION_RUN matched no tests" >&2; exit 1; \
+	fi; \
+	go test ./cmd/evener-hub -run "$$GATE_HUB_INTEGRATION_RUN" -count=1 -timeout 30m
+
 # check:scripts is separate from check because they answer different questions
 # with different resolvers. `tsc --noEmit` reads tsconfig.check.json and proves
 # the types line up; check:scripts asks Node's own resolver, through tsx, the
 # only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
 # can still load their module graph. The scripts run under no gate, so nothing
 # noticed when they stopped resolving.
+## Fail if the committed mermaid bundle is stale (matches no rebuild).
+## proves: src/generated/mermaidPage.ts equals `npx tsx
+##   scripts/build-mermaid-page.mts`, so the offline WebView page matches the
+##   generator and the shared sanitize constants it substitutes.
+## trigger: Local pre-merge when the generator, mermaid, DOMPurify, or the
+##   shared sanitize constants change; merge-approval-gate.
+## requires: mobile-native's real node_modules install (esbuild, tsx).
+## fails-when: The committed module differs from a rebuild; the message names
+##   the regeneration command.
+check-mermaid-freshness: native-preflight
+	@cd mobile-native && npx tsx scripts/check-mermaid-freshness.mts
+
 ## The native iPhone app gate.
 ## proves: Metro bundles the real iOS entry point, the native
 ##   Vitest suites plus strict native TypeScript compilation
@@ -207,26 +240,23 @@ test:
 	@case "$(TEST_SCOPE)" in all|root|nonroot) ;; *) echo "make test: TEST_SCOPE must be all, root, or nonroot (got $(TEST_SCOPE))" >&2; exit 2;; esac; \
 		MODULES="$(strip $(SCOPE_MODULES_$(TEST_SCOPE)))" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
-## Alias for `make test`.
-test-short:
-	@$(MAKE) test
-
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
 # hosts are handled inside the tests themselves: the live/e2e families probe
 # their own capabilities and t.Skip (internal/e2ecap).
 ## The canonical serial post-merge gate: lint, build, full tests, and native/package qualification.
 ## proves: make lint, make build, ROOT_FULL=1 make test, the timing budget
-##   checked against the rows that same test run produced, make test-native and
-##   make test-api-package all pass, in that order.
+##   checked against the rows that same test run produced, make
+##   test-hub-integration, make test-native and make test-api-package all pass,
+##   in that order.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
 ##   browser guards; those have separate owners. The timing check reads the
 ##   gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is
 ##   strict where the ratchet's own policy is (CI) and warn-only on a local run;
-##   a blessed-class per-test ceiling breach is nonzero there, while an
-##   unclassified test over the flat ceiling only warns (#4601).
+##   a named per-test ceiling breach is nonzero there, while an
+##   unnamed test over the flat ceiling only warns (#4601).
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
@@ -236,7 +266,8 @@ merge-approval-gate:
 		$(MAKE) docs-check && \
 		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
 		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
-		$(MAKE) test-native test-api-package
+		$(MAKE) test-hub-integration && \
+		$(MAKE) test-native check-mermaid-freshness test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
 # keeps the agent wave at the runner's measured cap: under -race (~10x slower),
@@ -268,6 +299,7 @@ test-race:
 		modules="$(strip $(SCOPE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
 		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
+		EVENER_GATE_KEEP_HUB_INTEGRATION=1 \
 		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
 		scripts/gate/run-module-tests.sh -race -short -count=1
 
@@ -280,26 +312,29 @@ test-race:
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
-# test-timing-budget ratchets per-package test wall time against
-# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
-# a per-test ceiling segmented by test class (#4601), so an unexamined timing
+# test-timing-budget ratchets per-package test CPU time against
+# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, a
+# wall-time backstop at 2.5x, plus
+# a per-test ceiling (#4601), so an unexamined timing
 # regression cannot silently erode the wins
 # docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md recorded. CHECK=1
 # enforces the ratios (strict in CI, warn-only on a local run); a test named in
-# a class is enforced against its class ceiling, while a test in no class keeps
-# the flat perTestCeilingSeconds and stays warn-only in every mode. Bare
+# the map is enforced against its ceiling, while a test named nowhere keeps the
+# flat perTestCeilingSeconds and stays warn-only in every mode. Bare
 # invocation measures by running the suite itself. Companion to coverage-floor.
-## Ratchet per-package test wall time against testing-budget.json.
+## Ratchet per-package test CPU time, with a wall-time backstop, against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
-##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test
-##   ceiling segmented by test class: a test named in a class is compared
-##   strictly against that class's ceiling (a breach is nonzero under CHECK=1 in
-##   a CI-shaped environment), while a test in no class keeps the flat
+##   wins — fail at 1.5x the checked-in CPU budget, warn at 1.1x, fail at
+##   2.5x the wall budget (a package slowed by waiting), plus a per-test
+##   ceiling: a test named in the map is compared strictly against
+##   its ceiling (a breach is nonzero under CHECK=1 in
+##   a CI-shaped environment), while a test named nowhere keeps the flat
 ##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
-##   the unclassified backlog cannot red the gate (#4601). The checked-in
-##   budget carries the package-wall-seconds metric marker, so per-package ratios
-##   (frontend "web" included) are enforced; a budget file without the marker
-##   downgrades every ratio failure to a warning.
+##   the unnamed backlog cannot red the gate (#4601). The checked-in
+##   budget carries the package-cpu-seconds metric marker, so per-package ratios
+##   are enforced; the frontend "web" row, which has no CPU measurement, keeps
+##   1.5x/1.1x of its wall budget. A budget file without the marker downgrades
+##   every ratio failure to a warning.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);
@@ -308,22 +343,24 @@ vet:
 ##   for a broken measurement, which is nonzero either way.
 ## requires: Deterministic; no provider calls. Reuses gate-surface-lib.sh, so
 ##   it measures the same surface ROOT_FULL=1 make test proves.
-## fails-when: A broken measurement — go list or go test exiting nonzero, or a
-##   go list package with no terminal event in the stream — is nonzero in every
+## fails-when: A broken measurement — go list or go test exiting nonzero, a
+##   go list package with no terminal event in the stream, or a Go package that
+##   ran tests with no CPU row — is nonzero in every
 ##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
 ##   measured and preserves the rest of the file instead of deleting entries it
 ##   did not measure; a full rebaseline also drops entries go list no longer
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
-##   its budget is nonzero once the budget file carries the wall-time metric
-##   marker; while the marker is absent those ratios warn, the "web" row among
-##   them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an
-##   unclassified test over the flat ceiling is reported and named but nonzero in
-##   no mode. A missing budget file, or one whose packages map is empty, always
-##   exits zero; a malformed budget file (a top-level value that is not an object,
-##   invalid JSON, a packages value that is present but not an object, a package
-##   budget value that is not a finite number, a perTestCeilingSeconds that is
-##   present but not a finite number, a perTestCeilingClasses that is present
-##   but not an object, or a class ceilingSeconds that is not a finite,
+##   its CPU budget or 2.5x its wall budget is nonzero once the budget file
+##   carries the CPU metric marker; while the marker is absent those ratios
+##   warn, the "web" row among them. A named per-test ceiling breach is nonzero
+##   under CHECK=1; a test named nowhere that is over the flat ceiling is
+##   reported but nonzero in no mode. A missing budget file, or one whose
+##   packages and wallPackages maps are both empty, always exits zero; a
+##   malformed budget file (a top-level value that is not an object, invalid
+##   JSON, a packages or wallPackages value that is present but not an object, a
+##   package budget value that is not a finite number, a perTestCeilingSeconds
+##   that is present but not a finite number, a perTestCeiling that is present
+##   but not an object, or a per-test ceiling that is not a finite,
 ##   float-convertible number including an integer too large to convert) is a
 ##   broken config and is nonzero in every mode, naming the file and the entry
 ##   (#4609, #4614, #4618, #4622, #4629).
