@@ -183,6 +183,10 @@ func retireOverlapLog(t *testing.T, format string, args ...any) {
 	if path == "" {
 		path = filepath.Join(os.TempDir(), "retire-overlap-phases.tsv")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Errorf("create retirement diagnostic sink directory: %v", err)
+		return
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Errorf("open retirement diagnostic sink: %v", err)
