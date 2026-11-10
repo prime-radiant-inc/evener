@@ -390,6 +390,12 @@ interface ReaderOpeningState {
   authorityValid: boolean;
 }
 
+/** The foreground retention floor and the displayed turn array that produced it. */
+interface ForegroundFloor {
+  start: ThreadItemPosition | undefined;
+  scannedTurns: ThreadModel["turns"] | undefined;
+}
+
 /** Owns real wire acceptance, publication, local writes and attached readers for one binding. */
 export class TranscriptRepository {
   readonly #cache: SessionEntryCache;
@@ -407,7 +413,12 @@ export class TranscriptRepository {
   #sourceRevision = 0;
   // Identity-only range ownership survives foreground reader replacement, not
   // source reconciliation. Background payload reclamation remains unchanged.
-  #foregroundStart: ThreadItemPosition | undefined;
+  // The start and the displayed turn array it was derived from live together,
+  // so a reset cannot clear one without the other. The scan only ever moves the
+  // start deeper, so a publication that leaves the array unchanged cannot move
+  // it: metadata-only updates keep the same array identity and skip the
+  // O(displayed items) walk (#4700).
+  #foregroundFloor: ForegroundFloor = { start: undefined, scannedTurns: undefined };
   // True while the current baseline came from a plain windowed read — one
   // whose response carried an older cursor and was not an authoritative
   // reconciliation. Such a baseline presents only the wire window, so the
@@ -1409,7 +1420,7 @@ export class TranscriptRepository {
   holdsResidentForegroundRange(): boolean {
     if (this.#disposed || this.#invalidated) return false;
     const model = this.#model;
-    const start = this.#foregroundStart;
+    const start = this.#foregroundFloor.start;
     if (!model || !start) return false;
     const required = (model.history?.turns ?? model.turns)
       .flatMap((turn) => turn.items)
@@ -1656,7 +1667,7 @@ export class TranscriptRepository {
       continuityId: this.#committedCoverageContinuityId,
       committedSnapshot: this.#committedCoverageSnapshot,
       sourceRevision: this.#sourceRevision,
-      foregroundStart: this.#foregroundStart,
+      foregroundStart: this.#foregroundFloor.start,
       hadPendingWrites: this.#writes.size > 0,
       authorityValid: !this.#recoveryNeeded && !this.#seedAuthorityInvalid,
     });
@@ -2463,7 +2474,7 @@ export class TranscriptRepository {
 
   #advanceSourceRevision(): void {
     this.#sourceRevision++;
-    this.#foregroundStart = undefined;
+    this.#foregroundFloor = { start: undefined, scannedTurns: undefined };
     this.#baselineIdentity = this.#mintBaseline();
   }
 
@@ -3569,16 +3580,19 @@ export class TranscriptRepository {
     // Every publication passes here, so no path (a response-only field update
     // included) can republish a resolved escalation.
     if (this.#model) this.#model = this.#withoutResolvedEscalations(hydratedDisplay(this.#model));
-    if (this.#readerCount > 0 && this.#model) {
-      for (const turn of this.#model.turns) {
+    const displayedTurns = this.#model?.turns;
+    const floor = this.#foregroundFloor;
+    if (this.#readerCount > 0 && displayedTurns && displayedTurns !== floor.scannedTurns) {
+      floor.scannedTurns = displayedTurns;
+      for (const turn of displayedTurns) {
         for (const item of turn.items) {
           if (
             item.transcriptKey &&
             item.position &&
-            (!this.#foregroundStart || comparePosition(item.position, this.#foregroundStart) < 0) &&
+            (!floor.start || comparePosition(item.position, floor.start) < 0) &&
             !encodeTranscriptItem(item).identityOnly
           ) {
-            this.#foregroundStart = item.position;
+            floor.start = item.position;
           }
         }
       }
