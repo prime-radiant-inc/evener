@@ -117,6 +117,80 @@ func TestSessionDeleteRemovesOnlyTarget(t *testing.T) {
 	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
+// TestSessionDeletePersistsTerminalDeletionFence covers #5209: a successful
+// individual deletion must remain an authoritative terminal deletion for
+// later reads, while an unrelated unknown ref keeps the pre-existing
+// retryable-unavailable behavior.
+func TestSessionDeletePersistsTerminalDeletionFence(t *testing.T) {
+	stateRoot := t.TempDir()
+	stateDir := filepath.Join(stateRoot, "projects", "session-delete-0123456789")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(stateRoot, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: srv.Listener.Addr().String(), StateDir: stateRoot, Past: past,
+		Roster: hubcore.NewRosterWithEntries(), DeletionStore: store,
+	})
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	client := dialHubRPCInitialized(t, srv)
+
+	var deleted appwire.SessionDeleteResponse
+	if err := client.Request(t.Context(), appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: "local:" + targetID}, &deleted); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if len(deleted.Deleted) != 1 || deleted.Deleted[0] != targetID {
+		t.Fatalf("delete = %+v, want the target deleted", deleted)
+	}
+	if state, ok := store.TargetState("local:"+targetID, targetID); !ok || state != hubcore.DeletionStateDeleted {
+		t.Fatalf("TargetState after delete = %q, %v, want the durable deleted state", state, ok)
+	}
+	reopened, err := hubcore.NewDeletionStore(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := reopened.TargetState("local:"+targetID, targetID); !ok || state != hubcore.DeletionStateDeleted {
+		t.Fatalf("reopened TargetState = %q, %v, want the durable deleted state", state, ok)
+	}
+	for _, subscribe := range []bool{false, true} {
+		var response appwire.ThreadReadResponse
+		err := client.Request(t.Context(), appwire.MethodThreadRead, appwire.ThreadReadParams{
+			Ref: "local:" + targetID, IncludeTurns: true, Subscribe: subscribe,
+		}, &response)
+		assertStoppedTargetDeletedError(t, err)
+	}
+
+	// An unrelated absent ref is not a deletion: its read keeps the existing
+	// retryable-unavailable shape rather than the terminal outcome.
+	unknownID := identifier.MustNewSessionID()
+	var response appwire.ThreadReadResponse
+	err = client.Request(t.Context(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:" + unknownID, IncludeTurns: true}, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
+		t.Fatalf("unknown ref read = %v, want non-terminal unavailable", err)
+	}
+}
+
 // TestSessionDeleteRefusesLiveTarget covers half of n15j's verification #2: a
 // reachable live daemon refuses the delete with no partial artifact removal.
 func TestSessionDeleteRefusesLiveTarget(t *testing.T) {

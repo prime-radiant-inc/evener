@@ -41,12 +41,16 @@ type DeletionTarget struct {
 	StateProjectID string `json:"state_project_id,omitempty"`
 }
 
-// DeletionRecord is one irrevocable project deletion generation.
+// DeletionRecord is one irrevocable deletion generation. SessionOnly marks a
+// generation begun by individual session deletion: it fences the same stable
+// target as a project generation, but it is never resumed by (or merged into)
+// a project deletion, and DeletingProject ignores it.
 type DeletionRecord struct {
 	ProjectID    string           `json:"project_id"`
 	Generation   uint64           `json:"generation"`
 	State        DeletionState    `json:"state"`
 	WholeProject bool             `json:"whole_project"`
+	SessionOnly  bool             `json:"session_only,omitempty"`
 	Targets      []DeletionTarget `json:"targets"`
 }
 
@@ -112,11 +116,14 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		if record.ProjectID != projectID {
 			continue
 		}
-		if record.State == DeletionStateDeleting {
-			return cloneDeletionRecord(record), nil
-		}
 		if record.Generation > generation {
 			generation = record.Generation
+		}
+		if record.SessionOnly {
+			continue
+		}
+		if record.State == DeletionStateDeleting {
+			return cloneDeletionRecord(record), nil
 		}
 	}
 	record := DeletionRecord{
@@ -125,6 +132,53 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		State:        DeletionStateDeleting,
 		WholeProject: wholeProject,
 		Targets:      normalized,
+	}
+	next := cloneDeletionSnapshot(s.state)
+	next.Records = append(next.Records, record)
+	if err := s.commitLocked(next); err != nil {
+		return DeletionRecord{}, err
+	}
+	return cloneDeletionRecord(record), nil
+}
+
+// BeginSession durably fences one individual session deletion under the
+// project that owns its state. A session record reuses only its own
+// incomplete generation for the same target. It never merges with a project
+// generation, whose target set governs a different deletion, and it never
+// becomes the generation DeletingProject resumes.
+func (s *DeletionStore) BeginSession(projectID string, target DeletionTarget) (DeletionRecord, error) {
+	if s == nil {
+		return DeletionRecord{}, errors.New("deletion store is not configured")
+	}
+	if err := identifier.ValidateProjectID(projectID); err != nil {
+		return DeletionRecord{}, fmt.Errorf("invalid deletion project ID: %w", err)
+	}
+	normalized, err := normalizeDeletionTargets([]DeletionTarget{target})
+	if err != nil {
+		return DeletionRecord{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var generation uint64
+	for _, record := range s.state.Records {
+		if record.ProjectID != projectID {
+			continue
+		}
+		if record.Generation > generation {
+			generation = record.Generation
+		}
+		if record.SessionOnly && record.State == DeletionStateDeleting &&
+			len(record.Targets) == 1 && record.Targets[0] == normalized[0] {
+			return cloneDeletionRecord(record), nil
+		}
+	}
+	record := DeletionRecord{
+		ProjectID:   projectID,
+		Generation:  generation + 1,
+		State:       DeletionStateDeleting,
+		SessionOnly: true,
+		Targets:     normalized,
 	}
 	next := cloneDeletionSnapshot(s.state)
 	next.Records = append(next.Records, record)
@@ -180,7 +234,7 @@ func (s *DeletionStore) DeletingProject(projectID string) (DeletionRecord, bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range slices.Backward(s.state.Records) {
-		if record.ProjectID == projectID && record.State == DeletionStateDeleting {
+		if record.ProjectID == projectID && !record.SessionOnly && record.State == DeletionStateDeleting {
 			return cloneDeletionRecord(record), true
 		}
 	}
@@ -318,6 +372,9 @@ func validateDeletionSnapshot(state deletionSnapshot) error {
 		}
 		if len(record.Targets) == 0 {
 			return fmt.Errorf("deletion project %q has no targets", record.ProjectID)
+		}
+		if record.SessionOnly && (record.WholeProject || len(record.Targets) != 1) {
+			return fmt.Errorf("session deletion project %q must have one target and not be whole-project", record.ProjectID)
 		}
 		key := fmt.Sprintf("%s/%d", record.ProjectID, record.Generation)
 		if _, ok := seen[key]; ok {
