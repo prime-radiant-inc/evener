@@ -381,3 +381,47 @@ func TestStopDuringContinuationAdmissionKeepsTheReservedStart(t *testing.T) {
 		t.Fatalf("recovered claim = %q, want the reserved start %q", claimed.ClientMutationID, reserved.ClientMutationID)
 	}
 }
+
+// TestStopAtCommunicateBoundaryKeepsTheReservedStart covers the other half of
+// the admission window: deliverIfCommunicated has already set the session idle
+// while the continuation's execution is still running. The Stop must still
+// treat the accepted start as a bystander, not retire input it never ran.
+func TestStopAtCommunicateBoundaryKeepsTheReservedStart(t *testing.T) {
+	t.Parallel()
+
+	var sess *Session
+	var interruptErr error
+	step := func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCall("boundary-communicate", "done"))
+	}
+	sess = newTestSessionForEnvctx(t, withSteps(step))
+	serveSessionWithMutationStore(t, sess)
+
+	reserved := appwire.TurnStartParams{
+		ClientMutationID: "start-reserved-at-communicate-boundary",
+		Input:            []appwire.InputItem{{Type: "text", Text: "input that must survive the boundary Stop"}},
+	}
+	if _, err := sess.AcceptClientMutationStart(reserved); err != nil {
+		t.Fatalf("AcceptClientMutationStart(reserved): %v", err)
+	}
+	sess.cfg.testOnly.afterCommunicateBoundary = func(s *Session) {
+		s.cfg.testOnly.afterCommunicateBoundary = nil
+		_, interruptErr = s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+			ClientMutationID: "interrupt-at-communicate-boundary",
+		}, nil)
+	}
+	if _, err := sess.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
+		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	}
+	if interruptErr != nil {
+		t.Fatalf("InterruptClientMutation at the communicate boundary: %v", interruptErr)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	pending, ok := snapshot.PendingExecutions[reserved.ClientMutationID]
+	if !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("reserved start at the boundary = %#v, present=%v; want an accepted pending execution", pending, ok)
+	}
+	if len(snapshot.Journal[reserved.ClientMutationID].Payload) == 0 {
+		t.Fatal("the boundary Stop cleared the reserved start's payload")
+	}
+}

@@ -1115,15 +1115,17 @@ func (s *Session) InterruptClientMutation(
 		// claimed between the sample above and this reservation keeps its own
 		// name rather than inheriting the stale execution's.
 		//
-		// The durable slot answers differently only while a processing session
-		// runs beside an accepted-but-unrun start: an unnamed continuation owns
-		// no slot entry, so the start is a bystander the Stop must not retire.
-		// Name the execution when the sample already saw it; when admission has
-		// not registered one yet, name nothing. The empty target matches no
-		// pending execution, which is right -- cancelling the continuation ends
-		// the turn and the accepted input stays for its next run.
+		// The durable slot answers differently only while a continuation runs
+		// beside an accepted-but-unrun start (processing, or idle at a
+		// communicate boundary with its execution not yet completed): an unnamed
+		// continuation owns no slot entry, so the start is a bystander the Stop
+		// must not retire. Name the execution when the sample already saw it;
+		// when admission has not registered one yet, name nothing. The empty
+		// target matches no pending execution, which is right -- cancelling the
+		// continuation ends the turn and the accepted input stays for its next
+		// run.
 		target := snapshot.ActiveTurnID
-		if sessionProcessing && activeTurnIsUnrunReservation(snapshot) {
+		if (sessionProcessing || execution.running) && activeTurnIsUnrunReservation(snapshot) {
 			target = ""
 			if execution.running && execution.turnID != "" &&
 				!pendingTurnIsUnrunReservation(snapshot, execution.turnID) {
