@@ -369,7 +369,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "second-job", Name: "shell", Type: "function",
-				Arguments: json.RawMessage(`{"command":"printf second-job-output","mode":"background"}`),
+				Arguments: json.RawMessage(`{"command":"held follow-up job","mode":"background"}`),
 			})
 		},
 		func(llm.Request) llm.Response {
@@ -379,6 +379,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 			running := sess.jobManager.runningJobIDs()
 			if len(running) != 1 {
 				t.Errorf("running jobs at the tool-result request = %v, want only the follow-up job", running)
+				env.releaseJob()
 			} else {
 				finalizeShell(t, sess.jobManager, running[0], env.releaseJob)
 			}
