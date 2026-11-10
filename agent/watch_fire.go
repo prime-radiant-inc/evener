@@ -26,7 +26,11 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
-			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			n, fired := jm.conditionFireNotificationLocked(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			if !fired {
+				notifications = append(notifications, n...)
+				continue
+			}
 			// A self/parent-target job.notification watch must deliver the
 			// concrete completed job's own identity (kata 673k), not the thin
 			// generic watch shape watchNotificationFromWatch builds by default —
@@ -34,9 +38,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			// send-coalescing key deliberately stays target-shaped; only the
 			// notify-branch frame identity is fixed here).
 			if data, ok := jobFinishedEventData(ev.Data); ok && data.JobID != "" {
-				n = jobFinishedEventIdentity(n, data)
+				n[0] = jobFinishedEventIdentity(n[0], data)
 			}
-			notifications = append(notifications, n)
+			notifications = append(notifications, n...)
 			jm.countWatchDeliveryLocked(cfg)
 		}
 	}
@@ -189,6 +193,32 @@ func (jm *jobManager) fuseDepthLocked(cfg *watchConfig, p *provenance.Causal) in
 	return provenance.SelfInfluenceDepth(p, cfg.watchID, "", jm.watchSendDeliveredLocked)
 }
 
+// conditionFireNotificationLocked builds what a no-send watch delivers for one
+// condition fire. fired reports a real delivery of the fire, which the caller
+// counts. The notification carries a delivery id on its lineage entry, so an
+// event the resulting notification turn emits descends from it; a fire
+// descending from runawaySelfInfluenceDepth of this watch's own fires is the
+// runaway that the send rail's fuse drops too. At exactly the cap it is replaced
+// by one runaway diagnostic whose lineage counts one fire deeper, so a turn the
+// diagnostic causes falls past the cap and its fires drop silently instead of
+// raising another. A fire from anything outside the chain starts again at 0.
+// The watch stays armed throughout. The caller must hold jm.mu.
+func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, reason string, root *provenance.Causal) (notifications []jobNotification, fired bool) {
+	everyFire := func(string) bool { return true }
+	depth := provenance.SelfInfluenceDepth(root, cfg.watchID, "", everyFire)
+	deliveryID := jobstore.NewWatchSendDeliveryID()
+	switch {
+	case depth < runawaySelfInfluenceDepth:
+		return []jobNotification{jm.watchNotificationWithDelivery(cfg, jobID, reason, root, deliveryID)}, true
+	case depth == runawaySelfInfluenceDepth:
+		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
+		diagnostic.Provenance = jm.watchNotificationWithDelivery(cfg, jobID, reason, root, deliveryID).Provenance
+		return []jobNotification{diagnostic}, false
+	default:
+		return nil, false
+	}
+}
+
 // selfInfluenceNotice is the breaker's worker-facing line for a self-influenced
 // delivery: terse when shallow, pointed as the loop tightens (or when the chain
 // truncated, so the exact depth is unknown). Empty when not self-influenced.
@@ -314,8 +344,11 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			if cfg.send != nil {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
-				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
-				jm.countWatchDeliveryLocked(cfg)
+				n, fired := jm.conditionFireNotificationLocked(cfg, jobID, "output_match: "+match.Text, match.Provenance)
+				notifications = append(notifications, n...)
+				if fired {
+					jm.countWatchDeliveryLocked(cfg)
+				}
 			}
 		}
 	}
@@ -411,11 +444,15 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 		return true
 	}
+	root := jobProvenanceForWatch(jm, jobID)
 	jm.mu.Lock()
 	cfg.conditionFires++
-	jm.countWatchDeliveryLocked(cfg)
+	notifications, fired := jm.conditionFireNotificationLocked(cfg, jobID, reason, root)
+	if fired {
+		jm.countWatchDeliveryLocked(cfg)
+	}
 	jm.mu.Unlock()
-	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
+	jm.enqueueWatchNotifications(notifications)
 	return true
 }
 

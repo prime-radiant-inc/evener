@@ -31,6 +31,14 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 }
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
+	return jm.watchNotificationWithDelivery(cfg, jobID, reason, root, "")
+}
+
+// watchNotificationWithDelivery is watchNotificationFromWatch with a delivery id
+// on the notification's own lineage entry. A no-send condition fire carries
+// one, so the runaway guard can count how many of this watch's fires an
+// event descends from (conditionFireNotificationLocked).
+func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, reason string, root *provenance.Causal, deliveryID string) jobNotification {
 	n := watchNotification(jobID, reason)
 	if cfg == nil {
 		return n
@@ -47,7 +55,7 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if visibleSessionID == "" {
 		visibleSessionID = jm.sessionID
 	}
-	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", visibleSessionID, jobID)
+	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, deliveryID, visibleSessionID, jobID)
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify

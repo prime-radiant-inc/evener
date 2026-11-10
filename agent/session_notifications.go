@@ -344,7 +344,7 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			seenTok[n.WatchSend.Key] = true
 			// The model already has this frame; only its settle is owed.
 			if jm.watchSendTranscribed(state.DeliveryID) {
-				if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+				if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
 					s.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
 				}
 				continue
