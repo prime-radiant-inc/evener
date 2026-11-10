@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -99,13 +100,13 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) (err error) {
 		}
 		// flag.Parse already reports syntax failures. Semantic parse errors do not.
 		if !parseReported {
-			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
 		}
 		return err
 	}
 	defer func() {
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
 		}
 	}()
 	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

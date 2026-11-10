@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 
@@ -271,7 +272,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// without preventing the hub from starting.
 	hubLaunchEntrypoint, errHubLaunchEntrypoint = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
 	if errHubLaunchEntrypoint != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", errHubLaunchEntrypoint)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("launch path: %v", errHubLaunchEntrypoint))
 	} else {
 		_, _, hubLaunchShareBinDir = hubInstallDirs()
 		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
@@ -284,7 +285,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
 		return err
 	}
 
@@ -351,12 +352,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer func() {
 		if removeErr := retireEndpoint(); removeErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] retire endpoint: %v\n", removeErr)
+			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("retire endpoint: %v", removeErr))
 		}
 	}()
 	announceHub(stderr, record, r.runDir, r.hubStateRoot, r.authToken)
 	if err := deps.serve(ctx, srv); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	return nil
@@ -398,27 +399,27 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 		return nil, fmt.Errorf("host operation store: %w", err)
 	}
 	if signal := store.Quarantine(); signal != nil {
-		_, _ = fmt.Fprintf(stderr,
-			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports as historical rows (no name is held closed)\n",
-			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf(
+			"host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports as historical rows (no name is held closed)",
+			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch))
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store opened, but its expired confirmation tokens were not reaped: %v", err))
 	} else if reaped > 0 {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d expired confirmation token(s)\n", reaped)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store reaped %d expired confirmation token(s)", reaped))
 	}
 	if reapedEpochs, err := store.ReapProbeEpochs(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its probe epochs were not reaped: %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store opened, but its probe epochs were not reaped: %v", err))
 	} else if reapedEpochs > 0 {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d probe epoch(s)\n", reapedEpochs)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store reaped %d probe epoch(s)", reapedEpochs))
 	}
 	// §7's interrupted transition, before the store serves any request: a
 	// record a crash left pending/running is a terminal unknown outcome. A
 	// retry with the same operation ID gets the interrupted record back.
 	if interrupted, err := store.RecoverInterrupted(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its in-flight operations were not moved to interrupted: %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store opened, but its in-flight operations were not moved to interrupted: %v", err))
 	} else if interrupted > 0 {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("host operation store moved %d in-flight operation(s) to interrupted", interrupted))
 	}
 	return store, nil
 }
