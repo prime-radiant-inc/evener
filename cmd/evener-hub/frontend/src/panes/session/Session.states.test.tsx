@@ -6,7 +6,6 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
@@ -31,33 +30,15 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES } from "../../threadTestUtils";
-import { readResponse, setNavigationTitle, turnFixture, versionedReadResponse } from "./sessionTestUtils";
+import {
+  readResponse,
+  seedPendingSend,
+  setNavigationTitle,
+  stubSessionSlots,
+  turnFixture,
+  versionedReadResponse,
+} from "./sessionTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -523,21 +504,6 @@ test("a session that has never run invites the first message", async () => {
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
 });
 
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
-
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
@@ -553,7 +519,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
   let clientMutationId = "";
   await act(async () => {
-    clientMutationId = await seedPendingSend("ref_a", { attempted: true });
+    clientMutationId = await seedPendingSend(mutationStorage, "ref_a", { attempted: true });
   });
   expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
@@ -647,7 +613,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
-  const clientMutationId = await act(async () => seedPendingSend());
+  const clientMutationId = await act(async () => seedPendingSend(mutationStorage));
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
   act(() => {
@@ -732,7 +698,7 @@ test("cold-start skeleton clears when the first turn terminates without an autho
     </ClientProvider>,
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-  await act(async () => seedPendingSend());
+  await act(async () => seedPendingSend(mutationStorage));
 
   act(() => {
     fake.emitNotification({
@@ -773,7 +739,7 @@ test("an explicitly rejected first send leaves cold-start state for durable reco
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
-  const clientMutationId = await act(async () => seedPendingSend());
+  const clientMutationId = await act(async () => seedPendingSend(mutationStorage));
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
   await act(async () => {
@@ -796,7 +762,7 @@ test.each(["failed", "error", "cancelled"])(
       </ClientProvider>,
     );
     await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-    await act(async () => seedPendingSend());
+    await act(async () => seedPendingSend(mutationStorage));
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
     act(() => {
@@ -829,7 +795,7 @@ test.each(["closed", "systemError"] as const)(
       </ClientProvider>,
     );
     await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-    await act(async () => seedPendingSend());
+    await act(async () => seedPendingSend(mutationStorage));
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
     act(() => {
@@ -867,7 +833,7 @@ test("a later turn never gets the first-turn skeleton", async () => {
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByText("earlier")).toBeTruthy());
-  await act(async () => seedPendingSend());
+  await act(async () => seedPendingSend(mutationStorage));
 
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(screen.getByTestId("turn-block")).toBeTruthy();
@@ -883,7 +849,7 @@ test("cold-start skeleton is scoped to the session ref and disappears on session
     </ClientProvider>,
   );
   await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
-  await act(async () => seedPendingSend("ref_a"));
+  await act(async () => seedPendingSend(mutationStorage, "ref_a"));
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   view.rerender(

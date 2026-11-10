@@ -1,6 +1,5 @@
 import {
   type HostForwardedResult,
-  type HostRow,
   type InstanceEntry,
   type InstanceListResponse,
   WireError,
@@ -11,6 +10,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { hostsStore } from "../../stores/hosts";
+import { registryRow } from "../../stores/hostsTestUtils";
 import { useProviderSetup } from "./useProviderSetup";
 
 const provider: InstanceEntry = {
@@ -174,22 +174,6 @@ test("a controller-scoped refetch does not replace a remote host's provider list
   expect(result.current.instances).toEqual([{ ...provider, activeSource: "store" }]);
 });
 
-// M2 (round 6): the store owns the refresh when the registry invalidates a
-// partition. The spawn form keys its effect on [client, connection, load] and
-// knows nothing about registry identity - it must converge anyway, because the
-// same defect would otherwise reappear in every other partition consumer.
-function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: true,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
 // M1: the registry's own failure must be REACHABLE here. A remote target whose
 // registry read failed used to sit on a pending state forever - status
 // "loading", no verdict, and Start proceeding without the provider gate.
@@ -221,6 +205,10 @@ test("a failed registry surfaces on a remote target, and its retry recovers", as
   await waitFor(() => expect(result.current.status).toBe("ready"));
 });
 
+// M2 (round 6): the store owns the refresh when the registry invalidates a
+// partition. The spawn form keys its effect on [client, connection, load] and
+// knows nothing about registry identity - it must converge anyway, because the
+// same defect would otherwise reappear in every other partition consumer.
 test("a registry-driven re-registration re-reads the host's listing without a remount", async () => {
   const client = new FakeClient("ready");
   let listing: InstanceListResponse = { instances: [{ ...provider, activeSource: "store" }], availableProviders: [] };

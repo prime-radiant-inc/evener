@@ -9,7 +9,6 @@ import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activ
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
@@ -54,34 +53,11 @@ import {
   emitDaemonGoneResync,
   readResponse,
   resumeViaSend,
+  seedPendingSend,
   setNavigationTitle,
+  stubSessionSlots,
   versionedReadResponse,
 } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -200,21 +176,6 @@ afterEach(() => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
 });
-
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
 
 test("offers explicit resume after restart even without pending messages", async () => {
   const fake = connectReadyFakeClient();
@@ -459,7 +420,7 @@ test.each(["notLoaded", "active", "idle"])(
     );
     await screen.findByRole("alert");
     await act(async () => {
-      mutationId = await seedPendingSend();
+      mutationId = await seedPendingSend(mutationStorage);
       await mutationStorage.markUnknown(mutationId, "blockedUnknown");
       await refreshPendingTurnsProjection("ref_a");
     });
@@ -616,7 +577,7 @@ test.each(["active", "idle"])("a retained %s child with nothing uncertain shows 
 
 test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
-  const mutationId = await seedPendingSend("local:retained-child");
+  const mutationId = await seedPendingSend(mutationStorage, "local:retained-child");
   await mutationStorage.markUnknown(mutationId, "blockedUnknown");
   const fake = connectReadyFakeClient();
   let resumed = false;

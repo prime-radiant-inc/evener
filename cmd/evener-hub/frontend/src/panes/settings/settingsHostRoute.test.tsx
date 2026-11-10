@@ -1,4 +1,3 @@
-import type { HostRow } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -11,6 +10,7 @@ import { installLocalStorage } from "../../storageTestUtils";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { hostsStore } from "../../stores/hosts";
+import { registryRow } from "../../stores/hostsTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
@@ -71,23 +71,11 @@ function stubMatchMedia(matches: boolean) {
   }) as unknown as typeof window.matchMedia;
 }
 
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: true,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
 // A connected hub whose host registry lists beta and whose beta partition
 // answers the picker's and the remote view's reads.
 function connectFakeClient(): FakeClient {
   return connectReadyFakeClient((fake) => {
-    fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta" })] }));
+    fake.on("evener/host/list", () => ({ hosts: [registryRow({ name: "beta" })] }));
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     fake.on("evener/host/request", () => ({ instances: [], availableProviders: [] }));
   });

@@ -1,15 +1,16 @@
-import type { HostRow } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { McpSectionHostScope, type SettingsOverviewLike } from "./mcp";
+import { McpSectionHostScope } from "./mcp";
+import { overviewHook } from "./mcpTestUtils";
 
 // The MCP settings surface's host scope (component 07b): the shared HostPicker
 // over the selected host, whose own global launch layer both shows and changes
@@ -18,29 +19,6 @@ import { McpSectionHostScope, type SettingsOverviewLike } from "./mcp";
 // - so it is host-scoped for the same reason they are. Local is today's
 // plain-call section; a remote selection routes every read and write through
 // evener/host/request and never touches the controller's launch layer.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
-function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {
-  const state: SettingsOverviewLike = {
-    data: null,
-    loading: false,
-    error: null,
-    fetch: vi.fn(async () => {}),
-    ...overrides,
-  };
-  return () => state;
-}
 
 /** The calls this section makes about the launch layer and the path helpers it
  * uses to validate an entry - the controller's own, i.e. NOT via the proxy. */
