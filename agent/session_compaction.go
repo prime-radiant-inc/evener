@@ -817,7 +817,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				hi := s.hookInput(plugin.HookPostCompact)
 				hi.Trigger = string(commit.trigger)
 				hi.CompactSummary = commit.compactSummary
-				result := s.hookRunner.RunPostCompactFor(s.apiLogContext(s.foldHookContext()), hi, hi.Trigger)
+				result := s.hookRunner.RunPostCompactFor(s.apiLogContext(s.foldHookContext(ctx)), hi, hi.Trigger)
 				for _, m := range result.UserMessages {
 					s.deliverHookUserMessage(m)
 				}
@@ -924,15 +924,22 @@ func lastCompactionTurnText(turns []schema.Turn) string {
 	return ""
 }
 
-// foldHookContext is the base context for a fold's hooks that fire outside any
-// turn: the session's own lifetime, superseded by the close cascade's shared
-// budget once one is published. Close is exactly what SessionEnd does, and the
-// warning hook does the same for the same reason — a hook still running when
-// shutdown starts is interrupted by that cancellation instead of holding the
-// close for its full timeout (spec §5.4). A session built without a lifetime
-// context degrades to Background.
-func (s *Session) foldHookContext() context.Context {
-	ctx := s.sessionContext()
+// foldHookContext is the base context for a fold's hooks. base is the fold's own
+// context, so an interrupted request stops waiting on its hooks instead of
+// holding the turn for a hook's full timeout. A nil base (a fold with no turn
+// behind it) degrades to the session's lifetime, which is what a hook that fires
+// outside any turn wants.
+//
+// Either way the close cascade's shared budget supersedes it once one is
+// published: a hook still running when shutdown starts is interrupted by that
+// cancellation instead of holding the close for its full timeout (spec §5.4).
+// The supersession is not a join of the two — the close budget is the shorter of
+// the two deadlines, so it is the one worth honoring.
+func (s *Session) foldHookContext(base context.Context) context.Context {
+	ctx := base
+	if ctx == nil {
+		ctx = s.sessionContext()
+	}
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
 	s.closeCtxMu.RUnlock()

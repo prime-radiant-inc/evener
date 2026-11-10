@@ -2038,6 +2038,60 @@ func TestValidate_PostToolBatchMatcherIsNotDiagnosed(t *testing.T) {
 	}
 }
 
+// TestValidate_StopMatcherIsNotDiagnosed proves the load-time warning agrees with
+// dispatch for Stop too: RunStop bypasses matching, so an uncompilable matcher
+// never skips the hook and "will not fire" would be a false alarm. This is the
+// exact regression the review found — Validate and hookCanRun probed a matcher
+// that dispatch never consulted.
+func TestValidate_StopMatcherIsNotDiagnosed(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo stop", PluginName: "stop-plugin"})
+	if diags := r.Validate(); len(diags) != 0 {
+		t.Fatalf("Validate() = %+v, want none: no matcher can skip Stop", diags)
+	}
+}
+
+// TestSupportedSummary_StopMatcherIsRunnable proves the runnable-hook count (the
+// /status number) agrees with dispatch for Stop: a "(" matcher still fires, so
+// the hook is counted rather than omitted.
+func TestSupportedSummary_StopMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo stop"})
+	if got := r.SupportedSummary()[plugin.HookStop]; got != 1 {
+		t.Fatalf("SupportedSummary[Stop] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestSupportedSummary_UserPromptSubmitMatcherIsRunnable is the same statement
+// for UserPromptSubmit, whose matcher dispatch also ignores.
+func TestSupportedSummary_UserPromptSubmitMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookUserPromptSubmit, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo prompt"})
+	if got := r.SupportedSummary()[plugin.HookUserPromptSubmit]; got != 1 {
+		t.Fatalf("SupportedSummary[UserPromptSubmit] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestRunUserPromptSubmit_IgnoresConfiguredMatcher proves Claude's "no matcher"
+// for UserPromptSubmit: a hook with an exact, non-empty matcher ("startup") still
+// fires, because there is no value to match it against. Before this, the runner
+// matched against an empty target, so an exact matcher never fired.
+func TestRunUserPromptSubmit_IgnoresConfiguredMatcher(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "user-prompt-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookUserPromptSubmit, plugin.RegisteredHook{
+		Matcher: "startup", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(marker),
+	})
+	out := r.RunUserPromptSubmit(context.Background(), Input{HookEventName: "UserPromptSubmit", Prompt: "hello"})
+	if out.Stopped {
+		t.Fatalf("a plain touch hook must not stop the prompt: %+v", out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a startup-matched UserPromptSubmit hook did not fire: %v", err)
+	}
+}
+
 // TestRunPostToolBatch_EmitsHookLifecycleEvents keeps the HOOK_START/HOOK_END
 // announcements on the bypass path; runMatched owns them for every event.
 func TestRunPostToolBatch_EmitsHookLifecycleEvents(t *testing.T) {

@@ -168,8 +168,8 @@ func (r *Runner) Summary() map[plugin.HookEvent]int {
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
-// excluded. PostToolBatch is the exception: it has no matcher, so only its handler
-// type is consulted. Events with zero runnable hooks are omitted. This backs the AppWire
+// excluded. An event without a matcher (see eventUsesMatcher) consults only its
+// handler type. Events with zero runnable hooks are omitted. This backs the AppWire
 // "active supported hooks" count; Summary (above) counts every registered hook.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
@@ -199,17 +199,32 @@ var supportedHandlerTypes = map[string]bool{
 // type is supported and its matcher compiles. It mirrors the two places that
 // silently skip a hook — runHook (unsupported type) and MatchHooks (invalid
 // matcher) — so diagnostics do not advertise a hook that can never run.
-// PostToolBatch has no matcher at all (RunPostToolBatch bypasses MatchHooks), so
-// its matcher is not probed: any value, valid regex or not, still fires.
+// An event without a matcher (see eventUsesMatcher) never probes one: any value,
+// valid regex or not, still fires.
 func hookCanRun(event plugin.HookEvent, hook plugin.RegisteredHook) bool {
 	if !supportedHandlerTypes[hook.Type] {
 		return false
 	}
-	if event == plugin.HookPostToolBatch {
+	if !eventUsesMatcher(event) {
 		return true
 	}
 	_, err := matchTarget(hook.Matcher, "")
 	return err == nil
+}
+
+// eventUsesMatcher reports whether dispatch consults an event's configured
+// matcher. Claude's matcher table lists Stop, UserPromptSubmit and PostToolBatch
+// without one, and the runners for those events execute every registered hook
+// rather than matching a target that does not exist. Validate and hookCanRun
+// must ask the same question dispatch does: a matcher that is never consulted
+// can neither skip a hook nor make it "will not fire".
+func eventUsesMatcher(event plugin.HookEvent) bool {
+	switch event {
+	case plugin.HookStop, plugin.HookUserPromptSubmit, plugin.HookPostToolBatch:
+		return false
+	default:
+		return true
+	}
 }
 
 // Add registers hooks for an event.
@@ -237,9 +252,10 @@ func (r *Runner) Validate() []InvalidMatcherDiagnostic {
 	var diags []InvalidMatcherDiagnostic
 	for event, hooks := range r.hooks {
 		for _, hook := range hooks {
-			// PostToolBatch never consults its matcher, so an uncompilable one
-			// does not skip the hook and "will not fire" would be false.
-			if event == plugin.HookPostToolBatch {
+			// An event without a matcher never consults its matcher, so an
+			// uncompilable one does not skip the hook and "will not fire" would
+			// be false.
+			if !eventUsesMatcher(event) {
 				continue
 			}
 			if _, err := matchTarget(hook.Matcher, ""); err != nil {
@@ -588,10 +604,21 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
 	return r.runMatched(ctx, event, r.MatchHooks(event, claudeName), input)
 }
 
+// runEvent dispatches an event's registered hooks, consulting the matcher only
+// when the event has one. It is the single dispatch decision behind
+// eventUsesMatcher, so the runner cannot disagree with Validate and
+// SupportedSummary about which events match.
+func (r *Runner) runEvent(ctx context.Context, event plugin.HookEvent, target string, input Input) []parsedHookOutput {
+	if !eventUsesMatcher(event) {
+		return r.runMatched(ctx, event, r.hooks[event], input)
+	}
+	return r.runAll(ctx, event, target, input)
+}
+
 // runMatched executes the given hooks in parallel and returns their parsed
 // outputs. Matching is the caller's job: runAll matches through MatchHooks, and
-// RunPostToolBatch passes the event's registered hooks directly because Claude
-// documents no matcher for that event. Both share the HOOK_START/HOOK_END
+// runEvent passes the event's registered hooks directly for an event Claude
+// documents without a matcher. Both share the HOOK_START/HOOK_END
 // announcements, so they fire either way.
 func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched []plugin.RegisteredHook, input Input) []parsedHookOutput {
 	if len(matched) == 0 {
@@ -704,7 +731,7 @@ func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 // for this event, so a configured matcher never narrows it: the registered
 // hooks go straight to execution rather than through MatchHooks.
 func (r *Runner) RunPostToolBatch(ctx context.Context, input Input) RunResult {
-	outputs := r.runMatched(ctx, plugin.HookPostToolBatch, r.hooks[plugin.HookPostToolBatch], input)
+	outputs := r.runEvent(ctx, plugin.HookPostToolBatch, "", input)
 	return collectPostToolBatchMessages(outputs)
 }
 
@@ -734,17 +761,12 @@ func (r *Runner) RunSubagentStopFor(ctx context.Context, input Input, agentType 
 // runStopEventFor dispatches a blocking event's hooks and aggregates their
 // results. Stop has no matcher in Claude — its table lists the event with
 // "(none)" — so a configured matcher never narrows it, exactly as
-// RunPostToolBatch treats its own matcher: the registered hooks go straight to
-// execution. (At a turn boundary there is no tool name to match against, so
-// consulting a matcher would silently skip every hook whose matcher was not
-// "*"/empty.) SubagentStop targets the child's agent type.
+// RunPostToolBatch treats its own matcher: eventUsesMatcher sends the
+// registered hooks straight to execution. (At a turn boundary there is no tool
+// name to match against, so consulting a matcher would silently skip every hook
+// whose matcher was not "*"/empty.) SubagentStop targets the child's agent type.
 func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, input Input, target string) StopResult {
-	var outputs []parsedHookOutput
-	if event == plugin.HookStop {
-		outputs = r.runMatched(ctx, event, r.hooks[event], input)
-	} else {
-		outputs = r.runAll(ctx, event, target, input)
-	}
+	outputs := r.runEvent(ctx, event, target, input)
 	var result StopResult
 	for _, o := range outputs {
 		applyStopped(event, o, &result.Stopped, &result.StopReason)
@@ -762,9 +784,11 @@ func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, in
 	return result
 }
 
-// RunUserPromptSubmit dispatches UserPromptSubmit hooks.
+// RunUserPromptSubmit dispatches UserPromptSubmit hooks. Claude's table lists the
+// event without a matcher, so a configured matcher never narrows it: adding one
+// is silently ignored, and the registered hooks go straight to execution.
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
+	outputs := r.runEvent(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(plugin.HookUserPromptSubmit, outputs)
 }
 

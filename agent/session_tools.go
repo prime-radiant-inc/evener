@@ -873,13 +873,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		}
 	}
 	s.execToolCheckpoint("after_pre_hook")
-	// A tool call is the work a Stop hook's block asked for, so it ends the
-	// continuation that block started: the next Stop dispatch in this turn
-	// reports stop_hook_active false. The flag is per turn and per session; a
-	// tool that never ran cannot clear it.
-	s.mu.Lock()
-	s.stopHookActive = false
-	s.mu.Unlock()
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -963,6 +956,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			Err:        prep.Err,
 		}
 	} else {
+		// A tool call is the work a Stop hook's block asked for, so it ends the
+		// continuation that block started: the next Stop dispatch in this turn
+		// reports stop_hook_active false. The flag is per turn and per session; a
+		// tool that never ran cannot clear it, so the clear sits here — past both
+		// closing checks and past a validation-only result, at the call that
+		// actually dispatches.
+		s.mu.Lock()
+		s.stopHookActive = false
+		s.mu.Unlock()
 		if prevalidated {
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {

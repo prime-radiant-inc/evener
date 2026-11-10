@@ -1823,6 +1823,12 @@ func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agent
 // ordinary finish, not a failure — classifyRunEnd reads the nil error and the
 // run's unset cancel flag as SubagentCompleted — so the parent's delegate result
 // reads the hook's reason and the caller returns normally.
+//
+// The finish is hookStoppedFinish's, not subagent.stableDelegateFinish's: that
+// builder reports the child's communicate state, which on a rerun would replace
+// the stop reason with the previous run's reply, and which on a first launch
+// settles a nil-error run with no report as a FAILED ended_without_report. The
+// durable outcome and the local status must agree, so both say Completed.
 func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, stopReason string) {
 	if sub == nil || sub.sess == nil {
 		return
@@ -1830,7 +1836,7 @@ func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, s
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	sub.finalizeRun(subagentFinalize{
 		result:    stopReason,
-		finish:    sub.stableDelegateFinish(stopReason, nil),
+		finish:    sub.hookStoppedFinish(stopReason),
 		lease:     lease,
 		stableRun: stableRun,
 	})
@@ -2372,6 +2378,21 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	if a == nil || a.sess == nil {
 		return stableDelegateFinish(nil, result, runErr)
 	}
+	inputs := a.delegateTerminalRunInputs(result, runErr)
+	inputs.captureCommunicateReport(a.sess)
+	finish := stableDelegateFinishFromRun(inputs)
+	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
+		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
+	}
+	return finish
+}
+
+// delegateTerminalRunInputs snapshots everything a terminal packet reports about
+// this run except its result text: the descriptor, the run's times, usage,
+// worktree and scratch path. It reads no communicate state, so a caller that
+// must not report a previous run's reply (a hook-stopped launch on a child that
+// already reported) can build its own packet from it.
+func (a *subagent) delegateTerminalRunInputs(result string, runErr error) delegateTerminalRunInputs {
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
 	startedAt := a.startedAt
@@ -2392,7 +2413,6 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		usage:            cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
 		stoppedByUser:    stoppedByUser,
 	}
-	inputs.captureCommunicateReport(a.sess)
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
 		controller.mu.Lock()
@@ -2414,21 +2434,47 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 		inputs.scratchPath = le.SessionScratchDir()
 	}
-	finish := stableDelegateFinishFromRun(inputs)
-	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
-		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
+	return inputs
+}
+
+// hookStoppedFinish is the terminal result of a child run a SubagentStart hook's
+// continue:false kept from launching. The run completed — the hook ended it, the
+// run raised no error — and its result IS the hook's stop reason.
+//
+// It deliberately does not read the child's communicate state: a resumed child
+// that reported on an earlier run still carries that report, and
+// captureCommunicateReport would replace the stop reason with it. For the same
+// reason it never reports the earlier run's structured result.
+func (a *subagent) hookStoppedFinish(stopReason string) delegateFinish {
+	if a == nil || a.sess == nil {
+		message, _ := json.Marshal(stopReason)
+		return delegateFinish{
+			outcome:     delegatestore.OutcomeCompleted,
+			disposition: delegatestore.DispositionReported,
+			packet: &delegatestore.TerminalPacket{
+				Kind:    delegatestore.PacketReported,
+				Message: message,
+			},
+		}
 	}
-	return finish
+	inputs := a.delegateTerminalRunInputs(stopReason, nil)
+	inputs.completedWithoutReport = true
+	return stableDelegateFinishFromRun(inputs)
 }
 
 // delegateTerminalRunInputs is the immutable run evidence used to construct a
 // stable delegate's terminal result. The packet builder consumes this snapshot
 // after the run has finished all provider, transcript, and worktree activity.
 type delegateTerminalRunInputs struct {
-	session                 *Session
-	result                  string
-	runErr                  error
-	communicated            bool
+	session      *Session
+	result       string
+	runErr       error
+	communicated bool
+	// completedWithoutReport marks a run that completed with the result it
+	// carries and no communicate report: a SubagentStart hook's continue:false
+	// ends the run before it launches, and the hook's stop reason is its result.
+	// Without this, a nil-error run with no report reads as ended_without_report.
+	completedWithoutReport  bool
 	structuredResult        any
 	structuredResultPresent bool
 	descriptor              delegatestore.Descriptor
@@ -2525,12 +2571,14 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		endedAt:     inputs.endedAt,
 	}
 	metadata := delegateTerminalMetadataFromRun(inputs)
-	if inputs.runErr == nil && inputs.communicated {
+	if inputs.runErr == nil && (inputs.communicated || inputs.completedWithoutReport) {
 		packet.Kind = delegatestore.PacketReported
 		finish.outcome = delegatestore.OutcomeCompleted
 		finish.disposition = delegatestore.DispositionReported
 		finish.reason = ""
-		captureDelegateStructuredResult(&packet, inputs)
+		if inputs.communicated {
+			captureDelegateStructuredResult(&packet, inputs)
+		}
 	} else if exhaustion, exhausted := budgetExhaustionFromError(inputs.runErr); exhausted {
 		finish.outcome = delegatestore.OutcomeExhausted
 		finish.reason = exhaustion.reason()

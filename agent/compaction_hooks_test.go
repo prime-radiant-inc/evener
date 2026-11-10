@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -326,6 +327,85 @@ func TestPostCompact_SupersededFoldStaysSilent(t *testing.T) {
 	}
 	if !strings.Contains(post[0].CompactSummary, "fold-2") {
 		t.Fatalf("compact_summary = %q, want the newest fold's summary", post[0].CompactSummary)
+	}
+}
+
+// TestPostCompact_HonorsTheFoldsCancellation proves PostCompact runs on the
+// fold's context, like its PreCompact sibling: a request interrupted while the
+// hook runs must not wait the hook's full timeout. The hook sleeps far longer
+// than the test's bound; only a cancellation from the fold's ctx can end it in
+// time. Falling back to the session lifetime fails this test after 10s (the
+// hook's timeout).
+func TestPostCompact_HonorsTheFoldsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "post-compact-started")
+	hooksJSON, err := json.Marshal(map[string]any{
+		"hooks": map[string]any{
+			"PostCompact": []any{
+				map[string]any{"matcher": "*", "hooks": []any{
+					map[string]any{
+						"type":    "command",
+						"timeout": 10,
+						"command": "touch " + shellquote.Literal(started) + "; sleep 30",
+					},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal hooks.json: %v", err)
+	}
+	pluginDir := writePluginHooks(t, "post-compact-cancel-plugin", string(hooksJSON))
+	// Three identical scripted rounds: the fold's request, the summary request,
+	// then whichever the strategy lets through. Built rather than written out, as
+	// the sibling fixture does, so the repetition is deliberate.
+	steps := make([]func(llm.Request) llm.Response, 3)
+	for i := range steps {
+		steps[i] = doneResponder
+	}
+	sess := newSession(t,
+		withDir(t.TempDir()),
+		withSteps(steps...),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			PluginDirs:       []string{pluginDir},
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly: testConfig{
+				skipGitSnapshot:         true,
+				contextStrategyOverride: compactionEventStrategy{emitCompaction: true},
+			},
+		}),
+	)
+	drainSessionEvents(sess)
+	seedNumberedSessionHistory(t, sess, 12)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel once the hook is actually running, which is the interruption the
+	// test is about: the fold's own work is done and only the hook is left.
+	go func() {
+		// TRIPWIRE: a local shell hook and a scripted model, so only a genuine
+		// hang reaches 30s.
+		waitForCondition(t, 30*time.Second, "the PostCompact hook to start", func() bool {
+			_, statErr := os.Stat(started)
+			return statErr == nil
+		})
+		cancel()
+	}()
+
+	begin := time.Now()
+	_ = sess.Compact(ctx)
+	elapsed := time.Since(begin)
+	sess.Close()
+
+	// The hook must have run: a fold that never fired PostCompact would make the
+	// timing below meaningless.
+	if _, statErr := os.Stat(started); statErr != nil {
+		t.Fatalf("PostCompact never started: %v", statErr)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Compact took %s with a cancelled ctx, want well under the hook's 10s timeout: "+
+			"PostCompact did not see the fold's cancellation", elapsed)
 	}
 }
 

@@ -118,6 +118,50 @@ func TestStop_HookInputFields(t *testing.T) {
 	}
 }
 
+// TestStop_CancelledCallKeepsStopHookActive proves a call that never ran does not
+// clear the flag: the close that skips the tool happens after "after_pre_hook",
+// and the clear must sit past the closing check, at the call that dispatches.
+// Moving the clear back above the check fails this test.
+func TestStop_CancelledCallKeepsStopHookActive(t *testing.T) {
+	t.Parallel()
+	var sess *Session
+	sess = newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
+		testOnly: testConfig{
+			skipGitSnapshot: true,
+			execToolCheckpoint: func(name string) {
+				if name != "after_pre_hook" {
+					return
+				}
+				// The session starts closing between the pre-hook and dispatch, so
+				// the call is skipped without ever running the tool.
+				sess.mu.Lock()
+				sess.closing = true
+				sess.mu.Unlock()
+			},
+		},
+	}))
+	sess.RegisterTool("probe", "probe", map[string]any{"type": "object"},
+		func(context.Context, any) (any, error) { return "ran", nil })
+	sess.mu.Lock()
+	sess.stopHookActive = true
+	sess.mu.Unlock()
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "cancelled", Name: "probe", Arguments: json.RawMessage(`{}`)}, "")
+	if !res.IsError {
+		t.Fatalf("a closing session must skip the call: %+v", res)
+	}
+	if !strings.HasPrefix(res.Output, "tool skipped:") {
+		t.Fatalf("skipped call output = %q, want the skipped-tool result", res.Output)
+	}
+	sess.mu.Lock()
+	active := sess.stopHookActive
+	sess.mu.Unlock()
+	if !active {
+		t.Fatal("a call that never ran cleared stop_hook_active: the Stop hook's work is still undone")
+	}
+	sess.Close()
+}
+
 // TestStop_StopHookActiveResetsWithTheTurn proves stop_hook_active is per TURN,
 // not per process: a turn whose Stop hook blocked leaves the flag set, and the
 // next turn's first Stop dispatch must still report false. Removing the
@@ -334,6 +378,43 @@ func TestSessionEnd_ReasonVocabulary(t *testing.T) {
 	if got, _ := plainCaptured[0]["reason"].(string); got != "other" {
 		t.Errorf("reason = %q, want other", got)
 	}
+}
+
+// TestSessionEnd_RetirementRunsNoHook proves a retirement close skips SessionEnd
+// hooks entirely. Retirement retires a runtime inside a live session (a resumed
+// session's previous incarnation, a delegate being reclaimed), not an end of the
+// session the hook describes; Claude's SessionEnd would be a lie there. The
+// marker file must never appear.
+func TestSessionEnd_RetirementRunsNoHook(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "session-end-fired")
+	stdin := filepath.Join(dir, "session-end-input.jsonl")
+	runner := hooks.NewRunner(nil, "")
+	// Two hooks: a marker that must never appear, and a capture that says what
+	// (if anything) ran.
+	runner.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(marker),
+	})
+	runner.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: appendStdinHook(stdin),
+	})
+	sess := newSession(t, withDir(dir))
+	sess.hookRunner = runner
+	drainSessionEvents(sess)
+
+	if err := sess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); err != nil {
+		t.Fatalf("releaseRuntime(releaseRetirement): %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a retirement close fired the SessionEnd hook")
+	}
+	if got := decodeHookCapture(t, stdin); len(got) != 0 {
+		t.Fatalf("a retirement close ran SessionEnd %d time(s): %+v", len(got), got)
+	}
+	sess.Close()
 }
 
 // TestNotification_CarriesTypeAndTitle proves a diagnostic warning fires the

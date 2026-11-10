@@ -1225,7 +1225,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// append -- returns without ever reaching the take, so this clear is what
 	// keeps a stop recorded for an input that never ran from swallowing the
 	// NEXT, unrelated prompt. Idempotent on the path that did consume it.
-	defer s.clearSessionStartHookStop()
+	//
+	// It applies to USER input only, because only a user turn takes the stop:
+	// a notification, continuation or delegate-attention turn that ran first
+	// must leave it for the user's first prompt (the take's own gate).
+	if kind == EntryUserInput {
+		defer s.clearSessionStartHookStop()
+	}
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -2334,10 +2340,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// A UserPromptSubmit hook's continue:false ends the turn before its first
 	// model request: its reason was delivered to the user while the input was
 	// accepted, and no model work dispatches. A SessionStart hook's stop does the
-	// same for the first turn. Both are consumed unconditionally: a short-circuit
-	// would leave the second flag set and stop an unrelated later turn.
+	// same for the first USER turn; both are consumed unconditionally here so a
+	// short-circuit cannot leave the other flag set for a later turn.
+	//
+	// The startup stop waits for that user turn. A notification, continuation or
+	// delegate-attention turn can arrive first (a child's update, a watched job),
+	// and letting one of those consume the flag would swallow the user's first
+	// prompt's stop: the reason names start-up, and the input it guards is the
+	// user's.
 	promptStopped := s.takePromptHookStop()
-	startStopped := s.takeSessionStartHookStop()
+	startStopped := kind == EntryUserInput && s.takeSessionStartHookStop()
 	if promptStopped || startStopped {
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return "", false, nil

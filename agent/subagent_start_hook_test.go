@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
@@ -39,6 +40,16 @@ type subagentStartFixture struct {
 // own script.
 func newSubagentStartFixture(t *testing.T, specs ...subagentStartHookSpec) subagentStartFixture {
 	t.Helper()
+	return newSubagentStartFixtureWithResponder(t, func(llm.Request) llm.Response {
+		return finalResponse("child done")
+	}, specs...)
+}
+
+// newSubagentStartFixtureWithResponder is newSubagentStartFixture with the
+// child's scripted model reply chosen by the test: a run that must count as
+// "already communicated" has to answer with the communicate tool, not bare text.
+func newSubagentStartFixtureWithResponder(t *testing.T, respond func(llm.Request) llm.Response, specs ...subagentStartHookSpec) subagentStartFixture {
+	t.Helper()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "subagent-start-runs")
 	stdinPath := filepath.Join(dir, "subagent-start-input.jsonl")
@@ -58,9 +69,7 @@ func newSubagentStartFixture(t *testing.T, specs ...subagentStartHookSpec) subag
 	pluginDir := writePluginHooks(t, "toolsmith", string(hooksJSON))
 
 	client := llm.NewClient()
-	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return finalResponse("child done")
-	}}
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: respond}
 	client.Register(adapter)
 	root := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
@@ -547,5 +556,134 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 	// the re-arm above is the finalize tail's work on a run that did.
 	if got := subagentStartChildRequests(fixture.adapter, created.ChildSessionID); got != 0 {
 		t.Fatalf("a hook-stopped child made %d model requests, want zero", got)
+	}
+}
+
+// settledDelegateAggregate returns a copy of the controller's durable record for
+// one delegate, so a test can read the parent-visible outcome and packet without
+// holding the controller lock.
+func settledDelegateAggregate(t *testing.T, root *Session, delegateID string) delegatestore.Aggregate {
+	t.Helper()
+	if root.delegateController == nil {
+		t.Fatal("the root has no delegate controller")
+	}
+	root.delegateController.mu.Lock()
+	defer root.delegateController.mu.Unlock()
+	aggregate := root.delegateController.durable[delegateID]
+	if aggregate == nil {
+		t.Fatalf("delegate %q has no durable aggregate", delegateID)
+	}
+	return *aggregate
+}
+
+// hookStopSpec is a SubagentStart hook that stops the launch with stopReason
+// while marker exists. A test that needs an unstopped first run creates the
+// marker afterwards.
+func hookStopSpec(stopReason, marker string) subagentStartHookSpec {
+	return subagentStartHookSpec{command: `if [ -e ` + shellquote.Literal(marker) + ` ]; then printf '%s' '{"continue":false,"stopReason":"` + stopReason + `"}'; fi`}
+}
+
+// TestSubagentStart_ContinueFalsePublishesACompletedResult proves the durable
+// outcome and the parent-visible packet agree with the local status on a stopped
+// first launch: Completed, and the packet's message is the hook's stop reason.
+// Before the fix the packet was terminal_error/ended_without_report while the
+// local status said SubagentCompleted.
+func TestSubagentStart_ContinueFalsePublishesACompletedResult(t *testing.T) {
+	const stopReason = "SUBAGENT-START-STOP-RESULT"
+	fixture := newSubagentStartFixture(t, subagentStartHookSpec{
+		command: `printf '%s' '{"continue":false,"stopReason":"` + stopReason + `"}'`,
+	})
+	created := fixture.createDelegateThroughTheTool(t)
+	fixture.waitForChildRunComplete(t, created.ChildSessionID)
+
+	aggregate := settledDelegateAggregate(t, fixture.root, created.DelegateID)
+	if aggregate.LatestOutcome == nil {
+		t.Fatal("the stopped run recorded no outcome")
+	}
+	if got := aggregate.LatestOutcome.Status; got != delegatestore.OutcomeCompleted {
+		t.Errorf("durable outcome = %q, want %q: the local status says the run completed",
+			got, delegatestore.OutcomeCompleted)
+	}
+	if got := aggregate.LatestOutcome.Reason; got != "" {
+		t.Errorf("durable outcome reason = %q, want empty for a completed run", got)
+	}
+	if aggregate.LatestPacket == nil {
+		t.Fatal("the stopped run recorded no terminal packet")
+	}
+	if got := aggregate.LatestPacket.Kind; got != delegatestore.PacketReported {
+		t.Errorf("packet kind = %q, want %q", got, delegatestore.PacketReported)
+	}
+	var message string
+	if err := json.Unmarshal(aggregate.LatestPacket.Message, &message); err != nil {
+		t.Fatalf("decode packet message: %v (%s)", err, aggregate.LatestPacket.Message)
+	}
+	if message != stopReason {
+		t.Errorf("packet message = %q, want the hook's stop reason %q", message, stopReason)
+	}
+}
+
+// TestSubagentStart_ContinueFalseOnAResumedChildReportsTheStopReason proves a
+// stopped SECOND launch reports the hook's reason, not the first run's reply. The
+// child already communicated on run one, so a finish built from the child's
+// communicate state would overwrite inputs.result with that stale reply.
+func TestSubagentStart_ContinueFalseOnAResumedChildReportsTheStopReason(t *testing.T) {
+	const (
+		firstReply = "FIRST-RUN-REPLY"
+		stopReason = "SECOND-LAUNCH-STOPPED"
+	)
+	marker := filepath.Join(t.TempDir(), "stop-second-launch")
+	fixture := newSubagentStartFixtureWithResponder(t, func(llm.Request) llm.Response {
+		return communicateResponse(true, firstReply)
+	}, hookStopSpec(stopReason, marker))
+
+	created := fixture.createDelegateThroughTheTool(t)
+	fixture.waitForChildRunComplete(t, created.ChildSessionID)
+	first := settledDelegateAggregate(t, fixture.root, created.DelegateID)
+	if first.LatestPacket == nil || first.LatestOutcome == nil {
+		t.Fatal("setup: the first run recorded no outcome/packet")
+	}
+	var firstMessage string
+	if err := json.Unmarshal(first.LatestPacket.Message, &firstMessage); err != nil {
+		t.Fatalf("decode first packet message: %v", err)
+	}
+	if firstMessage != firstReply {
+		t.Fatalf("setup: first run's packet = %q, want its communicate reply %q", firstMessage, firstReply)
+	}
+	// The child keeps comm.called set, which is what makes the stale report reach
+	// the second launch's finish builder.
+	if reply, called := fixture.root.getSub(created.ChildSessionID).sess.communicatedReply(); !called || reply != firstReply {
+		t.Fatalf("setup: child communicate state = %q (called=%v), want the first run's report", reply, called)
+	}
+
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatalf("write stop marker: %v", err)
+	}
+	outcome := (delegateRuntime{owner: fixture.root}).send(context.Background(), created.DelegateID, "second assignment", 60_000)
+	if outcome.result.Err != nil {
+		t.Fatalf("stopped delegate_send: %v", outcome.result.Err)
+	}
+	if outcome.commit != nil {
+		abortUnpersistedStableDelegateOutcome(t, outcome)
+	}
+
+	if got := string(outcome.result.Status); got != "completed" {
+		t.Errorf("parent's delegate result status = %q, want completed", got)
+	}
+	if outcome.result.Output != stopReason {
+		t.Errorf("parent's delegate result = %q, want the hook's stop reason %q", outcome.result.Output, stopReason)
+	}
+	second := settledDelegateAggregate(t, fixture.root, created.DelegateID)
+	if second.LatestPacket == nil || second.LatestOutcome == nil {
+		t.Fatal("the second launch recorded no outcome/packet")
+	}
+	var secondMessage string
+	if err := json.Unmarshal(second.LatestPacket.Message, &secondMessage); err != nil {
+		t.Fatalf("decode second packet message: %v", err)
+	}
+	if secondMessage != stopReason {
+		t.Errorf("durable packet message = %q, want the stop reason %q (not the first run's reply)", secondMessage, stopReason)
+	}
+	if got := second.LatestOutcome.Status; got != delegatestore.OutcomeCompleted {
+		t.Errorf("durable outcome = %q, want completed", got)
 	}
 }

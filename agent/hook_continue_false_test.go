@@ -373,3 +373,46 @@ func TestSessionStart_ContinueFalseSkipsTheFirstTurn(t *testing.T) {
 		t.Fatalf("model requests = %d, want 0: continue:false stops the first turn", got)
 	}
 }
+
+// TestSessionStart_ContinueFalseSurvivesANotificationTurn proves a notification
+// turn (a child's update, a watched job) cannot eat the user's first prompt's
+// SessionStart stop. The stop must apply to the USER turn that follows it.
+func TestSessionStart_ContinueFalseSurvivesANotificationTurn(t *testing.T) {
+	t.Parallel()
+	cmd := `printf '%s' '{"continue":false,"stopReason":"startup hook stopped the session"}'`
+	sess, adapter := postHookFixture(t, "SessionStart", cmd, func(_ int, _ llm.Request) llm.Response {
+		return finalResponse("notification turn answered")
+	})
+	warnings := collectWarnings(sess)
+
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The startup stop was recorded at init; its reason is already delivered.
+	awaitWarningNaming(t, warnings, "startup hook stopped the session")
+
+	// Make the notification turn deliverable: a steering item is what it drains.
+	if err := sess.deliverHookContext("notification turn content"); err != nil {
+		t.Fatalf("queue notification steering: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model requests after the notification turn = %d, want 1: the notification turn must run", got)
+	}
+
+	// The user turn is the one the startup stop guards: it must end before its
+	// model request, leaving the notification turn's request as the only one.
+	text, err := sess.ProcessInput(ctx, "first prompt", nil)
+	if err != nil {
+		t.Fatalf("user turn: %v", err)
+	}
+	sess.Close()
+	if text != "" {
+		t.Fatalf("user turn delivered %q, want nothing: the startup stop must end it", text)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model requests = %d, want 1: a notification turn consumed the startup stop", got)
+	}
+}

@@ -182,9 +182,18 @@ accepts `[A-Za-z0-9_|]`. Claude accepts letters, digits, `_`, `-`, spaces, `,`,
 `|` in exact mode, with `|` or `,` separating alternatives and optional
 surrounding whitespace. Widen Evener to match: exact mode splits on `|` and `,`
 and trims each alternative. Without this, `Edit, Write` is treated as a regex
-and never matches, and `code-reviewer` only matches by regex accident. `FileChanged`
-and `StopFailure` keep Claude's narrower set (no comma/space/hyphen) — `StopFailure`
-because Claude uses errors like `model_not_found`, which contains `_` only.
+and never matches, and `code-reviewer` only matches by regex accident.
+
+**Amendment (Task 9).** The widened set applies to **every** event, not to all
+but two. `isExactMatcher` takes no event, so a hyphenated `FileChanged` matcher
+and a hyphenated `StopFailure` matcher are exact in Evener where Claude treats
+them as regexes. That divergence is accepted and documented: `StopFailure`'s own
+error names (`model_not_found`, `rate_limit`) contain only letters and `_`, so
+exact mode reproduces Claude's behavior for every name Evener emits, and
+`FileChanged`'s file events are matched by the same widened list. A per-event
+discriminator would have to be threaded through `matchTarget`, `MatchHooks`,
+`hookCanRun` and `Validate` to buy nothing for either event's real vocabulary.
+`docs/hooks.md` names the difference where it lists the exact-match set.
 
 ### 4.2 `SubagentStart`
 
@@ -377,11 +386,19 @@ per Claude. Exit 2 shows stderr to the user only.
 - **`SessionEnd`**: matcher target becomes Claude's reason vocabulary. Evener
   can distinguish a thread clear and nothing else, so `closeOptions` gains a
   `reason`, `CloseWithReason("clear")` is called from the clear handler
-  (`cmd/evener/serve.go`'s `closeSupersededSession` call site), and every other
-  close — `Close`, `CloseForShutdown` — sends `other`. A retirement close skips
+  (`cmd/evener/serve.go`'s `closeSupersededSession` call site); `Close` and a
+  `CloseForShutdown` that cannot prove idleness send `other`; an idle
+  `CloseForShutdown` sends `prompt_input_exit` (see the amendment below). A
+  retirement close skips
   `SessionEnd` hooks entirely (`session_lifecycle.go`'s `if !retirement` guard),
-  so that stays true and is documented. `resume`, `logout`,
-  `prompt_input_exit` are never sent. The input `reason` carries the same value.
+  so that stays true and is documented. `resume` and `logout` are never sent.
+  The input `reason` carries the same value.
+  **Amendment:** `prompt_input_exit` therefore *is* sent, and it is the one
+  shutdown reason Evener claims. "Idle" means no turn in flight, no running job,
+  and no turn killed mid-stream; a shutdown that finds any of those sends `other`
+  instead. Its helper is
+  `sessionEndPromptInputExit`/`idleForPromptExit`, and `docs/hooks.md` documents
+  the three-value vocabulary (`clear`, `prompt_input_exit`, `other`).
 - **`Notification`**: input gains `notification_type` and `title`; the matcher
   target becomes `notification_type`. Evener emits only one kind of
   notification, a model-facing diagnostic warning, so the value is the

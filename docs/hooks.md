@@ -229,11 +229,17 @@ and each is traced to the code that implements it.
   **retirement close runs no `SessionEnd` hook at all** (`agent/session_lifecycle.go`
   `claudeSessionEndReasons`, `sessionEndPromptInputExit`, `idleForPromptExit`,
   and the `if !retirement` guard around `RunSessionEndFor`).
-- **`PostToolUseFailure.error` is the model-facing text, not the full output.** It
-  is `ExecResult.Output`, the truncated text the model receives; `FullOutput`
-  stays on the event stream. `PostToolBatch.tool_calls[].tool_response` is the
-  same truncated text (`agent/session_tools.go:1062`, `agent/session_tool_round.go:147`;
-  `agent/internal/tool/registry.go:301` defines it).
+- **The tool result fields are not all the same text.** `PostToolUse.tool_response`
+  (and its `tool_result` alias) is `ExecResult.FullOutput`, the untruncated text
+  the event stream carries. Its two siblings send the model-facing text:
+  `PostToolUseFailure.error` is `ExecResult.Output`, the truncated text the model
+  receives, and `PostToolBatch.tool_calls[].tool_response` is the same truncated
+  text (`agent/session_tools.go:1059-1064`, `agent/session_tool_round.go:147`;
+  `agent/internal/tool/registry.go:301` defines it). This is documented, not
+  unified: `PostToolUse`'s hook sees what actually happened, while the failure
+  and batch hooks see what the model was told. A plugin that needs the two to
+  agree should read `tool_response` from `PostToolUse` only for a successful
+  call, where the truncation difference is the one to expect.
 - **`terminalSequence` is parsed but has no delivery site.** A hook may return
   it; Evener carries it and never emits it (`agent/internal/hooks/hooks.go`,
   the `TerminalSequences` fields, each commented "parsed but currently has no
@@ -417,10 +423,11 @@ For the events Evener fires, the matcher is tested against:
 - **`SessionEnd`**: the session end reason — `clear`, `prompt_input_exit`, or
   `other`.
 - **`Notification`**: the `notification_type` — always `warning` today.
-- **`UserPromptSubmit`**, **`Stop`**: no matcher target. `UserPromptSubmit`
-  matches against an empty target, so `""`, `*`, or a regex that matches the
-  empty string fires; a name matcher such as `"startup"` does not. `Stop` ignores
-  a configured matcher entirely.
+- **`UserPromptSubmit`**, **`Stop`**: no matcher target. Both ignore a
+  configured matcher entirely — `""`, `"*"`, `"startup"`, or an uncompilable
+  `"("` all fire — because Claude's table lists neither event with a matcher and
+  adding one is silently ignored. This holds for `Stop`'s exit-2 block and for
+  both events' `continue: false`.
 - **`PostToolBatch`**: no matcher target. Claude documents none, so Evener
   ignores a configured matcher rather than skip the hook.
 
