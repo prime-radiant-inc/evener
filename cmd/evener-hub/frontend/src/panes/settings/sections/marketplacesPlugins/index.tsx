@@ -14,7 +14,7 @@ import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
 import styles from "./marketplacesPlugins.module.css";
-import { PluginDetailSheet } from "./PluginDetailSheet";
+import { PluginDetailSheet, type PluginDetailTarget } from "./PluginDetailSheet";
 import { SourcesSection } from "./SourcesSection";
 
 const CLASS = {
@@ -52,7 +52,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
-  const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const [selectedPlugin, setSelectedPlugin] = useState<PluginDetailTarget | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
   // The registry removal can finish after its sheet closes. Keep its
   // no-repeat marker at the page lifecycle, and tie
@@ -123,6 +123,22 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
     setSelectedMarketplace(null);
   }
 
+  // The sheet's mode is decided by the row that opened it. An Installed
+  // row is installed by construction; a catalog row is resolved through the
+  // installed list - an already-installed catalog plugin opens its installed
+  // entry's editor (the same isInstalled predicate the browse rows render
+  // by), a fresh one the catalog sheet.
+  function handleSelectInstalled(target: { plugin: string; marketplace: string }): void {
+    setSelectedPlugin({ mode: "installed", plugin: target.plugin, marketplace: target.marketplace });
+  }
+
+  function handleSelectCatalog(plugin: string, marketplace: string): void {
+    const installed = (plugins ?? []).some((p) => p.plugin === plugin && p.marketplace === marketplace);
+    setSelectedPlugin(
+      installed ? { mode: "installed", plugin, marketplace } : { mode: "catalog", plugin, marketplace },
+    );
+  }
+
   const pluginCount = plugins?.length ?? 0;
   const marketplaceCount = marketplaces?.length ?? 0;
 
@@ -182,7 +198,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         (plugins === null ? (
           pluginsError === null && <Skeleton />
         ) : (
-          <InstalledSection onSelect={setSelectedPlugin} onBrowse={() => handleSegmentChange("browse")} />
+          <InstalledSection onSelect={handleSelectInstalled} onBrowse={() => handleSegmentChange("browse")} />
         ))}
       {activeSegment === "browse" &&
         (marketplaces === null ? (
@@ -192,9 +208,10 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
             expandedMarketplaces={expandedMarketplaces}
             setExpandedMarketplaces={setExpandedMarketplaces}
             onSources={() => handleSegmentChange("sources")}
+            onOpen={handleSelectCatalog}
           />
         ))}
-      {plugins !== null && <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />}
+      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
       {marketplaces !== null && (
         <MarketplaceSheet
           name={selectedMarketplace}

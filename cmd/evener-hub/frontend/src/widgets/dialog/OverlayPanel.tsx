@@ -105,7 +105,7 @@ export function OverlayPanel({
     // just knowing not to act on it too - it checks event.defaultPrevented
     // rather than never receiving the event at all) marks this Escape as
     // already handled, so an ancestor overlay/pane doesn't also close.
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       onClose();
     }

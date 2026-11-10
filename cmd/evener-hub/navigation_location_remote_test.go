@@ -234,6 +234,42 @@ func TestNavigationLocationRemoteFreshChildAndForkRefresh(t *testing.T) {
 	}
 }
 
+// An already indexed fork original must keep its placement beneath the
+// continuation that superseded it. This is the remote list-to-location path:
+// the original is present in the controller's snapshot, so it never reaches the
+// missing-location alias resolver that repairs a fresh descendant's ancestry.
+func TestNavigationLocationRemoteIndexedForkOriginal(t *testing.T) {
+	f := newRemoteLocationFixture(t)
+	original, continuation := hubtest.SessionID(t), hubtest.SessionID(t)
+	f.save(t, schema.SessionMeta{ID: original, ProfileID: "local", ForkLabel: "original"})
+	f.save(t, schema.SessionMeta{ID: continuation, ProfileID: "local", ParentSessionID: original})
+	f.refresh(t)
+
+	location := remoteLocationData(t, remoteLocationRead(t, f.controller, "remote:"+original, nil))
+	if location.Ref != "remote:"+original || location.TopLevel || location.TopLevelRef != "remote:"+continuation || location.Session.Kind != "fork" {
+		t.Fatalf("fork original location = %+v, session = %+v", location, location.Session)
+	}
+}
+
+// The active continuation is usually a live row, so the persisted lineage must
+// reach the live wire row too, not only a past-only projection.
+func TestNavigationLocationRemoteLiveForkOriginal(t *testing.T) {
+	original, continuation := hubtest.SessionID(t), hubtest.SessionID(t)
+	live := liveActivityEntry(1, continuation, appwire.ThreadStatusActive, nil)
+	live.SourceID = "local"
+	live.Endpoint = "ws://127.0.0.1:1/rpc"
+	live.Protocol = appwire.ProtocolVersion
+	f := newRemoteLocationFixture(t, live)
+	f.save(t, schema.SessionMeta{ID: original, ProfileID: "local", ForkLabel: "original"})
+	f.save(t, schema.SessionMeta{ID: continuation, ProfileID: "local", ParentSessionID: original})
+	f.refresh(t)
+
+	location := remoteLocationData(t, remoteLocationRead(t, f.controller, "remote:"+original, nil))
+	if location.Ref != "remote:"+original || location.TopLevel || location.TopLevelRef != "remote:"+continuation || location.Session.Kind != "fork" {
+		t.Fatalf("live fork original location = %+v, session = %+v", location, location.Session)
+	}
+}
+
 func TestNavigationLocationRemoteSourceIsolationAndAbsence(t *testing.T) {
 	f := newRemoteLocationFixture(t)
 	// The same IDs exist here under a different local root. Remote resolution

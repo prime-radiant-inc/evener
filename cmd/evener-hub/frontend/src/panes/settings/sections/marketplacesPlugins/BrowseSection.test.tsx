@@ -198,8 +198,37 @@ test("an already-installed plugin shows an Installed badge instead of an Install
   const linterRow = screen.getByText("linter").closest("li") as HTMLElement;
   expect(chipKinds(linterRow)).toEqual(["installed"]);
   expect(within(linterRow).queryByRole("button", { name: "Install" })).toBeNull();
+  // The shared row with no trailing control: the whole row is one button.
+  expect(within(linterRow).getAllByRole("button")).toHaveLength(1);
   const formatterRow = screen.getByText("formatter").closest("li") as HTMLElement;
   expect(within(formatterRow).getByRole("button", { name: "Install" })).toBeTruthy();
+});
+
+test("rows are the shared shape: the plugin name is the row's main button, Install rides the trailing slot", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    plugins: [{ name: "linter", description: "Lints code" }],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByText("linter");
+  const main = screen.getByRole("button", { name: /linter/ });
+  const install = screen.getByRole("button", { name: "Install" });
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
+  // No nested buttons: the shared row's split shape.
+  expect(main.closest("button")).toBe(main);
+  expect(install.closest("button")).toBe(install);
+  // Only the trailing Install opens the install confirm; the main area is
+  // the row's own target and does not install.
+  await user.click(main);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+  await user.click(install);
+  expect(screen.getByRole("dialog", { name: "Install plugin" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
 });
 
 test("Install opens a non-destructive confirm; confirming installs and toasts success", async () => {

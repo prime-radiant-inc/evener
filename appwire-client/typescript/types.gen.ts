@@ -922,6 +922,12 @@ export interface EvenerThread {
   instanceId?: string;
   parentRef?: string;
   kind?: string;
+  /**
+   * ForkLabel names the snapshotted original of an edited message. A remote
+   * projection needs it to nest that original beneath the continuation that
+   * superseded it; the label is also the tree row's display suffix.
+   */
+  forkLabel?: string;
   profile?: string;
   /**
    * TurnCount is the daemon's total completed model-response count. It stays
@@ -3106,6 +3112,37 @@ export interface PluginCheckNowResponse {
   errors?: string[];
 }
 
+export interface PluginComponents {
+  skills?: string[];
+  agents?: string[];
+  commands?: string[];
+  hooks?: PluginHookEvent[];
+  mcpServers?: string[];
+  warnings?: string[];
+}
+
+export interface PluginComponentsParams {
+  targets: PluginComponentsTarget[];
+}
+
+export interface PluginComponentsResponse {
+  results: PluginComponentsResult[];
+}
+
+export interface PluginComponentsResult {
+  plugin?: string;
+  marketplace?: string;
+  path?: string;
+  components?: PluginComponents;
+  error?: string;
+}
+
+export interface PluginComponentsTarget {
+  plugin?: string;
+  marketplace?: string;
+  path?: string;
+}
+
 export interface PluginDiagnostic {
   name?: string;
   path?: string;
@@ -3134,6 +3171,11 @@ export interface PluginEntry {
    * it is true.
    */
   updateAvailable?: boolean;
+}
+
+export interface PluginHookEvent {
+  event: string;
+  count: number;
 }
 
 export interface PluginLaunchCandidate {
@@ -5574,6 +5616,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
+  "evener/plugin/components",
   "evener/plugin/install",
   "evener/plugin/upgrade",
   "evener/plugin/remove",
@@ -5650,6 +5693,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/paths/complete",
   "evener/plugin/checkNow",
   "evener/plugin/checkUpdates",
+  "evener/plugin/components",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -6248,6 +6292,7 @@ export interface MethodTypes {
   "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
+  "evener/plugin/components": { params: PluginComponentsParams; result: PluginComponentsResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/upgrade": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/remove": { params: PluginRefParams; result: PluginListResponse };
