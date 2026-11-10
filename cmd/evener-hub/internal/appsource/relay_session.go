@@ -355,7 +355,7 @@ func (s *relaySession) readWithRoutePublication(
 	// a binding-retention read passes false so an unwatched session does not
 	// count a subscriber that cannot answer its approval cards. Recovery
 	// derives its own demand from the leases rather than these params.
-	response, err := connection.client.ThreadRead(ctx, params)
+	response, err := readThreadWindowTransfer(ctx, connection.client, params)
 	if err != nil {
 		s.cancelCapture(capture)
 		if callerErr := ctx.Err(); callerErr != nil {

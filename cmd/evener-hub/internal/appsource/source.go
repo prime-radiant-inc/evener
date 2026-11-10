@@ -216,6 +216,12 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 		if sourceIncarnation, ok := params.SourceIncarnation(cursorIncarnation, params.ItemLimit); ok {
 			cursorIncarnation = sourceIncarnation
 		}
+		// A bounded transfer page that names withheld turns is not the end of
+		// the window: the packer must report the rest and resume at them.
+		exhausted := response.OlderCursor == ""
+		if response.Window != nil && response.Window.WithheldTurns > 0 {
+			exhausted = false
+		}
 		return ItemCandidateResult{
 			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
 			Identity: appitempaging.CursorIdentity{
@@ -223,7 +229,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 				Incarnation:       cursorIncarnation,
 				ProjectionVersion: localDaemonItemCursorProjectionVersion,
 			},
-			Exhausted: response.OlderCursor == "",
+			Exhausted: exhausted,
 			History:   ReadHistoryIdentity(response),
 		}, nil
 	}

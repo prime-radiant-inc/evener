@@ -254,7 +254,9 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 		var overlay []appwire.OverlayItem
 		var err error
 		if params.TurnWindow != nil {
-			turns, snapshot, latestExecutionTurnID, overlay, err = cut.history.turnWindow(cut.capture, cut.history.ref, *params.TurnWindow)
+			var transfer *appwire.ThreadWindowResult
+			turns, snapshot, latestExecutionTurnID, transfer, overlay, err = cut.history.turnWindow(cut.capture, cut.history.ref, *params.TurnWindow)
+			response.Window = transfer
 		} else {
 			turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err = cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
 		}

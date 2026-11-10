@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -14,6 +16,87 @@ import (
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/llm"
 )
+
+func TestLiveThreadReadPagesWindowTransferUnderCap(t *testing.T) {
+	previous := historyWindowTransferPageBytes
+	historyWindowTransferPageBytes = 96 << 10
+	t.Cleanup(func() { historyWindowTransferPageBytes = previous })
+
+	const textBytes = 24 << 10
+	turns := make([]schema.Turn, 0, 8)
+	for i := range 8 {
+		turns = append(turns, inExecution(
+			fmt.Sprintf("turn_m%d", i+1), i == 0,
+			schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", textBytes))),
+		))
+	}
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_transfer", turns...)
+
+	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID:     st.threadID,
+		IncludeTurns: true,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 8},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedTurns, err := json.Marshal(response.Thread.Turns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encodedTurns) > historyWindowTransferPageBytes {
+		t.Fatalf("windowed read carried %d turn bytes, transfer cap %d", len(encodedTurns), historyWindowTransferPageBytes)
+	}
+	encodedResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encodedResponse) > historyWindowTransferPageBytes {
+		t.Fatalf("windowed read message is %d bytes, transfer cap %d", len(encodedResponse), historyWindowTransferPageBytes)
+	}
+	if response.Window == nil {
+		t.Fatal("windowed read carries no transfer page state")
+	}
+	if response.Window.ServedTurns == 0 || response.Window.ServedTurns >= 8 || response.Window.WithheldTurns == 0 {
+		t.Fatalf("transfer page = %+v, want a proper subset of the eight selected turns", response.Window)
+	}
+	if got, want := len(response.Thread.Turns), response.Window.ServedTurns; got != want {
+		t.Fatalf("served turns = %d, transfer state says %d", got, want)
+	}
+	if response.Window.FirstWithheldTurnID == "" || response.Window.LastWithheldTurnID == "" {
+		t.Fatalf("transfer page names no withheld turns: %+v", response.Window)
+	}
+	for i, turn := range response.Thread.Turns {
+		if want := fmt.Sprintf("turn_m%d", 8-len(response.Thread.Turns)+i+1); turn.ID != want {
+			t.Fatalf("served turn %d = %q, want newest chronological order starting at %q", i, turn.ID, want)
+		}
+	}
+}
+
+func TestLiveThreadReadSmallWindowCarriesNoTransferPage(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_transfer_small",
+		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("small"))),
+	)
+
+	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID:     st.threadID,
+		IncludeTurns: true,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Window != nil {
+		t.Fatalf("small window carried transfer state: %+v", response.Window)
+	}
+	if len(response.Thread.Turns) != 1 || response.Thread.Turns[0].ID != "turn_m1" {
+		t.Fatalf("small window turns = %+v, want the one selected turn", response.Thread.Turns)
+	}
+}
 
 func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_window",

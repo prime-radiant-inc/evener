@@ -2,12 +2,32 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
+
+const (
+	// historyWindowTransferMessageReserveBytes is held back from
+	// historyWindowTransferPageBytes for the response envelope a windowed read
+	// carries beside its turns (the thread projection, snapshot and history
+	// identity).
+	historyWindowTransferMessageReserveBytes = 8 << 10
+
+	// historyWindowTransferAppliedBy names the daemon as the source of a
+	// partial window page. The hub overwrites the field with the arrangement
+	// that packed the response it serves.
+	historyWindowTransferAppliedBy = "serving-daemon"
+)
+
+// historyWindowTransferPageBytes bounds the projected turns one windowed read
+// response carries. A window larger than this transfers in pages the hub walks
+// before packing, so a selection larger than AppWire's message limit cannot
+// disconnect the transport. Tests shrink it to exercise the page boundary.
+var historyWindowTransferPageBytes = 8 << 20
 
 func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.ThreadReadParams) (appwire.AnswerContinuationVerdict, appwire.SnapshotIdentity, error) {
 	query := params.AnswerContinuation
@@ -106,7 +126,13 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 
 // turnWindow projects a turn-addressed read from the same index snapshot used
 // by legacy item paging. Turn selectors never mint legacy item cursors.
-func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector appwire.ThreadTurnWindow) (turns []appwire.Turn, snapshot appwire.SnapshotIdentity, latestExecutionTurnID string, overlay []appwire.OverlayItem, err error) {
+//
+// The returned turns are one bounded transfer page: the newest turns of a
+// latest/before selection or the oldest turns of a since selection, whichever
+// fit historyWindowTransferPageBytes. transfer is nil when the whole selection
+// fit, and otherwise names what the page withheld so the hub can request the
+// next page. A tiny window keeps the exact response it had before paging.
+func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector appwire.ThreadTurnWindow) (turns []appwire.Turn, snapshot appwire.SnapshotIdentity, latestExecutionTurnID string, transfer *appwire.ThreadWindowResult, overlay []appwire.OverlayItem, err error) {
 	var resolved transcriptindex.ResolvedTurnWindow
 	var latest transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Snapshot) error {
@@ -120,26 +146,122 @@ func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector 
 	})
 	if err != nil {
 		if missing, ok := errors.AsType[*transcriptindex.TurnNotFoundError](err); ok {
-			return nil, appwire.SnapshotIdentity{}, "", nil, appwire.TranscriptTurnNotFound(missing.TurnID, missing.Frontier.OldestTurnID, missing.Frontier.NewestTurnID, missing.Frontier.TurnCount)
+			return nil, appwire.SnapshotIdentity{}, "", nil, nil, appwire.TranscriptTurnNotFound(missing.TurnID, missing.Frontier.OldestTurnID, missing.Frontier.NewestTurnID, missing.Frontier.TurnCount)
 		}
-		return nil, appwire.SnapshotIdentity{}, "", nil, err
+		return nil, appwire.SnapshotIdentity{}, "", nil, nil, err
 	}
+	candidates, servedTurnIDs, transfer := boundTurnWindowTransfer(resolved, selector)
 	turns, _, snapshot, err = h.page(transcriptindex.Window{
-		Candidates:  resolved.Candidates,
+		Candidates:  candidates,
 		Incarnation: resolved.Incarnation,
 		Length:      resolved.Length,
 	}, threadRef)
 	if err != nil {
-		return nil, appwire.SnapshotIdentity{}, "", nil, err
+		return nil, appwire.SnapshotIdentity{}, "", nil, nil, err
 	}
-	turns = appitempaging.PreserveSelectedTurnShells(turns, resolved.TurnIDs)
+	turns = appitempaging.PreserveSelectedTurnShells(turns, servedTurnIDs)
 	overlay = make([]appwire.OverlayItem, 0, len(c.overlay))
 	for _, item := range c.overlay {
 		if h.overlay.Contains(item.Key) {
 			overlay = append(overlay, item)
 		}
 	}
-	return turns, snapshot, latest.LatestExecutionTurnID, overlay, nil
+	return turns, snapshot, latest.LatestExecutionTurnID, transfer, overlay, nil
+}
+
+// boundTurnWindowTransfer cuts a resolved selection down to one transfer page.
+// A latest or before selection keeps its newest turns, because those are the
+// ones the packer serves first and the withheld older ones resume behind them.
+// A since selection keeps its oldest turns, because it is read oldest-first.
+// Whole turns are kept: an item's position and its turn shell must travel
+// together for the hub's candidate projection.
+func boundTurnWindowTransfer(
+	resolved transcriptindex.ResolvedTurnWindow,
+	selector appwire.ThreadTurnWindow,
+) ([]appitempaging.TranscriptItemCandidate, []string, *appwire.ThreadWindowResult) {
+	limit := historyWindowTransferPageBytes - historyWindowTransferMessageReserveBytes
+	turnIDs := resolved.TurnIDs
+	if limit <= 0 || len(turnIDs) == 0 {
+		return resolved.Candidates, turnIDs, nil
+	}
+	turnBytes := make(map[string]int, len(turnIDs))
+	for _, candidate := range resolved.Candidates {
+		encoded, err := json.Marshal(candidate.Item)
+		if err != nil {
+			turnBytes[candidate.TurnID] += len(candidate.Item.Text)
+			continue
+		}
+		turnBytes[candidate.TurnID] += len(encoded)
+	}
+	total := 0
+	for _, turnID := range turnIDs {
+		total += turnBytes[turnID]
+	}
+	if total <= limit {
+		return resolved.Candidates, turnIDs, nil
+	}
+
+	keepNewest := selector.Since == ""
+	servedStart, servedEnd := 0, len(turnIDs)
+	used := 0
+	if keepNewest {
+		for servedStart = len(turnIDs); servedStart > 0; servedStart-- {
+			turnID := turnIDs[servedStart-1]
+			if servedStart < len(turnIDs) && used+turnBytes[turnID] > limit {
+				break
+			}
+			used += turnBytes[turnID]
+		}
+	} else {
+		for servedEnd = 0; servedEnd < len(turnIDs); servedEnd++ {
+			turnID := turnIDs[servedEnd]
+			if servedEnd > 0 && used+turnBytes[turnID] > limit {
+				break
+			}
+			used += turnBytes[turnID]
+		}
+	}
+	if servedStart >= servedEnd {
+		// A single turn can exceed the cap on its own; it still travels whole,
+		// because a turn shell without its items is not a usable page.
+		if keepNewest {
+			servedStart = len(turnIDs) - 1
+		} else {
+			servedEnd = 1
+		}
+	}
+	served := turnIDs[servedStart:servedEnd]
+	servedSet := make(map[string]bool, len(served))
+	for _, turnID := range served {
+		servedSet[turnID] = true
+	}
+	candidates := make([]appitempaging.TranscriptItemCandidate, 0, len(resolved.Candidates))
+	for _, candidate := range resolved.Candidates {
+		if servedSet[candidate.TurnID] {
+			candidates = append(candidates, candidate)
+		}
+	}
+	trimmedEnd := "oldest"
+	if !keepNewest {
+		trimmedEnd = "newest"
+	}
+	withheld := turnIDs[:servedStart]
+	if !keepNewest {
+		withheld = turnIDs[servedEnd:]
+	}
+	transfer := &appwire.ThreadWindowResult{
+		AppliedBy:         historyWindowTransferAppliedBy,
+		ServedTurns:       len(served),
+		WithheldTurns:     len(turnIDs) - len(served),
+		FirstServedTurnID: served[0],
+		LastServedTurnID:  served[len(served)-1],
+		TrimmedEnd:        trimmedEnd,
+	}
+	if len(withheld) > 0 {
+		transfer.FirstWithheldTurnID = withheld[0]
+		transfer.LastWithheldTurnID = withheld[len(withheld)-1]
+	}
+	return candidates, served, transfer
 }
 
 // before pages the request's ItemLimit items before its cursor from the
