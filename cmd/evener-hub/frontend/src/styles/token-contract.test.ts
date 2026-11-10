@@ -1198,6 +1198,75 @@ test("does not flag outline or box-shadow mentioned only in comments", () => {
   expect(focusRingViolations("/* box-shadow: inset 0 0 0 2px var(--accent); */ .a { color: red; }")).toEqual([]);
 });
 
+// --- (f) a focus ring must survive scroll-into-view ---------------------
+//
+// A keyboard scroll-into-view aligns the focused box flush with the
+// scrollport edge; the ring paints OUTSIDE that box, so it clips unless the
+// scroll margin covers the ring's reach. One global :focus-visible rule in
+// global.css owns that margin (issue #5578); it must stay larger than every
+// positive outline-offset plus the ring width, with a sub-pixel rounding
+// allowance - an exact-reach margin still clipped by a measured 1/64px.
+const GLOBAL_CSS = STYLESHEETS["styles/global.css"]!;
+
+function cssPxToken(cssText: string, name: string): number {
+  const match = new RegExp(`${name}\\s*:\\s*([\\d.]+)px\\s*;`).exec(cssText);
+  if (!match) throw new Error(`token-contract: ${name} is not declared in px`);
+  return Number(match[1]);
+}
+
+const RING_WIDTH_PX = cssPxToken(TOKENS_CSS, "--focus-ring-width");
+const RING_SCROLL_MARGIN_PX = cssPxToken(TOKENS_CSS, "--focus-ring-scroll-margin");
+
+function scrollMarginViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(/\{([^{}]*)\}/g)) {
+    const body = match[1]!;
+    if (!/outline\s*:\s*var\(--focus-ring(?:-danger)?\)/.test(body)) continue;
+    const offset = /outline-offset\s*:\s*(-?[\d.]+)px/.exec(body);
+    if (!offset) continue;
+    const value = Number(offset[1]);
+    // A negative offset draws the ring inside the box, so it cannot clip at
+    // the scrollport edge.
+    if (value < 0) continue;
+    if (value + RING_WIDTH_PX >= RING_SCROLL_MARGIN_PX) violations.push(`outline-offset: ${offset[1]}px`);
+  }
+  return violations;
+}
+
+test("global.css applies the ring scroll margin to every focus-visible element", () => {
+  expect(/:focus-visible\s*\{[^}]*scroll-margin:\s*var\(--focus-ring-scroll-margin\)/.test(GLOBAL_CSS)).toBe(true);
+});
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} keeps positive ring offsets inside the scroll margin`, () => {
+    expect(scrollMarginViolations(text), path).toEqual([]);
+  });
+}
+
+test("the ring scroll margin exceeds the ring width and every positive offset", () => {
+  expect(RING_SCROLL_MARGIN_PX).toBeGreaterThan(RING_WIDTH_PX);
+  // The largest positive outline-offset in the tree is 2px; the margin must
+  // cover that plus the ring width with room for scroll rounding.
+  expect(RING_SCROLL_MARGIN_PX - RING_WIDTH_PX).toBeGreaterThan(2);
+});
+
+test("catches a positive offset whose ring would reach the scrollport edge", () => {
+  const violations = scrollMarginViolations(".a:focus-visible { outline: var(--focus-ring); outline-offset: 6px; }");
+  expect(violations).toEqual(["outline-offset: 6px"]);
+});
+
+test("allows negative and covered ring offsets", () => {
+  expect(scrollMarginViolations(".a:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }")).toEqual([]);
+  expect(
+    scrollMarginViolations(".a:focus-visible { outline: var(--focus-ring-danger); outline-offset: 2px; }"),
+  ).toEqual([]);
+});
+
+test("ignores outlines that are not the focus-ring token", () => {
+  expect(scrollMarginViolations(".a { outline: 2px dashed var(--accent); outline-offset: 8px; }")).toEqual([]);
+});
+
 // --- (g) every bare var(--token) resolves to a declared property --------
 //
 // `var(--radius-sm)` shipped in two rules - composer.module.css:65 and
