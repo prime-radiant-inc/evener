@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -59,6 +60,11 @@ type SessionConfig struct {
 	MemoryStateRoot string `json:"-"`
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
+
+	// CommitProvenance controls whether the system prompt tells the model to
+	// end commit messages with the Evener provenance trailer. Empty and
+	// "coauthor" enable it; "off" disables it. Persisted with the session.
+	CommitProvenance string `json:"commit_provenance,omitempty"`
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -475,6 +481,11 @@ func (c *SessionConfig) applyDefaults() {
 	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
 		c.ProviderIdleTimeout = "10m"
 	}
+	if c.CommitProvenance != "" {
+		if mode, err := commitprovenance.Normalize(c.CommitProvenance); err == nil {
+			c.CommitProvenance = mode
+		}
+	}
 	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
 	// default of 200 killed long-running agentic sessions doing real work from
 	// a single prompt. Loop detection (enabled by default) still guards against
@@ -558,6 +569,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ProviderIdleTimeout:         c.ProviderIdleTimeout,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		CommitProvenance:            c.CommitProvenance,
 		VisionModel:                 c.VisionModel,
 	}
 }
@@ -603,6 +615,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ProviderIdleTimeout:         s.ProviderIdleTimeout,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		CommitProvenance:            s.CommitProvenance,
 		VisionModel:                 s.VisionModel,
 	}
 }

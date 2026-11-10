@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/commitprovenance"
 )
 
 // layerFieldKey is the schema row key for one Layer field: its toml name, or
@@ -73,6 +75,8 @@ func layerWith(f reflect.StructField) Layer {
 		l.SystemPromptAppendFile = "x"
 	case "SandboxNet":
 		l.Sandbox = "read-only"
+	case "CommitProvenance":
+		l.CommitProvenance = commitprovenance.ModeOff
 	}
 	return l
 }

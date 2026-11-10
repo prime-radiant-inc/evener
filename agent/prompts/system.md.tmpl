@@ -257,6 +257,12 @@ Not a git repository.
 </git>
 {{ end }}
 
+{{ if .CommitTrailer }}## Commit provenance
+When you create a git commit, end the commit message with this exact line:
+{{ .CommitTrailer }}
+Do not add it to pull request descriptions. Do not amend a commit only to add it.
+
+{{ end }}
 {{ if or .WorkspaceTree .BuildInfo }}<workspace>
 This is a snapshot of the working directory taken at session start. It does not update.
 

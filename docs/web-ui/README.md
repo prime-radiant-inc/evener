@@ -83,6 +83,9 @@ Settings groups controls by task:
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
+Session defaults and the New session form include a **Commit provenance**
+control for recording the Evener version, model, host and session ID in commit
+messages the model writes.
 Phone density opens Appearance; desktop or mobile layout opens Conversation
 display; desktop notifications or quiet opens Notifications. Pairing still opens Devices.
 Appearance is the default. Explicit unknown or retired `general`, `display`

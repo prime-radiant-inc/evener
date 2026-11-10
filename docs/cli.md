@@ -227,6 +227,7 @@ runtime meaning across flags.
 | `--system-prompt-append` | `omitted` | path to append to system prompt file (repeatable) |
 | `--sandbox` | `"off"` | sandbox mode: off (default), read-only, workspace-write, or restricted |
 | `--sandbox-net` | `"on"` | sandbox network egress on\|off (default on; only applies with a non-off --sandbox mode) |
+| `--commit-provenance` | `""` | record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor) |
 | `--api-log` | `"off"` | durable API request logging on\|off (default off; on records every provider request and response to `<state-dir>/sessions/<id>.api.jsonl`) |
 | `--timeout` | `0` | overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback) |
 | `--ask-responder` | `""` | Command run through sh -c to answer ask_user, questions JSON on stdin and reply on stdout. Enables interactive behavior, with at most three responder rounds per input. |

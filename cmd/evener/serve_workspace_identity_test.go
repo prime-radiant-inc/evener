@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/server"
 )
 
@@ -98,6 +99,46 @@ func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 	}
 	if !meta.Manager {
 		t.Fatal("restarted session metadata lost Manager=true")
+	}
+}
+
+func TestResumeThenClearKeepsCommitProvenanceOff(t *testing.T) {
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedResumableSession(t, stateDir, sessionID, sessionID)
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		t.Fatalf("load seeded session: %v", err)
+	}
+	meta.Config.CommitProvenance = commitprovenance.ModeOff
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save seeded session: %v", err)
+	}
+
+	deps, state, baseArgs := newClearServeDeps(t)
+	baseArgs[7] = stateDir
+	args := append(append([]string(nil), baseArgs...), "--resume", sessionID)
+	var clearErr error
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		read := clearThreadRead(t, state.srv)
+		clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                read.Thread.Evener.Ref,
+			ClientMutationID:   "resume-clear-provenance",
+			ExpectedInstanceID: sessionID,
+		})
+		if clearErr == nil {
+			if got := state.session(0).Meta().Config.CommitProvenance; got != commitprovenance.ModeOff {
+				t.Errorf("cleared session commit provenance = %q, want %q", got, commitprovenance.ModeOff)
+			}
+		}
+		state.srv.shutdown()
+		return http.ErrServerClosed
+	}
+	if err := runServeWithDeps(args, deps); err != nil {
+		t.Fatalf("resume and clear: %v", err)
+	}
+	if clearErr != nil {
+		t.Fatalf("clear: %v", clearErr)
 	}
 }
 
