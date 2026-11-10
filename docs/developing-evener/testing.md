@@ -939,6 +939,85 @@ A hung bundler is bounded by `timeout 900` where coreutils provides it (the ubun
 runner, or a Mac with `gtimeout`) and by the CI step's own `timeout-minutes`
 everywhere else.
 
+## CI Caches
+
+GitHub gives the repository 10GB of Actions cache. Past that it evicts the
+least recently accessed entries, whatever they are, so an over-budget cache
+evicts entries lanes are still restoring, and those lanes run cold. A cold
+`lint-golangci` can exceed golangci-lint's 5-minute limit on its GOOS=darwin
+pass over the agent module, so that lane depends on staying inside the
+budget. Keep the steady state under 6GB: the
+headroom absorbs the second generation each main push writes before
+`cache-prune` deletes the first.
+
+What is cached, and where it is saved:
+
+- **Go build cache, one entry per kind.** `.github/actions/go-cache-restore`
+  restores the newest `go-<kind>-<os>-<arch>-<go version>-<commit>` entry by
+  prefix; `.github/actions/go-cache-save` saves this commit's entry on pushes to
+  main only. Jobs whose compiled output differs (race and non-race, lint, vet,
+  tags) use different kinds; jobs that compile nearly the same thing share one,
+  saved by one of them (the `web-browser` shards share `web-browser`, saved by
+  the cascade shard).
+- **Go module cache, one entry for every kind**, `gomod-…`, saved by
+  `static-build` alone (go-cache-save's `modules: "true"`). A job that needs a
+  module the entry lacks downloads it on each run.
+- **golangci-lint analysis caches**, `golangci-lint-…` and
+  `golangci-lint-tagged-…`, a few megabytes each, saved by the two lint lanes on
+  main. With both it and the Go build cache warm, the whole golangci sweep takes
+  seconds; with only the build cache, about four minutes.
+- **Nothing else.** setup-go's and setup-node's built-in caches stay off: they
+  save from whichever ref first misses their key, pull requests and merge-queue
+  branches included, an entry saved on a pull request's ref serves only that
+  pull request, and a warm `~/.npm` does not make `npm ci` measurably faster
+  here. `TestBuiltInToolchainCachesStayOff` pins this for every workflow that
+  runs on pull requests.
+
+The rules that keep the budget:
+
+- **One generation on main.** CI's `cache-prune` job runs after every lane of a
+  main push and deletes each `go-*`, `gomod-*` and `golangci-lint-*` entry on
+  main that a newer entry with the same prefix supersedes. It never deletes a
+  prefix's newest entry, so a lane that saved nothing keeps its last one.
+  Entries left by a renamed kind or an older Go version are their prefix's
+  newest, so the job keeps them; nothing
+  restores them, so eviction takes them first, and they expire after 7 days.
+- **A saved entry is one job's build.** go-cache-restore dates every restored
+  build cache entry two hours back on main, Go refreshes the mtime of an entry
+  over an hour old whenever it uses it, and go-cache-save deletes every entry
+  still older than an hour before the restore. Without the backdating, an entry
+  a main run wrote less than an hour earlier reads as used and rides along.
+- **A failed step does not skip a save.** Every save runs under
+  `if: ${{ !cancelled() }}` and go-cache-save gets `job-status: ${{ job.status }}`.
+  A failed job saves everything it restored plus what it built, untrimmed, so a
+  run that stopped early never shrinks the entry; a lane that failed only by
+  running cold saves a warm cache for the next run. Saves still precede the
+  timing-budget steps, so a budget breach saves a trimmed entry.
+  `TestCacheSavesRunAfterAFailedStep` and `TestEveryRestoredGoCacheKindIsSaved`
+  (every restored kind is saved by a job that restores it, and the module cache
+  by exactly one) pin these.
+
+Adding a cache kind costs its trimmed entry's size, once. Before adding one,
+check that an existing kind does not already hold most of what the job
+compiles; if one does, restore that kind instead and save from only the job
+that compiles the most. If the job needs its own kind, read the size of a
+comparable kind's newest entry, add it to the current total, and keep the total
+under 6GB. Restore with go-cache-restore (or setup-toolchain's
+`go-cache-kind`), and save with go-cache-save after the job's last Go step.
+
+To read the budget, list the entries and the total:
+
+~~~sh
+gh cache list --repo prime-radiant-inc/evener --limit 200 \
+  --json key,ref,sizeInBytes,lastAccessedAt
+gh api repos/prime-radiant-inc/evener/actions/cache/usage
+~~~
+
+Every entry should be on `refs/heads/main`, one per prefix, apart from a
+`setup-ruby-bundler-cache-…` entry from the iOS qualification workflow and the
+release workflow's tag-scoped entries. `cache-prune`'s log prints the total
+after each main push.
+
 ## The Test Timing Ratchet
 
 `make test-timing-budget` budgets each Go package's test CPU time, plus one
