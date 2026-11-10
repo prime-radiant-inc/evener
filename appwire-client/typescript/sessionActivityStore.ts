@@ -1279,7 +1279,12 @@ export class SessionActivityStore {
   }
 
   private refreshThreadMetadata(lease: ThreadSubscriptionLease, generation: number, attempt = 0): void {
-    if (this.disposed || this.lease !== lease || generation !== this.generation) return;
+    if (this.disposed || this.lease !== lease) return;
+    if (generation !== this.generation) {
+      const next = this.generation;
+      void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+      return;
+    }
     void lease
       .read({ includeTurns: false })
       .then(() => {
@@ -1296,7 +1301,12 @@ export class SessionActivityStore {
         this.publish({ runtime: this.seedEscalations(metadata) });
       })
       .catch((error: unknown) => {
-        if (this.disposed || this.lease !== lease || generation !== this.generation || permanentError(error)) return;
+        if (this.disposed || this.lease !== lease || permanentError(error)) return;
+        if (generation !== this.generation) {
+          const next = this.generation;
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+          return;
+        }
         const delay = Math.min(1000 * 2 ** Math.min(attempt, 5), 30000);
         this.clock.setTimeout(() => this.refreshThreadMetadata(lease, generation, attempt + 1), delay);
       });

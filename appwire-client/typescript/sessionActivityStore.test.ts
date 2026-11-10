@@ -565,6 +565,68 @@ test("a replacement summary does not discard recovery metadata", async () => {
   expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
 });
 
+test("a replacement summary keeps recovery after a transient metadata failure", async () => {
+  const seedClient = activityClient();
+  const seed = owner(seedClient);
+  seed.start();
+  await activityState(seed, () => seed.getSnapshot().summary !== null);
+  const retained = seed.getSnapshot();
+  seed.dispose();
+  const client = activityClient();
+  const first = deferred<ThreadReadResponse>(),
+    failed = deferred<void>(),
+    entered = deferred<void>();
+  const old: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-old",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const fresh: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-new",
+      sessionId: "replacement-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return first.promise;
+    }
+    if (reads === 2) {
+      failed.resolve();
+      throw new WireError("temporary failure", -32000, { retryDisposition: "automatic" });
+    }
+    return fresh;
+  });
+  const replacement = deferred<SessionActivitySummary>();
+  client.on("evener/thread/activity/read", () => replacement.promise);
+  const store = owner(client, "session", retained);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-new" },
+  });
+  first.resolve(old);
+  await failed.promise;
+  replacement.resolve({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "replacement-session", ref: "remote:replacement" },
+  });
+  await activityState(store, () => store.getSnapshot().context?.sessionId === "replacement-session");
+  await vi.advanceTimersByTimeAsync(1000);
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+});
+
 test("replacement activity identity retires the previous runtime atomically", async () => {
   const client = runtimeClient(),
     store = owner(client);
