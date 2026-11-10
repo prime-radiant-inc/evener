@@ -20,7 +20,12 @@ test("wireThreadSubscriptions wires one registry and retirement releases it", ()
 test("a status frame keeps shared metadata current across a closed and re-opened viewer", async () => {
   const client = activityClient();
   const response: ThreadReadResponse = {
-    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "active" },
+    },
   };
   client.on("thread/read", () => response);
   // The transcript owner keeps the wire subscription alive across the
@@ -33,7 +38,11 @@ test("a status frame keeps shared metadata current across a closed and re-opened
 
   client.emitNotification({
     method: "thread/status/changed",
-    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+    params: {
+      ref: activityRef,
+      threadId: "wire-root",
+      status: { type: "idle" },
+    },
   });
   expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
 
@@ -56,7 +65,12 @@ test("a read issued before a newer status frame cannot revert the shared status"
     late = deferred<ThreadReadResponse>(),
     entered = deferred<void>();
   const active: ThreadReadResponse = {
-    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "active" },
+    },
   };
   let reads = 0;
   client.on("thread/read", () => {
@@ -76,7 +90,11 @@ test("a read issued before a newer status frame cannot revert the shared status"
   await entered.promise;
   client.emitNotification({
     method: "thread/status/changed",
-    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+    params: {
+      ref: activityRef,
+      threadId: "wire-root",
+      status: { type: "idle" },
+    },
   });
   expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
 
@@ -121,7 +139,12 @@ test("a delayed read cannot revert askPending set by a newer status frame", asyn
   await entered.promise;
   client.emitNotification({
     method: "thread/status/changed",
-    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: false },
+    params: {
+      ref: activityRef,
+      threadId: "wire-root",
+      status: { type: "awaiting" },
+      askPending: false,
+    },
   });
   expect(transcript.metadata?.()?.askPending).toBe(false);
 
@@ -154,7 +177,12 @@ test("a status frame before the initial read applies its askPending once the rea
   expect(lease.metadata?.()).toBeNull();
   client.emitNotification({
     method: "thread/status/changed",
-    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+    params: {
+      ref: activityRef,
+      threadId: "wire-root",
+      status: { type: "awaiting" },
+      askPending: true,
+    },
   });
   expect(lease.metadata?.()).toBeNull();
   late.resolve(read);
@@ -273,9 +301,7 @@ test("a read started after an askPending=false frame cannot restore the older qu
     status: { type: "awaiting" as const },
     evener: { ...threadFixture().thread.evener, askPending: true },
   };
-  let reads = 0;
   client.on("thread/read", () => {
-    reads += 1;
     return { thread: question };
   });
   const lease = acquireThreadSubscription(client, activityRef);
@@ -283,7 +309,12 @@ test("a read started after an askPending=false frame cannot restore the older qu
   expect(lease.metadata?.()?.askPending).toBe(true);
   client.emitNotification({
     method: "thread/status/changed",
-    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" }, askPending: false },
+    params: {
+      ref: activityRef,
+      threadId: "wire-root",
+      status: { type: "idle" },
+      askPending: false,
+    },
   });
   expect(lease.metadata?.()?.askPending).toBe(false);
   await lease.read({ includeTurns: true });
@@ -307,7 +338,10 @@ test("a resync clears requested approvals that the recovery snapshot resolves", 
       ...threadFixture().thread,
       id: "wire-root",
       sessionId: "root-session",
-      evener: { ...threadFixture().thread.evener, pendingEscalations: [escalation("esc_1")] },
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1")],
+      },
     },
   };
   const recovered: ThreadReadResponse = {
@@ -394,7 +428,9 @@ test("shared leases expose only admitted runtime metadata, including after a ric
     askPending: false,
   });
   expect(second.metadata?.()).toEqual(first.metadata?.());
-  const rich: ThreadReadResponse = { thread: { ...response.thread, status: { type: "idle" } } };
+  const rich: ThreadReadResponse = {
+    thread: { ...response.thread, status: { type: "idle" } },
+  };
   client.on("thread/read", () => rich);
   expect(await second.read({ includeTurns: true })).toBe(rich);
   expect(second.metadata?.()).toEqual({
@@ -404,8 +440,18 @@ test("shared leases expose only admitted runtime metadata, including after a ric
     askPending: false,
   });
   expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([
-    { ref: activityRef, includeTurns: false, subscribe: true, replaceSubscription: false },
-    { ref: activityRef, includeTurns: true, subscribe: false, replaceSubscription: false },
+    {
+      ref: activityRef,
+      includeTurns: false,
+      subscribe: true,
+      replaceSubscription: false,
+    },
+    {
+      ref: activityRef,
+      includeTurns: true,
+      subscribe: false,
+      replaceSubscription: false,
+    },
   ]);
   first.release();
   expect(first.metadata?.()).toBeNull();
@@ -445,7 +491,13 @@ test("disconnect clears metadata and fences a late rich read from the former gen
       entered.resolve();
       return late.promise;
     }
-    return { thread: { ...threadFixture().thread, id: "wire-new", sessionId: "replacement-session" } };
+    return {
+      thread: {
+        ...threadFixture().thread,
+        id: "wire-new",
+        sessionId: "replacement-session",
+      },
+    };
   });
   const prior = lease.read({ includeTurns: true });
   await entered.promise;
@@ -475,7 +527,13 @@ test("a late old subscribe cannot publish metadata after reconnect", async () =>
       entered.resolve();
       return late.promise;
     }
-    return { thread: { ...threadFixture().thread, id: "wire-new", sessionId: "replacement-session" } };
+    return {
+      thread: {
+        ...threadFixture().thread,
+        id: "wire-new",
+        sessionId: "replacement-session",
+      },
+    };
   });
   const lease = acquireThreadSubscription(client, activityRef),
     prior = lease.ensure();
@@ -507,7 +565,12 @@ test.each([
     });
     const activity = new SessionActivityStore(client, activityRef),
       transcript = acquireThreadSubscription(client, activityRef);
-    const params = { includeTurns: true, itemsView: "fragment", itemLimit: 25, requestGeneration: 7 };
+    const params = {
+      includeTurns: true,
+      itemsView: "fragment",
+      itemLimit: 25,
+      requestGeneration: 7,
+    };
     if (order === "transcript-first") await transcript.read(params);
     activity.start();
     await activityState(activity, () => activity.getSnapshot().summary !== null);
@@ -519,7 +582,12 @@ test.each([
       client.calls.find(
         (call) => call.method === "thread/read" && (call.params as { includeTurns: boolean }).includeTurns,
       )?.params,
-    ).toEqual({ ...params, ref: activityRef, subscribe: order === "transcript-first", replaceSubscription: false });
+    ).toEqual({
+      ...params,
+      ref: activityRef,
+      subscribe: order === "transcript-first",
+      replaceSubscription: false,
+    });
     if (releaseOrder === "transcript-first") {
       transcript.release();
       expect(callsTo(client, "thread/unsubscribe")).toBe(0);
@@ -558,7 +626,9 @@ test("a reopened lease's read does not queue behind a departed holder's pending 
   // The fresh lease's read must answer from its OWN subscribe request,
   // while the departed one is still unresolved on the wire.
   const fresh = acquireThreadSubscription(client, activityRef);
-  client.on("thread/read", () => ({ thread: { ...threadFixture().thread, id: "wire-fresh" } }));
+  client.on("thread/read", () => ({
+    thread: { ...threadFixture().thread, id: "wire-fresh" },
+  }));
   const response = await fresh.read({ includeTurns: false });
   expect(response.thread.id).toBe("wire-fresh");
 
