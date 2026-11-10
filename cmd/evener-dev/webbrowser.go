@@ -158,9 +158,9 @@ func browserGuardSpec(guard, root string) guardSpec {
 // it. Every guard belongs to exactly one shard, and the workflow's matrix
 // names every shard.
 var browserGuardShards = map[string][]string{
-	"overflow": {"layoutguard", "overflowguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard"},
-	"skill":    {"shellguard", "skillguard"},
-	"cascade":  {"cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard},
+	"overflow": {"layoutguard", "overflowguard", "spawnguard", "transcriptscrollguard", retirementGuard, "mermaidguard", "memoryguard"},
+	"skill":    {"shellguard", skillGuard},
+	"cascade":  {cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard},
 }
 
 // browserShardGuards is shard's guards in verdict order (BROWSER_GUARD_SHARD),

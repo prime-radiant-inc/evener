@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"maps"
 	"os"
 	"slices"
 	"testing"
@@ -46,19 +47,12 @@ func TestBrowserShardGuards(t *testing.T) {
 		if err != nil {
 			t.Fatalf("shard %q: %v", shard, err)
 		}
-		if len(got) != len(members) {
+		if !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(members))) {
 			t.Errorf("shard %q = %q, want its members %q", shard, got, members)
 		}
-		last := -1
-		for _, guard := range got {
-			if !slices.Contains(members, guard) {
-				t.Errorf("shard %q ran %q, which is not one of its guards", shard, guard)
-			}
-			at := slices.Index(browserGuards, guard)
-			if at <= last {
-				t.Errorf("shard %q = %q is out of verdict order", shard, got)
-			}
-			last = at
+		verdictOrder := func(a, b string) int { return slices.Index(browserGuards, a) - slices.Index(browserGuards, b) }
+		if !slices.IsSortedFunc(got, verdictOrder) {
+			t.Errorf("shard %q = %q is out of verdict order", shard, got)
 		}
 	}
 	if got, err := browserShardGuards("no-such-shard"); err == nil {
@@ -86,12 +80,7 @@ func TestCIWebBrowserMatrixRunsEveryShard(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := slices.Sorted(slices.Values(workflow.Jobs["web-browser"].Strategy.Matrix.Shard))
-	var want []string
-	for shard := range browserGuardShards {
-		want = append(want, shard)
-	}
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
+	if want := slices.Sorted(maps.Keys(browserGuardShards)); !slices.Equal(got, want) {
 		t.Fatalf("web-browser matrix shards = %q, want %q", got, want)
 	}
 }
