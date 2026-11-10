@@ -585,6 +585,9 @@ func rejectUntrustedCandidateEnvironment(local *execenv.LocalExecutionEnvironmen
 		return err
 	}
 	trustedMetadata := trustedMetadataRoots(local.Sandbox, trusted)
+	if err := rejectUntrustedRequestedRoot(next.WorkingDirectory(), trustedMetadata); err != nil {
+		return err
+	}
 	masked := local.Sandbox.MaskedPaths
 	if err := rejectUntrustedGitMetadata(next.Sandbox.Git, trustedMetadata, masked); err != nil {
 		return err
@@ -603,6 +606,36 @@ func rejectUntrustedCandidateEnvironment(local *execenv.LocalExecutionEnvironmen
 		if err := rejectUntrustedGitMetadata(wrapperPolicy.Git, trustedMetadata, masked); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// rejectUntrustedRequestedRoot walks from the retained boundary to the path the
+// switch asked to enter and refuses a symlink at any component. The policy's
+// resolved WorktreeRoot is a different reading of the same target; if the
+// requested path became a link after the switch classified it, the resolved
+// root can belong to another directory while the requested spelling still names
+// the retained workspace (#3724 review).
+func rejectUntrustedRequestedRoot(requested string, trustedMetadata []string) error {
+	target := filepath.Clean(requested)
+	for _, root := range trustedMetadata {
+		root = filepath.Clean(root)
+		if root == "" || root == "." || !identifier.PathUnder(target, root) {
+			continue
+		}
+		rel, err := filepath.Rel(root, target)
+		if err != nil || rel == "." {
+			return nil
+		}
+		current := root
+		for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, component)
+			info, err := os.Lstat(current)
+			if err != nil || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%w: candidate worktree root crosses a symlink from the retained boundary", errUntrustedWorktreeProject)
+			}
+		}
+		return nil
 	}
 	return nil
 }

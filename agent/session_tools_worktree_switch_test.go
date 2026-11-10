@@ -1778,3 +1778,41 @@ func TestWorktreeSwitch_FileLayerRefusesSwappedWorktreeRoot(t *testing.T) {
 		t.Fatal("write through a swapped worktree root succeeded")
 	}
 }
+
+// The swap can also happen between the switch's classification and
+// WithWorkingDirectory: the requested path becomes a symlink to an external
+// directory while the linked checkout's metadata stays in the launch
+// repository. The candidate must walk from the retained boundary to the
+// requested root and refuse the symlink before installing anything (#3724
+// review).
+func TestWorktreeSwitch_RejectsRootSwappedBeforeCandidateResolve(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-preresolve-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	_, head := worktreeBaseRepo(t)
+	inside := filepath.Join(repo, "inside-lane")
+	wtGit(t, repo, "worktree", "add", "-q", "-b", "inside-lane", inside, head)
+	external := canonicalFixtureTempDir(t, "worktree-preresolve-external-*")
+
+	s, _, env := newSandboxedFixtureSession(t, repo, "worktree-preresolve-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	s.cfg.testOnly.worktree.enterWorktree = func(path string, managed bool) error {
+		if filepath.Clean(path) != filepath.Clean(inside) {
+			return nil
+		}
+		if err := os.RemoveAll(inside); err != nil {
+			return err
+		}
+		return os.Symlink(external, inside)
+	}
+
+	_, switchErr := s.worktreeSwitchByPath(context.Background(), inside)
+	if switchErr == nil {
+		t.Fatal("switch installed a candidate whose requested root became a symlink to an external directory")
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, repo, repo, external, filepath.Join(external, ".git"))
+}
