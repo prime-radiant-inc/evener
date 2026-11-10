@@ -152,6 +152,12 @@ Two standard gates enforce the convention:
   table name for snake_case. A single key can opt out with a
   `# evener:naming-ignore` marker on the immediately preceding line.
 
+A `cmd/evener-*` directory that is not `cmd/evener`, `cmd/evener-hub`, or
+`cmd/evener-doctor` is a library package, not a program: it exports a `Run` and
+is dispatched by `cmd/evener-dev/bin`, the one `main` that calls them. So
+`go run ./cmd/evener-tomlcheck` fails with "is not a main package"; run
+`go run ./cmd/evener-dev/bin tomlcheck` instead, or the covering `make` target.
+
 Run locally:
 
 ```bash
