@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // A user-message document part must reach the wire as Anthropic's document
@@ -16,7 +17,7 @@ func TestToAnthropicMessages_UserDocumentBlock(t *testing.T) {
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "describe this"},
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4 body"), MediaType: "application/pdf", FileName: "document.pdf"}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestToAnthropicMessages_UserDocumentDefaultsToPDF(t *testing.T) {
 	t.Parallel()
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestToAnthropicMessages_UserDocumentURLBlock(t *testing.T) {
 	t.Parallel()
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.com/a.pdf", MediaType: "application/pdf"}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("user document url: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestToAnthropicMessages_UserDocumentPrefersInlineData(t *testing.T) {
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{
 			Data: []byte("%PDF-1.4"), MediaType: "application/pdf", URL: "https://example.com/a.pdf",
 		}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -96,24 +97,24 @@ func TestToAnthropicMessages_AssistantDocumentRejected(t *testing.T) {
 	t.Parallel()
 	_, _, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "application/pdf"}},
-	}}})
+	}}}, false)
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("assistant document error = %v, want ConfigurationError", err)
 	}
 }
 
-// A tool result's document bytes stay off the wire: an image block carrying a
-// pdf media type is rejected by the API (#4209 comment), and the design keeps
-// documents on the side-channel (llm.DeliversToolResultMedia is image-only), so
-// the block carries the text alone.
-func TestToAnthropicMessages_ToolResultDocumentBytesStayOffTheWire(t *testing.T) {
+// A tool result's document bytes ride inline as Anthropic's document content
+// block when the row declares pdf input: the Messages API accepts a document
+// block inside tool_result content, so a PDF a tool returns reaches the model
+// natively instead of through the vision side-channel (#4465).
+func TestToAnthropicMessages_ToolResultDocumentBlock(t *testing.T) {
 	t.Parallel()
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleTool, ToolCallID: "c1", Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 			ToolCallID: "c1", Name: "read_file", Content: "[document: a.pdf]",
 			ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf",
 		}},
-	}}})
+	}}}, true)
 	if err != nil {
 		t.Fatalf("tool-result document: %v", err)
 	}
@@ -121,8 +122,72 @@ func TestToAnthropicMessages_ToolResultDocumentBytesStayOffTheWire(t *testing.T)
 	if block["type"] != "tool_result" {
 		t.Fatalf("block = %#v, want tool_result", block)
 	}
-	if got, ok := block["content"].(string); !ok || got != "[document: a.pdf]" {
-		t.Fatalf("tool_result content = %#v, want the text alone", block["content"])
+	content, ok := block["content"].([]map[string]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("tool_result content = %#v, want text + document", block["content"])
+	}
+	doc := content[1]
+	if doc["type"] != "document" {
+		t.Fatalf("tool-result media block = %#v, want a document block", doc)
+	}
+	src, _ := doc["source"].(map[string]any)
+	if src["type"] != "base64" || src["media_type"] != "application/pdf" {
+		t.Fatalf("document source = %#v, want base64 application/pdf", src)
+	}
+	if src["data"] != base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")) {
+		t.Fatalf("document source data = %v, want base64 of the tool-result bytes", src["data"])
+	}
+}
+
+// A row that does not declare pdf input cannot see a tool-result document, so
+// the builder keeps the text alone: the agent's side-channel describes the
+// document, and sending the bytes here too would deliver them twice (#4465).
+func TestToAnthropicMessages_ToolResultDocumentStaysTextWithoutPDFInput(t *testing.T) {
+	t.Parallel()
+	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleTool, ToolCallID: "c1", Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "c1", Name: "read_file", Content: "[document: a.pdf]",
+			ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf",
+		}},
+	}}}, false)
+	if err != nil {
+		t.Fatalf("tool-result document: %v", err)
+	}
+	content, ok := docBlocks(t, msgs, 0)[0]["content"].(string)
+	if !ok || content != "[document: a.pdf]" {
+		t.Fatalf("tool_result content = %#v, want the text alone", docBlocks(t, msgs, 0)[0]["content"])
+	}
+}
+
+// TestBuildProtocolBody_ToolResultDocumentGateFollowsRowPDFInput pins the
+// production wiring: the builder's document block follows the resolved row's
+// pdf input, not a flag a caller passes directly.
+func TestBuildProtocolBody_ToolResultDocumentGateFollowsRowPDFInput(t *testing.T) {
+	t.Parallel()
+	req := protoReq("")
+	req.Messages = append(req.Messages, toolResultMessage([]byte("%PDF-1.4"), "application/pdf")...)
+
+	toolResultContent := func(body map[string]any) any {
+		msgs, _ := body["messages"].([]map[string]any)
+		for _, m := range msgs {
+			blocks, _ := m["content"].([]map[string]any)
+			for _, b := range blocks {
+				if b["type"] == "tool_result" {
+					return b["content"]
+				}
+			}
+		}
+		t.Fatalf("no tool_result block in %#v", body["messages"])
+		return nil
+	}
+
+	withPDF := protoRes(func(c *registry.Caps) { c.InputModalities = []string{"text", "pdf"} })
+	if content, ok := toolResultContent(protoBuild(t, req, withPDF)).([]map[string]any); !ok || len(content) != 2 || content[1]["type"] != "document" {
+		t.Fatalf("with pdf input: tool_result content = %#v, want text + document", toolResultContent(protoBuild(t, req, withPDF)))
+	}
+	withoutPDF := protoRes(nil)
+	if _, ok := toolResultContent(protoBuild(t, req, withoutPDF)).(string); !ok {
+		t.Fatalf("without pdf input: tool_result content = %#v, want the text alone", toolResultContent(protoBuild(t, req, withoutPDF)))
 	}
 }
 
@@ -134,7 +199,7 @@ func TestToAnthropicMessages_ToolResultImageBlock(t *testing.T) {
 			ToolCallID: "c1", Name: "read_file", Content: "[image: a.png]",
 			ImageData: []byte("png-bytes"), ImageMediaType: "image/png",
 		}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("tool-result image: %v", err)
 	}
@@ -154,7 +219,7 @@ func TestToAnthropicMessages_ToolResultEmptyMediaIsAnImage(t *testing.T) {
 			ToolCallID: "c1", Name: "read_file", Content: "[image]",
 			ImageData: []byte("bytes"),
 		}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("tool-result empty media: %v", err)
 	}

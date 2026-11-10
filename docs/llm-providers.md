@@ -162,6 +162,11 @@ bytes travel to the vision model as a base64 document part
 - On the `openai-chat` protocol the document part is a gateway extension; a
   backend that ignores it sees no image at all, and the model honestly reports
   an empty view.
+- A PDF a **tool** returns reaches an Anthropic model natively: the request
+  builder puts a `document` block inside `tool_result` content, and the
+  describing side-channel is skipped for a row that declares pdf input
+  (`llm.DeliversToolResultMedia`). The Responses, Google and chat tool-result
+  shapes carry no document, so those routes keep the side-channel (#4465).
 - When a task needs visual PDF reading on a provider without document support,
   rasterize the pages to JPEG before reading them — that is the supported path,
   not a workaround for a defect.

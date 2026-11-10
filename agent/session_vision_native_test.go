@@ -52,8 +52,9 @@ func TestDescribeImage_SkipsCallWhenSessionModelSeesImagesNatively(t *testing.T)
 	}
 }
 
-// The skip is per-media: no adapter delivers PDF tool-result bytes inline, so
-// a vision-capable session model still gets PDFs described out of band.
+// The skip is per-media and per-protocol: the Responses tool-result shape
+// carries no document, so a vision-capable Responses session model still gets
+// PDFs described out of band (Anthropic delivers them inline, #4465).
 func TestDescribeImage_StillDescribesPDFsWhenSessionModelSeesImages(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){

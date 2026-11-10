@@ -389,3 +389,22 @@ protocols. Two statements above are superseded:
 - "only the Responses builder writes input_file today" is superseded: the
   Anthropic builder writes a document block too, and the `AcceptsDocumentInput`
   retry/failure gate covers both protocols.
+
+## Revision (2026-11-09): an Anthropic tool result carries a document natively (#4465)
+
+The Messages API accepts a `document` content block inside `tool_result`
+content, so the Anthropic builder now writes a PDF tool result as a document
+block. `llm.DeliversToolResultMedia` answers per media type: images follow the
+protocol rule, and `application/pdf` rides natively on Anthropic only.
+`RowSeesToolResultMedia` checks the media's own modality (pdf for a document,
+image for an image), so a row that declares pdf input skips the describing
+side-channel for a PDF tool result. The statements above that a PDF tool result
+always takes the side-channel are superseded for Anthropic. The Responses,
+Google and chat tool-result shapes carry no document, so those routes keep the
+side-channel, and token estimation bills the bytes Anthropic now sends.
+
+Native delivery removes the persisted text description the side-channel used
+to leave behind. A later switch to a target whose tool-result shape carries no
+document therefore leaves only the result's text. This is the same
+media-orphan tradeoff as #4217; this change does not add a switch-time notice
+for documents, so the limitation remains unresolved until that work lands.

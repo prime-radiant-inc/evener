@@ -243,8 +243,8 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 	f.Fuzz(func(t *testing.T, script []byte, s1, s2 string, blob []byte) {
 		msgs := areqMessages(script, s1, s2, blob, imgPath, rawPath)
 
-		sys1, out1, err1 := toAnthropicMessages(msgs)
-		sys2, out2, err2 := toAnthropicMessages(areqMessages(script, s1, s2, blob, imgPath, rawPath))
+		sys1, out1, err1 := toAnthropicMessages(msgs, true)
+		sys2, out2, err2 := toAnthropicMessages(areqMessages(script, s1, s2, blob, imgPath, rawPath), true)
 
 		// Determinism.
 		if (err1 == nil) != (err2 == nil) {
@@ -261,7 +261,7 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 		// Unknown-kind invisibility: the per-role default arms ignore parts
 		// whose kind matches none of llm's declared constants, so stripping
 		// exactly those parts cannot change the translation.
-		stripSys, stripOut, stripErr := toAnthropicMessages(areqStripUnknownKinds(msgs))
+		stripSys, stripOut, stripErr := toAnthropicMessages(areqStripUnknownKinds(msgs), true)
 		if (stripErr == nil) != (err1 == nil) || stripSys != sys1 || !reflect.DeepEqual(stripOut, out1) {
 			t.Fatalf("unknown-kind parts changed the translation:\n with=%#v (err=%v)\n without=%#v (err=%v)\n msgs=%#v", out1, err1, stripOut, stripErr, msgs)
 		}

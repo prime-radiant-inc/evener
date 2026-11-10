@@ -355,12 +355,13 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 
 	// Native vision replaces the side-channel when every model that could
 	// serve a later round sees this result's bytes inline
-	// (sessionChainSeesToolResultMedia: image input on a row whose adapter
-	// delivers that media, checked across the session model and its
+	// (sessionChainSeesToolResultMedia: the media's input modality on a row
+	// whose adapter delivers it, checked across the session model and its
 	// fallbacks): a describing call would only duplicate bytes the serving
 	// model already sees, and its failures would call native vision
-	// unavailable. Documents never qualify — no adapter vouches for a PDF
-	// tool result — so they always take the side-channel. An explicitly
+	// unavailable. An image qualifies on any delivering protocol; a document
+	// only where the tool-result shape carries one (Anthropic, #4465), so the
+	// other protocols keep describing PDFs out of band. An explicitly
 	// configured vision model is a deliberate instruction to describe with
 	// that model and stays honored.
 	if visionSetting == "" && s.sessionChainSeesToolResultMedia(profile, modelFallbacks, mt) {

@@ -113,7 +113,7 @@ func TestToAnthropicMessages_LocalPathBitmapIsConverted(t *testing.T) {
 	}
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: path}},
-	}}})
+	}}}, false)
 	if err != nil {
 		t.Fatalf("local-path bmp: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestToAnthropicMessages_UserRasterConvertedToAcceptedMediaType(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := rasterFixture(t, tc.format)
-			_, msgs, err := toAnthropicMessages(userImageMessage(data, tc.claimed))
+			_, msgs, err := toAnthropicMessages(userImageMessage(data, tc.claimed), false)
 			if err != nil {
 				t.Fatalf("user %s image: %v", tc.name, err)
 			}
@@ -185,7 +185,7 @@ func TestToAnthropicMessages_ToolResultRasterConvertedToAcceptedMediaType(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := rasterFixture(t, tc.format)
-			_, msgs, err := toAnthropicMessages(toolResultMessage(data, tc.claimed))
+			_, msgs, err := toAnthropicMessages(toolResultMessage(data, tc.claimed), false)
 			if err != nil {
 				t.Fatalf("tool-result %s image: %v", tc.name, err)
 			}
@@ -227,7 +227,7 @@ func TestToAnthropicMessages_SupportedRastersRideUnchanged(t *testing.T) {
 				if kind == "tool" {
 					messages = toolResultMessage(data, tc.mediaType)
 				}
-				_, msgs, err := toAnthropicMessages(messages)
+				_, msgs, err := toAnthropicMessages(messages, false)
 				if err != nil {
 					t.Fatalf("%s %s: %v", kind, tc.name, err)
 				}
@@ -246,20 +246,20 @@ func TestToAnthropicMessages_SupportedRastersRideUnchanged(t *testing.T) {
 	}
 }
 
-// A non-image media tool result contributes its text alone, exactly as before
-// (#4209): an application/pdf result must not become an image block.
-func TestToAnthropicMessages_ToolResultNonImageMediaStaysTextOnly(t *testing.T) {
+// A PDF tool result must never become an image block (#4209); it rides as the
+// document block tool_result content accepts instead (#4465).
+func TestToAnthropicMessages_ToolResultPDFBecomesDocumentNotImage(t *testing.T) {
 	t.Parallel()
-	_, msgs, err := toAnthropicMessages(toolResultMessage([]byte("%PDF-1.4"), "application/pdf"))
+	_, msgs, err := toAnthropicMessages(toolResultMessage([]byte("%PDF-1.4"), "application/pdf"), true)
 	if err != nil {
 		t.Fatalf("pdf tool result: %v", err)
 	}
 	if got := len(imageSources(t, msgs)); got != 0 {
 		t.Fatalf("image blocks = %d, want 0", got)
 	}
-	content, ok := msgs[0]["content"].([]map[string]any)[0]["content"].(string)
-	if !ok || content == "" {
-		t.Fatalf("tool_result content = %#v, want the text alone", msgs[0]["content"])
+	content, ok := msgs[0]["content"].([]map[string]any)[0]["content"].([]map[string]any)
+	if !ok || len(content) != 2 || content[1]["type"] != "document" {
+		t.Fatalf("tool_result content = %#v, want text + document", msgs[0]["content"])
 	}
 }
 

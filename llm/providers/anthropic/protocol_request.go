@@ -24,7 +24,7 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 	// attribution alone.
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
-	system, messages, err := toAnthropicMessages(req.Messages)
+	system, messages, err := toAnthropicMessages(req.Messages, llm.RowSeesToolResultMedia(res, "application/pdf"))
 	if err != nil {
 		return nil, err
 	}
