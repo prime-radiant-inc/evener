@@ -64,23 +64,14 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	}
 	// A response can be lost after the replacement was applied. Replay that
 	// saved receipt before taking the exclusive gate: another client may already
-	// be running a turn on the replacement, which holds the gate's read side.
+	// be mutating the replacement, which holds the gate's read side.
 	if decision, ok := s.replayAppliedThreadClear(params, requestHash); ok {
 		return decision.response, decision.err
-	}
-	// A turn the server reports as running refuses clear now; waiting on the
-	// input gate below would otherwise hold the clear for the whole turn.
-	if reason := s.clearBlockedReason(); reason != "" {
-		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, reason)
 	}
 	if !s.appMutationGate.TryLock() {
 		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "a retry-safe mutation is already in progress")
 	}
 	defer s.appMutationGate.Unlock()
-	// The serve input loop holds the read side only for one step, so clear
-	// waits for it; decideThreadClear rechecks the turn state once it is held.
-	s.automaticInputGate.Lock()
-	defer s.automaticInputGate.Unlock()
 
 	decision := s.decideThreadClear(params, requestHash)
 	switch decision.action {
@@ -89,6 +80,15 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	case threadClearRecover:
 		return s.recoverThreadClear(params)
 	case threadClearProceed:
+		replace := decision.fn
+		decision.fn = func(ctx context.Context, params appwire.ThreadClearParams) error {
+			release, err := s.holdAutomaticInput(ctx)
+			if err != nil {
+				return err
+			}
+			defer release()
+			return replace(ctx, params)
+		}
 		return s.runThreadClear(ctx, params, decision)
 	default:
 		return appwire.ThreadClearResponse{}, decision.err
@@ -217,12 +217,6 @@ func (s *Server) runThreadClear(ctx context.Context, params appwire.ThreadClearP
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
 	}
 	return response, nil
-}
-
-func (s *Server) clearBlockedReason() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.clearBlockedReasonLocked()
 }
 
 func (s *Server) clearBlockedReasonLocked() string {

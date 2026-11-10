@@ -397,17 +397,77 @@ func (s *Server) admitRetrySafeMutation(rawRef, threadID string, expectedInstanc
 	return s.appMutationGate.RUnlock, nil
 }
 
-// WithMutationRead runs fn under the automatic input gate's read side. A
-// thread/clear holds the write side for its whole preparation and
-// publication, so an automatic input turn that would otherwise move the old
-// session's worktree lane waits until clear has installed the replacement. The
-// serve loop calls this for every input message and samples the live session
-// inside fn, which is what makes a queued wake run against the replacement
-// rather than the closed predecessor.
+// WithMutationRead runs fn as one serve input step. A thread/clear holds
+// input for its whole preparation and publication, so an automatic input turn
+// that would otherwise move the old session's worktree lane waits until clear
+// has installed the replacement. The serve loop calls this for every input
+// message and samples the live session inside fn, which is what makes a queued
+// wake run against the replacement rather than the closed predecessor.
 func (s *Server) WithMutationRead(fn func()) {
-	s.automaticInputGate.RLock()
-	defer s.automaticInputGate.RUnlock()
+	s.mu.Lock()
+	for s.clearHoldsInput {
+		changed := s.inputGateChangedLocked()
+		s.mu.Unlock()
+		<-changed
+		s.mu.Lock()
+	}
+	s.inputSteps++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inputSteps--
+		s.signalInputGateLocked()
+		s.mu.Unlock()
+	}()
 	fn()
+}
+
+// holdAutomaticInput waits until no serve input step is in flight, then holds
+// input until release. A step that only probes or wakes ends quickly, so
+// clear waits for it; a step that starts a turn makes the thread busy, and
+// clear is refused instead of waiting out the turn. The wait also ends when
+// ctx does.
+func (s *Server) holdAutomaticInput(ctx context.Context) (release func(), err error) {
+	s.mu.Lock()
+	for {
+		if reason := s.clearBlockedReasonLocked(); reason != "" {
+			s.mu.Unlock()
+			return nil, errors.New(reason)
+		}
+		if s.inputSteps == 0 {
+			break
+		}
+		changed := s.inputGateChangedLocked()
+		s.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		s.mu.Lock()
+	}
+	s.clearHoldsInput = true
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.clearHoldsInput = false
+		s.signalInputGateLocked()
+		s.mu.Unlock()
+	}, nil
+}
+
+func (s *Server) inputGateChangedLocked() chan struct{} {
+	if s.inputGateChanged == nil {
+		s.inputGateChanged = make(chan struct{})
+	}
+	return s.inputGateChanged
+}
+
+func (s *Server) signalInputGateLocked() {
+	if s.inputGateChanged != nil {
+		close(s.inputGateChanged)
+		s.inputGateChanged = nil
+	}
 }
 
 func (s *Server) retrySafeTurnFunctions() RetrySafeTurnFunctions {

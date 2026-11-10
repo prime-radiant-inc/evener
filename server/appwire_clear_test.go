@@ -221,6 +221,69 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 		}
 	})
 
+	t.Run("step becomes a turn", func(t *testing.T) {
+		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
+		srv.SetAppIdentity("local", "old")
+		setReplacingClearFunc(srv, "new")
+		interrupts := make(chan struct{}, 1)
+		srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+			Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+				interrupts <- struct{}{}
+				return appwire.TurnInterruptResponse{}, nil
+			},
+		})
+		release := holdInputStep(t, srv)
+		defer release()
+
+		result := make(chan error, 1)
+		go func() {
+			_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+				Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old",
+			})
+			result <- err
+		}()
+		select {
+		case err := <-result:
+			t.Fatalf("clear answered %v while an input step was in flight; want it to wait for the step", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		// The step the clear is waiting on starts a turn: clear is refused
+		// rather than waiting out the turn, and the user can still stop it.
+		srv.SetProcessing(true)
+		requireMutationErrorData(t, <-result, "clear-1", appwire.MutationOutcomeNotAccepted)
+		if got := srv.appThread().ID; got != "old" {
+			t.Fatalf("live instance after a refused clear = %q, want the original", got)
+		}
+		if _, err := srv.handleAppTurnInterrupt(context.Background(), appwire.TurnInterruptParams{
+			Ref: "local:old", ClientMutationID: "interrupt-1", ExpectedInstanceID: "old",
+		}); err != nil {
+			t.Fatalf("turn/interrupt after clear was refused for the turn: %v", err)
+		}
+		<-interrupts
+	})
+
+	t.Run("caller gives up", func(t *testing.T) {
+		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
+		srv.SetAppIdentity("local", "old")
+		setReplacingClearFunc(srv, "new")
+		release := holdInputStep(t, srv)
+		defer release()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := srv.handleAppThreadClear(ctx, appwire.ThreadClearParams{
+				Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old",
+			})
+			result <- err
+		}()
+		cancel()
+		requireMutationErrorData(t, <-result, "clear-1", appwire.MutationOutcomeNotAccepted)
+		if got := srv.appThread().ID; got != "old" {
+			t.Fatalf("live instance after an abandoned clear = %q, want the original", got)
+		}
+	})
+
 	t.Run("running turn", func(t *testing.T) {
 		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
 		srv.SetAppIdentity("local", "old")
