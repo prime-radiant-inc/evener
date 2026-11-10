@@ -94,3 +94,20 @@ func TestNextBootGenerationStartsAboveTheFloor(t *testing.T) {
 		t.Fatalf("generation = %d, want 7", generation)
 	}
 }
+
+// An empty state dir would resolve the counter path against the working
+// directory; the counter must refuse rather than write there.
+func TestNextBootGenerationRefusesEmptyDirWithoutWriting(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if _, err := NextBootGeneration("", "S1", 0); err == nil {
+		t.Fatal("NextBootGeneration with an empty dir succeeded")
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("working directory gained %d entries", len(entries))
+	}
+}

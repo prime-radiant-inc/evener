@@ -911,12 +911,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess)
 	}
-	bootGeneration, err := schema.NextBootGeneration(subSess.stateDir, subSess.ID(), 0)
-	if err != nil {
+	if err := subSess.mintBootGeneration(); err != nil {
 		disposeUnadopted()
 		return nil, fmt.Errorf("child boot generation: %w", err)
 	}
-	subSess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
 		for _, toolName := range canonicalGrantTools {
