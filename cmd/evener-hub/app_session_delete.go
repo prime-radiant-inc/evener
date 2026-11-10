@@ -94,6 +94,16 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
 	if !deleted {
+		// The sweep may refuse after the metadata is already gone (a later
+		// rendezvous/log removal failed). Only a session whose metadata still
+		// exists is intact and resumable; that one must not stay fenced as a
+		// terminal deletion. Once the metadata is gone the deletion is
+		// effectively done, so its fence stays authoritative.
+		if sessionMetaFilePresent(pe.StateDir, threadID) {
+			if abandonErr := s.cfg.DeletionStore.Abandon(fence.ProjectID, fence.Generation); abandonErr != nil {
+				skip.Reason += "; abandon deletion fence: " + abandonErr.Error()
+			}
+		}
 		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{*skip}, projectID)
 	}
 

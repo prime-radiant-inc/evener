@@ -414,6 +414,39 @@ func TestDeletionStoreMarkDeletedNotFound(t *testing.T) {
 	}
 }
 
+// Abandon releases a generation whose sweep refused, so an intact session
+// stops reading as a terminal deletion; a deleted generation stays irrevocable.
+func TestDeletionStoreAbandonReleasesAnInProgressGeneration(t *testing.T) {
+	store := newMemDeletionStore(t)
+	record, err := store.BeginSession("project-delete-0123456789", deletionTestTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Abandon(record.ProjectID, record.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := store.TargetState("local:"+deletionStoreTestThreadID, deletionStoreTestThreadID); ok {
+		t.Fatalf("abandoned generation still fences its target with state %q", state)
+	}
+	if deleting := store.Deleting(); deleting != nil {
+		t.Fatalf("Deleting after Abandon = %+v, want nil", deleting)
+	}
+	if err := store.Abandon(record.ProjectID, record.Generation); err == nil {
+		t.Fatal("Abandon of an already-removed generation succeeded")
+	}
+
+	deleted, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDeleted(deleted.ProjectID, deleted.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Abandon(deleted.ProjectID, deleted.Generation); err == nil {
+		t.Fatal("Abandon of a deleted generation succeeded")
+	}
+}
+
 // Marking a generation deleted twice is idempotent and leaves nothing in
 // progress.
 func TestDeletionStoreMarkDeletedAlreadyDeleted(t *testing.T) {

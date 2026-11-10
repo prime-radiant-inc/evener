@@ -191,6 +191,115 @@ func TestSessionDeletePersistsTerminalDeletionFence(t *testing.T) {
 	}
 }
 
+// TestSessionDeleteFailedSweepReleasesItsDeletionFence covers the other half
+// of #5209: a sweep that refuses before removing the session must not leave a
+// terminal fence behind for a session that is still intact and resumable.
+func TestSessionDeleteFailedSweepReleasesItsDeletionFence(t *testing.T) {
+	stateRoot := t.TempDir()
+	stateDir := filepath.Join(stateRoot, "projects", "session-delete-0123456789")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(stateRoot, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: stateRoot, Past: past, Roster: hubcore.NewRosterWithEntries(), DeletionStore: store,
+	})
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if err := os.Chmod(sessionsDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sessionsDir, 0o755) })
+
+	resp := mustDeleteSession(t, web, targetID)
+	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != targetID {
+		t.Fatalf("failed sweep = %+v, want the target skipped", resp)
+	}
+	if state, ok := store.TargetState("local:"+targetID, targetID); ok {
+		t.Fatalf("failed sweep left a deletion fence with state %q", state)
+	}
+	if err := deletionFenceError(web.cfg, "local:"+targetID, targetID, ""); err != nil {
+		t.Fatalf("a skipped session still reads as deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, targetID+".meta.json")); err != nil {
+		t.Fatalf("failed sweep removed the session metadata: %v", err)
+	}
+}
+
+// A sweep that fails after the metadata is gone has effectively deleted the
+// session; its fence must stay authoritative so the ref remains a terminal
+// deletion rather than falling back to retryable-unavailable.
+func TestSessionDeleteLateSweepFailureKeepsItsFence(t *testing.T) {
+	stateRoot := t.TempDir()
+	stateDir := filepath.Join(stateRoot, "projects", "session-delete-0123456789")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(stateRoot, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(stateRoot, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: stateRoot, RunDir: runDir, Past: past,
+		Roster: hubcore.NewRosterWithEntries(), DeletionStore: store,
+	})
+	// The metadata removal succeeds; the rendezvous sweep that follows it
+	// cannot read the run directory, so the target reports skipped after the
+	// session is already gone.
+	if err := os.Chmod(runDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runDir, 0o755) })
+
+	resp := mustDeleteSession(t, web, targetID)
+	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != targetID {
+		t.Fatalf("late sweep failure = %+v, want the target skipped", resp)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", targetID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("late-failing sweep should have removed the metadata: %v", err)
+	}
+	if state, ok := store.TargetState("local:"+targetID, targetID); !ok || state != hubcore.DeletionStateDeleting {
+		t.Fatalf("late sweep failure fence = %q, %v, want the in-progress terminal fence", state, ok)
+	}
+	if err := deletionFenceError(web.cfg, "local:"+targetID, targetID, ""); err == nil {
+		t.Fatal("session deleted before the late sweep failure reads as non-deleted")
+	}
+}
+
 // TestSessionDeleteRefusesLiveTarget covers half of n15j's verification #2: a
 // reachable live daemon refuses the delete with no partial artifact removal.
 func TestSessionDeleteRefusesLiveTarget(t *testing.T) {

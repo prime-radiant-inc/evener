@@ -187,6 +187,32 @@ func (s *DeletionStore) MarkDeleted(projectID string, generation uint64) error {
 	return fmt.Errorf("deletion generation %s/%d not found", projectID, generation)
 }
 
+// Abandon removes one in-progress generation whose governed cleanup was
+// refused before the target was removed. The fence existed only across that
+// destructive window: leaving it behind would turn an intact, resumable
+// session into a terminal deletion for every later read. A deleted generation
+// is irrevocable and cannot be abandoned.
+func (s *DeletionStore) Abandon(projectID string, generation uint64) error {
+	if s == nil {
+		return errors.New("deletion store is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneDeletionSnapshot(s.state)
+	for i := range next.Records {
+		record := next.Records[i]
+		if record.ProjectID != projectID || record.Generation != generation {
+			continue
+		}
+		if record.State == DeletionStateDeleted {
+			return fmt.Errorf("deletion generation %s/%d is already deleted", projectID, generation)
+		}
+		next.Records = append(next.Records[:i], next.Records[i+1:]...)
+		return s.commitLocked(next)
+	}
+	return fmt.Errorf("deletion generation %s/%d not found", projectID, generation)
+}
+
 // Deleting returns every incomplete generation for startup recovery.
 func (s *DeletionStore) Deleting() []DeletionRecord {
 	if s == nil {
