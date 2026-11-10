@@ -58,12 +58,14 @@ func TestHubRPCMutationImageAdmissionBounds(t *testing.T) {
 							Evener: appwire.EvenerThread{Ref: ref, InstanceID: sessionID, Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
 						}}}
 						resumes := 0
-						cfg := hubcore.WebConfig{HubID: "image-hub", HubStateRoot: t.TempDir(), Past: past,
+						cfg := testWebConfig(t, hubcore.WebConfig{
+							HubID: "image-hub",
+							Past:  past,
 							Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 								resumes++
 								return rendezvous.Entry{}, appwire.Unavailable("recorded resume attempt")
 							}},
-						}
+						})
 						if !hubKnowsRef(cfg, ref) {
 							t.Fatal("image target is not eligible for ordinary resume")
 						}

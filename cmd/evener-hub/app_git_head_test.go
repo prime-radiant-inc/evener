@@ -275,13 +275,12 @@ func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotDir string
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		ResolveGitHead: func(_ context.Context, dir string) (string, error) {
 			gotDir = dir
 			return "main", nil
 		},
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)

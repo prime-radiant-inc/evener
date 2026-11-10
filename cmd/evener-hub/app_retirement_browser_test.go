@@ -772,10 +772,7 @@ func TestRetirementBrowser(t *testing.T) {
 	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatalf("build fixture navigation generation: %v", err)
 	}
-	appServer := newHubAppServerWithNavigation(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources, navigation, nil)
+	appServer := newHubAppServerWithNavigation(testWebConfig(t, hubcore.WebConfig{}), sources, navigation, nil)
 	source.publishRestartResync = func() {
 		appServer.Broadcast(ref, appwire.NotifyEvenerThreadResync, map[string]any{"threadId": threadID, "ref": ref})
 	}

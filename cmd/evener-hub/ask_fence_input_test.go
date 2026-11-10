@@ -27,12 +27,14 @@ func askHubClientForDaemon(t *testing.T, sessionID, daemonURL string) *appwire.C
 	})
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex(""), ResumeLocks: hubcore.NewResumeLocks(),
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		ResumeLocks: hubcore.NewResumeLocks(),
 		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{}, errors.New("unexpected resume of live daemon")
 		}},
-	})
+	}))
 	t.Cleanup(hub.Close)
 	client := dialSkillInputHub(t, hub)
 	t.Cleanup(func() { _ = client.Close() })

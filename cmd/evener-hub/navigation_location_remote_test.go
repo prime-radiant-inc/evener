@@ -83,9 +83,7 @@ func newRemoteLocationFixture(t *testing.T, entries ...hubcore.LiveEntry) *remot
 	client := appwire.NewClient(wire)
 	client.Start(t.Context())
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	fixture := &remoteLocationFixture{remote: remote, client: client, wire: wire, root: root, child: child, nested: nested, stateDir: stateDir}
 	fixture.attached.Store(true)
 	source := appsource.NewRemoteHubSource("remote", nil, nil)

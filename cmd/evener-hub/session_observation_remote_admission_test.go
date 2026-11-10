@@ -54,7 +54,7 @@ func TestManagerRemoteWatchAdmissionUsesThreadReadTargetSupport(t *testing.T) {
 			sources := appsource.NewRegistry()
 			sources.Add(local)
 			sources.Add(remote)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			server := newHubAppServer(cfg, sources)
 			defer server.Shutdown(ctx)
 			owner := &sessionOperations{cfg: cfg, sources: sources, server: server}

@@ -331,9 +331,7 @@ func TestHostRunningThroughTheRealServer(t *testing.T) {
 
 	bridge := dialHubRPCWithHeaders(t, server, http.Header{bridgeOriginHeader: []string{"1"}})
 	defer bridge.Close()
-	if _, err := bridge.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("bridge Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, bridge)
 	var served appwire.HostRunningResponse
 	if err := bridge.Request(context.Background(), appwire.MethodEvenerHostRunning, params, &served); err != nil {
 		t.Fatalf("evener/host/running over the bridge: %v", err)

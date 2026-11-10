@@ -617,10 +617,7 @@ func TestHubRestartRPCIsRegistered(t *testing.T) {
 	errHubLaunchEntrypoint = nil
 	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, appsource.NewRegistry())
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), appsource.NewRegistry())
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)

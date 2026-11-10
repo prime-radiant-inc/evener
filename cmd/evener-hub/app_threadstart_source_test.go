@@ -213,9 +213,7 @@ func TestHubRPCThreadStartRefusesBridgeOriginatedFanOut(t *testing.T) {
 		client := appwire.NewClient(transport)
 		client.Start(t.Context())
 		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 		return client
 	}
 
