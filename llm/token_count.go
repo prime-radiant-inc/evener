@@ -233,7 +233,13 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				chars += len(p.ToolResult.ToolCallID)
 				chars += len(p.ToolResult.Name)
 				if t.billsToolResultMedia(p.ToolResult) {
-					tokens += estimateImageTokens(t, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
+					if IsDocumentMediaType(p.ToolResult.ImageMediaType) {
+						// A PDF is not a raster: charge it like a document
+						// rather than spending a decode that cannot succeed.
+						tokens += fallbackMediaTokens + len(p.ToolResult.ImageMediaType)/4
+					} else {
+						tokens += estimateImageTokens(t, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
+					}
 				}
 				switch x := p.ToolResult.Content.(type) {
 				case string:
@@ -422,7 +428,11 @@ type targetInfo struct {
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
-	unsignedThinking      bool
+	// seenToolResultDocuments marks a resolved row that both declares pdf input
+	// and speaks a protocol whose tool-result shape carries a document. The
+	// estimate prices a document only for such a row (#4465).
+	seenToolResultDocuments bool
+	unsignedThinking        bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A
@@ -554,7 +564,9 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
 		dropsToolResultImages: dropsToolResultImages(res),
-		unsignedThinking:      unsignedThinkingReplayed(res, fallbackProvider, model),
+		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
+			deliversToolResultDocuments(res.Protocol),
+		unsignedThinking: unsignedThinkingReplayed(res, fallbackProvider, model),
 	}
 }
 
@@ -581,10 +593,11 @@ func dropsToolResultImages(res registry.Resolved) bool {
 // billsToolResultMedia reports whether the target's adapter puts this tool
 // result's bytes on the wire, so the estimate prices only media the request
 // carries. Image media follows the image rule (dropsToolResultImages). A
-// non-image media type does not ride inline on Anthropic, Responses or Google:
-// documents take the user-message side-channel instead. Chat drops tool-result
-// media entirely. An unknown protocol (a name-based target) cannot be ruled
-// out, so it bills like the permissive default.
+// document rides inline on Anthropic only (its tool_result content carries a
+// document block); on Responses and Google it takes the user-message
+// side-channel instead. Chat drops tool-result media entirely. An unknown
+// protocol (a name-based target) cannot be ruled out, so it bills like the
+// permissive default.
 func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
 	if len(tr.ImageData) == 0 && tr.ImageMediaType == "" {
 		return false
@@ -593,8 +606,18 @@ func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
 	if mt == "" || strings.HasPrefix(mt, "image/") {
 		return !t.dropsToolResultImages
 	}
-	if t.protocol == registry.ProtocolAnthropic || t.protocol == registry.ProtocolOpenAIResponses || t.protocol == registry.ProtocolGoogle {
-		return false
+	if IsDocumentMediaType(mt) {
+		if strings.TrimSpace(t.protocol) == "" {
+			// An unknown protocol (a name-based target) cannot be ruled out.
+			return !t.dropsToolResultImages
+		}
+		if t.resolved {
+			// A resolved row's estimate follows the builder's gate: a document
+			// rides only for a row that declares pdf input (below), so none is
+			// billed otherwise (#4465).
+			return t.seenToolResultDocuments
+		}
+		return deliversToolResultDocuments(t.protocol)
 	}
 	return !t.dropsToolResultImages
 }
@@ -609,20 +632,40 @@ func DeliversToolResultImages(res registry.Resolved) bool {
 }
 
 // DeliversToolResultMedia reports whether the row's adapter delivers
-// tool-result bytes of this media type in a form the model can consume. The
-// predicate is deliberately image-only: the Responses builder gates
-// tool-result images on image/* (image_input.go) and the Anthropic builder
-// writes inline bytes for image media only (anthropic/request.go; an image
-// block carrying a document media type is rejected, #4209). Google's
-// functionResponse likewise omits non-image media, so documents take the
-// user-message side-channel without also riding inline. An empty media type
-// reads as the image default the tool layer applies.
+// tool-result bytes of this media type in a form the model can consume. Image
+// media follows the per-protocol image rule. Documents are delivered natively
+// on Anthropic only: its tool_result content accepts a document block, while
+// the Responses builder gates tool-result bytes on image/* (image_input.go),
+// Google's functionResponse omits non-image media, and chat has no
+// image-bearing tool-message representation at all — those routes keep the
+// user-message side-channel (#4465). An empty media type reads as the image
+// default the tool layer applies.
 func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 	mt := strings.ToLower(strings.TrimSpace(mediaType))
 	if mt == "" || strings.HasPrefix(mt, "image/") {
 		return DeliversToolResultImages(res)
 	}
+	if IsDocumentMediaType(mt) {
+		return deliversToolResultDocuments(res.Protocol)
+	}
 	return false
+}
+
+// IsDocumentMediaType reports whether a tool result's media type is a document
+// the tool layer produces. read_file hands PDFs through unchanged
+// (agent/internal/tool/registry.go) and every other non-image media type is
+// rejected there, so application/pdf is the document shape. Both the delivery
+// predicates here and the Anthropic builder consult this one definition.
+func IsDocumentMediaType(mt string) bool {
+	return strings.ToLower(strings.TrimSpace(mt)) == "application/pdf"
+}
+
+// deliversToolResultDocuments reports whether the row's protocol represents a
+// document inside a tool result. Anthropic's tool_result content accepts a
+// document content block; the other protocols' tool-result shapes do not carry
+// one, so they route documents through the side-channel.
+func deliversToolResultDocuments(protocol string) bool {
+	return protocol == registry.ProtocolAnthropic
 }
 
 // DeliversUserMessageDocuments reports whether the row's adapter represents
@@ -635,10 +678,10 @@ func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 // writes inlineData/fileData. A URL-only document rides Anthropic's url
 // source, Google's fileData, and the Responses builder's pass-through; Chat
 // Completions has no URL file mechanism, so a URL-only or payload-less
-// document is not delivered there. This is a
-// different position from DeliversToolResultMedia: these document-capable
-// protocols still drop tool-result documents to avoid double delivery through
-// the side-channel.
+// document is not delivered there. This is a different position from
+// DeliversToolResultMedia: only Anthropic also carries a document inside a
+// tool result, so Responses, Google and Chat drop tool-result documents to
+// avoid double delivery alongside the side-channel.
 func DeliversUserMessageDocuments(res registry.Resolved, doc *DocumentData) bool {
 	if doc == nil || (len(doc.Data) == 0 && doc.URL == "") {
 		return false
@@ -655,11 +698,28 @@ func DeliversUserMessageDocuments(res registry.Resolved, doc *DocumentData) bool
 
 // RowSeesToolResultMedia reports whether a resolved row's advertised facts let
 // the model receive tool-result bytes of this media type inline: the row
-// declares image input and its adapter delivers tool-result media of this
-// type. Facts depth only, so a caller that resolved the row without
-// materializing credentials can still answer the native-vision question.
+// declares the media's input modality (image for image media, pdf for a
+// document) and its adapter delivers tool-result media of this type. A
+// synthesized row (one whose model id matched no catalog row) inherits another
+// row's facts and cannot vouch for the named model, so it never qualifies —
+// the same rule the profile layer applies for images. Facts depth only, so a
+// caller that resolved the row without materializing credentials can still
+// answer the native-vision question.
 func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
-	return res.Caps.AcceptsModality("image") && DeliversToolResultMedia(res, mediaType)
+	if res.Synthesized {
+		return false
+	}
+	if !DeliversToolResultMedia(res, mediaType) {
+		return false
+	}
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	if mt == "" || strings.HasPrefix(mt, "image/") {
+		return res.Caps.AcceptsModality("image")
+	}
+	if IsDocumentMediaType(mt) {
+		return res.Caps.AcceptsModality("pdf")
+	}
+	return false
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target

@@ -1,6 +1,7 @@
-package internalcheck
+package repoaudit
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +16,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	internalcheck "primeradiant.com/evener/cmd/evener-internalcheck"
 )
 
 type goListPackage struct {
@@ -79,13 +81,19 @@ var supportedExecsupportInventoryCache struct {
 	err         error
 }
 
-func TestExecsupportPackagesStayInLibraryScope(t *testing.T) {
-	inventories := listSupportedExecsupportInventories(t)
+// libraryPackages are the packages evener-internalcheck holds to an
+// internal-free exported surface. Every execsupport package must be one.
+var libraryPackages = internalcheck.LibraryPackages()
+
+// execsupportStaysInLibraryScope keeps every execsupport package the host
+// GOOS builds in libraryPackages, and pins that list.
+func execsupportStaysInLibraryScope(a *audit) {
+	inventories := listSupportedExecsupportInventories(a)
 	inventory, ok := inventories[runtime.GOOS]
 	if !ok {
-		t.Fatalf("missing execsupport inventory for GOOS=%s", runtime.GOOS)
+		a.Fatalf("missing execsupport inventory for GOOS=%s", runtime.GOOS)
 	}
-	assertExecsupportPackagesStayInLibraryScope(t, runtime.GOOS, inventory.packages)
+	assertExecsupportPackagesStayInLibraryScope(a, runtime.GOOS, inventory.packages)
 
 	wantLibraries := append([]string{
 		"primeradiant.com/evener/agent",
@@ -105,59 +113,65 @@ func TestExecsupportPackagesStayInLibraryScope(t *testing.T) {
 	actualLibraries := append([]string(nil), libraryPackages...)
 	sort.Strings(actualLibraries)
 	if !reflect.DeepEqual(actualLibraries, wantLibraries) {
-		t.Fatalf("libraryPackages = %v, want %v", actualLibraries, wantLibraries)
+		a.Fatalf("libraryPackages = %v, want %v", actualLibraries, wantLibraries)
 	}
 }
 
-func TestExecsupportPackagesStayInLibraryScopeForUnlistedGOOS(t *testing.T) {
-	root := repositoryRoot(t)
+// execsupportStaysInLibraryScopeForUnlistedGOOS holds the same rule for a
+// GOOS no inventory lists.
+func execsupportStaysInLibraryScopeForUnlistedGOOS(a *audit) {
+	root := repositoryRoot(a)
 	packages, err := loadExecsupportPackagesForGOOS(root, "freebsd")
 	if err != nil {
-		t.Fatal(err)
+		a.Fatal(err)
 	}
-	assertExecsupportPackagesStayInLibraryScope(t, "freebsd", packages)
+	assertExecsupportPackagesStayInLibraryScope(a, "freebsd", packages)
 }
 
-func assertExecsupportPackagesStayInLibraryScope(t *testing.T, goos string, packages []goListPackage) {
-	t.Helper()
+func assertExecsupportPackagesStayInLibraryScope(a *audit, goos string, packages []goListPackage) {
 	for _, pkg := range packages {
 		if !slices.Contains(libraryPackages, pkg.ImportPath) {
-			t.Errorf("GOOS=%s package %q is not in libraryPackages", goos, pkg.ImportPath)
+			a.Errorf("GOOS=%s package %q is not in libraryPackages", goos, pkg.ImportPath)
 		}
 	}
 }
 
-func TestExecsupportPackagesCoverSupportedGOOS(t *testing.T) {
-	inventories := listSupportedExecsupportInventories(t)
+// execsupportCoversSupportedGOOS pins which execsupport packages each GOOS
+// builds, and that together they are every execsupport package.
+func execsupportCoversSupportedGOOS(a *audit) {
+	inventories := listSupportedExecsupportInventories(a)
 	var union []string
 	for _, goos := range supportedGOOS {
 		got := inventories[goos].paths
 		want := execsupportPackagesByGOOS[goos]
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("GOOS=%s go list ./execsupport/... = %v, want %v", goos, got, want)
+			a.Fatalf("GOOS=%s go list ./execsupport/... = %v, want %v", goos, got, want)
 		}
 		union = append(union, got...)
 	}
 	slices.Sort(union)
 	union = slices.Compact(union)
 	if !reflect.DeepEqual(union, allExecsupportPackages) {
-		t.Fatalf("supported GOOS package union = %v, want %v", union, allExecsupportPackages)
+		a.Fatalf("supported GOOS package union = %v, want %v", union, allExecsupportPackages)
 	}
 }
 
-func TestReviveExportedRuleCoversPublishedLibraryFiles(t *testing.T) {
-	root := repositoryRoot(t)
-	pathExcept, re := reviveExportedPathExcept(t, root)
-	inventories := listSupportedExecsupportInventories(t)
+// reviveExportedRuleCoversLibraryFiles keeps .golangci.yml's revive
+// exported-comment rule applying to every file of the published execsupport
+// and llm/registry packages.
+func reviveExportedRuleCoversLibraryFiles(a *audit) {
+	root := repositoryRoot(a)
+	pathExcept, re := reviveExportedPathExcept(a, root)
+	inventories := listSupportedExecsupportInventories(a)
 	for _, goos := range sortedInventoryGOOSes(inventories) {
-		assertReviveExportedRuleCoversPackages(t, root, pathExcept, re, goos, inventories[goos].packages)
+		assertReviveExportedRuleCoversPackages(a, root, pathExcept, re, goos, inventories[goos].packages)
 	}
 
 	registryPackages, err := loadGoListPackages(root, "linux", "primeradiant.com/evener/llm/registry")
 	if err != nil {
-		t.Fatal(err)
+		a.Fatal(err)
 	}
-	assertReviveExportedRuleCoversPackages(t, root, pathExcept, re, "linux registry", registryPackages)
+	assertReviveExportedRuleCoversPackages(a, root, pathExcept, re, "linux registry", registryPackages)
 }
 
 func sortedInventoryGOOSes(inventories map[string]execsupportInventory) []string {
@@ -169,31 +183,29 @@ func sortedInventoryGOOSes(inventories map[string]execsupportInventory) []string
 	return gooses
 }
 
-func assertReviveExportedRuleCoversPackages(t *testing.T, root, pathExcept string, re *regexp.Regexp, goos string, packages []goListPackage) {
-	t.Helper()
+func assertReviveExportedRuleCoversPackages(a *audit, root, pathExcept string, re *regexp.Regexp, goos string, packages []goListPackage) {
 	for _, pkg := range packages {
 		for _, file := range packageGoFiles(pkg) {
 			path, err := filepath.Rel(root, filepath.Join(pkg.Dir, file))
 			if err != nil {
-				t.Fatalf("relativize %s/%s: %v", pkg.Dir, file, err)
+				a.Fatalf("relativize %s/%s: %v", pkg.Dir, file, err)
 			}
 			path = filepath.ToSlash(path)
 			if !re.MatchString(path) {
-				t.Errorf("revive exported path-except %q does not cover %s (GOOS=%s)", pathExcept, path, goos)
+				a.Errorf("revive exported path-except %q does not cover %s (GOOS=%s)", pathExcept, path, goos)
 			}
 		}
 	}
 }
 
-func reviveExportedPathExcept(t *testing.T, root string) (string, *regexp.Regexp) {
-	t.Helper()
+func reviveExportedPathExcept(a *audit, root string) (string, *regexp.Regexp) {
 	configBytes, err := os.ReadFile(filepath.Join(root, ".golangci.yml"))
 	if err != nil {
-		t.Fatalf("read .golangci.yml: %v", err)
+		a.Fatalf("read .golangci.yml: %v", err)
 	}
 	var config golangciConfig
 	if err := yaml.Unmarshal(configBytes, &config); err != nil {
-		t.Fatalf("parse .golangci.yml: %v", err)
+		a.Fatalf("parse .golangci.yml: %v", err)
 	}
 	for _, rule := range config.Linters.Exclusions.Rules {
 		if rule.PathExcept == "" || rule.Text == "" || !slices.Contains(rule.Linters, "revive") {
@@ -204,17 +216,16 @@ func reviveExportedPathExcept(t *testing.T, root string) (string, *regexp.Regexp
 		}
 		re, err := regexp.Compile(rule.PathExcept)
 		if err != nil {
-			t.Fatalf("compile revive path-except %q: %v", rule.PathExcept, err)
+			a.Fatalf("compile revive path-except %q: %v", rule.PathExcept, err)
 		}
 		return rule.PathExcept, re
 	}
-	t.Fatal(".golangci.yml has no revive exported path-except rule")
+	a.Fatal(".golangci.yml has no revive exported path-except rule")
 	return "", nil
 }
 
-func listSupportedExecsupportInventories(t *testing.T) map[string]execsupportInventory {
-	t.Helper()
-	root := repositoryRoot(t)
+func listSupportedExecsupportInventories(a *audit) map[string]execsupportInventory {
+	root := repositoryRoot(a)
 	supportedExecsupportInventoryCache.Do(func() {
 		inventories := make(map[string]execsupportInventory, len(supportedGOOS))
 		hostPackages, err := loadExecsupportPackages(root)
@@ -237,7 +248,7 @@ func listSupportedExecsupportInventories(t *testing.T) map[string]execsupportInv
 		supportedExecsupportInventoryCache.inventories = inventories
 	})
 	if supportedExecsupportInventoryCache.err != nil {
-		t.Fatal(supportedExecsupportInventoryCache.err)
+		a.Fatal(supportedExecsupportInventoryCache.err)
 	}
 	return supportedExecsupportInventoryCache.inventories
 }
@@ -261,7 +272,7 @@ func loadExecsupportPackagesForGOOS(root, goos string) ([]goListPackage, error) 
 
 func loadGoListPackages(root, goos string, patterns ...string) ([]goListPackage, error) {
 	args := append([]string{"list", "-json"}, patterns...)
-	cmd := exec.Command("go", args...)
+	cmd := exec.CommandContext(context.Background(), "go", args...)
 	cmd.Dir = root
 	if goos != "" {
 		cmd.Env = append(os.Environ(), "GOOS="+goos)
@@ -303,41 +314,13 @@ func packageGoFiles(pkg goListPackage) []string {
 	return files
 }
 
-func repositoryRoot(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	if filepath.IsAbs(file) {
-		candidate := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-		if isRepositoryRoot(candidate) {
-			return candidate
-		}
-	}
-
-	workingDir, err := os.Getwd()
+// repositoryRoot is the absolute repository root the audit runs from. go list
+// reports each package's Dir as an absolute path, so the files it names are
+// made repository-relative against this.
+func repositoryRoot(a *audit) string {
+	root, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("get working directory: %v", err)
+		a.Fatalf("get working directory: %v", err)
 	}
-	for candidate := filepath.Clean(workingDir); ; candidate = filepath.Dir(candidate) {
-		if isRepositoryRoot(candidate) {
-			return candidate
-		}
-		parent := filepath.Dir(candidate)
-		if parent == candidate {
-			break
-		}
-	}
-	t.Fatalf("repository root not found from %q or %q", file, workingDir)
-	return ""
-}
-
-func isRepositoryRoot(path string) bool {
-	for _, name := range []string{".golangci.yml", "go.work"} {
-		if _, err := os.Stat(filepath.Join(path, name)); err != nil {
-			return false
-		}
-	}
-	return true
+	return root
 }

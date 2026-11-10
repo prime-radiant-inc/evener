@@ -1,4 +1,4 @@
-package mcphttp_test
+package repoaudit
 
 import (
 	"bytes"
@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"testing"
 )
 
 // sdkImportPath is the MCP SDK both callers import, whatever local name they
@@ -22,66 +21,34 @@ const sdkImportPath = "github.com/modelcontextprotocol/go-sdk/mcp"
 // MCP transport. Everything else goes through mcphttp.BuildTransport.
 const allowedTransportPackage = "agent/internal/mcphttp"
 
-// TestTransportConstructionStaysInThisPackage pins the boundary the MCP
-// transport policy lives behind (#2396, architecture audit EXT-04). The http and
-// sse SDK transports are built by this package for both callers — the connection
-// manager (agent/internal/mcp) and the reachability probe (agent/mcpprobe) — so
-// the two cannot drift apart: a production file anywhere in this workspace,
-// outside this package, that names either SDK transport type at all — a
-// composite literal, new(), an address, a slice element type, a type alias, a
-// declaration, a signature — fails this scan.
+// mcpTransportBuiltInOnePackage pins the boundary the MCP transport policy
+// lives behind (#2396, architecture audit EXT-04). The http and sse SDK
+// transports are built by allowedTransportPackage for both callers — the
+// connection manager (agent/internal/mcp) and the reachability probe
+// (agent/mcpprobe) — so the two cannot drift apart: a production file anywhere
+// in this workspace, outside that package, that names either SDK transport type
+// at all — a composite literal, new(), an address, a slice element type, a type
+// alias, a declaration, a signature — fails this scan.
 //
 // It reads each file's own imports to find the local name the SDK was imported
 // under, so a renamed or aliased import is still caught, and it reads a file's
 // bytes before parsing it, so only the handful that import the SDK are parsed.
 // It does not follow a value back to where it was built, so a transport a caller
 // receives from elsewhere is out of its reach, and it scans production sources
-// only (a test file is not a production construction site). Its proof that the
-// walk reaches other packages is the mutation recorded in #2396's pull request:
-// rebuilding a transport privately in agent/mcpprobe fails this test.
-func TestTransportConstructionStaysInThisPackage(t *testing.T) {
-	t.Parallel()
-	// The workspace root, absolute: the walk covers every module in the
-	// workspace, not just this one.
-	workspaceRoot, err := filepath.Abs("../../..")
+// only (a test file is not a production construction site). The walk starts at
+// the repository root, so it covers every module in the workspace, and it fails
+// unless it reached the allowed package's own sources.
+func mcpTransportBuiltInOnePackage(a *audit) {
+	sites, reached, err := transportConstructionSites(".")
 	if err != nil {
-		t.Fatal(err)
-	}
-	sites, reached, err := transportConstructionSites(workspaceRoot)
-	if err != nil {
-		t.Fatal(err)
+		a.Fatal(err)
 	}
 	for _, site := range sites {
-		t.Errorf("%s outside %s/; build the transport through mcphttp.BuildTransport so the "+
+		a.Errorf("%s outside %s/; build the transport through mcphttp.BuildTransport so the "+
 			"probe and the connection manager keep one policy (#2396)", site, allowedTransportPackage)
 	}
 	if !reached {
-		t.Fatalf("the scan did not reach this package's own production sources under %s, so it did not run as intended", workspaceRoot)
-	}
-}
-
-// The scan must never prune the directory it starts at. A checkout whose own
-// directory name begins with a dot is ordinary — a hidden clone, a CI workspace
-// — and skipping it would leave the scan visiting nothing, with the
-// proof-of-reaching check in the test above as the only thing that notices.
-func TestTransportConstructionScanDoesNotPruneItsRoot(t *testing.T) {
-	t.Parallel()
-	root := filepath.Join(t.TempDir(), ".evener")
-	fixture := filepath.Join(root, "agent", "mcpprobe")
-	if err := os.MkdirAll(fixture, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	source := "package mcpprobe\n\nimport (\n\tmcpsdk \"" + sdkImportPath + "\"\n)\n\n" +
-		"var _ = mcpsdk.SSEClientTransport{}\n"
-	if err := os.WriteFile(filepath.Join(fixture, "transport.go"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sites, _, err := transportConstructionSites(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sites) != 1 || !strings.Contains(sites[0], "SSEClientTransport") {
-		t.Fatalf("a dot-named root's production sources were not scanned: sites = %v", sites)
+		a.Fatalf("the scan did not reach %s's own production sources, so it did not run as intended", allowedTransportPackage)
 	}
 }
 

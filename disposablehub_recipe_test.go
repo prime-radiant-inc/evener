@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
 
 // disposableHubHeading anchors the recipe audit to the one section that
@@ -40,7 +41,7 @@ func markdownFencedBlock(t *testing.T, path, heading string) []string {
 		t.Fatalf("%s no longer carries the heading %q", path, heading)
 	}
 
-	fences, err := markdownFences(string(body))
+	fences, err := repoaudit.MarkdownFences(string(body))
 	if err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
@@ -57,28 +58,6 @@ func markdownFencedBlock(t *testing.T, path, heading string) []string {
 	}
 	t.Fatalf("%s has no fenced block after %q", path, heading)
 	return nil
-}
-
-// markdownFencedBlocks returns every fenced block in the file, one entry per
-// fence pair, so the runbook audit can enforce its rule per block rather than
-// on the file as a whole. An unterminated final fence is a fatal error: a
-// broken block is exactly what the audit exists to catch, and silently
-// dropping it would let a recipe pass by never being scanned.
-func markdownFencedBlocks(t *testing.T, path string) [][]string {
-	t.Helper()
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	fences, err := markdownFences(string(body))
-	if err != nil {
-		t.Fatalf("%s: %v", path, err)
-	}
-	blocks := make([][]string, 0, len(fences))
-	for _, f := range fences {
-		blocks = append(blocks, f.Lines)
-	}
-	return blocks
 }
 
 // hostileAmbient is the ambient environment the recipes must shed: the
@@ -272,7 +251,7 @@ func TestDisposableHubRecipeIsolatesTheHubEnvironment(t *testing.T) {
 
 	block := markdownFencedBlock(t, "docs/developing-evener/testing.md", disposableHubHeading)
 	recipe := strings.Join(block, "\n")
-	if !hasCommand(recipe, "e2e_isolate_home") {
+	if !repoaudit.HasCommand(recipe, "e2e_isolate_home") {
 		t.Fatalf("the disposable-hub recipe no longer routes through e2e_isolate_home; "+
 			"a bare HOME=$(mktemp -d) leaves XDG_STATE_HOME and the provider/credential "+
 			"config paths in force:\n%s", recipe)
@@ -299,7 +278,7 @@ func TestSharedHubHandoffRecipeIsolatesTheHubEnvironment(t *testing.T) {
 
 	block := findFencedBlockContaining(t, "docs/developing-evener/agentic-testing.md", "EVENER_E2E_RUN")
 	recipe := strings.Join(block, "\n")
-	if !hasCommand(recipe, "e2e_isolate_home") {
+	if !repoaudit.HasCommand(recipe, "e2e_isolate_home") {
 		t.Fatalf("the sibling hand-off recipe no longer routes through e2e_isolate_home:\n%s", recipe)
 	}
 
@@ -341,45 +320,17 @@ func TestSharedHubHandoffRecipeIsolatesTheHubEnvironment(t *testing.T) {
 // contains needle, or fails the test.
 func findFencedBlockContaining(t *testing.T, path, needle string) []string {
 	t.Helper()
-	for _, block := range markdownFencedBlocks(t, path) {
-		if strings.Contains(strings.Join(block, "\n"), needle) {
-			return block
+	fences, err := repoaudit.ReadMarkdownFences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fence := range fences {
+		if strings.Contains(strings.Join(fence.Lines, "\n"), needle) {
+			return fence.Lines
 		}
 	}
 	t.Fatalf("%s has no fenced block containing %q", path, needle)
 	return nil
-}
-
-// isolationSite reports whether a fenced block tries to point evener at a
-// scratch HOME: it sources the isolation helper or assigns HOME. Prose and
-// samples that do neither are not isolation sites.
-func isolationSite(text string) bool {
-	return strings.Contains(text, "scripts/lib/e2e-lib.sh") || hasHomeAssignment(text)
-}
-
-// hasHomeAssignment reports whether a non-comment line assigns HOME. The match
-// is boundary-aware so XDG_STATE_HOME (and HOMEDRIVE/HOMEPATH) — whose names
-// merely end in HOME — do not count as the isolation this audit looks for.
-func hasHomeAssignment(text string) bool {
-	for line := range strings.SplitSeq(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		for i := 0; i+len("HOME=") <= len(trimmed); i++ {
-			if trimmed[i:i+len("HOME=")] != "HOME=" {
-				continue
-			}
-			if i == 0 || !identByte(trimmed[i-1]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func identByte(b byte) bool {
-	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // hasHubLaunch reports whether a non-comment line starts a disposable hub,
@@ -396,186 +347,4 @@ func hasHubLaunch(text string) bool {
 		}
 	}
 	return false
-}
-
-// hasCommand reports whether a non-comment line in text invokes cmd. A
-// comment that merely names the helper (the #2040 review showed one did) must
-// not satisfy the audit.
-func hasCommand(text, cmd string) bool {
-	for line := range strings.SplitSeq(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.Contains(trimmed, cmd) {
-			return true
-		}
-	}
-	return false
-}
-
-// numberedLine is a non-fenced source line with its 1-based line number.
-type numberedLine struct {
-	n    int
-	text string
-}
-
-// nonFencedLines returns every line of path that lies outside a fenced block.
-// Some cards state their isolation recipe as a prose bullet rather than a
-// fenced block, and a fenced-only audit would miss it. Unterminated fences are
-// already fatal in markdownFencedBlocks.
-func nonFencedLines(t *testing.T, path string) []numberedLine {
-	t.Helper()
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	var out []numberedLine
-	inFence := false
-	lineNo := 0
-	for line := range strings.SplitSeq(string(body), "\n") {
-		lineNo++
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-			continue
-		}
-		if !inFence {
-			out = append(out, numberedLine{n: lineNo, text: line})
-		}
-	}
-	return out
-}
-
-// nonFencedIsolationRecipe returns the shell of a prose list item that is
-// entirely one backticked command, e.g. "- `export HOME="$run/home"`". The
-// whole-item-is-a-command shape is what separates a copyable recipe from a
-// sentence that merely names a variable; the latter is not returned.
-func nonFencedIsolationRecipe(line string) (string, bool) {
-	s := strings.TrimSpace(line)
-	for _, marker := range []string{"- ", "* ", "+ "} {
-		if strings.HasPrefix(s, marker) {
-			s = strings.TrimSpace(s[len(marker):])
-			break
-		}
-	}
-	if !strings.HasPrefix(s, "`") || !strings.HasSuffix(s, "`") || len(s) < 2 {
-		return "", false
-	}
-	inner := s[1 : len(s)-1]
-	if strings.Contains(inner, "`") {
-		return "", false
-	}
-	return inner, true
-}
-
-// scenarioIsolationExemptions names scenario cards that deliberately set HOME
-// their own way and must not be routed through e2e_isolate_home, each with its
-// reason. An entry is earned by the card's own stated intent, never to silence
-// a finding:
-//
-//   - compact-tool-pins-note-and-persists.md and compact-note-survives-resume.md
-//     deliberately symlink the operator's real provider credentials into a
-//     throwaway HOME and write a bespoke hub.toml under the legacy ~/.evener
-//     layout; e2e_isolate_home's EVENER_PROVIDERS_CONFIG/EVENER_CREDENTIALS_CONFIG
-//     unsets are the opposite of what those cards exist to prove.
-var scenarioIsolationExemptions = map[string]string{
-	"test/scenarios/compact-tool-pins-note-and-persists.md": "deliberately symlinks the operator's real provider credentials into a throwaway HOME",
-	"test/scenarios/compact-note-survives-resume.md":        "inherits compact-tool-pins-note-and-persists.md's real-credential setup",
-}
-
-// scenarioExemptionKey normalizes a path to the slash form the exemption map is
-// keyed by. filepath.Glob builds its results with filepath.Join, so on Windows
-// it hands back `test\scenarios\...`; without this the lookup would miss, the
-// two exempt cards would be reported as violations, and the stale-exemption
-// check would fire on both entries.
-func scenarioExemptionKey(path string) string {
-	return strings.ReplaceAll(path, `\`, "/")
-}
-
-// scenarioExemption reports the reason path is exempt, matching either
-// separator form so the audit still runs (and still exempts) on Windows.
-func scenarioExemption(path string) (string, bool) {
-	reason, ok := scenarioIsolationExemptions[scenarioExemptionKey(path)]
-	return reason, ok
-}
-
-// TestScenarioExemptionMatchesEitherSeparator pins the normalization above: a
-// slash path, a backslash path, and the current host's spelling must all
-// resolve the same exemption.
-func TestScenarioExemptionMatchesEitherSeparator(t *testing.T) {
-	t.Parallel()
-	const slash = "test/scenarios/compact-note-survives-resume.md"
-	const backslash = `test\scenarios\compact-note-survives-resume.md`
-	for _, path := range []string{slash, backslash, filepath.FromSlash(slash)} {
-		if _, ok := scenarioExemption(path); !ok {
-			t.Errorf("scenarioExemption(%q) did not resolve; a Windows glob's backslash "+
-				"path must match the slash-keyed exemption map", path)
-		}
-	}
-}
-
-// TestDisposableHubRunbooksRouteIsolationThroughTheHelper covers the sibling
-// runbook and the scenario cards the #2040 review flagged: agentic-testing.md
-// and the cards hand-rolled the same unsets and omitted
-// EVENER_PROVIDERS_CONFIG/EVENER_CREDENTIALS_CONFIG, so an operator with those
-// exported still loaded real providers and loaded/claimed real state.
-//
-// The rule is per block, not per file: any block that sets up an isolated HOME
-// (it sources the helper or assigns HOME) must call e2e_isolate_home, so a
-// file-global mention cannot satisfy it. Cards that deliberately run against
-// the real HOME or real credentials carry a named exemption above; the audit
-// fails if an exemption names a card that no longer exists.
-func TestDisposableHubRunbooksRouteIsolationThroughTheHelper(t *testing.T) {
-	t.Parallel()
-	docs := []string{
-		"docs/developing-evener/testing.md",
-		"docs/developing-evener/agentic-testing.md",
-	}
-	scenarios, err := filepath.Glob("test/scenarios/*.md")
-	if err != nil {
-		t.Fatalf("glob test/scenarios/*.md: %v", err)
-	}
-	docs = append(docs, scenarios...)
-	if len(scenarios) == 0 {
-		t.Fatal("no scenario cards found; the audit would silently scan nothing")
-	}
-
-	seen := map[string]bool{}
-	for _, doc := range docs {
-		key := scenarioExemptionKey(doc)
-		if _, exempt := scenarioExemption(doc); exempt {
-			seen[key] = true
-			continue
-		}
-		for _, block := range markdownFencedBlocks(t, doc) {
-			text := strings.Join(block, "\n")
-			if !isolationSite(text) {
-				continue
-			}
-			if !hasCommand(text, "e2e_isolate_home") {
-				t.Errorf("%s sets up an isolated HOME without routing through e2e_isolate_home; "+
-					"hand-rolled unsets drift from the e2e harnesses' list (the #2040 defect):\n%s",
-					doc, text)
-			}
-		}
-		for _, line := range nonFencedLines(t, doc) {
-			inner, ok := nonFencedIsolationRecipe(line.text)
-			if !ok || !isolationSite(inner) {
-				continue
-			}
-			if !hasCommand(inner, "e2e_isolate_home") {
-				t.Errorf("%s:%d states a non-fenced isolation recipe without routing through "+
-					"e2e_isolate_home (the #2040 defect):\n  %s", doc, line.n, strings.TrimSpace(line.text))
-			}
-		}
-	}
-	for doc, reason := range scenarioIsolationExemptions {
-		if !seen[doc] {
-			t.Errorf("scenarioIsolationExemptions names %s, which is not a scenario card being "+
-				"scanned — delete the stale entry", doc)
-		}
-		if strings.TrimSpace(reason) == "" {
-			t.Errorf("scenarioIsolationExemptions names %s with no reason", doc)
-		}
-	}
 }
