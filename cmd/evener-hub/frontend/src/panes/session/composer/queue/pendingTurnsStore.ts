@@ -476,10 +476,6 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
 // identity is visible; queue consumption and pendingMutations disappearance
 // update the row, never delete it.
 export function usePendingMessages(ref: string): PendingMessage[] {
-  useEffect(() => {
-    if (ref === "") return;
-    void refreshPendingTurnsProjection(ref);
-  }, [ref]);
   const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
     for (const id of transcriptMutationIds(model)) deliveredHere.add(id);

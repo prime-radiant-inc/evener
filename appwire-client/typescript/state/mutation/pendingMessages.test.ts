@@ -308,6 +308,31 @@ test("two identical legacy queue rows pair with two local rows in order", () => 
   expect(rows.every((row) => row.queueEntryId !== undefined)).toBe(true);
 });
 
+test("a legacy row with the same text but different image content stays separate", () => {
+  const input: InputItem[] = [
+    { type: "text", text: "hello" },
+    { type: "image", mediaType: "image/png", data: "AAAA" },
+  ];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/queue", input },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, outbox: [record] });
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "queue:q1"]);
+});
+
 test("a retargeted Stop-canceled row stays visible under the displayed ref", () => {
   const record = local("m1", "turn/start", "hello", {
     state: "canceled",

@@ -178,6 +178,10 @@ function legacyQueueDisplayText(text: string, skillNames: readonly string[], com
   return [genericSelection ? "" : text, namedMarkers].filter((part) => part !== "").join(" ");
 }
 
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 interface LocalFamily<A extends MutationAttachmentRef> {
   outbox?: MutationOutboxRecord<A>;
   optimistic?: MutationOptimisticRecord<A>;
@@ -558,6 +562,9 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         !candidate.queueEntryId &&
         candidate.textComplete &&
         normalizeText(candidate.text) === normalizeText(row.text) &&
+        candidate.imageCount === row.imageCount &&
+        sameStrings(candidate.skillNames, row.skillNames) &&
+        sameStrings(candidate.commandNames, row.commandNames) &&
         candidate.queueEntryIds.length === 0,
     );
     if (!match) continue;
