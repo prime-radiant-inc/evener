@@ -899,6 +899,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if noQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
+		// A hook's continue:false owns this input: no autonomous turn may run
+		// behind it. Read once here so the decision and the idle goal kick below
+		// cannot disagree.
+		hookStoppedInput := s.hookStoppedTheInput()
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
 			HaveDeferredCont:     haveDeferredCont,
@@ -910,7 +914,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
 			SteeringParked:       s.steeringParkedNow(),
-			HookStoppedInput:     s.hookStoppedTheInput(),
+			HookStoppedInput:     hookStoppedInput,
 		})
 
 		if action == runQueued {
@@ -1006,7 +1010,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
 			s.emit(events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
-		goalKicked := s.settleGoalOnIdle()
+		// A hook-stopped input arms no goal: the idle kick would queue the very
+		// continuation that runs without the stopping hook and sends the stopped
+		// prompt to the model. Settling still clears the in-turn flag below.
+		goalKicked := false
+		if !hookStoppedInput {
+			goalKicked = s.settleGoalOnIdle()
+		}
 		// A steer this input recorded whose store mark the store refused gets
 		// its mark now, through the steering table; nothing when none waits.
 		s.reconcileRecordedSteering()

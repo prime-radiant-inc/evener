@@ -1655,6 +1655,10 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.runProvenance = nil
 	sub.runStructured = nil
 	sub.runStructuredCaptured = false
+	// A hook stop belongs to the generation that raised it. A retained child
+	// resumed by a later send whose hook allows completion must drain and
+	// capture its report like any other run.
+	sub.hookStopped = false
 	sub.cancel = cancel
 	sub.cancelRequested = false
 	sub.userStopRequested = false
@@ -1770,7 +1774,7 @@ func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, s
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	sub.finalizeRun(subagentFinalize{
 		result:    stopReason,
-		finish:    sub.hookStoppedFinish(stopReason),
+		finish:    sub.hookStoppedFinish(stopReason, nil),
 		lease:     lease,
 		stableRun: stableRun,
 	})
@@ -1946,9 +1950,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
 		restoreParentDriveNotify = nil
-		if a.hookStoppedRun() {
-			// The hook ended the run. drainForFinalization would return the
-			// child's earlier communicated reply in place of the hook's result.
+		if a.hookStoppedRun() || a.sess.stopHookReplacedReplyNow() {
+			// A hook ended the run or vetoed its reply. drainForFinalization
+			// would return the child's earlier communicated reply in place of
+			// the hook's text.
 		} else if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
@@ -1982,7 +1987,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					continue
 				case delegateSupervisionSuppress:
 				}
-				if err == nil {
+				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
 			}
@@ -2430,12 +2435,12 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 		// A Stop hook vetoed the reply this turn would have delivered, so the
 		// run's result (the hook's text) is the packet's message. Capturing the
 		// communicate report here would hand the parent the vetoed reply.
-		return a.hookStoppedFinish(result)
+		return a.hookStoppedFinish(result, runErr)
 	}
 	if hookStopped {
 		// The hook ended this run, so its reason IS the result. captureCommunicateReport
 		// would replace it with a report the child made on an earlier turn.
-		return a.hookStoppedFinish(result)
+		return a.hookStoppedFinish(result, runErr)
 	}
 	inputs := a.delegateTerminalRunInputs(result, runErr)
 	inputs.captureCommunicateReport(a.sess)
@@ -2496,6 +2501,16 @@ func (a *subagent) delegateTerminalRunInputs(result string, runErr error) delega
 	return inputs
 }
 
+// stopHookReplacedReplyNow reports whether a Stop hook vetoed this turn's reply.
+func (s *Session) stopHookReplacedReplyNow() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopHookReplacedReply
+}
+
 // hookStoppedRun reports whether a SubagentStop continue:false ended this run.
 func (a *subagent) hookStoppedRun() bool {
 	if a == nil {
@@ -2506,16 +2521,21 @@ func (a *subagent) hookStoppedRun() bool {
 	return a.hookStopped
 }
 
-// hookStoppedFinish is the terminal result of a child run a SubagentStart hook's
-// continue:false kept from launching. The run completed — the hook ended it, the
-// run raised no error — and its result IS the hook's stop reason.
+// hookStoppedFinish is the terminal result of a child run a hook's
+// continue:false ended: a SubagentStart stop that kept the launch from
+// starting, a SubagentStop stop, or a Stop that vetoed the reply. The hook's
+// reason IS the run's result.
+//
+// runErr is the run's own error, so a stop that followed a provider failure
+// still settles failed, cancelled or exhausted. Only a hook that ended a
+// healthy run yields a completed outcome.
 //
 // It deliberately does not read the child's communicate state: a resumed child
 // that reported on an earlier run still carries that report, and
 // captureCommunicateReport would replace the stop reason with it. For the same
 // reason it never reports the earlier run's structured result.
-func (a *subagent) hookStoppedFinish(stopReason string) delegateFinish {
-	inputs := a.delegateTerminalRunInputs(stopReason, nil)
+func (a *subagent) hookStoppedFinish(stopReason string, runErr error) delegateFinish {
+	inputs := a.delegateTerminalRunInputs(stopReason, runErr)
 	inputs.completedWithoutReport = true
 	finish := delegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {

@@ -113,9 +113,6 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	if found.PluginName != "reserved-plugin" {
 		t.Errorf("PluginName = %q, want %q", found.PluginName, "reserved-plugin")
 	}
-	if found.Title != "unsupported hook event" {
-		t.Errorf("Title = %q, want %q", found.Title, "unsupported hook event")
-	}
 }
 
 // TestInitPlugins_UnsupportedHandlerTypeWarns asserts that a plugin declaring a

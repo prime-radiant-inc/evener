@@ -738,6 +738,12 @@ type Session struct {
 	// carry the hook's text, not the communicated reply it vetoed. Cleared at the
 	// start of every turn. Guarded by mu.
 	stopHookReplacedReply bool
+	// dispatchedToolArgs holds each call's arguments as they were dispatched,
+	// after the repair step and any PreToolUse updatedInput. PostToolBatch
+	// renders these, so a hook sees the arguments the tool actually ran with
+	// rather than the model's original bytes. Replaced each round and guarded
+	// by mu.
+	dispatchedToolArgs map[string][]byte
 	// turnInterrupted records that the turn which just ran ended on a
 	// cancellation (an interrupt, a signal, a shutdown). It is set in the
 	// interrupt branch before the turn settles idle, because that settle would

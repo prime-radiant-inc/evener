@@ -277,6 +277,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
+	// PostToolBatch renders this round's calls after dispatch, and the
+	// arguments that actually ran are the ones a hook should see: a repair or
+	// a PreToolUse updatedInput rewrote them after the model's bytes were read.
+	s.recordDispatchedToolArguments(call)
 
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,

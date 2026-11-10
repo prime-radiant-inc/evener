@@ -135,6 +135,32 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // any decode, so oversized or invalid-UTF-8 bytes never reach a lossy
 // json.Unmarshal. A call with no positional result (an aborted round) carries an
 // empty tool_response.
+// recordDispatchedToolArguments remembers the arguments a call actually ran
+// with, after the repair step and any PreToolUse updatedInput.
+func (s *Session) recordDispatchedToolArguments(call llm.ToolCallData) {
+	if s == nil || call.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.dispatchedToolArgs == nil {
+		s.dispatchedToolArgs = map[string][]byte{}
+	}
+	s.dispatchedToolArgs[call.ID] = append([]byte(nil), call.Arguments...)
+	s.mu.Unlock()
+}
+
+// dispatchedToolArguments returns the arguments call was dispatched with, or
+// its original bytes when nothing was recorded (a call that never dispatched).
+func (s *Session) dispatchedToolArguments(call llm.ToolCallData) []byte {
+	s.mu.Lock()
+	raw, ok := s.dispatchedToolArgs[call.ID]
+	s.mu.Unlock()
+	if ok {
+		return raw
+	}
+	return call.Arguments
+}
+
 func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
 	out := make([]hooks.BatchToolCall, len(calls))
 	for i, call := range calls {
@@ -143,8 +169,8 @@ func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecRe
 		// here: decoding is exactly what those bytes are bounded against, and a
 		// lossy decode would show a hook an argument map the tool never saw.
 		// PostToolUse makes the same call, so the two agree on that case.
-		if len(call.Arguments) > 0 && tool.ValidateRawArguments(call.Arguments) == nil {
-			_ = json.Unmarshal(call.Arguments, &input)
+		if raw := s.dispatchedToolArguments(call); len(raw) > 0 && tool.ValidateRawArguments(raw) == nil {
+			_ = json.Unmarshal(raw, &input)
 		}
 		response := ""
 		if i < len(results) {

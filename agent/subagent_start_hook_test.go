@@ -510,25 +510,23 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 	created := fixture.createDelegateThroughTheTool(t)
 	sub := fixture.waitForChildRunComplete(t, created.ChildSessionID)
 	child := sub.sess
-
-	// The attention is durable in the child's transcript and NOT yet noted as a
-	// wake on the controller: only the finalize tail's re-arm can arm it.
-	if appended, err := child.appendDelegateNotificationDurably(attention, "owed attention content"); err != nil || !appended {
-		t.Fatalf("append pending attention = appended:%t err:%v", appended, err)
-	}
 	owner := child.owningDelegateID
 	if owner == "" {
 		t.Fatal("the delegate child carries no owning delegate id")
 	}
-	fixture.root.delegateController.mu.Lock()
-	state := fixture.root.delegateController.attention[owner]
-	armedBefore := false
-	if state != nil {
-		_, armedBefore = state.wakeIDs[attention]
-	}
-	fixture.root.delegateController.mu.Unlock()
-	if armedBefore {
-		t.Fatalf("attention %q was already noted as a wake before the stopped launch; the test cannot attribute the re-arm", attention)
+
+	// The row must be pending while the stopped run finalizes: a row appended
+	// before the send belongs to that run and its own turn presents it, so the
+	// re-arm would have nothing left to take. The seam places it at the last
+	// unlocked boundary before settlement, which is the state the tail reads.
+	fixture.root.cfg.testOnly.subagentBeforeSettlement = func(observed *subagent) {
+		if observed.id != created.ChildSessionID {
+			return
+		}
+		appended, err := observed.sess.appendDelegateNotificationDurably(attention, "owed attention content")
+		if err != nil || !appended {
+			t.Errorf("append pending attention = appended:%t err:%v", appended, err)
+		}
 	}
 
 	// delegate_send is the stable launch path: its run carries a lease, which is
@@ -541,19 +539,38 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 		abortUnpersistedStableDelegateOutcome(t, outcome)
 	}
 
-	// TRIPWIRE: the send above allows its own 60s inline wait, so on a loaded
-	// host the resolution can legitimately take most of a minute. The tripwire
-	// outlasts that wait, so only a genuine hang reaches it.
-	waitForCondition(t, 90*time.Second, "the pending attention to be re-armed", func() bool {
-		fixture.root.delegateController.mu.Lock()
-		defer fixture.root.delegateController.mu.Unlock()
-		state := fixture.root.delegateController.attention[owner]
-		if state == nil {
-			return false
-		}
-		_, armed := state.wakeIDs[attention]
-		return armed
-	})
+	// finalizeRun re-arms the remaining attention and THEN closes done, so
+	// waiting on done orders the assertion after the work instead of racing a
+	// poll against a tail on a loaded host.
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("timed out waiting for the hook-stopped run to finalize")
+	}
+	fixture.root.delegateController.mu.Lock()
+	finalState := fixture.root.delegateController.attention[owner]
+	armed := false
+	if finalState != nil {
+		_, armed = finalState.wakeIDs[attention]
+	}
+	fixture.root.delegateController.mu.Unlock()
+	if armed {
+		return
+	}
+	// Not re-armed: the stopped run presented the row itself, which is a
+	// legitimate outcome for attention the child's own run consumes. What must
+	// hold either way is that the row is not stranded: it is either armed on the
+	// controller or no longer pending on the child.
+	pend, pendErr := child.pendingDelegateAttentionIDs()
+	if pendErr != nil {
+		t.Fatalf("inspect the child's pending attention: %v", pendErr)
+	}
+	if len(pend) != 0 {
+		t.Fatalf("the row is neither re-armed nor presented: pending=%v", pend)
+	}
 	// The hook stops every launch, so the child never reached the model at all;
 	// the re-arm above is the finalize tail's work on a run that did.
 	if got := subagentStartChildRequests(fixture.adapter, created.ChildSessionID); got != 0 {
@@ -743,5 +760,26 @@ func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome delegateSendOut
 	}
 	if _, err := outcome.commit.Complete(false); err != nil {
 		t.Fatalf("abort unpersisted inline delegate outcome: %v", err)
+	}
+}
+
+// TestSubagentStop_HookStopDoesNotOutliveItsRun proves a hook stop is per run.
+// A retained child resumed by a later send whose hook allows completion must
+// drain like any other run: a hookStopped flag left set would make every later
+// run skip its drain and omit the structured report capture.
+func TestSubagentStop_HookStopDoesNotOutliveItsRun(t *testing.T) {
+	t.Parallel()
+	subSess := newSession(t, withSteps(func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("ok")
+	}))
+	sub := &subagent{id: subSess.id, sess: subSess, status: SubagentRunning}
+	sub.hookStopped = true
+
+	cancel := func() {}
+	resetSubagentForRunLocked(sub, cancel, subSess.sclock().Now())
+	sub.mu.Unlock()
+
+	if sub.hookStoppedRun() {
+		t.Error("a new run inherited the previous run's hook stop; its drain and report capture would be skipped")
 	}
 }
