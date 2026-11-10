@@ -294,17 +294,22 @@ wrong (`fuzz-corpus-scan` claims CI). **Change:** keep summary plus one failure
 line per target; move the narrative into the doc it generates. **Risk:** low.
 **Delta:** −300 to −400 comment lines, fewer false claims.
 
-**F23. `docs/superpowers/plans` is 472 files and 401,038 lines — 65% of all
-Markdown — and only five plan paths are cited by Go code.**
-`docs-site/scripts/check.mjs` already excludes `docs/superpowers/` from link
-checking. Jesse's ruling: plans may go, specs stay.
-**Change:** delete `docs/superpowers/plans/`, fix the five citations
-(`agent/doctor/apilog.go`, `agent/internal/atif/atif.go`,
-`agent/session_notes_committed_test.go`, `agent/session_turn_boundary_test.go`,
-`appwire/daemon_test.go`, `llm/providers/anthropic/protocol_test.go`), and the
-`scripts/measure-transcript-read-model.sh` header reference; drop the `plans/`
-row from `docs/superpowers/README.md`. **Risk:** low — no gate reads them.
-**Delta:** −401,038 lines.
+**F23. `docs/superpowers/plans` held 472 files and 401,038 lines.**
+At the audit base that was 65% of all Markdown, and only five plan paths were
+cited by Go code. Two mass deletions landed before this finding was published
+and took it to 81 files and 55,129 lines, so the original figure was stale on
+arrival. `docs-site/scripts/check.mjs` excludes `docs/superpowers/` from link
+checking, so no gate reads them. Jesse's ruling: plans may go, specs stay.
+**Done:** 39 plans deleted (44,628 lines), keeping 42. The retention rule is the
+one now in `docs/superpowers/README.md`: a plan stays if it is dated 2026-10-15
+or later, or if a retained document or test cites it. Recent plans are where
+undelivered decisions live, and review proved the point three times. The
+fleet-audit plan holds D4 (replace the 50-delivery watch budget with one
+coalesced delivery per minute), which no code implements. The
+notification-delivery plan holds a bookkeeping ruling the code still
+contradicts. And `docs/design/session-activity-api.md` calls itself a target
+contract whose implementation is tracked in `session-activity-api.md`.
+**Risk:** low. **Delta:** −44,628 lines.
 
 **F24. The doc archive beyond specs is also mostly uncited.** 899 superpowers
 files, 522,157 lines; only 68 are cited anywhere outside the tree. `handoffs` (6),
