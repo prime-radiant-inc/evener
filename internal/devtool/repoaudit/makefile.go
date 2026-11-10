@@ -1,18 +1,49 @@
-package evener_test
+package repoaudit
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
-	"testing"
 )
+
+// MakefileSources returns every file that contributes rules to the build: the
+// root Makefile plus the family files it includes, in sorted order. Anything
+// that audits the Makefile must read all of them; reading only the root would
+// silently stop auditing most of the repo's targets, which live in make/.
+func MakefileSources() ([]string, error) {
+	family, err := filepath.Glob("make/*.mk")
+	if err != nil {
+		return nil, fmt.Errorf("globbing make/*.mk: %w", err)
+	}
+	// filepath.Glob returns (nil, nil) when the pattern matches nothing, so a
+	// renamed or missing make/ directory would silently narrow every audit
+	// built on this list down to the rule-free root Makefile and leave them
+	// all passing vacuously. Refuse that instead.
+	if len(family) == 0 {
+		return nil, errors.New("make/*.mk matched no files; every Makefile audit would pass vacuously against the rule-free root Makefile. Did make/ move?")
+	}
+	sort.Strings(family)
+	return append([]string{"Makefile"}, family...), nil
+}
+
+// makefileSourcePaths is MakefileSources for a check, which cannot go on
+// without the list.
+func makefileSourcePaths(a *audit) []string {
+	paths, err := MakefileSources()
+	if err != nil {
+		a.Fatal(err)
+	}
+	return paths
+}
 
 // The rm-detection predicate this audit walks the Makefile with —
 // recursiveDeleteLineText, recursiveDeleteCommands, namesRM, rmArguments,
 // recursiveDelete, operandComesFromVariable — is shared with the scripts
-// audit's TestNoScriptFeedsVariableToRecursiveDelete and lives in
-// recursivedelete_audit_test.go; see that file's header for why (issue #153).
+// audit's noScriptFeedsVariableToRecursiveDelete and lives in
+// recursivedelete.go; see that file's header for why (issue #153).
 
 // makefileVariableFedDeletes are the recipe lines that hand a variable to a
 // recursive delete today, each mapped to the reason it survives review.
@@ -26,7 +57,7 @@ import (
 // normalizes it, so they carry no trailing continuation backslash.
 var makefileVariableFedDeletes = map[string]string{}
 
-// TestNoMakefileRecipeFeedsVariableToRecursiveDelete holds the delete-safety
+// noMakefileRecipeFeedsVariableToRecursiveDelete holds the delete-safety
 // rule over the Makefile, which is where the repository's remaining
 // variable-fed recursive deletes live.
 //
@@ -48,20 +79,18 @@ var makefileVariableFedDeletes = map[string]string{}
 // The scan walks makefileSourcePaths one file at a time, rather than joining
 // every file's body into one string first, so a failure's citation is
 // path:line for the file that actually holds the delete — matching the
-// pattern scriptmktemp_audit_test.go's recursiveDeleteOffenders already uses
+// pattern scriptmktemp.go's recursiveDeleteOffenders already uses
 // for the equivalent scripts/ audit. Scanning file-by-file also means the
 // last line of one file's content can never be mistaken for a continuation
 // of, or fused onto, the first line of the next file: each file's line index
 // and its "does this line continue" check are entirely its own.
-func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
-	t.Parallel()
-
+func noMakefileRecipeFeedsVariableToRecursiveDelete(a *audit) {
 	var unswept, unreadable []string
 	matched := map[string]int{}
-	for _, path := range makefileSourcePaths(t) {
+	for _, path := range makefileSourcePaths(a) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+			a.Fatalf("read %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			// continues reports whether make joins the NEXT physical line onto
@@ -120,7 +149,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 
 	sort.Strings(unswept)
 	for _, o := range unswept {
-		t.Errorf("this recipe hands a variable to a recursive delete, so an empty or "+
+		a.Errorf("this recipe hands a variable to a recursive delete, so an empty or "+
 			"unexpected expansion deletes whatever the expansion names (kata 5hs2 lost a "+
 			"checkout that way). Give the delete a path the recipe owns outright, or add "+
 			"the line to makefileVariableFedDeletes with the reason it is safe. If this is "+
@@ -130,7 +159,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 
 	sort.Strings(unreadable)
 	for _, o := range unreadable {
-		t.Errorf(recursiveDeleteUnreadableReason, o)
+		a.Errorf(recursiveDeleteUnreadableReason, o)
 	}
 
 	stale := make([]string, 0, len(makefileVariableFedDeletes))
@@ -142,28 +171,26 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 		switch matched[line] {
 		case 1:
 		case 0:
-			t.Errorf("makefileVariableFedDeletes lists a line that no longer feeds a variable "+
+			a.Errorf("makefileVariableFedDeletes lists a line that no longer feeds a variable "+
 				"to a recursive delete — delete the entry, whose stated reason was %q:\n  %s",
 				makefileVariableFedDeletes[line], line)
 		default:
-			t.Errorf("one makefileVariableFedDeletes entry now blesses %d deletes, so a copy of "+
+			a.Errorf("one makefileVariableFedDeletes entry now blesses %d deletes, so a copy of "+
 				"a reviewed line entered the Makefile without review of its own; give each site "+
 				"its own entry:\n  %s", matched[line], line)
 		}
 	}
 }
 
-// TestNoMakefileRecipeCreatesScratchOutsideTMPDIR holds the Makefile to the
+// noMakefileRecipeCreatesScratchOutsideTMPDIR holds the Makefile to the
 // same TMPDIR rule the scripts audit enforces (see mktempEscapesTMPDIR): a
 // recipe's scratch must live where a caller's TMPDIR can find and reclaim it.
-func TestNoMakefileRecipeCreatesScratchOutsideTMPDIR(t *testing.T) {
-	t.Parallel()
-
+func noMakefileRecipeCreatesScratchOutsideTMPDIR(a *audit) {
 	var offenders []string
-	for _, path := range makefileSourcePaths(t) {
+	for _, path := range makefileSourcePaths(a) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+			a.Fatalf("read %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -179,7 +206,7 @@ func TestNoMakefileRecipeCreatesScratchOutsideTMPDIR(t *testing.T) {
 	}
 	sort.Strings(offenders)
 	for _, o := range offenders {
-		t.Errorf("this recipe's mktemp ignores TMPDIR on macOS; give it an explicit "+
+		a.Errorf("this recipe's mktemp ignores TMPDIR on macOS; give it an explicit "+
 			"template like mktemp \"$${TMPDIR:-/tmp}/name.XXXXXX\":\n  %s", o)
 	}
 }

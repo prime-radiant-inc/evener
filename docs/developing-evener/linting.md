@@ -1,12 +1,12 @@
 # Linting
 
 Static checks that gate merges without running tests: formatting, generated-
-output freshness, compile floors, the frontend Biome scopes, and the repo
-secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`, `lint-gofmt`,
-`lint-evenerfuzz`, `lint-eval`, `lint-internal`, `lint-golangci`,
+output freshness, compile floors, repository source audits, the frontend Biome
+scopes, and the repo secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`,
+`lint-gofmt`, `lint-evenerfuzz`, `lint-eval`, `lint-internal`, `lint-golangci`,
 `lint-generated`, `lint-fuzz-registry`, `lint-package-imports`,
-`lint-js-toolchain-pins`, `lint-tracked-file-size`, `lint-biome`, and
-`secret-scan`. `make lint` runs all of them; CI enforces every one across
+`lint-js-toolchain-pins`, `lint-tracked-file-size`, `lint-repo-audit`,
+`lint-biome`, and `secret-scan`. `make lint` runs all of them; CI enforces every one across
 its split jobs, and each target's trigger says which.
 
 `make tools` installs the gate's only run-time tools, `golangci-lint` and
@@ -41,6 +41,22 @@ job's `make test-web` already runs. `web-preflight` makes the install ready
 first, the same way it does for the other web targets. Never invoke `npx biome`
 from the repository root — use `make lint-biome` (part of `make lint`) or run
 Biome from the frontend directory.
+
+## Where a rule about the repository's own text lives
+
+A rule that reads source, scripts, the Makefile or test files and fails on
+what a change writes (one source for a shared constant, one writer for a
+shared config, no scratch outside TMPDIR, no new copy-only test) is lint, not a
+test. As a test it sits in some package's run and its timing budget, and a
+change to an unrelated file reds that package. Such rules live in
+`internal/devtool/repoaudit`, one check function each, registered in that
+package's `checks` list; `make lint-repo-audit` runs them all through
+`evener-dev dev repo-audit` and prints each finding under its check's name.
+A check reports with `a.Errorf` and keeps going, or with `a.Fatalf` when it
+cannot read what it audits. The checker's own logic (a predicate, a parser)
+gets unit tests against fixtures in the same package, which `go test` runs.
+A test that executes a script, a recipe or a binary and asserts what it does
+stays a test.
 
 ## Why two tagged lint passes exist
 
@@ -196,6 +212,7 @@ user's global golangci-lint cache or sibling worktrees.
 | `make lint-package-imports` | Fail if a web or native import names the AppWire TypeScript package by path instead of by its package name, or native imports the web app's source. | Every import specifier under cmd/evener-hub/frontend/src, mobile-native spells the package @evener/appwire-client (or a subpath its exports map publishes), with no file exempt but the resolver configs and mobile-native/src/metroResolver.test.ts, which asserts that mapping - each named one by one. No mobile-native import reaches into cmd/evener-hub/frontend/src; code both apps need lives in the package. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond a POSIX shell and grep. | Any import specifier in those trees names the package directory or the protocol/ directory it moved out of, a mobile-native import names the web app's source tree, or a swept tree is missing. |
 | `make lint-js-toolchain-pins` | Fail if Biome, Vitest, TypeScript or React is not an exact version, if the toolchain differs between npm trees (React may), or a biome.jsonc $schema names another Biome. | Every npm tree that declares @biomejs/biome, vitest, @vitest/coverage-v8, typescript, react, react-dom, @types/react or @types/react-dom pins it to an exact version, all trees agree on all but react and react-dom, and each biome.jsonc $schema URL names its tree's Biome version. | Required CI (via make lint); local pre-merge. Well under a second. | node. | A shared toolchain package uses a range, two trees pin different versions, or a biome.jsonc $schema names another Biome version. |
 | `make lint-tracked-file-size` | Fail if a tracked file is over 1 MiB and is not on the script's allowlist. | No git-tracked file exceeds 1 MiB except the allowlisted ones in scripts/ops/tracked-file-size-check.sh. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond a POSIX shell and git. | A tracked file over 1 MiB is not on the allowlist. |
+| `make lint-repo-audit` | Run the repository source audits in internal/devtool/repoaudit: no new copy-only or error-text test, one source for shared constants and configs, and safe scratch and recursive deletes in scripts and Makefile recipes. | No Go test checks only wording or adds an error-text assertion beyond its allowlist; the quiet threshold, custom content seed, effort vocabulary, canonical temp-dir helper and e2e providers.toml writer each have one source; projection-work test policy stays in the host; the coverage scripts count through covstmt; the e2e and UI runners isolate through the shared helpers; and no script or recipe mints scratch outside TMPDIR, before its trap, or deletes recursively from a variable beyond the reviewed allowlists; and mobile-native/.gitignore keeps the mobile-native/build derived-data tree untracked. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain and git. | Any check in internal/devtool/repoaudit reports a finding. |
 | `make lint-biome` | Run the frontend's Biome over cmd/evener-hub/frontend/src and appwire-client/typescript via the frontend `lint` script. | Both frontend Biome scopes pass the @biomejs/biome ruleset, run by the frontend install's own `lint` script (the same command the web job runs) rather than the unrelated root-resolved `biome` package. | Required CI (the web job's make test-web runs the same frontend lint script); local make lint. | The frontend node_modules install; web-preflight makes it ready (and refuses npm ci through a symlinked install). | The frontend `lint` script is nonzero in either scope. |
-| `make lint` | Go lint, formatting, tagged floors, generated outputs, imports, frontend Biome, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; that no web or native import names the AppWire TypeScript package by path; that Biome, Vitest, TypeScript and React are pinned to one exact version across the npm trees; that no tracked file is over 1 MiB beyond a short allowlist; that the frontend's Biome lint script passes over both frontend scopes; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks, and the frontend node_modules install. | Any member of LINT_TARGETS exits nonzero. |
+| `make lint` | Go lint, formatting, tagged floors, generated outputs, imports, repository source audits, frontend Biome, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; that no web or native import names the AppWire TypeScript package by path; that Biome, Vitest, TypeScript and React are pinned to one exact version across the npm trees; that no tracked file is over 1 MiB beyond a short allowlist; the repository source audits in internal/devtool/repoaudit; that the frontend's Biome lint script passes over both frontend scopes; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks, and the frontend node_modules install. | Any member of LINT_TARGETS exits nonzero. |
 <!-- END GENERATED -->

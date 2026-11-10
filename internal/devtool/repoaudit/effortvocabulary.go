@@ -1,18 +1,16 @@
-package evener_test
+package repoaudit
 
 import (
 	"os"
 	"strings"
-	"testing"
 )
 
-// TestEffortVocabularyHasOneSource keeps the reasoning-effort lattice from
+// effortVocabularyHasOneSource keeps the reasoning-effort lattice from
 // being restated per language (#5553). Go's one source is llm/effort; the
 // TypeScript table is generated from it by internal/effortts. A local rank
 // table, a local fallback ladder, or a registry-side copy is the drift this
 // check exists to catch.
-func TestEffortVocabularyHasOneSource(t *testing.T) {
-	t.Parallel()
+func effortVocabularyHasOneSource(a *audit) {
 	checks := []struct {
 		path   string
 		must   string
@@ -41,14 +39,14 @@ func TestEffortVocabularyHasOneSource(t *testing.T) {
 	for _, tc := range checks {
 		body, err := os.ReadFile(tc.path)
 		if err != nil {
-			t.Fatalf("read %s: %v", tc.path, err)
+			a.Fatalf("read %s: %v", tc.path, err)
 		}
 		source := string(body)
 		if !strings.Contains(source, tc.must) {
-			t.Errorf("%s does not contain %q; %s", tc.path, tc.must, tc.why)
+			a.Errorf("%s does not contain %q; %s", tc.path, tc.must, tc.why)
 		}
 		if strings.Contains(source, tc.forbid) {
-			t.Errorf("%s still carries %q; %s", tc.path, tc.forbid, tc.why)
+			a.Errorf("%s still carries %q; %s", tc.path, tc.forbid, tc.why)
 		}
 	}
 }

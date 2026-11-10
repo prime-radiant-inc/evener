@@ -144,22 +144,6 @@ func TestRewriteRegionBeginMarkerNoLineEnding(t *testing.T) {
 	}
 }
 
-// TestRewriteRegionNoMatchingEnd covers the branch where the BEGIN marker is
-// found but the END marker is not (validateGeneratedRegionMarkers is bypassed
-// because there's exactly one valid begin and one end, but the end is before
-// the begin). Actually, the endIdx == -1 branch is hard to reach normally
-// because validateGeneratedRegionMarkers already checks pairing. But we can
-// reach it when there is exactly one valid begin and one end but the end
-// appears before the begin — validateGeneratedRegionMarkers catches that as
-// "end before begin". The only way to reach endIdx == -1 is if the doc passes
-// validation but the end marker is not found after the begin marker's
-// regionStart. Since validation already ensures exactly one begin and one end
-// in order, endIdx == -1 should not be reachable. This is documented as
-// unreachable.
-func TestRewriteRegionNoMatchingEndUnreachable(t *testing.T) {
-	t.Skip("the endIdx == -1 branch in RewriteRegion is unreachable: validateGeneratedRegionMarkers already enforces exactly one begin followed by one end")
-}
-
 // TestGenerateOneParseError covers the ParseFamily error path in generateOne.
 func TestGenerateOneParseError(t *testing.T) {
 	root := t.TempDir()
