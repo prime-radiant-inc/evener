@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"regexp"
 	"slices"
 	"sort"
@@ -33,30 +34,18 @@ func makefileSourcePaths(t testing.TB) []string {
 // ruleLineName reports whether line declares a make rule, and if so returns the
 // target name and everything after the colon.
 //
-// A rule line starts at column zero with `name:`. Recipe lines begin with a tab;
-// `:=` and friends are assignments, not rules; a name carrying whitespace is a
-// multi-target line this repo does not use; a leading `.` is a directive like
-// .PHONY or .DEFAULT_GOAL, not a target.
+// It calls the generator's own predicate, so the two cannot disagree about what
+// a rule is. The extra step here is excluding a leading-dot directive (.PHONY,
+// .DEFAULT_GOAL): RuleShape accepts those as rule-shaped because ParseFamily
+// has to attach a block to one and reject it, while these audits treat a
+// directive as neither a target nor a rule.
 //
-// This predicate lives in one place because it did not used to: five audits
-// each carried their own copy, and they had already drifted — only four of the
-// five excluded leading-dot directives, so a `.NOTPARALLEL:` line would have
-// counted as a real rule in one reading and not in the others. Nothing in the
-// tree triggered it, which is exactly how a hand-copied predicate hides a
-// divergence until the day it does.
-//
-// internal/maketargetsdoc/parse.go's ruleShape mirrors this deliberately and
-// says so; that copy is unavoidable, because the generator is package main and
-// cannot be imported here.
+// This predicate lives in one place because it did not used to: five audits each
+// carried their own copy, and they had already drifted -- only four of the five
+// excluded leading-dot directives.
 func ruleLineName(line string) (name, rest string, ok bool) {
-	if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-		return "", "", false
-	}
-	name, rest, ok = strings.Cut(line, ":")
-	if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-		return "", "", false
-	}
-	if strings.HasPrefix(name, ".") {
+	name, rest, ok = makefile.RuleShape(line)
+	if !ok || strings.HasPrefix(name, ".") {
 		return "", "", false
 	}
 	return name, rest, true

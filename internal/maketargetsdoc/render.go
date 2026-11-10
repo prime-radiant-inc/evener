@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"strings"
 )
 
@@ -195,13 +196,6 @@ func RewriteRegion(doc []byte, family string, body string) ([]byte, error) {
 	return out, nil
 }
 
-// hasFields reports whether t carries at least one structured field. A
-// target with only a summary renders in the compact list instead of the
-// wide table, per spec §3.
-func (t Target) hasFields() bool {
-	return t.Proves != "" || t.Trigger != "" || t.Requires != "" || t.FailsWhen != ""
-}
-
 // escapeCell makes s safe to place inside a single markdown table cell: a
 // literal "|" would otherwise be read as a column separator and split the
 // row. No annotation in make/*.mk contains one today, but the render must
@@ -240,10 +234,10 @@ func command(name string) string {
 //
 // The returned string has no trailing newline; RewriteRegion supplies the
 // one blank line that separates it from the END marker.
-func Render(targets []Target) string {
-	var wide, compact []Target
+func Render(targets []makefile.Target) string {
+	var wide, compact []makefile.Target
 	for _, t := range targets {
-		if t.hasFields() {
+		if t.HasFields() {
 			wide = append(wide, t)
 		} else {
 			compact = append(compact, t)
@@ -275,7 +269,7 @@ func Render(targets []Target) string {
 const wideTableHeader = "| Command | Summary | What it proves | Trigger | Requires | Fails when |\n" +
 	"| --- | --- | --- | --- | --- | --- |"
 
-func renderWideTable(targets []Target) string {
+func renderWideTable(targets []makefile.Target) string {
 	var b strings.Builder
 	b.WriteString(wideTableHeader)
 	for _, t := range targets {
@@ -291,7 +285,7 @@ func renderWideTable(targets []Target) string {
 // when a wide table precedes this list in the same region, so the list is
 // genuinely "other" than something. A family whose targets all lack fields
 // has no wide table, and the compact list is the whole region — no heading.
-func renderCompactList(targets []Target, withHeading bool) string {
+func renderCompactList(targets []makefile.Target, withHeading bool) string {
 	var b strings.Builder
 	if withHeading {
 		b.WriteString("### Other targets\n\n")

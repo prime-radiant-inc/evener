@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"strings"
 	"testing"
 )
@@ -14,11 +15,11 @@ import (
 // where a non-comment, non-rule line separates a ## block from its rule.
 func TestParseFamilyNonCommentLineSeparatesBlock(t *testing.T) {
 	src := []byte("## Summary\nfoo bar baz\nbuild:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a non-comment line separates a block from its rule")
 	}
-	if !errors.Is(err, errBlockDetached) {
+	if !errors.Is(err, makefile.ErrBlockDetached) {
 		t.Fatalf("error should mention separation: %v", err)
 	}
 }
@@ -27,11 +28,11 @@ func TestParseFamilyNonCommentLineSeparatesBlock(t *testing.T) {
 // directive (e.g. .PHONY:) appears with a pending ## block.
 func TestParseFamilyDirectiveWithPendingBlock(t *testing.T) {
 	src := []byte("## Summary\n.PHONY: build\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a directive carries a pending ## block")
 	}
-	if !errors.Is(err, errBlockOnDirective) {
+	if !errors.Is(err, makefile.ErrBlockOnDirective) {
 		t.Fatalf("error should mention directive: %v", err)
 	}
 }
@@ -41,11 +42,11 @@ func TestParseFamilyDirectiveWithPendingBlock(t *testing.T) {
 func TestParseFamilyBlockWithoutSummary(t *testing.T) {
 	// A ## block with only a field (## trigger: CI) and no summary line.
 	src := []byte("## trigger: CI\nbuild:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a ## block has no summary line")
 	}
-	if !errors.Is(err, errBlockWithoutSummary) {
+	if !errors.Is(err, makefile.ErrBlockWithoutSummary) {
 		t.Fatalf("error should mention no summary: %v", err)
 	}
 }
@@ -212,11 +213,11 @@ func TestValidateGeneratedRegionMarkersMultipleEnds(t *testing.T) {
 // no ## annotation block above it.
 func TestParseFamilyTargetWithoutAnnotation(t *testing.T) {
 	src := []byte("build:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a rule has no ## annotation")
 	}
-	if !errors.Is(err, errTargetUnannotated) {
+	if !errors.Is(err, makefile.ErrTargetUnannotated) {
 		t.Fatalf("error should mention no annotation: %v", err)
 	}
 }
@@ -224,11 +225,11 @@ func TestParseFamilyTargetWithoutAnnotation(t *testing.T) {
 // TestParseFamilyBlankLineSeparatesBlock covers the blank-line separation error.
 func TestParseFamilyBlankLineSeparatesBlock(t *testing.T) {
 	src := []byte("## Summary\n\nbuild:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a blank line separates a block from its rule")
 	}
-	if !errors.Is(err, errBlockDetached) {
+	if !errors.Is(err, makefile.ErrBlockDetached) {
 		t.Fatalf("error should mention blank line: %v", err)
 	}
 }
@@ -237,11 +238,11 @@ func TestParseFamilyBlankLineSeparatesBlock(t *testing.T) {
 // where a target-specific variable line carries a pending ## block.
 func TestParseFamilyTargetSpecificVariableWithPendingBlock(t *testing.T) {
 	src := []byte("## Summary\ninstall-home: PREFIX := $(HOME)/.local\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a target-specific variable carries a pending block")
 	}
-	if !errors.Is(err, errBlockOnTargetVariable) {
+	if !errors.Is(err, makefile.ErrBlockOnTargetVariable) {
 		t.Fatalf("error should mention target-specific variable: %v", err)
 	}
 }
@@ -250,11 +251,11 @@ func TestParseFamilyTargetSpecificVariableWithPendingBlock(t *testing.T) {
 // attached to a rule (pending != nil at EOF).
 func TestParseFamilyDanglingBlock(t *testing.T) {
 	src := []byte("## Summary\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a ## block is never attached to a rule")
 	}
-	if !errors.Is(err, errBlockUnattached) {
+	if !errors.Is(err, makefile.ErrBlockUnattached) {
 		t.Fatalf("error should mention never attached: %v", err)
 	}
 }
@@ -541,16 +542,16 @@ func TestGeneratedRegionFamilyValid(t *testing.T) {
 
 // TestHasFields covers the hasFields helper.
 func TestHasFields(t *testing.T) {
-	if (Target{}).hasFields() {
+	if (makefile.Target{}).HasFields() {
 		t.Fatalf("hasFields with empty target should return false")
 	}
-	if !(Target{Trigger: "CI"}).hasFields() {
+	if !(makefile.Target{Trigger: "CI"}).HasFields() {
 		t.Fatalf("hasFields with Trigger should return true")
 	}
-	if !(Target{Requires: "go"}).hasFields() {
+	if !(makefile.Target{Requires: "go"}).HasFields() {
 		t.Fatalf("hasFields with Requires should return true")
 	}
-	if !(Target{FailsWhen: "test fails"}).hasFields() {
+	if !(makefile.Target{FailsWhen: "test fails"}).HasFields() {
 		t.Fatalf("hasFields with FailsWhen should return true")
 	}
 }
@@ -559,7 +560,7 @@ func TestHasFields(t *testing.T) {
 // comment sits between a ## block and its rule — this is allowed.
 func TestParseFamilyCommentDoesNotBreakBlock(t *testing.T) {
 	src := []byte("## Summary\n# rationale\nbuild:\n\tgo build .\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily with a # comment between block and rule should succeed: %v", err)
 	}
@@ -574,7 +575,7 @@ func TestParseFamilyCommentDoesNotBreakBlock(t *testing.T) {
 // TestParseFamilyHappyPath covers the full happy path with structured fields.
 func TestParseFamilyHappyPath(t *testing.T) {
 	src := []byte("## Build the binary.\n## trigger: CI\n## requires: go\n## fails-when: tests fail\nbuild:\n\tgo build .\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily happy path: %v", err)
 	}
@@ -593,11 +594,11 @@ func TestParseFamilyHappyPath(t *testing.T) {
 // continuation line (##   ...) has no preceding block.
 func TestParseFamilyContinuationWithoutBlock(t *testing.T) {
 	src := []byte("##   continuation\nbuild:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily with a continuation line and no block should error")
 	}
-	if !errors.Is(err, errContinuationWithoutBlock) {
+	if !errors.Is(err, makefile.ErrContinuationWithoutBlock) {
 		t.Fatalf("error should mention nothing to continue: %v", err)
 	}
 }
@@ -606,11 +607,11 @@ func TestParseFamilyContinuationWithoutBlock(t *testing.T) {
 // start with exactly one space or three spaces.
 func TestParseFamilyInvalidHashLine(t *testing.T) {
 	src := []byte("##  double space summary\nbuild:\n\tgo build .\n")
-	_, err := ParseFamily(src)
+	_, err := makefile.ParseFamily(src)
 	if err == nil {
 		t.Fatalf("ParseFamily with invalid ## line should error")
 	}
-	if !errors.Is(err, errMalformedAnnotationLine) {
+	if !errors.Is(err, makefile.ErrMalformedAnnotationLine) {
 		t.Fatalf("error should mention not a valid ## line: %v", err)
 	}
 }
@@ -618,7 +619,7 @@ func TestParseFamilyInvalidHashLine(t *testing.T) {
 // TestParseFamilyMultipleTargets covers parsing multiple targets.
 func TestParseFamilyMultipleTargets(t *testing.T) {
 	src := []byte("## Build the binary.\nbuild:\n\tgo build .\n## Run tests.\ntest:\n\tgo test ./...\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily with multiple targets: %v", err)
 	}
@@ -632,7 +633,7 @@ func TestParseFamilyMultipleTargets(t *testing.T) {
 
 // TestRenderCompactList covers the renderCompactList helper.
 func TestRenderCompactList(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "build", Summary: "Build it."},
 		{Name: "test", Summary: "Test it."},
 	}
@@ -644,7 +645,7 @@ func TestRenderCompactList(t *testing.T) {
 
 // TestRenderCompactListWithHeading covers the renderCompactList helper with heading.
 func TestRenderCompactListWithHeading(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "build", Summary: "Build it."},
 	}
 	got := renderCompactList(targets, true)
@@ -655,7 +656,7 @@ func TestRenderCompactListWithHeading(t *testing.T) {
 
 // TestRenderWideTable covers the renderWideTable helper.
 func TestRenderWideTable(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "lint", Summary: "Lint everything.", Trigger: "CI", Requires: "golangci-lint", FailsWhen: "lint fails"},
 	}
 	got := renderWideTable(targets)
@@ -720,7 +721,7 @@ func TestFilesWithSuffixNonIsNotExistError(t *testing.T) {
 
 // TestParseFamilyEmptyInput covers ParseFamily with an empty source.
 func TestParseFamilyEmptyInput(t *testing.T) {
-	targets, err := ParseFamily([]byte(""))
+	targets, err := makefile.ParseFamily([]byte(""))
 	if err != nil {
 		t.Fatalf("ParseFamily with empty input should not error: %v", err)
 	}
@@ -932,7 +933,7 @@ func TestRenderNoTargets(t *testing.T) {
 
 // TestRenderWithTriggerOnly covers Render with a target that has only a Trigger field.
 func TestRenderWithTriggerOnly(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "lint", Summary: "Lint.", Trigger: "CI"},
 	}
 	got := Render(targets)
@@ -943,7 +944,7 @@ func TestRenderWithTriggerOnly(t *testing.T) {
 
 // TestRenderWithRequiresOnly covers Render with a target that has only a Requires field.
 func TestRenderWithRequiresOnly(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "build", Summary: "Build.", Requires: "go"},
 	}
 	got := Render(targets)
@@ -954,7 +955,7 @@ func TestRenderWithRequiresOnly(t *testing.T) {
 
 // TestRenderMixedFields covers Render with targets that have different field sets.
 func TestRenderMixedFields(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "build", Summary: "Build."},
 		{Name: "lint", Summary: "Lint.", Trigger: "CI"},
 	}
@@ -969,7 +970,7 @@ func TestRenderMixedFields(t *testing.T) {
 // multiple continuation lines.
 func TestParseFamilyWithMultipleContinuationLines(t *testing.T) {
 	src := []byte("## Build the binary.\n##   This is a long summary\n##   that spans multiple lines.\nbuild:\n\tgo build .\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily with continuation: %v", err)
 	}
@@ -988,7 +989,7 @@ func TestParseFamilyWithMultipleContinuationLines(t *testing.T) {
 // followed by a continuation.
 func TestParseFamilyWithFieldAndContinuation(t *testing.T) {
 	src := []byte("## Build.\n## trigger: CI\n##   and more detail\nbuild:\n\tgo build .\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily with field and continuation: %v", err)
 	}
@@ -1011,9 +1012,9 @@ func TestRuleShape(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		name, _, isRule := ruleShape(tt.line)
+		name, _, isRule := makefile.RuleShape(tt.line)
 		if isRule != tt.isRule {
-			t.Fatalf("ruleShape(%q) = %v, want %v (name=%q)", tt.line, isRule, tt.isRule, name)
+			t.Fatalf("makefile.RuleShape(%q) = %v, want %v (name=%q)", tt.line, isRule, tt.isRule, name)
 		}
 	}
 }
@@ -1021,7 +1022,7 @@ func TestRuleShape(t *testing.T) {
 // TestParseFamilyWithAllFields covers a target with all structured fields.
 func TestParseFamilyWithAllFields(t *testing.T) {
 	src := []byte("## Build.\n## trigger: CI\n## requires: go\n## fails-when: build fails\nbuild:\n\tgo build .\n")
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		t.Fatalf("ParseFamily with all fields: %v", err)
 	}

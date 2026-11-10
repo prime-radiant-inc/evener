@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"sort"
 	"strings"
 )
@@ -142,7 +143,7 @@ func generateOne(docDir, mkPath, stem string) error {
 	if err != nil {
 		return err
 	}
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		return fmt.Errorf("%s: %w", mkPath, err)
 	}

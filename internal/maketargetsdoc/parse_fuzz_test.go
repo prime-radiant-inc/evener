@@ -1,6 +1,7 @@
 package main
 
 import (
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"bytes"
 	"reflect"
 	"testing"
@@ -31,8 +32,8 @@ func FuzzParseFamily(f *testing.F) {
 			t.Skip()
 		}
 
-		targets, err := ParseFamily(src)
-		again, againErr := ParseFamily(src)
+		targets, err := makefile.ParseFamily(src)
+		again, againErr := makefile.ParseFamily(src)
 		if err != nil {
 			if targets != nil {
 				t.Fatalf("failed parse returned partial targets: %+v", targets)
