@@ -27,8 +27,7 @@ type LiveEntry struct {
 	// RosterInstanceID preserves a remote session's identity when SessionID
 	// is its stable, source-qualified tree key. Local entries use SessionID.
 	RosterInstanceID string
-	Status           string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags      []string // the status flags the daemon reported alongside Status
+	Status           string // most-recent daemon state ("active", "idle", "awaiting", etc.)
 	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
 	// successful local probe. A retained record clears both rather than claiming
 	// that a previously observed turn is still running.
@@ -57,8 +56,9 @@ type LiveEntry struct {
 	PendingAskState *appwire.PendingAskState
 	// Failure summarizes the failed turn the session rests on (S1c), from the
 	// same root row as Status; the daemon sends it only while that status is
-	// systemError. rosterFingerprint hashes it: a turn retried and failed
-	// again between two probes leaves Status where it was.
+	// systemError, or while a working session's model call waits out a usage
+	// limit (its ResumesAt is set). rosterFingerprint hashes it: a turn
+	// retried and failed again between two probes leaves Status where it was.
 	Failure *appwire.ThreadFailure
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
@@ -98,7 +98,14 @@ type LiveEntry struct {
 	// own, never merged across sessions, matching Watches' rollup rule. An older
 	// daemon that carries no per-child watches omits the entry entirely.
 	ChildWatches map[string][]appwire.EvenerWatchInfo
-	Project      identifier.Project // canonical identity resolved at hub ingestion, when available
+	// ChildQuotaWaits carries each listed in-process child whose model call
+	// is waiting out a provider usage limit: the limit's summary, with the
+	// time the call resumes, keyed by child session ID. A child has no
+	// LiveEntry of its own, so this is how the child's thread-list row (the
+	// hub's read-only alias) says it waits (S09). A child not waiting is
+	// absent.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
+	Project         identifier.Project // canonical identity resolved at hub ingestion, when available
 	// Lifecycle is the daemon's retirement lifecycle as of the probe that
 	// produced this entry; nil when the daemon could not answer
 	// evener/daemon/status (capability unknown). A failed lifecycle probe
@@ -147,7 +154,6 @@ type LiveEntry struct {
 type ProbeResult struct {
 	SessionID           string
 	Status              string
-	ActiveFlags         []string
 	ActiveTurnID        string
 	ActiveTurnStartedAt int64
 	PendingAsk          bool
@@ -183,6 +189,8 @@ type ProbeResult struct {
 	LifecycleFresh bool
 	Watches        []appwire.EvenerWatchInfo
 	ChildWatches   map[string][]appwire.EvenerWatchInfo
+	// ChildQuotaWaits mirrors LiveEntry.ChildQuotaWaits.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
@@ -250,11 +258,21 @@ func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]app
 	return out
 }
 
+func cloneChildQuotaWaits(in map[string]*appwire.ThreadFailure) map[string]*appwire.ThreadFailure {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*appwire.ThreadFailure, len(in))
+	for childID, failure := range in {
+		out[childID] = appwire.CloneThreadFailure(failure)
+	}
+	return out
+}
+
 // CloneLiveEntry returns a copy of in that shares no slice, map or pointer
 // with it, so a roster hand-off never aliases the roster's own snapshot.
 func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
-	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
 	out.PendingAskState = appwire.ClonePendingAsk(in.PendingAskState)
@@ -266,6 +284,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
+	out.ChildQuotaWaits = cloneChildQuotaWaits(in.ChildQuotaWaits)
 	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
 	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
@@ -1312,7 +1331,6 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
-		ActiveFlags:           result.ActiveFlags,
 		ActiveTurnID:          result.ActiveTurnID,
 		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
 		ProbeState:            appwire.ThreadProbeStateFresh,
@@ -1323,6 +1341,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
 		ChildWatches:          result.ChildWatches,
+		ChildQuotaWaits:       result.ChildQuotaWaits,
 	}, result)
 }
 

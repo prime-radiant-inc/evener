@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -135,101 +136,103 @@ func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 
 func TestSubagentCallWireFixtures(t *testing.T) {
 	t.Parallel()
-	s, stateDir, childRunning, answer := subagentWireSession(t)
-	delegate := subagentWireCall{
-		id:   "call_delegate_1",
-		tool: "delegate",
-		args: map[string]any{
-			"prompt": "Find and fix the race between tree settle and the drain.",
-			"name":   "settle-race",
-			"intent": "Fix race in tree settle",
-		},
-	}.run(t, s)
-	var receipt delegateCreateResult
-	if err := json.Unmarshal([]byte(delegate.output), &receipt); err != nil || receipt.DelegateID == "" {
-		t.Fatalf("delegate receipt %q names no delegate: %v", delegate.output, err)
-	}
-	// The send steers the delegate only once its child is in its model call,
-	// so it always finds the delegate running.
-	select {
-	case <-childRunning:
-	// TRIPWIRE: a hang guard only; the child reaches its model call within
-	// milliseconds, and the receive above is what orders the send.
-	case <-time.After(30 * time.Second):
-		t.Fatal("the delegate's child never reached its first model call")
-	}
-	steer := subagentWireCall{
-		id:   "call_send_1",
-		tool: "delegate_send",
-		args: map[string]any{"to": receipt.DelegateID, "message": "Also check drain ordering.", "intent": "Tell it to check drain ordering"},
-	}.run(t, s)
-	// Let the child answer, and send the question once the delegate is idle.
-	answer()
-	awaitDelegateIdle(t, s, receipt.DelegateID)
-	waiting := subagentWireCall{
-		id:   "call_send_2",
-		tool: "delegate_send",
-		args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000, "intent": "Ask whether drain ordering is safe"},
-	}.run(t, s)
-	calls := []subagentWireCall{
-		delegate,
-		steer,
-		waiting,
-		{
-			id:     "call_shell_1",
-			tool:   "shell",
-			args:   map[string]any{"command": "go test ./agent/...", "intent": "Run the agent tests"},
-			output: "ok  \tprimeradiant.com/evener/agent\t12.3s",
-		},
-		{
-			id:     "call_tasks_1",
-			tool:   "task_list",
-			args:   map[string]any{"operation": "update", "id": 3, "status": "done"},
-			output: `{"tasks":[{"id":3,"status":"done"}]}`,
-		},
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s, stateDir, childRunning, answer := subagentWireSession(t)
+		delegate := subagentWireCall{
+			id:   "call_delegate_1",
+			tool: "delegate",
+			args: map[string]any{
+				"prompt": "Find and fix the race between tree settle and the drain.",
+				"name":   "settle-race",
+				"intent": "Fix race in tree settle",
+			},
+		}.run(t, s)
+		var receipt delegateCreateResult
+		if err := json.Unmarshal([]byte(delegate.output), &receipt); err != nil || receipt.DelegateID == "" {
+			t.Fatalf("delegate receipt %q names no delegate: %v", delegate.output, err)
+		}
+		// The send steers the delegate only once its child is in its model call,
+		// so it always finds the delegate running.
+		select {
+		case <-childRunning:
+		// TRIPWIRE: a hang guard only; the child reaches its model call within
+		// milliseconds, and the receive above is what orders the send.
+		case <-time.After(30 * time.Second):
+			t.Fatal("the delegate's child never reached its first model call")
+		}
+		steer := subagentWireCall{
+			id:   "call_send_1",
+			tool: "delegate_send",
+			args: map[string]any{"to": receipt.DelegateID, "message": "Also check drain ordering.", "intent": "Tell it to check drain ordering"},
+		}.run(t, s)
+		// Let the child answer, and send the question once the delegate is idle.
+		answer()
+		requireDelegateIdle(t, s, receipt.DelegateID)
+		waiting := subagentWireCall{
+			id:   "call_send_2",
+			tool: "delegate_send",
+			args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000, "intent": "Ask whether drain ordering is safe"},
+		}.run(t, s)
+		calls := []subagentWireCall{
+			delegate,
+			steer,
+			waiting,
+			{
+				id:     "call_shell_1",
+				tool:   "shell",
+				args:   map[string]any{"command": "go test ./agent/...", "intent": "Run the agent tests"},
+				output: "ok  \tprimeradiant.com/evener/agent\t12.3s",
+			},
+			{
+				id:     "call_tasks_1",
+				tool:   "task_list",
+				args:   map[string]any{"operation": "update", "id": 3, "status": "done"},
+				output: `{"tasks":[{"id":3,"status":"done"}]}`,
+			},
+		}
 
-	announce := llm.Message{Role: llm.RoleAssistant}
-	results := llm.Message{Role: llm.RoleTool}
-	for _, call := range calls {
-		announce.Content = append(announce.Content, llm.ContentPart{
-			Kind:     llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: call.arguments(t)},
-		})
-		results.Content = append(results.Content, llm.ContentPart{
-			Kind:       llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{ToolCallID: call.id, Name: call.tool, Content: call.output, ToolState: call.state},
-		})
-	}
-	reg := apptranscript.NewToolCallRegistry()
-	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
-	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
+		announce := llm.Message{Role: llm.RoleAssistant}
+		results := llm.Message{Role: llm.RoleTool}
+		for _, call := range calls {
+			announce.Content = append(announce.Content, llm.ContentPart{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: call.id, Name: call.tool, Arguments: call.arguments(t)},
+			})
+			results.Content = append(results.Content, llm.ContentPart{
+				Kind:       llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: call.id, Name: call.tool, Content: call.output, ToolState: call.state},
+			})
+		}
+		reg := apptranscript.NewToolCallRegistry()
+		items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
+		items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
 
-	relocate := strings.NewReplacer(
-		receipt.DelegateID, subagentWireDelegateID,
-		receipt.ChildSessionID, subagentWireChildSession,
-		stateDir, subagentWireStateDir,
-	)
-	checkWireFixture(t, subagentWireFixturePath, struct {
-		Note  string               `json:"note"`
-		Items []appwire.ThreadItem `json:"items"`
-	}{
-		Note:  "One ASSISTANT entry announcing delegate, two delegate_sends, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real (the delegate's id, its child session's id and the state directory fixed): the first send steered the running delegate, and the second, sent once it was idle, waited for and returned its reply (its run times fixed too). The shell and task_list outputs are hand-written text.",
-		Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(t, relocate.Replace(encoded)) }),
-	}, "the mobile-native tests that read it")
+		relocate := strings.NewReplacer(
+			receipt.DelegateID, subagentWireDelegateID,
+			receipt.ChildSessionID, subagentWireChildSession,
+			stateDir, subagentWireStateDir,
+		)
+		checkWireFixture(t, subagentWireFixturePath, struct {
+			Note  string               `json:"note"`
+			Items []appwire.ThreadItem `json:"items"`
+		}{
+			Note:  "One ASSISTANT entry announcing delegate, two delegate_sends, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real (the delegate's id, its child session's id and the state directory fixed): the first send steered the running delegate, and the second, sent once it was idle, waited for and returned its reply (its run times fixed too). The shell and task_list outputs are hand-written text.",
+			Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(t, relocate.Replace(encoded)) }),
+		}, "the mobile-native tests that read it")
+	})
 }
 
-// awaitDelegateIdle waits until delegateID's generation has finished and the
+// requireDelegateIdle waits until every other goroutine in the test's synctest
+// bubble is blocked, then asserts delegateID's generation has finished and the
 // delegate reads idle. It reads the controller's own state: the session's
 // event stream is best effort and could drop the idle event.
-func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
+func requireDelegateIdle(t *testing.T, s *Session, delegateID string) {
 	t.Helper()
-	// TRIPWIRE: a hang guard only; the scripted child answers at once and its
-	// generation goes idle within milliseconds.
-	waitForCondition(t, 30*time.Second, "the delegate going idle after its child answered", func() bool {
-		aggregate := delegateAggregateSnapshot(t, s.delegateController, delegateID)
-		return aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
-	})
+	synctest.Wait()
+	aggregate := delegateAggregateSnapshot(t, s.delegateController, delegateID)
+	if aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen {
+		t.Fatalf("the quiet delegate reads phase %v with run open %v, want idle with no run open", aggregate.Phase, aggregate.CurrentRunOpen)
+	}
 }
 
 // subagentWireRunTimes are the run times a delegate_send result carries,

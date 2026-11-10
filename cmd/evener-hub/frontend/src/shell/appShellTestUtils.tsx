@@ -15,6 +15,7 @@ import { vi } from "vitest";
 import { navigationStore } from "../stores/navigation/store";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
+import { MOBILE_QUERY } from "./useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Session-title queries in this file target navigation, so keep them scoped to
@@ -87,7 +88,7 @@ export function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),
@@ -98,7 +99,7 @@ export function installSwitchableViewport(): (mobile: boolean) => void {
   let mobile = false;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
   const mediaQuery = {
-    media: "(max-width: 899px)",
+    media: MOBILE_QUERY,
     get matches() {
       return mobile;
     },

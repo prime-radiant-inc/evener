@@ -8,21 +8,25 @@ import (
 )
 
 // FuzzMatchTarget drives matchTarget — the Claude-compatible hook matcher that
-// classifies a matcher string into wildcard / exact-or-pipe-list / regexp modes
+// classifies a matcher string into wildcard / exact-or-list / regexp modes
 // and tests it against a target tool name. Input is an arbitrary matcher and an
 // arbitrary target.
 //
 // Oracles (never bare no-panic):
 //   - A trimmed "" or "*" matcher matches every target with no error.
-//   - When the trimmed matcher is exact-class ([A-Za-z0-9_|] only) the result is
-//     never an error and equals membership of target in the '|'-split segments —
-//     pure set membership, independent of regexp.
+//   - When the trimmed matcher matches exactMatcherClassRe ([A-Za-z0-9_|,-] and
+//     space only), the result is never an error and equals membership of target
+//     in the segments split on '|' and ',', each trimmed — pure set membership,
+//     independent of regexp. The class is derived here, not from isExactMatcher,
+//     so a wrong exact-class definition in the implementation fails the fuzz.
 //   - When matchTarget falls through to regexp mode and compiles, its verdict
 //     equals regexp.MatchString; a compile error yields (false, err).
 //   - matchTarget is deterministic.
 func FuzzMatchTarget(f *testing.F) {
 	f.Add("Bash", "Bash")
 	f.Add("Edit|Write", "Write")
+	f.Add("Edit, Write", "Write")
+	f.Add("code-reviewer", "code-reviewers")
 	f.Add("Bash", "BashOutput")
 	f.Add(" Bash ", "Bash")
 	f.Add("*", "anything")
@@ -48,11 +52,11 @@ func FuzzMatchTarget(f *testing.F) {
 				t.Fatalf("wildcard matcher %q: got (%v,%v), want (true,nil)", matcher, ok, err)
 			}
 
-		case isExactMatcher(m):
+		case exactMatcherClassRe.MatchString(m):
 			if err != nil {
 				t.Fatalf("exact matcher %q returned error %v", matcher, err)
 			}
-			want := slices.Contains(strings.Split(m, "|"), target)
+			want := slices.Contains(trimmedSplit(m), target)
 			if ok != want {
 				t.Fatalf("exact matcher %q vs %q: got %v, want %v", matcher, target, ok, want)
 			}
@@ -75,4 +79,20 @@ func FuzzMatchTarget(f *testing.F) {
 			}
 		}
 	})
+}
+
+// exactMatcherClassRe is the exact-matcher character class, written as a regex
+// independent of isExactMatcher. Note that "" does not match it; the empty
+// matcher is the wildcard branch.
+var exactMatcherClassRe = regexp.MustCompile(`^[A-Za-z0-9_|, -]+$`)
+
+// trimmedSplit returns an exact matcher's alternatives split on '|' and ',',
+// each trimmed. It is written independently of splitExactMatcher so the oracle
+// stays a real check rather than a mirror of the implementation.
+func trimmedSplit(m string) []string {
+	parts := strings.FieldsFunc(m, func(r rune) bool { return r == '|' || r == ',' })
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }

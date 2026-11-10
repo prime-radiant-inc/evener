@@ -2544,6 +2544,7 @@ export interface NavigationFailure {
   cause_kind?: string;
   provider?: string;
   status?: number;
+  resumes_at?: string;
 }
 
 export interface NavigationInvalidatedPayload {
@@ -3862,6 +3863,20 @@ export interface SessionDocumentResponse {
   modifiedAt?: number;
 }
 
+export interface SessionFetchRequest {
+  ref: string;
+  fetchCursor: string;
+}
+
+export interface SessionFetchResponse {
+  position: ThreadItemPosition;
+  version: number;
+  totalLength: number;
+  offset: number;
+  data: string;
+  fetchCursor?: string;
+}
+
 export interface SessionImageParams {
   sessionId: string;
   sha?: string;
@@ -3913,6 +3928,7 @@ export interface SessionOperationRequest {
   discover?: ThreadListParams;
   read?: ThreadReadParams;
   turns?: ThreadTurnsListParams;
+  fetch?: SessionFetchRequest;
   activity?: SessionActivityRequest;
   tasks?: SessionTasksRequest;
   job?: JobsGetParams;
@@ -3931,6 +3947,7 @@ export interface SessionOperationResponse {
   discover?: SessionDiscovery;
   read?: ThreadReadResponse;
   turns?: ThreadTurnsListResponse;
+  fetch?: SessionFetchResponse;
   activity?: SessionActivityResponse;
   tasks?: SessionTasksResponse;
   job?: JobsGetResponse;
@@ -4041,11 +4058,17 @@ export interface SessionStatusFollowUp {
 }
 
 export interface SessionStatusTarget {
+  turnWindow?: ThreadTurnWindow;
+  itemTypes?: string[];
+  previewBytes?: number;
+  messageBytes?: number;
+  windowBudgetBytes?: number;
   ref: string;
   mode?: string;
   resource?: SessionActivityResource;
   scope?: SessionActivityScope;
   cursor?: string;
+  fetchCursor?: string;
   limit?: number;
   itemLimit?: number;
   offset?: number;
@@ -4512,6 +4535,13 @@ export interface ThreadCapabilities {
    * earlier behavior.
    */
   voiceArm?: boolean;
+  /**
+   * WindowRead advertises that thread/read accepts bounded transcript turn
+   * windows and their item filters. Older daemons omit it, allowing the hub to
+   * choose its narrow legacy compatibility projection without sending fields
+   * their strict decoder rejects.
+   */
+  windowRead?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -4539,6 +4569,7 @@ export interface ThreadCompactStartParams {
 export interface ThreadFailure {
   title?: string;
   cause?: DiagnosticCause;
+  resumesAt?: number;
 }
 
 export interface ThreadForceStopParams {
@@ -4619,6 +4650,10 @@ export interface ThreadItem {
   description?: string;
   output?: string;
   error?: string;
+  truncated?: boolean;
+  truncatedBytes?: number;
+  inFlight?: boolean;
+  fetchCursor?: string;
   /**
    * OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
    * Images stays omitempty: nothing removes an item's input images.
@@ -4819,6 +4854,12 @@ export interface ThreadReadParams {
   subscribe?: boolean;
   replaceSubscription?: boolean;
   itemLimit?: number;
+  fetchCursor?: string;
+  turnWindow?: ThreadTurnWindow;
+  itemTypes?: string[];
+  previewBytes?: number;
+  messageBytes?: number;
+  windowBudgetBytes?: number;
   /**
    * RequestGeneration is the client's own read-request counter, echoed back
    * on ThreadReadResponse so a client can discard a stale reply that
@@ -4855,6 +4896,8 @@ export interface ThreadReadParams {
 export interface ThreadReadResponse {
   thread: Thread;
   pendingAskPage?: PendingAskPage;
+  window?: ThreadWindowResult;
+  fetch?: SessionFetchResponse;
   /**
    * TargetSessionToolsSupported reports whether the daemon serving this thread
    * negotiated session tools. Omission means the serving hub cannot attest it.
@@ -5074,6 +5117,23 @@ export interface ThreadTranscriptTarget {
   turnsUsed?: number;
 }
 
+export interface ThreadTurnBoundary {
+  turnId: string;
+  limit: number;
+}
+
+export interface ThreadTurnElision {
+  excludedByType?: Record<string, number>;
+  capWithheld?: number;
+  truncatedBeyondCursorLimit?: number;
+  elidedBeyondCursorLimit?: number;
+  continuationCursor?: string;
+  typeExcludedRecovery?: string;
+  capWithheldRecovery?: string;
+  truncatedBeyondCursorLimitRecovery?: string;
+  elidedBeyondCursorLimitRecovery?: string;
+}
+
 export interface ThreadTurnItemsListParams {
   threadId?: string;
   ref?: string;
@@ -5085,6 +5145,14 @@ export interface ThreadTurnItemsListParams {
 export interface ThreadTurnItemsListResponse {
   data: ThreadItem[];
   nextCursor?: string;
+}
+
+export interface ThreadTurnWindow {
+  latest?: number;
+  turn?: string;
+  since?: string;
+  limit?: number;
+  before?: ThreadTurnBoundary;
 }
 
 export interface ThreadTurnsListParams {
@@ -5118,6 +5186,11 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  turnWindow?: ThreadTurnWindow;
+  itemTypes?: string[];
+  previewBytes?: number;
+  messageBytes?: number;
+  windowBudgetBytes?: number;
   /**
    * Before, when set, ends the page just before this position. With a
    * Cursor it moves the cursor's boundary, keeping the cursor's identity
@@ -5131,6 +5204,7 @@ export interface ThreadTurnsListParams {
 export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
+  window?: ThreadWindowResult;
   /**
    * BootGeneration is the serving daemon's boot generation for this thread,
    * as on ThreadReadResponse. See CompareBootGeneration.
@@ -5166,6 +5240,19 @@ export interface ThreadVisionModelChangedParams {
 export interface ThreadVisionModelSetParams {
   ref: string;
   visionModel: string;
+}
+
+export interface ThreadWindowResult {
+  effectiveBudgetBytes: number;
+  appliedBy: string;
+  servedTurns: number;
+  withheldTurns: number;
+  firstServedTurnId?: string;
+  lastServedTurnId?: string;
+  firstWithheldTurnId?: string;
+  lastWithheldTurnId?: string;
+  trimmedEnd?: string;
+  continuationCursor?: string;
 }
 
 export interface TranscriptAuthor {
@@ -5250,6 +5337,7 @@ export interface Turn {
   id: string;
   items?: ThreadItem[];
   itemsView: string;
+  elision?: ThreadTurnElision;
   status: string;
   error?: TurnError;
   /**
@@ -6157,7 +6245,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
@@ -6175,9 +6263,9 @@ export const WIRE_FIELD_KEYS = {
   ThreadAccess: ["sandbox", "network"],
   GoalState: ["objective", "status", "iterations"],
   EvenerTurnSlots: ["inUse", "cap", "jobs", "driveTurns"],
-  ThreadTurnsListResponse: ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"],
+  ThreadTurnsListResponse: ["data", "nextCursor", "window", "bootGeneration", "epoch", "snapshot", "authoritative"],
   SnapshotIdentity: ["incarnation", "length"],
-  Turn: ["id", "items", "itemsView", "status", "error", "version", "hasEarlierItems", "hasLaterItems", "startedAt", "completedAt", "durationMs", "usage", "cost"],
+  Turn: ["id", "items", "itemsView", "elision", "status", "error", "version", "hasEarlierItems", "hasLaterItems", "startedAt", "completedAt", "durationMs", "usage", "cost"],
 } as const;
 
 export interface MethodTypes {

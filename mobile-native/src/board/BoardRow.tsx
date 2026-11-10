@@ -168,11 +168,12 @@ export function BoardRow({
 	// VoiceOver through this label, not a nested one. Speak the tally once: the
 	// why line can already state the running count ("Waiting on N subagents").
 	const spoken = waiting ?? reason;
-	// Only a signal row's why line names the running count; a quiet row has no
-	// why line, so the chip must speak it. `waiting` replaces the reason with a
-	// held-change message, so it never names the count either.
-	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
-	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
+	// Only a signal row's subagents why line names the running count; a quiet
+	// row has no why line, and a row whose why line says something else (a
+	// quota wait, say) does not name it, so the chip must speak it. `waiting`
+	// replaces the reason with a held-change message, so it never names the
+	// count either.
+	const whyNamesRunning = signal && !waiting && why?.kind === "subagents";
 	const chipLabel = tally ? subagentChipText({ running: whyNamesRunning ? 0 : tally.running }) : "";
 	const label = [
 		row.title,

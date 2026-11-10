@@ -80,9 +80,11 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	statusType := appStatus(status.State, processing)
 	// A failure summary describes the failed turn the session rests on, so it
 	// shows only while the status says so: the next turn moves the status
-	// before any facet re-samples the summary (S1c).
+	// before any facet re-samples the summary (S1c). The one summary a working
+	// session carries is a model call waiting out a usage limit, which names
+	// when the call resumes.
 	var failure *appwire.ThreadFailure
-	if statusType == appwire.ThreadStatusSystemError {
+	if statusType == appwire.ThreadStatusSystemError || envelope.Failure != nil && envelope.Failure.ResumesAt > 0 {
 		failure = envelope.Failure
 	}
 	reasoningEffort := envelope.ReasoningEffort
@@ -340,6 +342,29 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 	}
 }
 
+// attachDescendantQuotaWaits puts each waiting descendant's usage-limit
+// summary on its row, as the root's envelope puts the root's on its own
+// (appThreadWithDiagnosticsLocked lets a summary with a resume time through on
+// a working thread). The summary is attached to the returned copy only.
+func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
+	s.mu.RLock()
+	fn := s.appDescendantQuotaWaitsFunc
+	s.mu.RUnlock()
+	if fn == nil || len(descendants) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(descendants))
+	for i := range descendants {
+		ids = append(ids, descendants[i].ID)
+	}
+	waits := fn(ids)
+	for i := range descendants {
+		if failure := waits[descendants[i].ID]; failure != nil {
+			descendants[i].Evener.Failure = appwire.CloneThreadFailure(failure)
+		}
+	}
+}
+
 // attachSubagentTally stamps the root row with its tree's subagent
 // tally. A nested delegate's lifecycle change is emitted on its owner's stream
 // and never samples the root's envelope, so the tally is read when the row is
@@ -498,6 +523,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// advertised true means every endpoint really consumes selections.
 		SkillInput:   s.skillInputSupportedLocked(),
 		CommandInput: s.skillInputSupportedLocked(),
+		WindowRead:   true,
 	}
 }
 

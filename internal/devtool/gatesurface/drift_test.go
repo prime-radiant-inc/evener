@@ -60,30 +60,54 @@ func TestShellHubIntegrationRunMatchesGoConstant(t *testing.T) {
 	}
 }
 
-// TestHubIntegrationRunMatchesBudgetClasses pins HubIntegrationRun to the union
-// of the three runner-bound classes in testing-budget.json, so the gate's list
-// cannot drift from the classes that define it.
-func TestHubIntegrationRunMatchesBudgetClasses(t *testing.T) {
+// TestHubIntegrationRunMatchesBudget names every test HubIntegrationRun selects in
+// testing-budget.json's perTestCeiling. The gate's list is a literal, and the
+// budget is the record of which tests the timing gate watches; a test dropped
+// from one and not the other is a test that silently stops being timed and
+// stops being exercised by the hub-integration lane.
+//
+// The three groups it covers used to be named ceiling classes. The map is flat
+// now, so the members are listed here with the ceiling they must carry: that
+// keeps the coupling checkable without a class key to look up.
+func TestHubIntegrationRunMatchesBudget(t *testing.T) {
 	raw, err := os.ReadFile("../../../testing-budget.json")
 	if err != nil {
 		t.Fatalf("reading testing-budget.json: %v", err)
 	}
 	var budget struct {
-		Classes map[string]struct {
-			Tests []string `json:"tests"`
-		} `json:"perTestCeilingClasses"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
+		Ceilings map[string]float64 `json:"perTestCeiling"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
 	}
 	if err := json.Unmarshal(raw, &budget); err != nil {
 		t.Fatalf("parsing testing-budget.json: %v", err)
 	}
-	want := map[string]bool{}
-	for _, class := range []string{"deploy-host integration", "retirement", "live-stack E2E"} {
-		members, ok := budget.Classes[class]
+	// group -> its ceiling in the budget. The ceiling is part of the pin: a
+	// member that changes number without this test changing is a rebaseline that
+	// landed in one place only.
+	want := map[string]float64{
+		"TestHostDeployFilesystemSafety":                                     30,
+		"TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget": 30,
+		"TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact":              30,
+		"TestDaemonRetirementProcessAdmittedWorkResetsInterval":              30,
+		"TestDaemonRetirementProcessDirectPositiveExits":                     30,
+		"TestDaemonRetirementProcessDirectZeroStaysResident":                 30,
+		"TestDaemonRetirementProcessHelperExitsWithItsFixture":               30,
+		"TestDaemonRetirementProcessHubZeroStaysResident":                    30,
+		"TestDaemonRetirementProcessReadsDoNotResetInterval":                 30,
+		"TestDaemonRetirementProcessRestartedHubRediscoversOrResumes":        30,
+		"TestE2E_StopIsOfferedWheneverTheWireSaysActive":                     15,
+		"TestE2E_SendPromptToARetiredSession":                                15,
+		"TestE2E_SendPromptAfterDaemonDiedMidTurn":                           15,
+		"TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn":            15,
+		"TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary":           15,
+	}
+	for name, ceiling := range want {
+		got, ok := budget.Ceilings[name]
 		if !ok {
-			t.Fatalf("testing-budget.json no longer lists class %q", class)
+			t.Errorf("testing-budget.json's perTestCeiling no longer names %q, which HubIntegrationRun selects", name)
+			continue
 		}
-		for _, name := range members.Tests {
-			want[name] = true
+		if got != ceiling {
+			t.Errorf("testing-budget.json's perTestCeiling gives %q ceiling %g, want %g", name, got, ceiling)
 		}
 	}
 	body := strings.TrimSuffix(strings.TrimPrefix(HubIntegrationRun, "^("), ")$")
@@ -93,12 +117,12 @@ func TestHubIntegrationRunMatchesBudgetClasses(t *testing.T) {
 	}
 	for name := range want {
 		if !got[name] {
-			t.Errorf("HubIntegrationRun is missing class member %q", name)
+			t.Errorf("HubIntegrationRun is missing ceiling member %q", name)
 		}
 	}
 	for name := range got {
-		if !want[name] {
-			t.Errorf("HubIntegrationRun has %q, which is not in the three runner-bound classes", name)
+		if _, ok := want[name]; !ok {
+			t.Errorf("HubIntegrationRun has %q, which testing-budget.json does not name", name)
 		}
 	}
 }

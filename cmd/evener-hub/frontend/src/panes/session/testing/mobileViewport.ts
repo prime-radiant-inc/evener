@@ -1,7 +1,9 @@
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
+
 export function installMobileViewport(): () => void {
   const original = window.matchMedia;
   window.matchMedia = ((media: string) => ({
-    matches: media === "(max-width: 899px)",
+    matches: media === MOBILE_QUERY,
     media,
     addEventListener() {},
     removeEventListener() {},

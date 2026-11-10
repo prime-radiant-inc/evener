@@ -340,6 +340,27 @@ describe("a Board row (spec 7.2)", () => {
 		expect(pressable(tree).props.accessibilityLabel).not.toContain("3 failed");
 	});
 
+	// A working root waiting out a usage limit has a why line about the wait,
+	// which does not name its running subagents; VoiceOver must still hear the
+	// chip's count that the row shows.
+	it("speaks the subagent chip on a working row whose why line is a quota wait", () => {
+		const quota = {
+			title: "Usage limit reached",
+			cause_kind: "provider",
+			status: 429,
+			resumes_at: new Date(Date.now() + 90 * 60_000).toISOString(),
+		};
+		const withSubagents = mount({
+			item: item("working", { state: "active", failure: quota, subagents: { running: 2, failed: 0, done: 0 } }),
+		});
+		const without = mount({ item: item("working", { state: "active", failure: quota }) });
+		expect(withSubagents.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+		const fields = (tree: ReactTestRenderer) => pressable(tree).props.accessibilityLabel.split(", ");
+		// The same row and why line, plus one field: the chip's spoken count.
+		expect(fields(withSubagents)).toHaveLength(fields(without).length + 1);
+		expect(fields(withSubagents)).toEqual(expect.arrayContaining(fields(without)));
+	});
+
 	it("chips a live root's running subagents without calling out settled failures", () => {
 		const running = mount({
 			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }),

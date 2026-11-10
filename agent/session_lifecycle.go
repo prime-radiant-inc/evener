@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -65,6 +66,14 @@ const (
 	// the chain is a distinct budget from the tool-round cap.
 	maxServerContinuations = 8
 )
+
+// maxHookStopReasonRunes bounds a hook-supplied stop reason at the dispatch
+// site. It becomes a user-visible warning AND a steering turn, so a shell
+// stderr that happens to be one enormous line must not fill the transcript.
+// The hooks package already reduces a reason to its first line and to this
+// same width (maxHookFailureDetail); this is the second, independent bound at
+// the place the text is actually delivered.
+const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
@@ -317,6 +326,10 @@ type drainInputs struct {
 	// turn's last model call was already in flight. It carries no content of
 	// its own and runs as queued input.
 	QueuedCarrier bool
+	// HookStoppedInput reports that a hook's continue:false ended the whole
+	// input, so no autonomous turn (goal continuation, deferred continuation)
+	// may run behind it.
+	HookStoppedInput bool
 	// SteeringParked reports that pending user steering is parked after a
 	// failed attempt (Session.steeringParked): a carrier claim this ladder
 	// could not persist, most often. No autonomous turn runs behind it -- a
@@ -387,6 +400,12 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 	switch {
 	case queued:
 		return runQueued, skipGoalGate
+	case in.HookStoppedInput:
+		// The hook stopped the input, not only its turn. Nothing autonomous runs
+		// behind it: a goal continuation would send the stopped prompt to the
+		// model without the hooks that stopped it, so the input ends here.
+		// Queued user work still runs (the case above).
+		return goIdle, true
 	case in.SteeringParked:
 		return goIdle, skipGoalGate
 	case in.RanKind != EntryNotification && in.NotificationsPending:
@@ -438,6 +457,21 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	s.inputsInFlight.Add(1)
+	defer s.inputsInFlight.Add(-1)
+	// A SessionStart hook's continue:false is recorded while an input is being
+	// accepted and consumed by processOneInput's take. An input refused before
+	// that -- an unhealthy transcript, a closed session, a failed user-turn
+	// append -- returns without ever reaching the take, so this clear is what
+	// keeps a stop recorded for an input that never ran from swallowing the
+	// NEXT, unrelated prompt. Idempotent on the path that did consume it.
+	//
+	// It applies to USER input only, because only a user turn takes the stop:
+	// a notification, continuation or delegate-attention turn that ran first
+	// must leave it for the user's first prompt (the take's own gate).
+	if kind == EntryUserInput {
+		defer s.clearSessionStartHookStop()
+	}
 	// A delegate child's turn keeps the marker parent's activity evidence
 	// fresh for its whole life, silent stretches included; see
 	// startLaneEvidenceTicker. Stopped before the retirement release, so no
@@ -647,6 +681,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			if isTurnCancellation(processCtx, err) {
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
+				// Recorded BEFORE the settle below makes the session look idle:
+				// a later shutdown close must be able to tell that this turn was
+				// cut short, not that the user was sitting at an idle prompt.
+				s.turnInterrupted = true
 				s.mu.Unlock()
 
 				markerAccepted := false
@@ -861,6 +899,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if noQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
+		// A hook's continue:false owns this input: no autonomous turn may run
+		// behind it. Read once here so the decision and the idle goal kick below
+		// cannot disagree.
+		hookStoppedInput := s.hookStoppedTheInput()
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
 			HaveDeferredCont:     haveDeferredCont,
@@ -872,6 +914,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
 			SteeringParked:       s.steeringParkedNow(),
+			HookStoppedInput:     hookStoppedInput,
 		})
 
 		if action == runQueued {
@@ -943,7 +986,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// the continuation's acceptance drains steering, and the parked steer
 		// belongs to the carrier the next external wake runs; the goal is
 		// untouched in the store and the settle after that carrier kicks it.
-		if !awaiting && haveDeferredCont && !s.steeringParkedNow() {
+		if !awaiting && haveDeferredCont && !hookStoppedInput && !s.steeringParkedNow() {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
@@ -967,7 +1010,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
 			s.emit(events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
-		goalKicked := s.settleGoalOnIdle()
+		// A hook-stopped input arms no goal: the idle kick would queue the very
+		// continuation that runs without the stopping hook and sends the stopped
+		// prompt to the model. Settling still clears the in-turn flag below.
+		goalKicked := false
+		if !hookStoppedInput {
+			goalKicked = s.settleGoalOnIdle()
+		}
 		// A steer this input recorded whose store mark the store refused gets
 		// its mark now, through the steering table; nothing when none waits.
 		s.reconcileRecordedSteering()
@@ -1216,6 +1265,24 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if preserveUpdate {
 		s.comm.updated = updated
 	}
+	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
+	// turn must not leak into the next one.
+	s.stopHookActive.Store(false)
+	// A tool post-hook's continue:false belongs to the round that raised it; the
+	// round loop consumes it, and a new turn must not inherit an unconsumed one.
+	s.toolHookStop = false
+	s.toolHookStopReason = ""
+	// Likewise a UserPromptSubmit stop belongs to the input that raised it.
+	s.promptHookStop = ""
+	// A new turn is new work; the previous turn's interrupt no longer says
+	// anything about this session's idleness.
+	s.turnInterrupted = false
+	// The stopped-input marker belongs to the input whose prompt the hook
+	// stopped. The drain reads it for that input; the next input starts clean.
+	s.hookStoppedInput = false
+	s.hookStopReason = ""
+	// A Stop hook's replacement reply belongs to the turn that raised it.
+	s.stopHookReplacedReply = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -1382,6 +1449,39 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		return "", false, err
 	}
+	// A UserPromptSubmit hook's continue:false ends the turn before its first
+	// model request: its reason was delivered to the user while the input was
+	// accepted, and no model work dispatches. A SessionStart hook's stop does the
+	// same for the first USER turn; both are consumed unconditionally here so a
+	// short-circuit cannot leave the other flag set for a later turn.
+	//
+	// The startup stop waits for that user turn. A notification, continuation or
+	// delegate-attention turn can arrive first (a child's update, a watched job),
+	// and letting one of those consume the flag would swallow the user's first
+	// prompt's stop: the reason names start-up, and the input it guards is the
+	// user's.
+	promptStopReason := s.takePromptHookStop()
+	startStopReason := ""
+	if kind == EntryUserInput {
+		startStopReason = s.takeSessionStartHookStop()
+	}
+	stopReason := promptStopReason + startStopReason
+	if stopReason != "" {
+		// The stop owns the whole input, not only this turn: the drain would
+		// otherwise fold the goal gate and schedule a continuation, which runs
+		// without these hooks and sends the stopped prompt to the model.
+		s.mu.Lock()
+		s.hookStoppedInput = true
+		s.mu.Unlock()
+		// The reason is kept for a delegate's terminal packet, which would
+		// otherwise report a completed run with an empty message. The input's
+		// own return stays empty: a stopped turn delivers nothing to the model.
+		s.mu.Lock()
+		s.hookStopReason = stopReason
+		s.mu.Unlock()
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return "", false, nil
+	}
 	if skillRouteErr != nil {
 		// A known but failed skill route is a visible failed input: the
 		// original request is recorded above for correction and explicit
@@ -1467,15 +1567,63 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		// Notifications that arrived since the opener's drain or the previous
-		// request join this request, including a pause_turn continuation, which
-		// does not advance the round. They count as delivered only once a request
-		// is dispatched (below), so any exit before that leaves them owed.
-		if kind == EntryNotification {
-			s.injectLaterJobNotifications(ctx)
+		var (
+			profile, usedProfile *provider.Profile
+			sys, reqEffort       string
+			req                  llm.Request
+			fullHistory          []llm.Message
+			modelResp            sessionModelResponse
+			attempt              ModelAttemptMetadata
+			tPhaseStart          time.Time
+			err, prepareErr      error
+		)
+		// A call that waited out a usage limit (waitOutUsageLimit) makes the
+		// round's request again: prepared afresh, so it runs on a model
+		// switched to meanwhile and carries steering and notifications that
+		// arrived meanwhile, and within the same round, so waiting spends no
+		// round.
+		for {
+			// Notifications that arrived since the opener's drain or the
+			// previous request join this request, including a pause_turn
+			// continuation, which does not advance the round. They count as
+			// delivered only once a request is dispatched (below), so any exit
+			// before that leaves them owed.
+			if kind == EntryNotification {
+				s.injectLaterJobNotifications(ctx)
+			}
+			profile, sys, _, req, fullHistory, reqEffort, prepareErr = s.prepareModelRequestWithError(ctx, round, &timings)
+			if prepareErr != nil {
+				break
+			}
+			// --- Phase: LLMCall ---
+			tPhaseStart = s.sclock().Now()
+			quotaWakes := s.quotaWakeCount()
+			s.noteParentJobActivity(jobPhaseAwaitingModel)
+			// Completions awaiting a request settle only once one built from
+			// the transcript holding their reminders has actually been handed
+			// to the provider; the client reports that moment. A provider
+			// error after it still settles them (the turn fails visibly, or
+			// waits and retries from the same transcript), while a Stop, an
+			// admission refusal or any other failure before it leaves them
+			// owed.
+			var requestSent atomic.Bool
+			sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
+			modelResp, req, attempt, usedProfile, err = s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
+			if requestSent.Load() {
+				s.settleJobNotificationsCarriedByRequest(ctx)
+			}
+			for _, callID := range modelResp.CommunicatePreviewCallIDs {
+				communicatePreviewCalls[callID] = struct{}{}
+			}
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			if waitErr != nil {
+				err = waitErr
+			}
+			if !retry {
+				break
+			}
+			s.resetCommunicatePreviews(communicatePreviewCalls)
 		}
-
-		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
@@ -1485,24 +1633,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				continue
 			}
 			return "", progressed, prepareErr
-		}
-		// --- Phase: LLMCall ---
-		tPhaseStart := s.sclock().Now()
-
-		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		// Completions awaiting a request settle only once one built from the
-		// transcript holding their reminders has actually been handed to the
-		// provider; the client reports that moment. A provider error after it
-		// still settles them (the turn fails visibly), while a Stop, an
-		// admission refusal or any other failure before it leaves them owed.
-		var requestSent atomic.Bool
-		sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
-		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
-		if requestSent.Load() {
-			s.settleJobNotificationsCarriedByRequest(ctx)
-		}
-		for _, callID := range modelResp.CommunicatePreviewCallIDs {
-			communicatePreviewCalls[callID] = struct{}{}
 		}
 		resp := modelResp.Response
 
@@ -1688,6 +1818,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
+		s.beginToolRound()
 		results, execErr := s.execToolBatch(ctx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
@@ -1713,6 +1844,50 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		timings.Persistence = time.Since(tPhaseStart)
+
+		// PostToolBatch hooks, fired before injectPostToolSteering so their
+		// additionalContext is queued when that function's injectDrainedSteering
+		// -- the last drain before the next request -- runs, and so reaches the
+		// SAME next request. Firing after it would deliver one request late.
+		//
+		// The block is recorded here and applied only after
+		// deliverIfCommunicated reports done == false: a round that also called
+		// communicate keeps its reply, and one that posted ask_user stays
+		// awaiting. A batch of nothing never fires (no tool_calls to describe).
+		// A PostToolUse/PostToolUseFailure continue:false is recorded by the
+		// round's own tool executions and read here, where the results are
+		// already durable. It joins PostToolBatch's block in the same turn-ending
+		// tail below, so a round that also communicated keeps its reply.
+		s.mu.Lock()
+		toolHookStopped := s.toolHookStop
+		toolHookStopReason := s.toolHookStopReason
+		s.toolHookStop = false
+		s.toolHookStopReason = ""
+		s.mu.Unlock()
+		batchBlocked := toolHookStopped
+		batchStop := toolHookStopReason
+		// A session whose plugins register no PostToolBatch hook skips building
+		// and parsing every call this round; the gate is the same one the
+		// dispatch would apply, in front of the work it needs.
+		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostToolBatch) && len(calls) > 0 {
+			hi := s.hookInput(plugin.HookPostToolBatch)
+			hi.ToolCalls = s.batchToolCalls(calls, results)
+			batchRes := s.hookRunner.RunPostToolBatch(s.apiLogContext(ctx), hi)
+			for _, m := range batchRes.ModelContext {
+				if err := s.deliverHookContext(m); err != nil {
+					return "", progressed, err
+				}
+			}
+			for _, m := range batchRes.UserMessages {
+				s.deliverHookUserMessage(m)
+			}
+			if batchRes.Stopped {
+				batchBlocked = true
+				if stop := strings.TrimSpace(batchRes.StopReason); batchStop == "" {
+					batchStop = stop
+				}
+			}
+		}
 
 		// --- Phase: AfterAction ---
 		tPhaseStart = s.sclock().Now()
@@ -1750,6 +1925,27 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		if done {
 			return text, progressed, nil
+		}
+		// The round did not produce a reply or a question, so the recorded stop
+		// owns the turn: a PostToolUse/PostToolUseFailure continue:false, or
+		// PostToolBatch's block. Deliver its reason, record it as steering, and
+		// end through the same failure boundary the other pre-request stops use.
+		// The tool results are already persisted.
+		//
+		// A Stop hook that vetoed one of this round's communicate calls lands
+		// here too (deliverIfCommunicated returned not-done), so the batch block
+		// yields to nothing and ends the turn. Reaching another model request
+		// would be the alternative, and the loop the previous behavior could run.
+		// firstLineClamp bounds the reason: it becomes a warning AND a steering
+		// turn, and multi-line shell stderr must not fill the transcript.
+		if batchBlocked {
+			// A block with no stated reason still ends the turn with a legible
+			// line, rather than a silent stop.
+			batchStop = s.hookStopText(firstLineClamp(batchStop, maxHookStopReasonRunes), "a tool hook stopped this round")
+			s.deliverHookUserMessage(batchStop)
+			s.appendSteeringTurn(batchStop, events.SteeringKindHookContext)
+			s.finishProcessingAtFailureBoundary(ctx)
+			return "", progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtFailureBoundary(ctx)
@@ -1869,6 +2065,45 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
 	return s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, drainResumeSessionStart, nil)
+}
+
+// takePromptHookStop consumes a UserPromptSubmit hook's recorded continue:false.
+// It reports whether the turn must end before its first model request. The
+// reason was already delivered to the user when the input was accepted.
+func (s *Session) takePromptHookStop() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason := s.promptHookStop
+	s.promptHookStop = ""
+	return reason
+}
+
+// takeSessionStartHookStop consumes a SessionStart hook's recorded
+// continue:false. It reports whether the first turn must end before its model
+// request. The reason was already delivered to the user when the hook ran.
+func (s *Session) takeSessionStartHookStop() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason := s.sessionStartHookStop
+	s.sessionStartHookStop = ""
+	return reason
+}
+
+// clearSessionStartHookStop drops a SessionStart hook's recorded continue:false
+// when the input that raised it never ran. Without it the flag would survive to
+// the next prompt, which is not the input the hook stopped. Guarded by mu.
+func (s *Session) clearSessionStartHookStop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionStartHookStop = ""
+}
+
+// hookStoppedTheInput reports whether a hook's continue:false ended the whole
+// input. Guarded by mu.
+func (s *Session) hookStoppedTheInput() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hookStoppedInput
 }
 
 // acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill
@@ -2056,8 +2291,6 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		StableTurnID:     queuedIdentity.StableTurnID,
 		Turn:             s.recordedUserInputTurn(userInputTurn),
 	})
-	s.launchInitialPromptNamer(s.sessionCtx, input)
-
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookUserPromptSubmit)
@@ -2074,11 +2307,41 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		for _, m := range result.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+		// continue:false here means the prompt never reaches the model. The stop
+		// reason is delivered to the user now and carried to the turn loop, which
+		// ends the turn before its first request (see promptHookStop).
+		if result.Stopped {
+			reason := s.hookStopText(result.StopReason, "UserPromptSubmit hook stopped this prompt")
+			s.deliverHookUserMessage(reason)
+			s.mu.Lock()
+			s.promptHookStop = reason
+			s.mu.Unlock()
+		} else {
+			// Naming is a model call, so it waits for the hook's verdict: a
+			// stopped prompt must not reach the naming provider either.
+			s.launchInitialPromptNamerUnlessStopped(input)
+		}
+	} else {
+		s.launchInitialPromptNamerUnlessStopped(input)
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
 	return nil
+}
+
+// launchInitialPromptNamerUnlessStopped names the prompt only when no hook stop
+// is already recorded for it. A SessionStart continue:false is recorded during
+// session init and consumed by the turn loop after this function returns, so
+// waiting on UserPromptSubmit's verdict alone would still name a stopped prompt.
+func (s *Session) launchInitialPromptNamerUnlessStopped(input string) {
+	s.mu.Lock()
+	stopped := s.sessionStartHookStop != "" || s.promptHookStop != ""
+	s.mu.Unlock()
+	if stopped {
+		return
+	}
+	s.launchInitialPromptNamer(s.sessionCtx, input)
 }
 
 // goalContinuationMarker is the compact fallback text surfaced for a goal

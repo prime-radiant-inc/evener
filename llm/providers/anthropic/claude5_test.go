@@ -26,7 +26,7 @@ func TestFromAnthropicResponse_RefusalStopDetails(t *testing.T) {
 		},
 		"usage": map[string]any{"input_tokens": float64(10), "output_tokens": float64(5)},
 	}
-	r := fromAnthropicResponse(raw, "claude-fable-5")
+	r := fromAnthropicResponse(raw, "claude-fable-5", nil)
 	if r.Finish.Reason != llm.FinishReasonContentFilter {
 		t.Fatalf("Finish.Reason = %q, want content_filter", r.Finish.Reason)
 	}
@@ -57,7 +57,7 @@ func TestFromAnthropicResponse_RefusalNullCategory(t *testing.T) {
 			"explanation": "declined",
 		},
 	}
-	r := fromAnthropicResponse(raw, "claude-sonnet-5")
+	r := fromAnthropicResponse(raw, "claude-sonnet-5", nil)
 	if r.Finish.Reason != llm.FinishReasonContentFilter || r.Finish.Raw != "refusal" {
 		t.Fatalf("Finish = %+v", r.Finish)
 	}
@@ -86,7 +86,7 @@ func TestFromAnthropicResponse_NullStopDetailsAndUnknownBlocks(t *testing.T) {
 			},
 		},
 	}
-	r := fromAnthropicResponse(raw, "claude-fable-5")
+	r := fromAnthropicResponse(raw, "claude-fable-5", nil)
 	if r.Finish.Reason != llm.FinishReasonStop {
 		t.Fatalf("Finish.Reason = %q, want stop", r.Finish.Reason)
 	}

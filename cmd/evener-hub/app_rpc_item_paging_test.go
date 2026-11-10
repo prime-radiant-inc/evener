@@ -827,6 +827,42 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 	}
 }
 
+func TestHubRPCItemWindowLiveEmptyUsesSavedPastFallback(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	params.ItemLimit = 0
+	params.TurnWindow = &appwire.ThreadTurnWindow{Latest: 200}
+	params.WindowBudgetBytes = 1
+	ref, err := appwire.ParseRef(params.Ref)
+	if err != nil {
+		t.Fatalf("parse saved ref: %v", err)
+	}
+	live := &localEmptyItemRPCSource{threadID: ref.ThreadID}
+	sources := appsource.NewRegistry()
+	sources.Add(live)
+	server := newHubAppServer(cfg, sources)
+
+	value, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead, Params: mustPagingJSON(t, params),
+	})
+	if err != nil {
+		t.Fatalf("live-empty saved window fallback read: %v", err)
+	}
+	response, ok := value.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("live-empty saved window fallback = %T, want ThreadReadResponse", value)
+	}
+	if response.Window == nil {
+		t.Fatalf("live-empty saved window fallback = %+v, want window metadata", response)
+	}
+	if response.Window.AppliedBy != transcriptWindowAppliedBySavedIndex || response.Window.WithheldTurns == 0 ||
+		response.Window.TrimmedEnd != "oldest" || response.Window.ContinuationCursor == "" {
+		t.Fatalf("live-empty saved window metadata = %+v, want saved oldest-trimmed continuation", response.Window)
+	}
+	if response.OlderCursor != "" {
+		t.Fatalf("live-empty saved window older cursor = %q, want window continuation only", response.OlderCursor)
+	}
+}
+
 // When the live source has nothing, a cursorless before pages the saved
 // transcript, under the saved index's own identity: the page names the same
 // snapshot the saved read did, so a client that read the saved transcript

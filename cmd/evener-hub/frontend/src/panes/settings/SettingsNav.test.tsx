@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { SettingsNav } from "./SettingsNav";
 import { SETTINGS_SECTIONS } from "./sections";
 
@@ -13,8 +14,8 @@ function readCss(): string {
 // indented - the closing brace at column 0 is the block's own terminator
 // (iconbutton.test.tsx's own media-block extraction idiom).
 function mobileBlock(css: string): string {
-  const block = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  expect(block, "settings.module.css must have a max-width:899px media block").not.toBeNull();
+  const block = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(css);
+  expect(block, "settings.module.css must have a mobile media block").not.toBeNull();
   return block?.[1] ?? "";
 }
 

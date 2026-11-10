@@ -24,6 +24,43 @@ type TranscriptItemWindow struct {
 	OlderCursor string
 }
 
+// PreserveSelectedTurnShells inserts a shell for every selected turn that has
+// no projected item fragment. Existing fragments keep their order and shape;
+// missing shells follow the selected turn order around them.
+func PreserveSelectedTurnShells(turns []appwire.Turn, selectedTurnIDs []string) []appwire.Turn {
+	if len(selectedTurnIDs) == 0 {
+		return turns
+	}
+	order := make(map[string]int, len(selectedTurnIDs))
+	for index, turnID := range selectedTurnIDs {
+		if _, exists := order[turnID]; !exists {
+			order[turnID] = index
+		}
+	}
+	present := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		present[turn.ID] = true
+	}
+	merged := append([]appwire.Turn(nil), turns...)
+	for _, turnID := range selectedTurnIDs {
+		if present[turnID] {
+			continue
+		}
+		at := len(merged)
+		for index, turn := range merged {
+			if turnOrder, selected := order[turn.ID]; selected && turnOrder > order[turnID] {
+				at = index
+				break
+			}
+		}
+		merged = append(merged, appwire.Turn{})
+		copy(merged[at+1:], merged[at:])
+		merged[at] = appwire.Turn{ID: turnID, ItemsView: appwire.TurnItemsViewFragment}
+		present[turnID] = true
+	}
+	return merged
+}
+
 // CandidatesFromTurns converts positioned item-mode turn fragments into the
 // source-neutral chronological candidate representation used by hub paging.
 func CandidatesFromTurns(turns []appwire.Turn) ([]TranscriptItemCandidate, error) {
@@ -163,6 +200,25 @@ func ValidateCursorBoundary(candidates []TranscriptItemCandidate, before appwire
 		if candidate.Position == before {
 			return nil
 		}
+	}
+	return appwire.TranscriptItemCursorStale()
+}
+
+// ValidateWindowCursorBoundary verifies that a continuation still names the
+// same version of the item at its exclusive boundary. A missing position is a
+// stale view; a reused position with new content is an item-changed conflict.
+func ValidateWindowCursorBoundary(candidates []TranscriptItemCandidate, cursor WindowCursor) error {
+	if err := validateCandidates(candidates); err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if candidate.Position != cursor.Position {
+			continue
+		}
+		if candidate.Item.Version != cursor.ItemVersion {
+			return appwire.TranscriptItemChanged(candidate.Item.Version)
+		}
+		return nil
 	}
 	return appwire.TranscriptItemCursorStale()
 }

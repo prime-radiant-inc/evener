@@ -39,7 +39,11 @@ import {
   watchDurationLabel,
   watchGloss,
 } from "@evener/appwire-client";
-import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import {
+  quotaWaitRemainingMs,
+  subagentTallyToShow,
+  waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import {
@@ -105,6 +109,7 @@ const CLASS = {
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
   contextSummary: requireClass(styles.contextSummary, "RailRow.module.css", "contextSummary"),
+  quotaWait: requireClass(styles.quotaWait, "RailRow.module.css", "quotaWait"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -448,6 +453,21 @@ function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
   );
 }
 
+// RailQuotaWait is the row's second line while the session waits out a
+// provider usage limit: working, but paused until a known resume time. Without
+// it the row reads as a stuck spinner. It is its own leaf so the countdown
+// ticks without re-rendering the memoized row, and it sits inside the treeitem
+// so the wait is part of the row's accessible name.
+function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
+  const remaining = quotaWaitRemainingMs(session, useRailNow());
+  if (remaining === null) return null;
+  return (
+    <span data-testid="rail-row-quota-wait" className={CLASS.quotaWait}>
+      {waitingForQuotaText(remaining)}
+    </span>
+  );
+}
+
 function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
@@ -475,8 +495,11 @@ function sessionStatusLabel(
   state: CadenceState,
   notStarted: boolean,
   read: RailActivityRead | null,
+  now: number,
 ): RailStatus {
   if (notStarted) return { kind: "not-started", text: "Not started" };
+  const quotaWait = quotaWaitRemainingMs(session, now);
+  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
   if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
@@ -527,8 +550,8 @@ function SessionContextCard({
   // Only a working row asks the hub what the session is doing: every other
   // state word is already settled by the row's own fields.
   const read = useSessionActivityRead(session.ref, state === "working");
-  const status = sessionStatusLabel(session, state, notStarted, read);
   const now = useRailNow();
+  const status = sessionStatusLabel(session, state, notStarted, read, now);
   return (
     <div className={CLASS.contextCard} data-state={state}>
       <div className={CLASS.contextHead}>
@@ -640,6 +663,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           />
           <TrailingChevron info={info} />
         </span>
+        {cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />}
       </span>
       {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>

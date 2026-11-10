@@ -61,12 +61,12 @@ base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
 
 `StreamGenerate` retries a stream attempt only while it has not committed
 content: an open failure, a 429/5xx, or a stream that truncated before its
-finish event. A text delta commits the attempt, and so does a content-bearing
-passthrough (below). The normalized reasoning, tool-argument and object deltas
-keep their pre-existing retry behavior; they are not part of this commitment
-yet.
+finish event. A nonempty text or reasoning delta commits the attempt, as do
+nonempty tool arguments on a start, delta or end event, a nonnil object delta,
+and a content-bearing passthrough (below). An empty text delta and a
+control-only frame publish nothing, so they keep the attempt retryable.
 
-Text deltas commit an attempt. A `PROVIDER_EVENT` passthrough commits one only
+Nonempty text deltas commit an attempt. A `PROVIDER_EVENT` passthrough commits one only
 when the adapter sets `StreamEvent.ContentBearing`, because the adapter is the
 layer that knows which raw frame carries model output rather than lifecycle or
 control traffic. The criterion is "a retry would republish it": if the caller

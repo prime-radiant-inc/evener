@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { act, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp } from "../../styles/cssBlock";
 import { beginDisclosureBaseline, resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
 import { Disclosure } from "./index";
 
@@ -355,7 +357,9 @@ test("disabled styling attenuates only the summary and suppresses its hover wash
 
 test("keeps the summary at the narrow-viewport tap floor", () => {
   expect(motionCss()).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.summary\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
 });
 

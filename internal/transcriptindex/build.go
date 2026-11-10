@@ -70,6 +70,22 @@ type builder struct {
 	summary     turnRecord
 	summarySlot uint64
 	hasSummary  bool
+	// entryItemSlot and entryItemIndex carry the item ordinal the entry being
+	// applied assigns within its turn; entryItemCount is that turn's count once
+	// the entry's items are appended, which stampTurn folds into the summary.
+	entryItemSlot  uint64
+	entryItemIndex uint32
+	entryItemCount uint32
+	entryItems     bool
+	// replayOrdinals is set only while a crash replay extends turns whose
+	// summaries the interrupted extension already advanced: each committed
+	// turn's item count as the replay has advanced it; see itemBase.
+	replayOrdinals map[uint32]uint32
+	// entryReplayTurn and entryReplayOrdinal record that the entry being
+	// applied took its ordinal base from replayOrdinals, so each appended item
+	// advances that turn's count.
+	entryReplayTurn    uint32
+	entryReplayOrdinal bool
 	// assistant is the latest ASSISTANT entry with tool calls this builder
 	// applied, at assistantOffset, so the results after it need not read it
 	// back.
@@ -179,6 +195,7 @@ func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error 
 		return err
 	}
 	b.summary.Version = ordinal + 1
+	b.summary.ItemCount = 1
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], b.summary)); err != nil {
 		return err
 	}
@@ -224,6 +241,11 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
 	base := contributor{Offset: offset, Ordinal: ordinal, Length: length}
+	summary, err := b.load(b.turnSlot)
+	if err != nil {
+		return err
+	}
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = b.turnSlot, b.itemBase(b.turnSlot, summary, version), true
 	for i, item := range items {
 		c := base
 		merges := apptranscript.MergesByCallID(item)
@@ -254,6 +276,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			b.calls[item.CallID] = slot
 		}
 	}
+	b.entryItemCount = b.entryItemIndex
 	b.recordCommState(entry, turnID, seed, base, items)
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
@@ -517,8 +540,8 @@ func turnKindOf(kind schema.TurnSpanKind) uint32 {
 	}
 }
 
-// findTurn searches the summaries, newest first, for the new-format turn id.
-// Legacy turns never match: a new-format entry never joins one.
+// findTurn searches the summaries, newest first, for the turn id. Persisted
+// identity and legacy ids share one address space for transcript reads.
 func (b *builder) findTurn(id string) (uint64, bool, error) {
 	return b.x.findTurn(context.Background(), id)
 }
@@ -536,7 +559,7 @@ func (x *Index) findTurn(ctx context.Context, id string) (uint64, bool, error) {
 		}
 		for slot := end; slot > start; slot-- {
 			record := decodeTurn(buf[(slot-1-start)*turnRecordSize:])
-			if record.Kind == turnKindLegacy || int(record.ID.Len) != len(id) {
+			if int(record.ID.Len) != len(id) {
 				continue
 			}
 			name, err := x.strings.get(record.ID)
@@ -663,6 +686,11 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	summary, err := b.load(slot)
+	if err != nil {
+		return err
+	}
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = slot, b.itemBase(slot, summary, c.Ordinal+1), true
 	for i, item := range items {
 		if absorb != nil {
 			absorbed, err := absorb(item)
@@ -684,6 +712,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 			return err
 		}
 	}
+	b.entryItemCount = b.entryItemIndex
 	b.recordCommState(entry, entry.TurnID, seed, c, items)
 	return nil
 }
@@ -692,7 +721,11 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 // part. Only deferred communicate results need Context (communicateContext).
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
-	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
+	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, ItemIndex: b.entryItemIndex, Context: context}
+	b.entryItemIndex++
+	if b.entryReplayOrdinal {
+		b.replayOrdinals[b.entryReplayTurn]++
+	}
 	if apptranscript.MergesByCallID(item) || item.Type == "agentMessage" && item.Observation != nil && item.CallID != "" {
 		var err error
 		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
@@ -700,6 +733,24 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 		}
 	}
 	return b.x.items.append(encodeItemInto(b.itemBuf[:], record))
+}
+
+// itemBase is the ordinal the entry being applied gives its first item. A turn
+// summary advanced past this entry is left over from an extension interrupted
+// before its meta commit; its count already includes items this replay has not
+// re-appended, so the committed records' count is the correct base.
+func (b *builder) itemBase(slot uint64, summary turnRecord, version uint64) uint32 {
+	// A summary at or past this entry was rewritten by the interrupted
+	// extension, which already counted the items this replay appends; its
+	// count is not the committed one. The replay's own running count is.
+	if summary.Version >= version {
+		if count, ok := b.replayOrdinals[uint32(slot)]; ok {
+			b.entryReplayTurn, b.entryReplayOrdinal = uint32(slot), true
+			return count
+		}
+	}
+	b.entryReplayOrdinal = false
+	return summary.ItemCount
 }
 
 // completeCommunications links a typed result to the earlier COMMUNICATE item
@@ -1105,6 +1156,9 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 	r.FailedToolCalls += b.entryFailures
 	if b.entryInexact {
 		r.FailedInexact = true
+	}
+	if b.entryItems && b.entryItemSlot == slot {
+		r.ItemCount = b.entryItemCount
 	}
 	r.Version = version
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {

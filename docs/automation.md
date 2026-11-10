@@ -269,6 +269,23 @@ list is empty. An unknown or changing instance cannot mint a task token.
 
 `read_transcript` with `hub:{ref,itemLimit}` reads the latest bounded history;
 its returned `nextCursor` pages older items with `hub:{ref,cursor,itemLimit}`.
+For a smaller Manager-facing view, add exactly one `turnWindow`: `latest`, an
+exact `turn`, `since` a turn with a forward limit, or `before` a turn with a
+backward limit. `itemTypes` selects exact wire item types; `messages` is the
+source-aware shorthand for user, agent and human-steering messages. The optional
+`previewBytes`, `messageBytes`, `itemLimit` and `windowBudgetBytes` bounds keep
+tool output, message bodies, each turn and the complete encoded result bounded.
+The response reports the effective bounds and any excluded, withheld, truncated
+or budget-elided populations instead of implying that the view is complete.
+
+Use each returned structured `followUps` entry unchanged. Every page-level and
+per-turn continuation has its own shape-preserving entry with the original
+selection and bounds. A truncated settled item can carry a
+`fetchCursor`; call `read_transcript` with only `hub:{ref,fetchCursor}` and follow
+the next fetch cursor until the base64 ranges are complete. Cursors are bound to
+the exact thread, source incarnation, projection and item version. Refresh the
+window when a cursor is stale, the item changed, or compatibility recovery says
+the item is no longer reachable. In-flight items have no fetch cursor.
 `job_status` with `hub:{ref,jobId}` reads the job's full metadata, and
 `read_transcript` with `hub:{ref,jobId,maxBytes,beforeBytes}` pages its output
 backward in lifetime bytes. Each job handle names both its owner ref and job ID;

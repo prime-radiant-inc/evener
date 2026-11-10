@@ -105,7 +105,7 @@ func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
 	// rvreg terminal lifecycle is covered by its real filesystem tests; letting
 	// that guard reject this deliberately late clear would prevent the test from
 	// reaching bridgeSession and hide the invariant under test.
-	deps.updateSessionID = func(*rvreg.Registration, string) error { return nil }
+	deps.updateIdentity = func(*rvreg.Registration, string, string) error { return nil }
 
 	var mu sync.Mutex
 	var teardownBegun bool

@@ -3859,6 +3859,26 @@ Underlying Go kind: `string` (no struct fields).
 | `modifiedAt` | int64 | yes |  |
 
 
+### `SessionFetchRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `fetchCursor` | string |  |  |
+
+
+### `SessionFetchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `position` | [appwire.ThreadItemPosition](#threaditemposition) |  |  |
+| `version` | uint64 |  |  |
+| `totalLength` | uint64 |  |  |
+| `offset` | uint64 |  |  |
+| `data` | string |  |  |
+| `fetchCursor` | string | yes |  |
+
+
 ### `SessionImageParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3931,6 +3951,7 @@ Underlying Go kind: `string` (no struct fields).
 | `discover` | \*[appwire.ThreadListParams](#threadlistparams) | yes |  |
 | `read` | \*[appwire.ThreadReadParams](#threadreadparams) | yes |  |
 | `turns` | \*[appwire.ThreadTurnsListParams](#threadturnslistparams) | yes |  |
+| `fetch` | \*[appwire.SessionFetchRequest](#sessionfetchrequest) | yes |  |
 | `activity` | \*[appwire.SessionActivityRequest](#sessionactivityrequest) | yes |  |
 | `tasks` | \*[appwire.SessionTasksRequest](#sessiontasksrequest) | yes |  |
 | `job` | \*[appwire.JobsGetParams](#jobsgetparams) | yes |  |
@@ -3952,6 +3973,7 @@ Underlying Go kind: `string` (no struct fields).
 | `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
 | `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
 | `turns` | \*[appwire.ThreadTurnsListResponse](#threadturnslistresponse) | yes |  |
+| `fetch` | \*[appwire.SessionFetchResponse](#sessionfetchresponse) | yes |  |
 | `activity` | \*[appwire.SessionActivityResponse](#sessionactivityresponse) | yes |  |
 | `tasks` | \*[appwire.SessionTasksResponse](#sessiontasksresponse) | yes |  |
 | `job` | \*[appwire.JobsGetResponse](#jobsgetresponse) | yes |  |
@@ -4121,11 +4143,13 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `ThreadWindowParams` | [appwire.ThreadWindowParams](#threadwindowparams) |  | yes |
 | `ref` | string |  |  |
 | `mode` | string | yes |  |
 | `resource` | [appwire.SessionActivityResource](#sessionactivityresource) | yes |  |
 | `scope` | [appwire.SessionActivityScope](#sessionactivityscope) | yes |  |
 | `cursor` | string | yes |  |
+| `fetchCursor` | string | yes |  |
 | `limit` | int | yes |  |
 | `itemLimit` | int | yes |  |
 | `offset` | int | yes |  |
@@ -4505,6 +4529,7 @@ Underlying Go kind: `string` (no struct fields).
 | `stopSubagent` | bool | yes |  |
 | `pageBefore` | bool | yes |  |
 | `voiceArm` | bool | yes |  |
+| `windowRead` | bool | yes |  |
 
 
 ### `ThreadClearParams`
@@ -4559,6 +4584,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `title` | string | yes |  |
 | `cause` | \*[appwire.DiagnosticCause](#diagnosticcause) | yes |  |
+| `resumesAt` | int64 | yes |  |
 
 
 ### `ThreadForceStopParams`
@@ -4614,6 +4640,10 @@ Underlying Go kind: `string` (no struct fields).
 | `description` | string | yes |  |
 | `output` | string | yes |  |
 | `error` | string | yes |  |
+| `truncated` | bool | yes |  |
+| `truncatedBytes` | int | yes |  |
+| `inFlight` | bool | yes |  |
+| `fetchCursor` | string | yes |  |
 | `outputImages` | [][appwire.OutputImage](#outputimage) |  |  |
 | `status` | string | yes |  |
 | `prevalOnly` | bool | yes |  |
@@ -4753,6 +4783,8 @@ Underlying Go kind: `string` (no struct fields).
 | `subscribe` | bool | yes |  |
 | `replaceSubscription` | bool | yes |  |
 | `itemLimit` | int | yes |  |
+| `fetchCursor` | string | yes |  |
+| `ThreadWindowParams` | [appwire.ThreadWindowParams](#threadwindowparams) |  | yes |
 | `requestGeneration` | uint64 | yes |  |
 | `heldSnapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
 | `liveOnly` | bool | yes |  |
@@ -4769,6 +4801,8 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
 | `pendingAskPage` | \*[appwire.PendingAskPage](#pendingaskpage) | yes |  |
+| `window` | \*[appwire.ThreadWindowResult](#threadwindowresult) | yes |  |
+| `fetch` | \*[appwire.SessionFetchResponse](#sessionfetchresponse) | yes |  |
 | `targetSessionToolsSupported` | \*bool | yes |  |
 | `latestExecutionTurnId` | string | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
@@ -4913,6 +4947,29 @@ Underlying Go kind: `string` (no struct fields).
 | `turnsUsed` | int | yes |  |
 
 
+### `ThreadTurnBoundary`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `turnId` | string |  |  |
+| `limit` | int |  |  |
+
+
+### `ThreadTurnElision`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `excludedByType` | map[string]int | yes |  |
+| `capWithheld` | int | yes |  |
+| `truncatedBeyondCursorLimit` | int | yes |  |
+| `elidedBeyondCursorLimit` | int | yes |  |
+| `continuationCursor` | string | yes |  |
+| `typeExcludedRecovery` | string | yes |  |
+| `capWithheldRecovery` | string | yes |  |
+| `truncatedBeyondCursorLimitRecovery` | string | yes |  |
+| `elidedBeyondCursorLimitRecovery` | string | yes |  |
+
+
 ### `ThreadTurnItemsListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4932,6 +4989,17 @@ Underlying Go kind: `string` (no struct fields).
 | `nextCursor` | string | yes |  |
 
 
+### `ThreadTurnWindow`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `latest` | int | yes |  |
+| `turn` | string | yes |  |
+| `since` | string | yes |  |
+| `limit` | int | yes |  |
+| `before` | \*[appwire.ThreadTurnBoundary](#threadturnboundary) | yes |  |
+
+
 ### `ThreadTurnsListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4942,6 +5010,7 @@ Underlying Go kind: `string` (no struct fields).
 | `cursor` | string | yes |  |
 | `itemsView` | string | yes |  |
 | `itemLimit` | int | yes |  |
+| `ThreadWindowParams` | [appwire.ThreadWindowParams](#threadwindowparams) |  | yes |
 | `before` | \*[appwire.ThreadItemPosition](#threaditemposition) | yes |  |
 
 
@@ -4951,6 +5020,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `data` | [][appwire.Turn](#turn) |  |  |
 | `nextCursor` | string | yes |  |
+| `window` | \*[appwire.ThreadWindowResult](#threadwindowresult) | yes |  |
 | `bootGeneration` | string | yes |  |
 | `epoch` | uint64 | yes |  |
 | `snapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
@@ -4980,6 +5050,33 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string |  |  |
 | `visionModel` | string |  |  |
+
+
+### `ThreadWindowParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `turnWindow` | \*[appwire.ThreadTurnWindow](#threadturnwindow) | yes |  |
+| `itemTypes` | []string | yes |  |
+| `previewBytes` | int | yes |  |
+| `messageBytes` | int | yes |  |
+| `windowBudgetBytes` | int | yes |  |
+
+
+### `ThreadWindowResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `effectiveBudgetBytes` | int |  |  |
+| `appliedBy` | string |  |  |
+| `servedTurns` | int |  |  |
+| `withheldTurns` | int |  |  |
+| `firstServedTurnId` | string | yes |  |
+| `lastServedTurnId` | string | yes |  |
+| `firstWithheldTurnId` | string | yes |  |
+| `lastWithheldTurnId` | string | yes |  |
+| `trimmedEnd` | string | yes |  |
+| `continuationCursor` | string | yes |  |
 
 
 ### `TranscriptAuthor`
@@ -5117,6 +5214,7 @@ Underlying Go kind: `string` (no struct fields).
 | `id` | string |  |  |
 | `items` | [][appwire.ThreadItem](#threaditem) | yes |  |
 | `itemsView` | [appwire.TurnItemsView](#turnitemsview) |  |  |
+| `elision` | \*[appwire.ThreadTurnElision](#threadturnelision) | yes |  |
 | `status` | string |  |  |
 | `error` | \*[appwire.TurnError](#turnerror) | yes |  |
 | `version` | uint64 | yes |  |

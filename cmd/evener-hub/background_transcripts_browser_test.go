@@ -437,7 +437,7 @@ func runBackgroundDriverMode(ctx context.Context, t *testing.T, fixture *skillGu
 		return fmt.Errorf("open driver log: %w", err)
 	}
 	defer driverLog.Close()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join("scripts", "backgroundtranscriptguard", "run.mjs"),
+	cmd := backgroundDriverCommand(ctx, filepath.Join("scripts", "backgroundtranscriptguard", "run.mjs"),
 		"--url", authURL,
 		"--hub-url", hubURL,
 		"--artifact-dir", fixture.artifact,
@@ -453,7 +453,6 @@ func runBackgroundDriverMode(ctx context.Context, t *testing.T, fixture *skillGu
 	if entrySlice {
 		cmd.Args = append(cmd.Args, "--entry-production", "true")
 	}
-	configureBackgroundDriverCommand(cmd)
 	cmd.Dir = frontend
 	cmd.Stdout = driverLog
 	cmd.Stderr = driverLog
@@ -471,6 +470,14 @@ func runBackgroundDriverMode(ctx context.Context, t *testing.T, fixture *skillGu
 func configureBackgroundDriverCommand(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = backgroundDriverForceKillDelay
+}
+
+// backgroundDriverCommand launches a Node browser driver under that contract,
+// so every fixture shares one launch setup.
+func backgroundDriverCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "node", args...)
+	configureBackgroundDriverCommand(cmd)
+	return cmd
 }
 
 // backgroundDriverLifetime is the reserve set the owning await holds back from

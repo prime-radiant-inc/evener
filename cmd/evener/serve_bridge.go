@@ -171,7 +171,7 @@ func (b *serveBridge) bridgeSession(s *agent.Session) {
 	// first continuation prompt back into the serve loop's input channel
 	// as an EntryContinuation-kind message (the agent module must not
 	// import server, so this is a callback into the server, spec §C4/§7).
-	s.SetKickFunc(func(prompt string) { b.srv.SubmitContinuation(prompt) })
+	s.SetKickFunc(func(prompt string) { b.srv.SubmitContinuation(s.ID(), prompt) })
 	// The notify wake is wired alongside the kick: when a child finishes
 	// and the parent is idle, the durable notification queue is already
 	// populated; this callback feeds a text-less EntryNotification kick
@@ -216,6 +216,9 @@ func (b *serveBridge) bridgeSession(s *agent.Session) {
 	b.srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 		return s.LiveWatchRowsForSessions(threadIDs)
 	})
+	// A waiting delegate's row carries its usage-limit wait and resume time,
+	// sampled the same way.
+	b.srv.SetDescendantQuotaWaitsFunc(s.DescendantQuotaWaits)
 	// The root's row carries its whole tree's subagent tally (S3), read from
 	// the delegate controller when the list is served. Set per session so it
 	// follows the replacement a thread/clear installs.

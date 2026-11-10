@@ -22,6 +22,7 @@ type EnvironmentInfo struct {
 	GitModifiedFiles      int           `json:"git_modified_files"`                 // count of tracked files with changes
 	GitUntrackedFiles     int           `json:"git_untracked_files"`                // count of untracked files
 	GitStatusUnknown      bool          `json:"git_status_unknown,omitempty"`       // true when the status read was truncated or failed, so the counts above are not a claim
+	GitSnapshotFailed     bool          `json:"git_snapshot_failed,omitempty"`      // true when a git probe could not run or was cut short, so absent values below are not a claim about the repository
 	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"` // recent commit subject lines
 	Workspace             WorkspaceInfo `json:"workspace"`                          // detected build/workspace layout
 	Resources             *ResourceCaps `json:"resources,omitempty"`                // effective process resource caps, when observable

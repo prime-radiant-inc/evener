@@ -80,12 +80,13 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(ctx, runConfig{
-		prompt:  rootPrompt + ": delegate a coordinator that delegates a worker; report BUILD-COMPLETE when the whole tree finishes.",
-		model:   "openai/gpt-test",
-		workDir: tmp,
-		verbose: true,
-		stdout:  &stdout,
-		stderr:  &stderr,
+		prompt:           rootPrompt + ": delegate a coordinator that delegates a worker; report BUILD-COMPLETE when the whole tree finishes.",
+		model:            "openai/gpt-test",
+		workDir:          tmp,
+		verbose:          true,
+		maxSubagentDepth: -1,
+		stdout:           &stdout,
+		stderr:           &stderr,
 	})
 	if err != nil {
 		t.Fatalf("run: %v\nstderr tail: %s", err, tailString(stderr.String(), 2000))

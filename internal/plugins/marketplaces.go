@@ -1503,7 +1503,12 @@ func resolveForContainment(path string) (string, error) {
 // pathUnder is where under dir a path sits, and whether it is under dir at
 // all. Both are taken as the store recorded them — an install path against
 // the cache directory it was joined from — so neither is resolved here, and a
-// path that is dir itself is under it.
+// path that is dir itself is under it, reporting a relative path of ".".
+//
+// This is the package's one containment test. Every "is this path inside that
+// directory" question goes through it: filepath.Rel plus the two-way ".."
+// check is four lines that had been written out five times, and the copies
+// were already diverging on whether the directory itself counts.
 func pathUnder(dir, path string) (rel string, under bool) {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -1515,11 +1520,8 @@ func pathUnder(dir, path string) (rel string, under bool) {
 // pathWithinDir reports whether candidate is dir itself or sits beneath it.
 // Both must already be resolved.
 func pathWithinDir(dir, candidate string) bool {
-	rel, err := filepath.Rel(dir, candidate)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	_, under := pathUnder(dir, candidate)
+	return under
 }
 
 // recloneMarketplace replaces a marketplace clone whose git pull failed. The

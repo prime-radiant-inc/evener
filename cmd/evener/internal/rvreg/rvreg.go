@@ -34,6 +34,15 @@ func (r *Registration) Register(runDir string, entry rendezvous.Entry) error {
 }
 
 func (r *Registration) UpdateSessionID(sessionID string) error {
+	return r.UpdateIdentity(sessionID, "")
+}
+
+// UpdateIdentity rewrites the registered entry's session identity and, when
+// workingDir is non-empty, its working directory in one write. A clear that
+// keeps a worktree lane must move the identity and the lane together: a client
+// that discovers the replacement must never see it anchored at the old
+// checkout.
+func (r *Registration) UpdateIdentity(sessionID, workingDir string) error {
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
@@ -54,6 +63,9 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	entry.ThreadID = sessionID
 	entry.SessionID = sessionID
 	entry.InstanceID = sessionID
+	if workingDir != "" {
+		entry.WorkingDir = workingDir
+	}
 	if _, err := rendezvous.Write(r.runDir, entry); err != nil {
 		return err
 	}

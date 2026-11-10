@@ -13,6 +13,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import {
   consumePaneFocus,
   type OpenPaneRecord,
@@ -1314,7 +1315,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

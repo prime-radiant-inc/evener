@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// An independent assertion of the shared human/Manager input qualification:
+// An independent assertion of the shared human/Manager operation qualification:
 // the forwarding set and the host's own claims both gate advertising. Adding
 // a capability to the production mask cannot make this test agree by accident.
 func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
@@ -21,6 +21,7 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 		CommandInput: true, Shutdown: true, Interrupt: true, Compact: true,
 		Clear: true, ForkFromTurn: true, ChangeModel: true, ChangeVisionModel: true,
 		Goal: true, SharedNotes: true, Rename: true, StopSubagent: true,
+		WindowRead: true,
 	}
 	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{TurnStart: true, TurnSteer: true, ThreadClear: true, ForkFromTurn: true, ThreadShutdown: true})); got != want {
 		t.Fatalf("qualified input mask = %+v, want %+v", got, want)
@@ -29,7 +30,7 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 		AskFence:  true,
 		Interrupt: true, Compact: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
-		SkillInput: true, CommandInput: true, StopSubagent: true,
+		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true,
 	}
 	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{})); got != wantWithoutFeatures {
 		t.Fatalf("negotiated feature refusal not preserved: got %+v, want %+v", got, wantWithoutFeatures)

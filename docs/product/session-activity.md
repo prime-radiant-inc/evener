@@ -120,6 +120,13 @@ Background attention paused by a permanent provider failure is not live work
 while no fresh wake or paced retry is armed: the session keeps its own failure
 presentation until a new delegate event, a sent message, a model switch, or
 another re-engagement re-arms delivery.
+A usage-limit failure that names its reset time never pauses attention: the
+model call that met it waits inside the turn, so the session stays working and
+notifications and fresh delegate events queue behind the turn as behind any
+running turn. Its working row carries the limit's summary with the resume time
+(the hub keeps it on the working row), so clients say it waits for quota and
+when it resumes, until the reset, a model switch, or a sent message the provider
+accepts.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and

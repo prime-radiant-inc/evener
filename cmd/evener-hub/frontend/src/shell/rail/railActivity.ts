@@ -127,7 +127,16 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
   return { activity: read.activity, msSinceRead };
 }
 
-export type RailStatusKind = "not-started" | "failed" | "state" | "intent" | "subagents" | "quiet" | "stuck" | "job";
+export type RailStatusKind =
+  | "not-started"
+  | "failed"
+  | "quota"
+  | "state"
+  | "intent"
+  | "subagents"
+  | "quiet"
+  | "stuck"
+  | "job";
 
 export interface RailStatus {
   kind: RailStatusKind;

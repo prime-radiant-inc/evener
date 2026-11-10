@@ -390,6 +390,12 @@ interface ReaderOpeningState {
   authorityValid: boolean;
 }
 
+/** The foreground retention floor and the displayed turn array that produced it. */
+interface ForegroundFloor {
+  start: ThreadItemPosition | undefined;
+  scannedTurns: ThreadModel["turns"] | undefined;
+}
+
 /** Owns real wire acceptance, publication, local writes and attached readers for one binding. */
 export class TranscriptRepository {
   readonly #cache: SessionEntryCache;
@@ -407,7 +413,12 @@ export class TranscriptRepository {
   #sourceRevision = 0;
   // Identity-only range ownership survives foreground reader replacement, not
   // source reconciliation. Background payload reclamation remains unchanged.
-  #foregroundStart: ThreadItemPosition | undefined;
+  // The start and the displayed turn array it was derived from live together,
+  // so a reset cannot clear one without the other. The scan only ever moves the
+  // start deeper, so a publication that leaves the array unchanged cannot move
+  // it: metadata-only updates keep the same array identity and skip the
+  // O(displayed items) walk (#4700).
+  #foregroundFloor: ForegroundFloor = { start: undefined, scannedTurns: undefined };
   // True while the current baseline came from a plain windowed read — one
   // whose response carried an older cursor and was not an authoritative
   // reconciliation. Such a baseline presents only the wire window, so the
@@ -617,7 +628,15 @@ export class TranscriptRepository {
     // accepted read replace it, so the fresh latest boundary and its returned
     // cursor win.
     if (this.#model) {
-      this.#model = invalidateHistory(this.#model);
+      // The foldable bit is the outgoing connection's answer, and the store
+      // clears its own copy at this same boundary. Retire it here too, because
+      // the publish path reads the model from this repository: a frame that
+      // carries no read would otherwise hand the retired bit back to the store.
+      // Only a fresh read on the current connection stamps it again.
+      this.#model =
+        this.#model.resumeOnlyFoldable === true
+          ? invalidateHistory({ ...this.#model, resumeOnlyFoldable: false })
+          : invalidateHistory(this.#model);
       this.#recoveryNeeded = true;
     }
   }
@@ -632,6 +651,11 @@ export class TranscriptRepository {
   getRetentionSnapshotForTesting(): { bindingHasSeedModel: boolean } {
     const binding = this.#binding as TranscriptRepositoryBinding;
     return { bindingHasSeedModel: binding.seedModel !== undefined };
+  }
+
+  /** @internal Reports the floor start and whether the scan still pins a displayed range. */
+  getForegroundFloorForTesting(): { start: ThreadItemPosition | undefined; retainsScan: boolean } {
+    return { start: this.#foregroundFloor.start, retainsScan: this.#foregroundFloor.scannedTurns !== undefined };
   }
 
   /**
@@ -1409,7 +1433,7 @@ export class TranscriptRepository {
   holdsResidentForegroundRange(): boolean {
     if (this.#disposed || this.#invalidated) return false;
     const model = this.#model;
-    const start = this.#foregroundStart;
+    const start = this.#foregroundFloor.start;
     if (!model || !start) return false;
     const required = (model.history?.turns ?? model.turns)
       .flatMap((turn) => turn.items)
@@ -1656,7 +1680,7 @@ export class TranscriptRepository {
       continuityId: this.#committedCoverageContinuityId,
       committedSnapshot: this.#committedCoverageSnapshot,
       sourceRevision: this.#sourceRevision,
-      foregroundStart: this.#foregroundStart,
+      foregroundStart: this.#foregroundFloor.start,
       hadPendingWrites: this.#writes.size > 0,
       authorityValid: !this.#recoveryNeeded && !this.#seedAuthorityInvalid,
     });
@@ -2074,6 +2098,11 @@ export class TranscriptRepository {
         if (!active) return;
         active = false;
         this.#readerCount--;
+        // No foreground publication will rescan this range until a reader
+        // returns. Drop the scan's strong reference so a background lease can
+        // reclaim the pruned payloads; the scalar floor still survives reader
+        // replacement.
+        if (this.#readerCount === 0) this.#foregroundFloor.scannedTurns = undefined;
         unlisten();
         latest = undefined;
         if (openingState) releaseOpeningState(openingState, true);
@@ -2147,6 +2176,9 @@ export class TranscriptRepository {
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
+    // The model is gone; do not keep its displayed range alive from the scan
+    // memo. The floor start remains a scalar with no payload behind it.
+    this.#foregroundFloor.scannedTurns = undefined;
   }
 
   /** Reacquisition cancels the final read without retiring the live page authority. */
@@ -2463,7 +2495,7 @@ export class TranscriptRepository {
 
   #advanceSourceRevision(): void {
     this.#sourceRevision++;
-    this.#foregroundStart = undefined;
+    this.#foregroundFloor = { start: undefined, scannedTurns: undefined };
     this.#baselineIdentity = this.#mintBaseline();
   }
 
@@ -3562,6 +3594,10 @@ export class TranscriptRepository {
   #reclaimBackgroundModel(): void {
     if (this.#readerCount > 0 || this.#pending.size > 0 || this.#writes.size > 0 || !this.#model) return;
     this.#model = hydratedDisplay(pruneBackgroundHistoryBodies(this.#model));
+    // The pruned model also replaces the displayed turns the foreground floor
+    // last scanned; keeping that reference alive defeats the payload
+    // reclamation. The next reader publish rescans from the new model.
+    this.#foregroundFloor.scannedTurns = undefined;
   }
 
   #publish(): void {
@@ -3569,16 +3605,19 @@ export class TranscriptRepository {
     // Every publication passes here, so no path (a response-only field update
     // included) can republish a resolved escalation.
     if (this.#model) this.#model = this.#withoutResolvedEscalations(hydratedDisplay(this.#model));
-    if (this.#readerCount > 0 && this.#model) {
-      for (const turn of this.#model.turns) {
+    const displayedTurns = this.#model?.turns;
+    const floor = this.#foregroundFloor;
+    if (this.#readerCount > 0 && displayedTurns && displayedTurns !== floor.scannedTurns) {
+      floor.scannedTurns = displayedTurns;
+      for (const turn of displayedTurns) {
         for (const item of turn.items) {
           if (
             item.transcriptKey &&
             item.position &&
-            (!this.#foregroundStart || comparePosition(item.position, this.#foregroundStart) < 0) &&
+            (!floor.start || comparePosition(item.position, floor.start) < 0) &&
             !encodeTranscriptItem(item).identityOnly
           ) {
-            this.#foregroundStart = item.position;
+            floor.start = item.position;
           }
         }
       }

@@ -40,33 +40,22 @@ func markdownFencedBlock(t *testing.T, path, heading string) []string {
 		t.Fatalf("%s no longer carries the heading %q", path, heading)
 	}
 
-	fenceAt := -1
-	var lang string
-	for i := headingAt + 1; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, "```") {
-			fenceAt = i
-			lang = strings.TrimPrefix(trimmed, "```")
-			break
+	fences, err := markdownFences(string(body))
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	for _, f := range fences {
+		if f.LineNo <= headingAt+1 {
+			continue // before the heading, in 1-based line numbers
+		}
+		switch f.Lang {
+		case "sh", "bash", "shell":
+			return f.Lines
+		default:
+			t.Fatalf("%s's first block after %q is a %q block, want a shell block", path, heading, f.Lang)
 		}
 	}
-	if fenceAt < 0 {
-		t.Fatalf("%s has no fenced block after %q", path, heading)
-	}
-	switch lang {
-	case "sh", "bash", "shell":
-	default:
-		t.Fatalf("%s's first block after %q is a %q block, want a shell block", path, heading, lang)
-	}
-
-	var block []string
-	for i := fenceAt + 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "```" {
-			return block
-		}
-		block = append(block, lines[i])
-	}
-	t.Fatalf("%s has an unterminated fence after %q", path, heading)
+	t.Fatalf("%s has no fenced block after %q", path, heading)
 	return nil
 }
 
@@ -81,30 +70,13 @@ func markdownFencedBlocks(t *testing.T, path string) [][]string {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	var blocks [][]string
-	var current []string
-	inFence := false
-	openedAt := 0
-	lineNo := 0
-	for line := range strings.SplitSeq(string(body), "\n") {
-		lineNo++
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			if inFence {
-				blocks = append(blocks, current)
-				current = nil
-			} else {
-				openedAt = lineNo
-			}
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			current = append(current, line)
-		}
+	fences, err := markdownFences(string(body))
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
 	}
-	if inFence {
-		t.Fatalf("%s has a fence opened at line %d and never closed; a broken block "+
-			"must fail the audit rather than be skipped", path, openedAt)
+	blocks := make([][]string, 0, len(fences))
+	for _, f := range fences {
+		blocks = append(blocks, f.Lines)
 	}
 	return blocks
 }

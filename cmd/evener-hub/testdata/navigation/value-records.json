@@ -27,7 +27,8 @@
       "title": "Provider error",
       "cause_kind": "provider",
       "provider": "codex-jesse-fsck.com",
-      "status": 401
+      "status": 401,
+      "resumes_at": "2026-04-30T12:00:00Z"
     },
     "last_message": "Three layouts are ready for review. I recommend B.",
     "model_name": "Gpt 5.6",

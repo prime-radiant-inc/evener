@@ -21,7 +21,7 @@ import { activityDetailsThread, answerActivityRead } from "../stores/sessionActi
 import { resetSettingsHostForTests } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
-import { readModuleCss } from "../styles/cssBlock";
+import { escapeRegExp, readModuleCss } from "../styles/cssBlock";
 import { AppShell } from "./AppShell";
 import {
   installLocation,
@@ -35,6 +35,7 @@ import {
 } from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
+import { MOBILE_QUERY } from "./useIsMobile";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 const paneFor = (ref: string) =>
@@ -119,7 +120,7 @@ afterEach(() => {
 test("mobile: the shell content frame drops its padding so the workspace is full-bleed", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
   const contentRule = mobile![1]!.match(/\.content \{([^}]*)\}/);
   expect(contentRule).not.toBeNull();
@@ -135,7 +136,7 @@ test("mobile: the shell spends --keyboard-inset as bottom padding so the compose
   // before matching (testing.md: a comment quoting the declaration must not
   // satisfy the assertion).
   const css = readModuleCss(import.meta.url, "AppShell.module.css");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
   const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
   expect(shellRule).not.toBeNull();

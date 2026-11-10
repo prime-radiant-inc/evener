@@ -143,10 +143,10 @@ func TestE2E_ManagerRemoteSharedInput(t *testing.T) {
 		Send:     true, Steer: true, Interrupt: true, Compact: true, Clear: true,
 		ForkFromTurn: true, Shutdown: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
-		SkillInput: true, CommandInput: true, StopSubagent: true,
+		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true,
 	}
 	if caps != wantCaps {
-		t.Fatalf("shared remote input qualification: %+v", caps)
+		t.Fatalf("shared remote operation qualification: %+v", caps)
 	}
 	for _, item := range []appwire.InputItem{
 		{Type: "skill", Name: "invalid", Text: "skill selections cannot carry text"},

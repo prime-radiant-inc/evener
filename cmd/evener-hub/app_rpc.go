@@ -183,6 +183,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
 				Capabilities:      entry.Capabilities,
 				CapabilitiesKnown: entry.CapabilitiesKnown,
+				Failure:           appwire.CloneThreadFailure(item.ChildQuotaWaits[childID]), // the child's own usage-limit wait
 				ReadOnlyAlias:     true,
 			})
 		}
@@ -1387,6 +1388,14 @@ func registerThreadHandlers(
 	listThreadTurns := func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
+		}
+		if params.TurnWindow != nil {
+			// A window request is served by the same path the Manager's turns
+			// operation uses: an initial window is a windowed read, and only a
+			// cursor-bearing request resumes one. The plain item listing below
+			// ignores a window entirely, and a saved session's window must come
+			// from the past index instead of an empty cursor.
+			return operations.turns(ctx, params)
 		}
 		params, err := appitempaging.ApplyBefore(params)
 		if err != nil {

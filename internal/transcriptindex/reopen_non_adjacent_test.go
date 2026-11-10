@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"fmt"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -61,11 +62,11 @@ func TestWindowPaginationGroupsANonAdjacentlyRevisitedTurn(t *testing.T) {
 	want := referenceCandidates(t, path)
 	assertAllWindows(t, x, path)
 
-	// Pin down the exact adjacency this scenario is testing: turn_ra's two
-	// items are NOT each other's physical neighbours (turn_rb's two items —
-	// its own opening userMessage and its answer — sit between them in the
-	// file), so neither reports the other as adjacent, even though both
-	// belong to the same turn id.
+	// Pin down the exact shape this scenario is testing: turn_ra's two items
+	// are NOT each other's physical neighbours (turn_rb's two items — its own
+	// opening userMessage and its answer — sit between them in the file), yet
+	// both belong to the same logical turn id, so each reports that the other
+	// continues it.
 	var raFirst, rbFirst, rbLast, raSecond *appitempaging.TranscriptItemCandidate
 	for i := range want {
 		switch {
@@ -83,8 +84,8 @@ func TestWindowPaginationGroupsANonAdjacentlyRevisitedTurn(t *testing.T) {
 	if raFirst == nil || rbFirst == nil || rbLast == nil || raSecond == nil {
 		t.Fatalf("fixture did not produce the expected items; candidates: %s", dump(want))
 	}
-	if raFirst.HasLaterItems {
-		t.Errorf("turn_ra's first-attempt item reports HasLaterItems=true, want false (turn_rb's item is next, not turn_ra's)")
+	if !raFirst.HasLaterItems {
+		t.Errorf("turn_ra's first-attempt item reports HasLaterItems=false, want true (the reopened turn has a later item)")
 	}
 	if rbFirst.HasEarlierItems {
 		t.Errorf("turn_rb's first item reports HasEarlierItems=true, want false (turn_ra's first-attempt item precedes it, a different turn)")
@@ -92,8 +93,8 @@ func TestWindowPaginationGroupsANonAdjacentlyRevisitedTurn(t *testing.T) {
 	if rbLast.HasLaterItems {
 		t.Errorf("turn_rb's last item reports HasLaterItems=true, want false (turn_ra's second-attempt item follows it, a different turn)")
 	}
-	if raSecond.HasEarlierItems {
-		t.Errorf("turn_ra's second-attempt item reports HasEarlierItems=true, want false (turn_rb's item is the physical predecessor, not turn_ra's)")
+	if !raSecond.HasEarlierItems {
+		t.Errorf("turn_ra's second-attempt item reports HasEarlierItems=false, want true (the reopened turn has an earlier item)")
 	}
 
 	// The index must agree with the (now corrected) reference on every one
@@ -105,4 +106,66 @@ func TestWindowPaginationGroupsANonAdjacentlyRevisitedTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertWindow(t, "latest", window, want, len(want), appwire.TranscriptItemPageLimit)
+}
+
+// TestLatestWindowMarksAReopenedTurnsLaterFragmentAsIncomplete covers the page
+// split where the reopened turn's later fragment lands on the newest page and
+// its first fragment is one page further back: A1, B1..B39, A2. The later
+// fragment must report that its logical turn has earlier items even though its
+// physical predecessor belongs to turn B.
+func TestLatestWindowMarksAReopenedTurnsLaterFragmentAsIncomplete(t *testing.T) {
+	lines := []fixtureLine{
+		entryLine(opens("turn_a", schema.TurnSpanExecution, user("first attempt"))),
+		entryLine(inTurn("turn_a", assistant(text("a-first")))),
+		entryLine(completion("turn_a", schema.TurnCompleted, 1, 10)),
+		entryLine(opens("turn_b", schema.TurnSpanExecution, user("unrelated turn"))),
+	}
+	for i := range 39 {
+		lines = append(lines, entryLine(inTurn("turn_b", assistant(text(fmt.Sprintf("b-%02d", i))))))
+	}
+	lines = append(lines,
+		entryLine(completion("turn_b", schema.TurnCompleted, 2, 10)),
+		entryLine(reopen("turn_a")),
+		entryLine(inTurn("turn_a", assistant(text("a-second")))),
+		entryLine(completion("turn_a", schema.TurnCompleted, 3, 20)),
+	)
+	path := writeFixture(t, fixture{header: transcript.Header{SessionID: "th_reopen_paged"}, lines: lines})
+	x := openIndex(t, path, t.TempDir())
+
+	want := referenceCandidates(t, path)
+	window, err := x.Latest(appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var laterFragment bool
+	for i := range window.Candidates {
+		candidate := window.Candidates[i]
+		if candidate.Item.Text == "a-second" {
+			laterFragment = true
+			if !candidate.HasEarlierItems {
+				t.Fatal("the reopened turn's later fragment reports no earlier items")
+			}
+		}
+	}
+	if !laterFragment {
+		t.Fatal("latest window did not carry the reopened turn's later fragment")
+	}
+	for i := range want {
+		switch want[i].Item.Text {
+		case "first attempt":
+			if want[i].HasEarlierItems {
+				t.Fatal("the reopened turn's first item reports earlier items")
+			}
+		case "unrelated turn":
+			if want[i].HasEarlierItems {
+				t.Fatal("turn B's first item reports earlier items")
+			}
+		case "a-first":
+			if !want[i].HasLaterItems {
+				t.Fatal("the reopened turn's first fragment reports no later items")
+			}
+		}
+	}
+	assertWindow(t, "latest", window, want, len(want), appwire.TranscriptItemPageLimit)
+	assertAllWindows(t, x, path)
 }

@@ -5,7 +5,13 @@ import {
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "../stores/transcriptDisplay";
-import { isMobileViewport, resetMobileViewportForTests, subscribeMobileViewport, useIsMobile } from "./useIsMobile";
+import {
+  isMobileViewport,
+  MOBILE_QUERY,
+  resetMobileViewportForTests,
+  subscribeMobileViewport,
+  useIsMobile,
+} from "./useIsMobile";
 
 // jsdom does not implement window.matchMedia at all (verified directly:
 // `typeof window.matchMedia === "undefined"` under this project's vitest+
@@ -90,7 +96,7 @@ test("returns true when the media query matches at mount", () => {
 test("queries with the exact <900px breakpoint string", () => {
   const { matchMedia } = installMatchMediaStub(false);
   renderHook(() => useIsMobile());
-  expect(matchMedia).toHaveBeenCalledWith("(max-width: 899px)");
+  expect(matchMedia).toHaveBeenCalledWith(MOBILE_QUERY);
 });
 
 test("updates reactively when the media query's change event fires", () => {
@@ -99,7 +105,7 @@ test("updates reactively when the media query's change event fires", () => {
   expect(result.current).toBe(false);
 
   act(() => {
-    lists.get("(max-width: 899px)")!.emit(true);
+    lists.get(MOBILE_QUERY)!.emit(true);
   });
 
   expect(result.current).toBe(true);
@@ -108,7 +114,7 @@ test("updates reactively when the media query's change event fires", () => {
 test("removes its change listener on unmount", () => {
   const { lists } = installMatchMediaStub(false);
   const { unmount } = renderHook(() => useIsMobile());
-  const list = lists.get("(max-width: 899px)")!;
+  const list = lists.get(MOBILE_QUERY)!;
   expect(list.listenerCount).toBe(1);
 
   unmount();
@@ -119,7 +125,7 @@ test("removes its change listener on unmount", () => {
 test("keeps the same media-query listener across hook rerenders", () => {
   const { lists } = installMatchMediaStub(false);
   const { rerender } = renderHook(() => useIsMobile());
-  const list = lists.get("(max-width: 899px)")!;
+  const list = lists.get(MOBILE_QUERY)!;
   expect(list.listenerCount).toBe(1);
   const add = vi.spyOn(list, "addEventListener");
   const remove = vi.spyOn(list, "removeEventListener");
@@ -138,7 +144,7 @@ test("uses one shared live media query for direct readers and React subscribers"
   expect(isMobileViewport()).toBe(false);
   expect(matchMedia).toHaveBeenCalledTimes(1);
 
-  act(() => lists.get("(max-width: 899px)")!.emit(true));
+  act(() => lists.get(MOBILE_QUERY)!.emit(true));
   expect(result.current).toBe(true);
   expect(isMobileViewport()).toBe(true);
 });
@@ -157,7 +163,7 @@ test.each([
     const secondDirectListener = vi.fn();
     const stopFirst = subscribeMobileViewport(firstDirectListener);
     const stopSecond = subscribeMobileViewport(secondDirectListener);
-    const list = lists.get("(max-width: 899px)")!;
+    const list = lists.get(MOBILE_QUERY)!;
 
     expect(primary.result.current).toBe(initial);
     expect(secondary.result.current).toBe(initial);
@@ -203,7 +209,7 @@ test("ordinary events publish both directions once without duplicate notificatio
   const { result, unmount } = renderHook(() => useIsMobile());
   const directListener = vi.fn();
   const stop = subscribeMobileViewport(directListener);
-  const list = lists.get("(max-width: 899px)")!;
+  const list = lists.get(MOBILE_QUERY)!;
 
   act(() => list.emit(true));
   expect(result.current).toBe(true);
@@ -231,7 +237,7 @@ test("ordinary events publish both directions once without duplicate notificatio
 test("preserves a viewport change across the snapshot-to-subscribe gap", () => {
   const { lists, matchMedia } = installMatchMediaStub(false);
   expect(isMobileViewport()).toBe(false);
-  const list = lists.get("(max-width: 899px)")!;
+  const list = lists.get(MOBILE_QUERY)!;
 
   list.matches = true;
   const directListener = vi.fn();
@@ -250,13 +256,13 @@ test("preserves a viewport change across the snapshot-to-subscribe gap", () => {
 test("replaces the shared media source without losing existing subscribers", () => {
   const first = installMatchMediaStub(false);
   const primary = renderHook(() => useIsMobile());
-  const firstList = first.lists.get("(max-width: 899px)")!;
+  const firstList = first.lists.get(MOBILE_QUERY)!;
   expect(primary.result.current).toBe(false);
   expect(firstList.listenerCount).toBe(1);
 
   const replacement = installMatchMediaStub(true);
   const secondary = renderHook(() => useIsMobile());
-  const replacementList = replacement.lists.get("(max-width: 899px)")!;
+  const replacementList = replacement.lists.get(MOBILE_QUERY)!;
   expect(firstList.listenerCount).toBe(0);
   expect(replacementList.listenerCount).toBe(1);
   expect(primary.result.current).toBe(false);
@@ -294,5 +300,5 @@ test("isMobileViewport directly returns false without matchMedia", () => {
 test("isMobileViewport directly reads the current media query", () => {
   window.matchMedia = vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia;
   expect(isMobileViewport()).toBe(true);
-  expect(window.matchMedia).toHaveBeenCalledWith("(max-width: 899px)");
+  expect(window.matchMedia).toHaveBeenCalledWith(MOBILE_QUERY);
 });
