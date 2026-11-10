@@ -18,11 +18,11 @@ permissions:
   contents: read
 
 jobs:
-  # The frontend gate runs as two lanes on separate runners, because its two
-  # halves share nothing: the unit/type/lint checks, and the production build
-  # plus the real-browser guards. Each takes about three minutes; run one
-  # after the other on one runner they took over six. `web`, the required
-  # check, passes only when both lanes do.
+  # The frontend gate runs on separate runners, because its halves share
+  # nothing: the unit/type/lint checks in one lane, and the production build
+  # plus the real-browser guards in web-browser, which is itself split into
+  # shards, one runner each. `web`, the required check, passes only when every
+  # lane does.
   web-unit:
     runs-on: ubuntu-24.04
     steps:
@@ -86,7 +86,14 @@ jobs:
           vitest_json_to_tsv /tmp/gate-web-vitest.json > /tmp/gate-web-timing.tsv
           scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-web-timing.tsv
 
+  # One runner per shard of the browser gate (browserGuardShards in
+  # cmd/evener-dev/webbrowser.go); together the shards run every guard.
   web-browser:
+    name: web-browser / ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [overflow, skill, cascade]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -97,8 +104,8 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
-      # The retirement and skill browser guards run go test against
-      # cmd/evener-hub, with and without the browserguard tag.
+      # The retirement, skill, cascade and background guards run go test
+      # against cmd/evener-hub, with and without the browserguard tag.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
@@ -106,17 +113,27 @@ jobs:
 
       - uses: ./.github/actions/go-cache-restore
         with:
-          kind: web
+          kind: web-${{ matrix.shard }}
 
-      - name: Build and browser guards
+      # Two guards at a time, whatever the load average: the one-minute
+      # average still carries the frontend build when the gate sizes its
+      # slots, which left the unsharded lane at one slot or two by chance.
+      # Two is the contention the guards already pass at, a long guard beside
+      # a short one.
+      - name: Build and browser guards (${{ matrix.shard }})
+        env:
+          BROWSER_GUARD_SHARD: ${{ matrix.shard }}
+          BROWSER_GUARD_CONCURRENCY: 2
         run: make test-web-browser
 
       - name: Install native and shared journey dependencies
+        if: matrix.shard == 'cascade'
         run: |
           npm ci --prefix mobile-native
           npm ci --prefix appwire-client/typescript
 
       - name: Failed-turn continuation in both clients
+        if: matrix.shard == 'cascade'
         run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
 
       - uses: ./.github/actions/go-cache-save
@@ -126,7 +143,8 @@ jobs:
       # be read afterwards. On a runner nobody reads it: the directory goes
       # with the machine, and the failure arrives as one line naming a path
       # that no longer exists. This is the only copy that outlives the job.
-      # Named for the run so two failures on the same PR do not collide.
+      # Named for the shard and the run so two failures on the same PR do not
+      # collide.
       # The cascade guard keeps its evidence the same way (its temp dir is
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
       # So are the background Jobs and job output paging guards'.
@@ -134,7 +152,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-guards-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-guards-artifacts-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**

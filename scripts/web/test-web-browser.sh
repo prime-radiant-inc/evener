@@ -7,6 +7,8 @@
 # CPU, so by default the slots are the machine's spare cores
 # (scripts/lib/load-aware-workers.sh), all at once on an idle CI runner and one
 # at a time on a saturated one. BROWSER_GUARD_CONCURRENCY overrides that.
+# BROWSER_GUARD_SHARD, read by the gate itself, runs one shard of the guards
+# (CI runs one shard per runner).
 #
 # It execs the prebuilt ./evener-dev (the make target's build-dev
 # prerequisite) rather than `go run`: go run neither relays SIGTERM or SIGHUP

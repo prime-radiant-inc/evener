@@ -1112,6 +1112,26 @@ The full-stack skill guard is a different KIND of check:
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs Chrome.
 
+The gate runs its guards side by side in slots. Locally the slot count is the
+machine's spare cores (`scripts/lib/load-aware-workers.sh`);
+`BROWSER_GUARD_CONCURRENCY` overrides it. Run serially, the guards take about
+eleven minutes on a CI runner, and three of them take most of that:
+overflowguard and skillguard near three minutes each, cascadeguard near one
+and a half. So CI splits the gate into shards, one runner each, and the lane
+takes as long as its slowest shard instead of the sum. `browserGuardShards` in
+`cmd/evener-dev/webbrowser.go` builds each shard around one long guard
+(`overflow`, `skill`, `cascade`) with shorter guards beside it, and
+`BROWSER_GUARD_SHARD=<shard> make test-web-browser` runs one shard. Every guard
+belongs to exactly one shard, and the `web-browser` job's matrix names every
+shard; `TestBrowserGuardShardsPartitionTheGuards` and
+`TestCIWebBrowserMatrixRunsEveryShard` hold both, so a new guard cannot land
+in no shard and never run in CI. A shard runs two guards at a time. The load
+average is no measure on a CI runner: it still carries the frontend build when
+the gate sizes its slots. Two at a time is the contention the guards are known
+to pass at, a long guard beside a short one. The `cascade` shard also runs the
+failed-turn continuation journey (`TestRetryContinuation*`), which needs the
+native and shared client installs.
+
 Three traps each produce a false green.
 
 **A fixture must use REGISTERED types.** An overflow harness that seeded item
