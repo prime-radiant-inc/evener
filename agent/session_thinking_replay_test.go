@@ -8,6 +8,10 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -248,4 +252,156 @@ func hasSignedThinking(messages []llm.Message, text, signature string) bool {
 		}
 	}
 	return false
+}
+
+// TestFallbackReceivesTurnsAppendedDuringSkillReload pins the fallback snapshot
+// refresh: a compacted-skill reload appends instructions while the request is
+// prepared, and a permanent primary failure must hand the fallback the rebuilt
+// history rather than the snapshot taken before the reload (#4563 review).
+func TestFallbackReceivesTurnsAppendedDuringSkillReload(t *testing.T) {
+	t.Parallel()
+	root := skillFixtureRoot(t)
+	markGitRoot(t, root)
+	const reloadedMarker = "RELOAD_BODY_a71c"
+	newBody := strings.Repeat(reloadedMarker+" reloaded instruction\n", 64)
+	oldBody := strings.Repeat("RELOAD_OLD_5e10 stale instruction\n", 64)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
+	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	var mainCalls atomic.Int32
+	fallback := provider.FromResolved(registry.Resolved{
+		Instance: "gwb", ModelID: "claude-fallback", WireID: "claude-fallback",
+		Protocol: registry.ProtocolAnthropic, Surface: registry.SurfaceAnthropic,
+		Caps: registry.Caps{InputModalities: []string{"text", "image"}},
+	}, nil)
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback ok") },
+	}
+	s, main, _ := newReloadSession(t, root, 0,
+		func(llm.Request) llm.Response {
+			if mainCalls.Add(1) == 1 {
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
+			}
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
+		},
+		reloadSummaryResponder("SUMMARY_reload_fb", nil),
+		withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1, StateDir: t.TempDir(),
+			ModelFallbacks: []string{"gwb/claude-fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gwb/claude-fallback" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+		}),
+	)
+	var mainAttempts atomic.Int32
+	main.FaultResponder = func(llm.Request) error {
+		if mainAttempts.Add(1) == 3 {
+			return llm.ErrorFromHTTPStatus("anthropic", 404, "model not found", nil, nil)
+		}
+		return nil
+	}
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 2
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+		t.Fatalf("activation: %v", err)
+	}
+	if lifecycleInventory(s)["opaque"].Ordinary == nil {
+		t.Fatal("test premise: the activation recorded no ordinary skill inventory")
+	}
+	foldWithReloadSelection(t, s, schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}})
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) == 0 {
+		t.Fatal("test premise: the fold published no reload handoff")
+	}
+	if err := os.WriteFile(source, []byte("---\nname: opaque\ndescription: fixture\n---\n"+newBody), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_again", nil); err != nil {
+		t.Fatalf("reload round: %v", err)
+	}
+	if mainReqs := main.Requests(); len(mainReqs) < 3 || !requestCarriesText(mainReqs[2], reloadedMarker) {
+		t.Fatalf("test premise: the reload round did not carry the reloaded instructions (%d requests)", len(mainReqs))
+	}
+	fallbackReqs := fallbackAdapter.Requests()
+	if len(fallbackReqs) == 0 {
+		t.Fatal("the fallback never ran")
+	}
+	if !requestCarriesText(fallbackReqs[len(fallbackReqs)-1], reloadedMarker) {
+		t.Fatal("the fallback request lost the instructions appended during the skill reload")
+	}
+}
+
+func requestCarriesText(req llm.Request, want string) bool {
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentText && strings.Contains(p.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestFallbackThinkingProjectionRepricesTheBudget pins the estimate refresh:
+// the continuation builder prices the untrimmed messages, but a chat fallback
+// drops their thinking before dispatch. Keeping the stale estimate makes the
+// budget reject a request that fits, so the fallback never runs (#4563 review).
+func TestFallbackThinkingProjectionRepricesTheBudget(t *testing.T) {
+	t.Parallel()
+	primary := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "chat-primary", WireID: "chat-primary",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{Reasoning: new(true)},
+	}, nil)
+	fallback := provider.FromResolved(registry.Resolved{
+		Instance: "gwb", ModelID: "chat-fallback", WireID: "chat-fallback",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+	}, nil)
+	fallback = WithContextWindow(fallback, 50000)
+	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider:       "gw",
+		FaultResponder: func(llm.Request) error { return permErr },
+		Responder:      func(llm.Request) llm.Response { return agenttest.FinalResponse("unused") },
+	}
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
+	}
+	sess := newSession(t,
+		withProfile(primary),
+		withAdapter(primaryAdapter),
+		withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/chat-fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gwb/chat-fallback" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+			testOnly: testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("THINK_b7d1 padded reasoning\n", 80000)}},
+		{Kind: llm.ContentText, Text: "prior answer"},
+	}})
+
+	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	fallbackReqs := fallbackAdapter.Requests()
+	if len(fallbackReqs) == 0 {
+		t.Fatal("the fallback never ran")
+	}
+	if requestCarriesText(fallbackReqs[len(fallbackReqs)-1], "THINK_b7d1") {
+		t.Fatal("the chat fallback carried thinking its policy drops")
+	}
 }

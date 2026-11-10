@@ -391,10 +391,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
 		for _, notification := range appended {
-			history = append(history, scope.projectTurnMessage(notification, true))
+			// The appended turns carry no replay-sensitive thinking; both the
+			// dispatched history and the untrimmed fallback source take them so
+			// a fallback sees the reloaded instructions too (#4563).
+			message := scope.projectTurnMessage(notification, true)
+			history = append(history, message)
+			untrimmedHistory = append(untrimmedHistory, message)
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+		s.mu.Lock()
+		s.roundFallbackMessages = untrimmedReq.Messages
+		s.mu.Unlock()
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
@@ -1419,6 +1428,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				break
 			}
 			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
+			// The continuation builder priced the untrimmed messages; the
+			// projection above removed thinking this target does not replay, so
+			// reprice both estimates before admission (#4563).
+			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
