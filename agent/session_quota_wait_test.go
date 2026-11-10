@@ -1226,3 +1226,40 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 		t.Fatal("the goal blocked on the usage limit instead of continuing")
 	}
 }
+
+// A Stop that lands while a switch picked during the wait is still being
+// applied ends the turn as a Stop: the retry never runs, so nothing the
+// retry would have carried is consumed. Steering waiting for the next
+// request stays queued for whatever runs after the Stop.
+func TestStopDuringTheSwitchAfterAWaitLeavesSteeringQueued(t *testing.T) {
+	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	serveSession(t, s)
+	turnCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	// The Stop lands while the switch is being applied.
+	s.cfg.testOnly.beforeModelSwitchPublish = stop
+	trip := tripwireCtx(t).Done()
+	run := startInput(WithQueuedInputDrainOnInterrupt(turnCtx, context.Background()), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s, trip)
+	if err := s.Steer("steering for the next request"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	recoverProvider(adapter)
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	run.awaitEnd(t, trip, "the Stop ends the turn")
+	if !errors.Is(run.err, context.Canceled) {
+		t.Fatalf("input error = %v, want the Stop's cancellation", run.err)
+	}
+	if got := streamCalls(adapter); got != 1 {
+		t.Fatalf("model requests = %d, want only the limited one: the retry must not run after the Stop", got)
+	}
+	s.mu.Lock()
+	queued := slices.ContainsFunc(s.steeringQueue, func(m steeringMessage) bool { return m.Text == "steering for the next request" })
+	s.mu.Unlock()
+	if !queued {
+		t.Fatal("the Stopped turn consumed steering its retry never carried")
+	}
+}

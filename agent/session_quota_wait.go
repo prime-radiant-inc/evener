@@ -158,6 +158,13 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	}
 	end()
 	s.applyModelSwitchPickedDuringWait()
+	// A Stop can land while the switch applies. The retry will not run, so
+	// nothing it would carry may be consumed: steering stays queued (or
+	// parked) for whatever runs after the Stop, and the turn ends as an
+	// ordinary cancellation.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	s.injectDrainedSteering()
 	return true, nil
 }
