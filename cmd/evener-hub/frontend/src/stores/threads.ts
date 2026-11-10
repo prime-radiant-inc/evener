@@ -72,7 +72,6 @@ import {
   MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
-  reflectedMutationIds,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -6631,15 +6630,16 @@ function handleNotification(n: AnyNotification): void {
       nextWatchedThreads?.get(settlementRef) ??
       threads.get(settlementRef) ??
       watchedThreads.get(settlementRef);
-    const visible = settledModel ? reflectedMutationIds(settledModel) : undefined;
     const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
     const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
     const consumed =
       n.method === "thread/queueChanged" ? validConsumedClientMutationIds(n.params.consumedClientMutationIds) : [];
-    const retireIds = visible
-      ? mutationIdentities.filter((id) => transcriptIds?.has(id) || consumed.includes(id))
+    const retireIds = transcriptIds
+      ? mutationIdentities.filter((id) => transcriptIds.has(id) || consumed.includes(id))
       : consumed;
-    const retainIds = visible ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds?.has(id)) : [];
+    const retainIds = transcriptIds
+      ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id))
+      : [];
     const runtime = getMutationRuntime();
     if (runtime && retireIds.length > 0) {
       void runtime.dispatcher

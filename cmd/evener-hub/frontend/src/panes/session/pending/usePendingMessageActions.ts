@@ -1,6 +1,11 @@
 import { errorText, sessionActionError } from "@evener/appwire-client";
 import type { PendingMessage } from "@evener/appwire-client/state/mutation";
-import { canEditQueuedMessage, canRemoveQueuedMessage } from "@evener/appwire-client/state/mutation";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  commandMarkers,
+  skillMarkers,
+} from "@evener/appwire-client/state/mutation";
 import { useState } from "react";
 import { copyToClipboard } from "../../../shell/palette/commands";
 import { pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
@@ -27,6 +32,14 @@ import type { PendingActionContext } from "./actionContext";
 const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
 
 export type PendingRowAction = "edit" | "remove" | "retry" | "steerNow" | "dismiss" | "copy";
+
+type PendingRowKind = "recovery" | "queue" | "local";
+
+function rowKind(row: PendingMessage): PendingRowKind {
+  if (row.recovery) return "recovery";
+  if (row.queueEntryId !== undefined && row.outbox === undefined) return "queue";
+  return "local";
+}
 
 // The action owner for one pending-message row. It preserves the rules the
 // durable and recovery rows already enforce, but reads them from the
@@ -205,9 +218,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
   async function handleCopy(row: PendingMessage): Promise<void> {
     setBusy(row.id, true);
     try {
-      const parts = [row.text];
-      for (const name of row.skillNames) parts.push(`[skill: ${name}]`);
-      for (const name of row.commandNames) parts.push(`[command: ${name}]`);
+      const parts = [row.text, skillMarkers(row.skillNames), commandMarkers(row.commandNames)];
       await copyToClipboard(parts.filter((part) => part !== "").join("\n"));
       toasts.push("success", "Copied message");
     } catch (error) {
@@ -320,12 +331,12 @@ export function usePendingMessageActions(context: PendingActionContext) {
   function action(row: PendingMessage, verb: PendingRowAction): void {
     switch (verb) {
       case "edit":
-        if (row.recovery) void handleRecoveryEdit(row);
-        else if (row.queueEntryId !== undefined && !localRecord(row)) void handleEdit(row);
+        if (rowKind(row) === "recovery") void handleRecoveryEdit(row);
+        else if (rowKind(row) === "queue") void handleEdit(row);
         else void handleLocalAction(row, "edit");
         break;
       case "remove":
-        if (row.queueEntryId !== undefined && !localRecord(row)) void handleCancel(row);
+        if (rowKind(row) === "queue") void handleCancel(row);
         else void handleLocalAction(row, "remove");
         break;
       case "retry":
@@ -349,17 +360,26 @@ export function usePendingMessageActions(context: PendingActionContext) {
     draining,
     isBusy: (row: PendingMessage) => busyIds.has(row.id),
     canEdit: (row: PendingMessage) => {
-      if (row.recovery) return row.interrupt !== true && row.recovery.recoveryKind !== "orphaned";
-      if (row.queueEntryId !== undefined && !localRecord(row))
-        return row.textComplete && (row.text.trim() !== "" || row.skillNames.length > 0 || row.commandNames.length > 0);
-      const record = row.outbox;
-      return record !== undefined && canEditQueuedMessage(record) && context.onEditRecovery !== undefined;
+      switch (rowKind(row)) {
+        case "recovery":
+          return row.interrupt !== true && row.recovery?.recoveryKind !== "orphaned";
+        case "queue":
+          return (
+            row.textComplete && (row.text.trim() !== "" || row.skillNames.length > 0 || row.commandNames.length > 0)
+          );
+        case "local":
+          return row.outbox !== undefined && canEditQueuedMessage(row.outbox) && context.onEditRecovery !== undefined;
+      }
     },
     canRemove: (row: PendingMessage) => {
-      if (row.recovery) return false;
-      if (row.queueEntryId !== undefined && !localRecord(row)) return true;
-      const record = row.outbox;
-      return record !== undefined && canRemoveQueuedMessage(record);
+      switch (rowKind(row)) {
+        case "recovery":
+          return false;
+        case "queue":
+          return true;
+        case "local":
+          return row.outbox !== undefined && canRemoveQueuedMessage(row.outbox);
+      }
     },
     canRetry: (row: PendingMessage) => {
       const record = row.outbox;

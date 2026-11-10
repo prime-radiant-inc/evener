@@ -1012,7 +1012,9 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
             await requestResult(recovery.delete(clientMutationId));
         } else if (wireCarriers.length > 0) {
           // The wire lives only as unedited recovery copies: the carrier is
-          // the subject and retires with the settlement.
+          // the subject. When the caller needs the display copy, convert it to
+          // the optimistic store before retiring the recovery row.
+          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
           await requestResult(recovery.delete(subject.clientMutationId));
         } else {
           await requestResult(outbox.delete(subject.clientMutationId));

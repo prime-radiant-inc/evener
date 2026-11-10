@@ -244,6 +244,35 @@ test("a legacy queue row with no texts array keeps its preview but is not editab
   expect(rows[0]).toMatchObject({ id: "queue:q1", text: "truncated…", textComplete: false });
 });
 
+test("a legacy queue row with complete text merges with its one local queue row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, outbox: [local("m1", "turn/queue", "hello")] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
+});
+
+test("a legacy queue preview never merges with a different full local text", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, outbox: [local("m1", "turn/queue", "hello world")] });
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "queue:q1"]);
+});
+
 test("durable local and recovery states map to their pending states", () => {
   const rows = project({
     outbox: [

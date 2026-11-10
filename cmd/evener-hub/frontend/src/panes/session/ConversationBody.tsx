@@ -28,7 +28,7 @@ import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
 import { PendingMessageStack } from "./pending/PendingMessageStack";
-import { usePendingArrivalEpoch } from "./pending/pendingMessageLiveEdge";
+import { usePendingArrivalEpoch, withoutActiveRecovery } from "./pending/pendingMessageLiveEdge";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
@@ -266,8 +266,10 @@ function LiveConversationBody({
   const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingMessages = usePendingMessages(ref);
   const activeRecoveryId = submission?.actions.pendingProps?.activeRecoveryId;
-  const visiblePendingMessages =
-    activeRecoveryId === undefined ? pendingMessages : pendingMessages.filter((row) => row.id !== activeRecoveryId);
+  const visiblePendingMessages = useMemo(
+    () => withoutActiveRecovery(pendingMessages, activeRecoveryId),
+    [pendingMessages, activeRecoveryId],
+  );
   // Spec §1's live gate still owns the departure announcements. The stack
   // itself stays visible on a fenced or dormant session so the messages never
   // lose their one rendering.

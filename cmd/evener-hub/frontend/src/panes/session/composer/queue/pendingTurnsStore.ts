@@ -377,6 +377,29 @@ const NO_PENDING_MESSAGES: PendingMessage[] = [];
 
 type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 
+// Both pending projections read the same two stores. The pending store's
+// listener receives (state, previous), so unrelated writes such as
+// submittingRefs changes do not wake either view.
+function subscribePendingInputs(ref: string, onStoreChange: () => void, includeRecovery: boolean): () => void {
+  const unsubscribePending = pendingTurnsStore.subscribe((state, previous) => {
+    if (
+      state.outbox !== previous.outbox ||
+      state.optimistic !== previous.optimistic ||
+      state.submittedHere !== previous.submittedHere ||
+      (includeRecovery && state.recovery !== previous.recovery)
+    ) {
+      onStoreChange();
+    }
+  });
+  const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
+    if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
+  });
+  return () => {
+    unsubscribePending();
+    unsubscribeThreads();
+  };
+}
+
 // pendingTurnEntries() reads both pendingTurnsStore's own state and, through
 // the threads port, the live thread model - a turn moving from queued to
 // started arrives over the wire into threadsStore, not into an outbox
@@ -403,16 +426,7 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   }, [ref]);
 
   const subscribe = useCallback(
-    (onStoreChange: () => void) => {
-      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
-      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
-        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
-      });
-      return () => {
-        unsubscribePending();
-        unsubscribeThreads();
-      };
-    },
+    (onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange, false),
     [ref],
   );
 
@@ -480,20 +494,12 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     if (ref === "") return;
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
+  const model = useThreadsStore((state) => state.threads.get(ref));
+  useEffect(() => {
+    for (const id of transcriptMutationIds(model)) deliveredHere.add(id);
+  }, [model]);
 
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => {
-      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
-      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
-        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
-      });
-      return () => {
-        unsubscribePending();
-        unsubscribeThreads();
-      };
-    },
-    [ref],
-  );
+  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange, true), [ref]);
 
   const cacheRef = useRef<{
     outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
@@ -507,7 +513,6 @@ export function usePendingMessages(ref: string): PendingMessage[] {
   const getSnapshot = useCallback((): PendingMessage[] => {
     const { outbox, optimistic, recovery, submittedHere } = pendingTurnsStore.getState();
     const model = threadsPort.getThreadModel(ref);
-    for (const id of transcriptMutationIds(model)) deliveredHere.add(id);
     const cached = cacheRef.current;
     if (
       cached &&
@@ -520,6 +525,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     ) {
       return cached.rows;
     }
+    const transcriptIds = transcriptMutationIds(model);
     const rows = projectPendingMessages({
       ref,
       outbox: [...outbox.values()],
@@ -527,6 +533,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       recovery: [...recovery.values()],
       model,
       deliveredHere,
+      transcriptIds,
       submittedHere,
       isOwnMutationRecord,
     });

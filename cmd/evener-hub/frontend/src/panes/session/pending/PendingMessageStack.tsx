@@ -8,6 +8,7 @@ import { SessionNowContext } from "../liveness";
 import { UserMessageView } from "../transcript/messages/UserMessageItem";
 import type { PendingActionContext } from "./actionContext";
 import { pendingMessageCaption } from "./pendingMessageCaption";
+import { withoutActiveRecovery } from "./pendingMessageLiveEdge";
 import styles from "./pendingmessagestack.module.css";
 import { usePendingMessageActions } from "./usePendingMessageActions";
 
@@ -32,8 +33,7 @@ export function PendingMessageStack({
   const canDrain = model !== undefined && controlsFor(model).drain;
   // The composer owns the recovery row it has activated; the stack keeps the
   // rest of the tray.
-  const shown =
-    context?.activeRecoveryId === undefined ? messages : messages.filter((row) => row.id !== context.activeRecoveryId);
+  const shown = withoutActiveRecovery(messages, context?.activeRecoveryId);
   const queued = shown.some((row) => row.method === "queue");
 
   if (shown.length === 0) return null;

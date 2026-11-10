@@ -15,7 +15,17 @@ import type { ThreadModel } from "../../model";
 import { isQueueParked } from "../../submitRouting";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { composerVerb } from "./composerMethods";
-import { type PendingMethod, pendingEntryPreview, reconcilePendingEntries } from "./pendingEntries";
+import {
+  compareKnownNumber,
+  normalizeText,
+  outboxInput,
+  type PendingMethod,
+  parseImagePlaceholder,
+  pendingEntryPreview,
+  reconcilePendingEntries,
+  textualInput,
+  transcriptMutationIds,
+} from "./pendingEntries";
 import type {
   MutationAttachmentRef,
   MutationOptimisticRecord,
@@ -96,67 +106,47 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   // Ids the client has already seen as delivered. A later bounded read that
   // drops the item cannot resurrect the row.
   deliveredHere?: ReadonlySet<string>;
+  // The transcript identity set, when the caller already computed it for the
+  // same model. Avoids a second full transcript walk per projection.
+  transcriptIds?: ReadonlySet<string>;
   submittedHere?: ReadonlyMap<string, number>;
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean;
 }
 
-// The transcript item identity that retires a pending row. Queue ids are
-// deliberately excluded: a queue row is the pending representation, not proof
-// of delivery.
-export function transcriptMutationIds(model: ThreadModel | undefined): Set<string> {
-  const ids = new Set<string>();
-  for (const turn of model?.turns ?? []) {
-    for (const item of turn.items) {
-      if (item.clientMutationId) ids.add(item.clientMutationId);
-    }
-  }
-  return ids;
-}
+export { transcriptMutationIds };
 
-function recordInput(record: MutationRecord): InputItem[] {
-  const display = record.optimisticDisplay;
-  if (display && typeof display === "object" && "input" in display && Array.isArray(display.input)) {
-    return display.input as InputItem[];
-  }
-  return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
-}
-
-function inputContent(input: readonly InputItem[]): {
+interface InputContent {
   text: string;
   images: PendingMessageImage[];
   imageCount: number;
   skillNames: string[];
   commandNames: string[];
-} {
-  const texts: string[] = [];
+}
+
+// The same input array is read by the base row and again when a queue row
+// merges into it. Cache the decoded content so image data URIs are built once.
+const inputContentCache = new WeakMap<readonly InputItem[], InputContent>();
+
+function inputContent(input: readonly InputItem[]): InputContent {
+  const cached = inputContentCache.get(input);
+  if (cached) return cached;
+  const content = textualInput(input);
   const images: PendingMessageImage[] = [];
-  const skillNames: string[] = [];
-  const commandNames: string[] = [];
   for (const item of input) {
-    if (item.type === "text" && typeof item.text === "string") texts.push(item.text);
-    else if (item.type === "image" && typeof item.data === "string") {
+    if (item.type === "image" && typeof item.data === "string") {
       images.push({
         src: `data:${item.mediaType ?? "image/png"};base64,${item.data}`,
         ...(item.name ? { name: item.name } : {}),
       });
-    } else if (item.type === "skill" && typeof item.name === "string") skillNames.push(item.name);
-    else if (item.type === "command" && typeof item.name === "string") commandNames.push(item.name);
+    }
   }
-  return {
-    text: texts.join("\n"),
+  const result = {
+    ...content,
     images,
     imageCount: images.length,
-    skillNames: canonicalSkillNames(skillNames),
-    commandNames: canonicalSkillNames(commandNames),
   };
-}
-
-// The daemon's own image-only queue preview: "[image]" or "[N images]".
-function previewImageCount(preview: string | undefined): number {
-  if (!preview) return 0;
-  if (preview.trim() === "[image]") return 1;
-  const match = /^\[(\d+) images\]$/.exec(preview.trim());
-  return match ? Number(match[1]) : 0;
+  inputContentCache.set(input, result);
+  return result;
 }
 
 // Pending rows render the actual image bytes when they have them, so the
@@ -208,7 +198,7 @@ function familyCreatedAt<A extends MutationAttachmentRef>(family: LocalFamily<A>
 function familyInput<A extends MutationAttachmentRef>(family: LocalFamily<A> | undefined): InputItem[] | undefined {
   const record = familyRecord(family);
   if (!record) return undefined;
-  const input = recordInput(record);
+  const input = outboxInput(record) ?? [];
   return input.length > 0 ? input : undefined;
 }
 
@@ -345,29 +335,19 @@ function mergeQueueContent<A extends MutationAttachmentRef>(
 }
 
 function compareRows(left: PendingMessage, right: PendingMessage): number {
-  if (left.createdAt !== undefined || right.createdAt !== undefined) {
-    if (left.createdAt === undefined) return 1;
-    if (right.createdAt === undefined) return -1;
-    if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
-  }
-  if (left.intentSequence !== undefined || right.intentSequence !== undefined) {
-    if (left.intentSequence === undefined) return 1;
-    if (right.intentSequence === undefined) return -1;
-    if (left.intentSequence !== right.intentSequence) return left.intentSequence - right.intentSequence;
-  }
-  if (left.queueIndex !== undefined || right.queueIndex !== undefined) {
-    if (left.queueIndex === undefined) return 1;
-    if (right.queueIndex === undefined) return -1;
-    if (left.queueIndex !== right.queueIndex) return left.queueIndex - right.queueIndex;
-  }
-  return left.id.localeCompare(right.id);
+  return (
+    compareKnownNumber(left.createdAt, right.createdAt) ||
+    compareKnownNumber(left.intentSequence, right.intentSequence) ||
+    compareKnownNumber(left.queueIndex, right.queueIndex) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 export function projectPendingMessages<A extends MutationAttachmentRef = MutationAttachmentRef>(
   input: PendingMessagesInput<A>,
 ): PendingMessage<A>[] {
   const { ref, model } = input;
-  const delivered = new Set(transcriptMutationIds(model));
+  const delivered = new Set(input.transcriptIds ?? transcriptMutationIds(model));
   for (const id of input.deliveredHere ?? []) delivered.add(id);
 
   const families = new Map<string, LocalFamily<A>>();
@@ -387,7 +367,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const reconciliationModel: ThreadModel | undefined = model
     ? {
         ...model,
-        queue: model.queue ? { ...model.queue, revision: model.queue.revision, clientMutationIds: [] } : null,
+        queue: model.queue ? { ...model.queue, clientMutationIds: [] } : null,
         turns: [],
       }
     : undefined;
@@ -448,13 +428,20 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const queue = model?.queue;
   const rowCount = queue?.preview?.length ?? queue?.texts?.length ?? queue?.ids?.length ?? queue?.depth ?? 0;
   const queueRows: PendingMessage<A>[] = [];
-  const consumedQueueEntryIds = new Set<string>();
+  const ownerByEntryId = new Map<string, PendingMessage<A>>();
+  for (const row of rows.values()) {
+    for (const ownedId of row.queueEntryIds) ownerByEntryId.set(ownedId, row);
+    if (row.queueEntryId) ownerByEntryId.set(row.queueEntryId, row);
+  }
   for (let index = 0; index < rowCount; index += 1) {
     const entryId = queue?.ids?.[index];
     const mutationId = queue?.clientMutationIds?.[index];
     const fullText = queue?.texts?.[index];
     const text = fullText ?? queue?.preview?.[index] ?? "";
     const preview = queue?.preview?.[index];
+    const imageCount = parseImagePlaceholder(preview);
+    const skillNames = canonicalSkillNames(queue?.skillNames?.[index] ?? []);
+    const commandNames = canonicalSkillNames(queue?.commandNames?.[index] ?? []);
     const queueMentions = queue?.mentions?.[index];
     const local = mutationId ? families.get(mutationId) : undefined;
     const localRecord = familyRecord(local);
@@ -472,16 +459,16 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         fullText !== undefined
           ? pendingEntryPreview({
               text,
-              imageCount: previewImageCount(preview),
-              skillNames: canonicalSkillNames(queue?.skillNames?.[index] ?? []),
-              commandNames: canonicalSkillNames(queue?.commandNames?.[index] ?? []),
+              imageCount,
+              skillNames,
+              commandNames,
             })
           : text,
       textComplete: fullText !== undefined,
       images: [],
-      imageCount: previewImageCount(preview),
-      skillNames: canonicalSkillNames(queue?.skillNames?.[index] ?? []),
-      commandNames: canonicalSkillNames(queue?.commandNames?.[index] ?? []),
+      imageCount,
+      skillNames,
+      commandNames,
       ...(queueMentions
         ? {
             mentions: queueMentions.flatMap((mention): ComposerMention[] =>
@@ -501,20 +488,11 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       ...(queue?.revision !== undefined ? { queueRevision: queue.revision } : {}),
       ...(localRecord ? { outbox: local?.outbox, optimistic: local?.optimistic } : {}),
     };
-    const merged = mergeQueueContent(row, local, pending);
     // The queue row is the pending representation of this message. If a
     // local/authoritative row already describes the same identity, update that
     // row instead of adding a second one. A drain or promote owns the queue
     // entries it names, so those queue rows disappear in its favor.
-    let owner: PendingMessage<A> | undefined;
-    if (entryId) {
-      for (const candidate of rows.values()) {
-        if (candidate.queueEntryIds.includes(entryId) || candidate.queueEntryId === entryId) {
-          owner = candidate;
-          break;
-        }
-      }
-    }
+    let owner = entryId ? ownerByEntryId.get(entryId) : undefined;
     if (!owner && mutationId) owner = rows.get(mutationId);
     if (owner) {
       const withQueue = mergeQueueContent(owner, families.get(owner.id), pendingById.get(owner.id));
@@ -531,52 +509,50 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         textComplete: withQueue.textComplete || row.textComplete,
       };
       rows.set(owner.id, next);
-      if (entryId) consumedQueueEntryIds.add(entryId);
+      if (entryId) ownerByEntryId.set(entryId, next);
     } else {
-      queueRows.push(merged);
+      queueRows.push(mergeQueueContent(row, local, pending));
     }
   }
 
   // A legacy queue row carries no clientMutationId. Merge it with the one
   // local queue entry whose own preview matches it, in order, so the same
   // message does not render once from the queue and once from local storage.
-  const unmatchedQueueIds = new Set(queueRows.filter((row) => row.id.startsWith("queue:")).map((row) => row.id));
-  if (unmatchedQueueIds.size > 0) {
-    for (const row of queueRows) {
-      if (!unmatchedQueueIds.has(row.id)) continue;
-      const match = [...rows.values()].find(
-        (candidate) =>
-          candidate.method === "queue" &&
-          (candidate.state === "waiting" || candidate.state === "sending") &&
-          !candidate.queueEntryId &&
-          candidate.text === row.text &&
-          candidate.queueEntryIds.length === 0,
-      );
-      if (match) {
-        row.id = match.id;
-        row.text = match.text;
-        row.displayText = match.displayText || row.displayText;
-        row.textComplete = match.textComplete;
-        row.images = match.images;
-        row.imageCount = match.imageCount;
-        row.skillNames = match.skillNames;
-        row.commandNames = match.commandNames;
-        row.createdAt = match.createdAt;
-        row.fromThisClient = match.fromThisClient;
-        row.outbox = match.outbox;
-        row.optimistic = match.optimistic;
-        row.recovery = match.recovery;
-        row.recoveryKind = match.recoveryKind;
-        rows.delete(match.id);
-      }
-      unmatchedQueueIds.delete(row.id);
-    }
+  // A legacy queue row carries no clientMutationId and no entry-id link. Merge
+  // it only when its complete text matches exactly one local queue row; a
+  // preview alone must not be restored or acted on as if it were full content.
+  for (const row of queueRows) {
+    if (!row.id.startsWith("queue:") || !row.textComplete) continue;
+    const matches = [...rows.values()].filter(
+      (candidate) =>
+        candidate.method === "queue" &&
+        (candidate.state === "waiting" || candidate.state === "sending") &&
+        !candidate.queueEntryId &&
+        candidate.textComplete &&
+        normalizeText(candidate.text) === normalizeText(row.text) &&
+        candidate.queueEntryIds.length === 0,
+    );
+    if (matches.length !== 1) continue;
+    const match = matches[0];
+    if (!match) continue;
+    row.id = match.id;
+    row.text = match.text;
+    row.displayText = match.displayText || row.displayText;
+    row.textComplete = match.textComplete;
+    row.images = match.images;
+    row.imageCount = match.imageCount;
+    row.skillNames = match.skillNames;
+    row.commandNames = match.commandNames;
+    row.createdAt = match.createdAt;
+    row.fromThisClient = match.fromThisClient;
+    row.outbox = match.outbox;
+    row.optimistic = match.optimistic;
+    row.recovery = match.recovery;
+    row.recoveryKind = match.recoveryKind;
+    rows.delete(match.id);
   }
 
-  const all = [
-    ...queueRows.filter((row) => !row.queueEntryId || !consumedQueueEntryIds.has(row.queueEntryId)),
-    ...rows.values(),
-  ].filter((row) => !delivered.has(row.id));
+  const all = [...queueRows, ...rows.values()];
 
   return all.sort(compareRows);
 }

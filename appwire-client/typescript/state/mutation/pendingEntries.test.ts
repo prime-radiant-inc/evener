@@ -8,6 +8,7 @@ import {
   normalizeText,
   ownPendingSend,
   ownPendingTurnInput,
+  parseImagePlaceholder,
   queueEntryPreviewText,
   reconcilePendingEntries,
 } from "./pendingEntries";
@@ -25,6 +26,13 @@ test("imagePlaceholder names the image count", () => {
   expect(imagePlaceholder(1)).toBe("[image]");
   expect(imagePlaceholder(2)).toBe("[2 images]");
   expect(imagePlaceholder(8)).toBe("[8 images]");
+});
+
+test("parseImagePlaceholder reads the same grammar", () => {
+  expect(parseImagePlaceholder(undefined)).toBe(0);
+  expect(parseImagePlaceholder("hello")).toBe(0);
+  expect(parseImagePlaceholder("[image]")).toBe(1);
+  expect(parseImagePlaceholder(" [2 images] ")).toBe(2);
 });
 
 test("queueEntryPreviewText prefers normalized text and falls back to images", () => {

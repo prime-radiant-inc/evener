@@ -2,7 +2,12 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
-import { effectiveWireId, type MutationOptimisticRecord, type MutationOutboxRecord } from "./records";
+import {
+  effectiveWireId,
+  type MutationOptimisticRecord,
+  type MutationOutboxRecord,
+  type MutationRecord,
+} from "./records";
 
 export type PendingMethod = ComposerVerb;
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
@@ -52,6 +57,16 @@ export function imagePlaceholder(count: number): string {
   if (count === 1) return "[image]";
   if (count > 1) return `[${count} images]`;
   return "";
+}
+
+// The inverse of imagePlaceholder for a daemon queue preview. The preview is a
+// wire string, so its grammar stays next to the composer that writes it.
+export function parseImagePlaceholder(preview: string | undefined): number {
+  if (!preview) return 0;
+  const normalized = preview.trim();
+  if (normalized === imagePlaceholder(1)) return 1;
+  const match = /^\[(\d+) images\]$/.exec(normalized);
+  return match ? Number(match[1]) : 0;
 }
 
 // queueEntryPreviewText is the one label computation used for BOTH a real
@@ -145,38 +160,70 @@ export function commandMarkers(names: readonly string[]): string {
   return names.map((name) => `[command: ${name}]`).join(" ");
 }
 
-function inputPreview(input: InputItem[] | undefined): {
+// Known values sort first, ascending; undefined sorts last. Shared by the
+// durable-entry sort and the pending projection's final ordering.
+export function compareKnownNumber(left: number | undefined, right: number | undefined): number {
+  if (left === undefined && right === undefined) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return left - right;
+}
+
+interface TextualInput {
   text: string;
-  imageCount: number;
   skillNames: string[];
   commandNames: string[];
-} {
-  const text = input
-    ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text)
-    .join("\n");
+}
+
+export function textualInput(input: readonly InputItem[] | undefined): TextualInput {
+  return {
+    text:
+      input
+        ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n") ?? "",
+    skillNames: canonicalSkillNames(
+      input
+        ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+        .map((item) => item.name),
+    ),
+    commandNames: canonicalSkillNames(
+      input
+        ?.filter(
+          (item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string",
+        )
+        .map((item) => item.name),
+    ),
+  };
+}
+
+function inputPreview(input: InputItem[] | undefined): TextualInput & { imageCount: number } {
+  const content = textualInput(input);
   const imageCount = input?.filter((item) => item.type === "image").length ?? 0;
-  const skillNames = canonicalSkillNames(
-    input
-      ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-      .map((item) => item.name),
-  );
-  const commandNames = canonicalSkillNames(
-    input
-      ?.filter((item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string")
-      .map((item) => item.name),
-  );
-  return { text: text ?? "", imageCount, skillNames, commandNames };
+  return { ...content, imageCount };
 }
 
 type PendingRecord = MutationOutboxRecord | MutationOptimisticRecord;
 
-function outboxInput(record: PendingRecord): InputItem[] | undefined {
+export function outboxInput(record: MutationRecord): InputItem[] | undefined {
   const display = record.optimisticDisplay;
   if (display && typeof display === "object" && "input" in display && Array.isArray(display.input)) {
     return display.input as InputItem[];
   }
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
+}
+
+// The transcript-item half of the reflected-identity rule, shared by the
+// reflected set below and the pending projection's retirement check.
+export function transcriptMutationIds(model: ThreadModel | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items) {
+      const clientMutationId = (item as typeof item & { clientMutationId?: string }).clientMutationId;
+      if (clientMutationId) ids.add(clientMutationId);
+    }
+  }
+  return ids;
 }
 
 // The ONE home of the reflected-identity rule - which client mutation ids
@@ -186,12 +233,7 @@ function outboxInput(record: PendingRecord): InputItem[] | undefined {
 // from reconcile's own settle rule.
 export function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set(model?.queue?.clientMutationIds ?? []);
-  for (const turn of model?.turns ?? []) {
-    for (const item of turn.items) {
-      const clientMutationId = (item as typeof item & { clientMutationId?: string }).clientMutationId;
-      if (clientMutationId) ids.add(clientMutationId);
-    }
-  }
+  for (const id of transcriptMutationIds(model)) ids.add(id);
   return ids;
 }
 
@@ -311,12 +353,6 @@ export function reconcilePendingEntries(
   // relative order is stable within a snapshot only). The stable sort keeps
   // array order for equal createdAt - a same-millisecond double-submit
   // keeps submission order in-session, an accepted corner. This is
-  // the ONE home of the rule: queue rows, chips, and the held-steer ghost
-  // stack all render this order.
-  return [...entries.values()].sort((left, right) => {
-    if (left.createdAt === undefined && right.createdAt === undefined) return 0;
-    if (left.createdAt === undefined) return 1;
-    if (right.createdAt === undefined) return -1;
-    return left.createdAt - right.createdAt;
-  });
+  // the ONE home of the rule: the pending stack renders this order.
+  return [...entries.values()].sort((left, right) => compareKnownNumber(left.createdAt, right.createdAt));
 }

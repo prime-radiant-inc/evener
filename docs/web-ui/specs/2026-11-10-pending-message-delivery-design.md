@@ -43,9 +43,11 @@ dedupes by text.
 
 The projection keys rows by the effective wire identity (`clientMutationId`).
 A legacy queue row with no identity is keyed `queue:<entryId>` and merged with
-the one local queue row whose content matches it. A drain or promote row owns
-the queue entries named by `queueEntryIds`, so those rows do not render beside
-it. A queue row whose identity is visible as a transcript item is suppressed.
+the one local queue row whose complete content matches it. A preview-only
+legacy row stays visible on its own rather than merging on truncated text. A
+drain or promote row owns the queue entries named by `queueEntryIds`, so those
+rows do not render beside it. A queue row whose identity is visible as a
+transcript item is suppressed.
 
 Row states:
 

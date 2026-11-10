@@ -31,12 +31,14 @@ export type {
 export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export {
+  commandMarkers,
   normalizeText,
   ownPendingSend,
   ownPendingTurnInput,
   pendingEntryPreview,
   reconcilePendingEntries,
   reflectedMutationIds,
+  skillMarkers,
 } from "./pendingEntries";
 export type {
   PendingMessage,

@@ -17,6 +17,16 @@ export function heldSteerEntries(
   );
 }
 
+// The composer owns the recovery row it has activated. One predicate for the
+// mount gate and the stack's own list, so the arrival epoch and the rendered
+// rows cannot disagree.
+export function withoutActiveRecovery<T extends { id: string }>(
+  rows: readonly T[],
+  activeRecoveryId: string | undefined,
+): readonly T[] {
+  return activeRecoveryId === undefined ? rows : rows.filter((row) => row.id !== activeRecoveryId);
+}
+
 // The live-edge arrival counter: bumps when a new pending identity joins the
 // visible set, never on removal. A pane reused across refs baselines the fresh
 // ref's already-present entries without a bump.
