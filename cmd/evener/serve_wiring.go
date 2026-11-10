@@ -233,7 +233,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
 		// so oldSess.Close() no longer pulls the tmp out from under the new session.
 		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
-		clearEnv.LoginPATH = execenv.LoginShellPATH() // cached: free after the first probe this process
+		clearEnv.LoginPATH, clearEnv.LoginPATHProbeError = execenv.LoginShellPATHProbe() // a cached answer is free; a failure retries
 		if err := deps.provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
 			return fmt.Errorf("clear sandbox: %w", err)
 		}

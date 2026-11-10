@@ -26,6 +26,15 @@ func probeOutputFixture(t *testing.T, path, finalLine string, floodLines int) {
 	writeExecFixture(t, path, script)
 }
 
+// resolveLoginShellPATH is the string-only form these capture tests use. The
+// production API is LoginShellPATHProbe, which keeps a failed probe distinct
+// from an empty answer; this wrapper stays in tests because production has no
+// caller that wants the error discarded.
+func resolveLoginShellPATH() string {
+	answer, _ := resolveLoginShellPATHProbe()
+	return answer
+}
+
 func probeOutputFixtureGuards(t *testing.T) {
 	t.Helper()
 	for _, tool := range []string{"sh", "yes", "head"} {
@@ -48,9 +57,7 @@ func TestLoginShellPATHOutputCapturesBounded(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "flood-shell")
 	probeOutputFixture(t, fixture, pathLine, floodLines)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	capture, err := loginShellPATHOutput(ctx, fixture, "-lc", "echo $PATH")
+	capture, err := loginShellPATHOutput(5*time.Second, fixture, "-lc", "echo $PATH")
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -160,7 +167,7 @@ func TestLoginShellPATHUnderCapIsByteExact(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "short-shell")
 	probeOutputFixture(t, fixture, pathLine, 0)
 
-	capture, err := loginShellPATHOutput(context.Background(), fixture, "-lc", "echo $PATH")
+	capture, err := loginShellPATHOutput(5*time.Second, fixture, "-lc", "echo $PATH")
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
