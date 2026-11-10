@@ -174,6 +174,111 @@ func TestDelegateShellRepairLeavesCallbackWatchForRestoreFromFinishOnlyPrefix(t 
 	}
 }
 
+// TestDelegateShellRepairPreservesPendingOutputMatchFrameFromFinishOnlyPrefix
+// covers the torn-batch prefix where the watch already matched and put its first
+// output-match frame on the journal, but the crash lost the terminal batch's
+// watch clear. The cold repair must clear the watch without synthesizing an end
+// notice: a second frame at the same key and UpdateSeq would fold over the
+// matched output and claim the watch never fired.
+func TestDelegateShellRepairPreservesPendingOutputMatchFrameFromFinishOnlyPrefix(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+
+	started := time.Unix(10, 0).UTC()
+	matched := time.Unix(15, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	key := jobstore.WatchSendKey{
+		VisibleSessionID:        "child-dlg_target",
+		WatchID:                 "watch-shell",
+		WatchTarget:             "job-shell",
+		ResolvedWatchedIdentity: "job-shell",
+		ResolvedSendTo:          runtimeMessageAliasCaller,
+		WatchGeneration:         "watch-generation",
+	}
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-shell",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:    jobstore.EventWatchRegistered,
+			TS:      started,
+			WatchID: "watch-shell",
+			Watch: &jobstore.WatchEvent{
+				Generation:       "watch-generation",
+				OwnerSessionID:   "child-dlg_target",
+				VisibleSessionID: "child-dlg_target",
+				Target:           "job-shell",
+				SendTo:           runtimeMessageAliasCaller,
+				ConfigHash:       "hash",
+				Condition:        "output_match",
+			},
+		},
+		jobstore.Event{
+			Kind: jobstore.EventWatchSendPending,
+			TS:   matched,
+			WatchSend: &jobstore.WatchSendState{
+				Key:        key,
+				DeliveryID: "delivery-match",
+				UpdateSeq:  1,
+				Message:    "output matched",
+				Frame:      "matched output frame",
+				CreatedAt:  matched,
+				UpdatedAt:  matched,
+			},
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-shell",
+			Status:      jobstore.StatusStopped,
+			Reason:      "runtime_lost",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-pending-match",
+		},
+	)
+
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 1 {
+		t.Fatalf("shell repair plans = %#v, want one plan for the finish-only prefix", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+
+	stored, err := jobstore.ReadEvents(path)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	pending := jobstore.FoldWatchSends(stored).Pending[key]
+	if pending == nil {
+		t.Fatalf("pending watch sends after repair = %#v, want the output-match frame preserved", jobstore.FoldWatchSends(stored).Pending)
+	}
+	if pending.EndNotice || pending.DeliveryID != "delivery-match" || pending.Message != "output matched" || pending.Frame != "matched output frame" {
+		t.Fatalf("pending watch send after repair = %#v, want the original output-match frame", pending)
+	}
+	if frames := watchEndNoticeFrames(t, path); len(frames) != 0 {
+		t.Fatalf("watch-end notice frames after repair = %#v, want none: the generation already spoke", frames)
+	}
+	_, watches := readDelegateShellStore(t, path)
+	if watch := watches["watch-shell"]; watch == nil || watch.Active {
+		t.Fatalf("terminal watch after repair = %#v, want cleared with its pending send preserved", watch)
+	}
+}
+
 // TestDelegateReconcileSkipsShellRepairPlanWithNoWork pins that a pending
 // notification outside a stop, with no active terminal watch, does not create a
 // repair plan. An empty plan would make the stop and bootstrap drains treat it
