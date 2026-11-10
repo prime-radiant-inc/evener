@@ -60,7 +60,12 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
-import { measureComposerPlacement, typeComposerDraft, verifyComposerGesture } from "./composer.mjs";
+import {
+  measureComposerPlacement,
+  typeComposerDraft,
+  verifyComposerGesture,
+  waitForComposerSettled,
+} from "./composer.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -231,6 +236,7 @@ async function measureAt(cdpEndpoint, url, width) {
         })()`,
       );
       if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      await waitForComposerSettled(send);
       const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
       engagedFooter = engaged.footer;
       engagedCurrentWork = engaged.currentWork;
