@@ -85,8 +85,7 @@ func TestShardRunnerSumsTheShardsCPUIntoThePackageRow(t *testing.T) {
 // the binary's exit status rather than its own.
 func TestTestCPUExecKeepsTheTestBinarysFailure(t *testing.T) {
 	out, err := goTestUnderCPUExec(t, "^TestFixtureBeta$", "SHARD_FIXTURE_FAIL=beta")
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
+	if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 		t.Fatalf("go test over a failing test under the wrapper = %v, want a failing exit\n%s", err, out)
 	}
 	if !bytes.Contains(out, []byte(`"Action":"fail","Package":"shardfixture","Elapsed"`)) {
@@ -120,8 +119,8 @@ func TestTestCPUExecForwardsSignalsToTheTestBinary(t *testing.T) {
 	}
 	for lines.Scan() {
 	}
-	var exit *exec.ExitError
-	if err := cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 7 {
+	err = cmd.Wait()
+	if exit, ok := errors.AsType[*exec.ExitError](err); !ok || exit.ExitCode() != 7 {
 		t.Fatalf("wrapper exit = %v, want the child's trapped exit status 7", err)
 	}
 }
