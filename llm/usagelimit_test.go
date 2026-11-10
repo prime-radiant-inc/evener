@@ -3,6 +3,8 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +267,52 @@ func TestUsageLimitMessageCarriesBothTimeForms(t *testing.T) {
 	}
 	if strings.Contains(msg, "map[") {
 		t.Errorf("message leaks a Go map dump: %q", msg)
+	}
+}
+
+// jsonInt64 accepts a decoded JSON number as seconds only while it fits a
+// Duration: integral and fractional forms in every decoded type, and nothing
+// past ±MaxInt64 nanoseconds.
+func TestJSONInt64(t *testing.T) {
+	maxSecs := int64(math.MaxInt64) / int64(time.Second)
+	for _, tc := range []struct {
+		name   string
+		in     any
+		want   int64
+		wantOK bool
+	}{
+		{"json.Number fraction truncates", json.Number("1.5"), 1, true},
+		{"json.Number past the cap", json.Number(fmt.Sprint(maxSecs + 1)), 0, false},
+		{"huge json.Number", json.Number("99999999999999999999999"), 0, false},
+		{"float64", float64(42), 42, true},
+		{"float64 overflow", 1e30, 0, false},
+		{"MaxFloat64", math.MaxFloat64, 0, false},
+		{"float64 negative overflow", -1e30, 0, false},
+		{"int64", int64(99), 99, true},
+		{"int64 overflow", maxSecs + 1, 0, false},
+		{"int64 far overflow", int64(1) << 62, 0, false},
+		{"int64 negative overflow", -maxSecs - 1, 0, false},
+		{"int64 far negative overflow", int64(-1) << 62, 0, false},
+		{"unknown type", "not-a-number", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := jsonInt64(tc.in)
+			if ok != tc.wantOK || (ok && got != tc.want) {
+				t.Fatalf("jsonInt64(%v) = (%d, %v), want (%d, %v)", tc.in, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// With no provider message the rendered limit still leads with a headline
+// before its plan and reset details.
+func TestUsagelimitMessageEmpty(t *testing.T) {
+	msg := usageLimitMessage(usageLimit{planType: "pro", resetsAt: time.Now().Add(time.Hour)}, time.Now())
+	detail := strings.Index(msg, "pro")
+	if detail < 0 {
+		t.Fatalf("message %q does not carry the plan", msg)
+	}
+	if lead := msg[:detail]; strings.TrimSpace(lead) == "" || lead[0] == ' ' || lead[0] == '(' {
+		t.Fatalf("message %q has no headline before its details", msg)
 	}
 }

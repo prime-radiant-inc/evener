@@ -507,3 +507,58 @@ func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyByMessageAuthenticationSignals covers the unauthorized/invalid-key
+// message-classification arm of a 400 response.
+func TestClassifyByMessageAuthenticationSignals(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 400, "invalid key supplied", nil, nil)
+	if Kind(err) != KindAuthentication {
+		t.Fatalf("Kind(invalid key) = %v, want authentication", Kind(err))
+	}
+}
+
+// A non-HTTP error always renders some text, names its provider when it has
+// one, and is exactly the caller's message when it has none.
+func TestNonHTTPBaseErrorMessage(t *testing.T) {
+	t.Run("message without provider", func(t *testing.T) {
+		if got := NewAbortError("cancelled by user", nil).Error(); got != "cancelled by user" {
+			t.Errorf("Error() = %q, want the caller's message alone", got)
+		}
+	})
+	t.Run("empty message without provider", func(t *testing.T) {
+		if got := NewAbortError("", nil).Error(); strings.TrimSpace(got) == "" {
+			t.Error("Error() is blank, want fallback text")
+		}
+	})
+	t.Run("provider and message", func(t *testing.T) {
+		got := NewStreamError("openai", "boom", nil).Error()
+		if !strings.Contains(got, "openai") || !strings.Contains(got, "boom") {
+			t.Errorf("Error() = %q, want the provider and the message", got)
+		}
+	})
+	t.Run("empty message with provider", func(t *testing.T) {
+		got := NewStreamError("openai", "   ", nil).Error()
+		if !strings.Contains(got, "openai") || strings.TrimSpace(strings.Replace(got, "openai", "", 1)) == "" {
+			t.Errorf("Error() = %q, want the provider plus fallback text", got)
+		}
+	})
+}
+
+// An unsupported tool_choice mode is a permanent, provider-attributed error
+// that names the mode it refused.
+func TestNewUnsupportedToolChoiceError(t *testing.T) {
+	err := NewUnsupportedToolChoiceError("anthropic", "required")
+	target, ok := errors.AsType[*UnsupportedToolChoiceError](err)
+	if !ok {
+		t.Fatalf("error %T is not an *UnsupportedToolChoiceError", err)
+	}
+	if target.Retryable() || target.Provider() != "anthropic" {
+		t.Fatalf("Retryable() = %v, Provider() = %q; want permanent and attributed", target.Retryable(), target.Provider())
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Fatalf("Error() = %q, want the refused mode", err.Error())
+	}
+	if NewUnsupportedToolChoiceError("openai", "  ").Error() == "" {
+		t.Fatal("an empty mode renders no text")
+	}
+}
