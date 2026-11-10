@@ -19,6 +19,12 @@ import (
 // Keep this separate from the terminal, positively unsupported capability.
 var errOwnerEvidence = errors.New("sshconn: selected owner evidence missing")
 
+// errNoUniqueLockOwner is the narrower failure of a global /proc/locks probe
+// that ran to completion but produced no single usable owner. A transport
+// failure or a lock identity that changed during the probe is not this error:
+// the per-process candidate proof below must not paper over either.
+var errNoUniqueLockOwner = fmt.Errorf("%w: hub lock has no unique visible owner", errOwnerEvidence)
+
 var errOwnerSelectionMismatch = fmt.Errorf("%w: different selected owner", errOwnerEvidence)
 
 // A service selecting this config under a different root is not unrelated.
@@ -72,6 +78,16 @@ func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, f
 	return m.resolveOwnedEndpointUsing(ctx, host, facts, m.resolveHostEndpoint)
 }
 
+// selectedLockCandidate is the running endpoint's own process, the only one
+// that can hold the selected root's exclusive flock. It is a candidate for the
+// independent per-process proof, never authority by itself.
+func selectedLockCandidate(report hubendpoint.Report) string {
+	if report.Running == nil || report.Running.PID <= 0 {
+		return ""
+	}
+	return strconv.Itoa(report.Running.PID)
+}
+
 func (m *Manager) resolveOwnedEndpointUsing(ctx context.Context, host hostreg.Host, facts Preflight, read func(context.Context, hostreg.Host, Preflight) (hubendpoint.Report, error)) (selectedOwner, error) {
 	// Capture the same effective executable that revalidation and replay compare,
 	// including for Darwin and cold stopped services.
@@ -89,7 +105,7 @@ func (m *Manager) resolveOwnedEndpointUsing(ctx context.Context, host hostreg.Ho
 	if facts.OS != "linux" {
 		return selectedOwner{}, fmt.Errorf("%w: host %q requires a live selected owner", errOwnerEvidence, host.Name)
 	}
-	pid, lockErr := m.selectedLockPID(ctx, host, report.HubStateRoot)
+	pid, lockErr := m.selectedLockPIDPreferring(ctx, host, report.HubStateRoot, selectedLockCandidate(report))
 	if lockErr == nil {
 		return m.resolveLinuxOwner(ctx, host, report, pid, true)
 	}
@@ -171,7 +187,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	}
 	currentPID := pid
 	if fromLock {
-		currentPID, err = m.selectedLockPID(ctx, host, report.HubStateRoot)
+		currentPID, err = m.selectedLockPIDPreferring(ctx, host, report.HubStateRoot, selectedLockCandidate(report))
 		if err != nil {
 			return selectedOwner{}, err
 		}
@@ -471,25 +487,69 @@ func (m *Manager) ownerRead(ctx context.Context, host hostreg.Host, remote strin
 	return out, nil
 }
 
-// Linux /proc/locks identifies the process holding this existing inode, not any
-// listener on a guessed port. stat's decimal st_dev is split using Linux dev_t's
-// major/minor encoding to match proc_locks' hexadecimal device fields. Never
-// create, unlink, replace or acquire hub.lock in an observer.
-// Unrelated lock churn can hide a held lock in a successful global-list read.
-// Retry only byte-empty results, at most three reads in this one SSH command.
-// This mitigates availability, not snapshot completeness. Pin the original
-// identity before/after each read, including immediately before acceptance.
-func selectedLockRemote(root string) string {
-	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; identity=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
+// lockIdentityRemote pins the selected lock path and captures its decimal
+// st_dev/st_ino identity. It never opens the lock; lockPinRemote rechecks the
+// identity after every read that could be accepted.
+func lockIdentityRemote(root string) string {
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; identity=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; "
+}
+
+// lockKeyRemote derives the /proc locks device:inode key from $identity using
+// Linux dev_t's major/minor encoding.
+func lockKeyRemote() string {
+	return "set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
 		"dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); " +
-		"key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); " +
+		"key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); "
+}
+
+// lockPinRemote rechecks the selected inode identity after a read.
+func lockPinRemote() string {
+	return "current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; "
+}
+
+// Linux /proc/locks identifies the process holding this existing inode, not any
+// listener on a guessed port. Unrelated lock churn can hide a held lock in a
+// successful global-list read. Retry only byte-empty results, at most three
+// reads in this one SSH command; this mitigates availability, not snapshot
+// completeness. Never create, unlink, replace or acquire hub.lock in an
+// observer, and pin the original identity immediately before acceptance.
+func selectedLockRemote(root string) string {
+	return lockIdentityRemote(root) + lockKeyRemote() +
 		"for attempt in 1 2 3; do " +
-		"current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
+		lockPinRemote() +
 		// The sentinel preserves trailing newlines so malformed nonempty output
 		// cannot become empty through command substitution and trigger a retry.
 		"owners=$(awk -v key=\"$key\" '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { print $5 }' /proc/locks && printf '.') || exit; owners=${owners%.}; " +
-		"current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
+		lockPinRemote() +
 		"if [ -n \"$owners\" ]; then printf '%s' \"$owners\"; exit; fi; done"
+}
+
+// uniqueOwnerPID parses a completed probe that must name exactly one numeric
+// PID. An empty result is errNoUniqueLockOwner so the caller may supplement it;
+// a malformed or ambiguous result keeps the caller's existing refusal.
+func uniqueOwnerPID(out []byte, ambiguous, invalid string) (string, error) {
+	var owners []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			owners = append(owners, line)
+		}
+	}
+	if len(owners) == 0 {
+		return "", errNoUniqueLockOwner
+	}
+	pid, err := numericPID(owners[0])
+	if err != nil || pid == "0" {
+		return "", fmt.Errorf("%w: %s", errOwnerEvidence, invalid)
+	}
+	// A global-list read can repeat the same held row under churn; repeated
+	// identical lines are one owner, while any distinct line is a real
+	// conflict. A line holding several words is malformed, not a duplicate.
+	for _, line := range owners[1:] {
+		if line != pid {
+			return "", fmt.Errorf("%w: %s", errOwnerEvidence, ambiguous)
+		}
+	}
+	return pid, nil
 }
 
 func (m *Manager) selectedLockPID(ctx context.Context, host hostreg.Host, root string) (string, error) {
@@ -500,15 +560,63 @@ func (m *Manager) selectedLockPID(ctx context.Context, host hostreg.Host, root s
 	if err != nil {
 		return "", err
 	}
-	fields := strings.Fields(string(out))
-	if len(fields) != 1 {
-		return "", fmt.Errorf("%w: selected lock has no unique visible owner", errOwnerEvidence)
+	return uniqueOwnerPID(out, "multiple visible lock owners", "invalid lock owner")
+}
+
+// selectedLockPIDPreferring returns the unique /proc/locks owner. A successful
+// global read can omit a continuously held row under unrelated lock churn even
+// after its bounded retries, so when it yields no owner at all and a candidate
+// PID is known, the candidate is proven independently from only its own fdinfo.
+// A global probe that failed (transport, changed identity) or returned
+// malformed/ambiguous owners keeps its existing refusal: the candidate proof
+// supplements a completed empty read, it does not paper over any other failure.
+func (m *Manager) selectedLockPIDPreferring(ctx context.Context, host hostreg.Host, root, candidate string) (string, error) {
+	pid, err := m.selectedLockPID(ctx, host, root)
+	if err == nil || !errors.Is(err, errNoUniqueLockOwner) || candidate == "" {
+		return pid, err
 	}
-	pid, err := numericPID(fields[0])
+	verified, verifyErr := m.selectedLockCandidatePID(ctx, host, root, candidate)
+	if verifyErr != nil {
+		return "", fmt.Errorf("%w: candidate proof: %w", err, verifyErr)
+	}
+	return verified, nil
+}
+
+// selectedLockCandidatePID proves that the candidate itself holds the
+// exclusive flock on the selected root's existing hub.lock, reading only that
+// process's fdinfo. The kernel writes the lock row into fdinfo from the open
+// file description, so unrelated global lock-list churn cannot hide it. The
+// probe never opens, creates, unlinks, replaces or acquires the lock, and it
+// pins the selected inode before and after the read; a stale or unrelated
+// candidate (including a reused PID) is rejected because its fdinfo carries no
+// FLOCK WRITE row with this inode's key.
+func (m *Manager) selectedLockCandidatePID(ctx context.Context, host hostreg.Host, root, candidate string) (string, error) {
+	if !path.IsAbs(root) {
+		return "", fmt.Errorf("%w: state root is not absolute", errOwnerEvidence)
+	}
+	pid, err := numericPID(candidate)
 	if err != nil || pid == "0" {
-		return "", fmt.Errorf("%w: invalid lock owner", errOwnerEvidence)
+		return "", fmt.Errorf("%w: invalid lock candidate", errOwnerEvidence)
 	}
-	return pid, nil
+	out, err := m.ownerRead(ctx, host, selectedLockCandidateRemote(root, pid))
+	if err != nil {
+		return "", err
+	}
+	return uniqueOwnerPID(out, "candidate has no unique lock owner", "invalid candidate lock owner")
+}
+
+// selectedLockCandidateRemote is the per-process companion to
+// selectedLockRemote. It pins the selected inode, then reads the candidate's
+// own fdinfo entries for a FLOCK ADVISORY WRITE row whose device/inode key
+// matches. It never touches the lock beyond stat, and it refuses a candidate
+// whose process, fdinfo, or selected inode is unavailable.
+func selectedLockCandidateRemote(root, pid string) string {
+	return lockIdentityRemote(root) + lockKeyRemote() + lockPinRemote() +
+		// grep tolerates a descriptor that closes between the glob and the read;
+		// awk exits nonzero if any file in its argument list is unreadable.
+		"owners=$( { grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null || true; } | awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
+		lockPinRemote() +
+		"printf '%s' \"$owners\""
 }
 
 func ownerGenerationRemote(pid string) string {

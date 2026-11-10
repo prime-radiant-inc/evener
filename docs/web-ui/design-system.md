@@ -482,6 +482,12 @@ outlines in any order/unit, the outline longhands, or the retired inset-ring `bo
 contract-banned; see §4. Dropzone's dashed drag-target outline is signage, not a focus ring, and
 holds the second (and last) contract exception.
 
+Every `:focus-visible` element also carries `--focus-ring-scroll-margin` (6px: the ring width plus
+the largest positive outline-offset, with a sub-pixel scroll-rounding allowance). A keyboard
+scroll-into-view aligns the focused box with the scrollport edge; this margin keeps the ring, which
+paints outside that box, from clipping. `global.css` owns the one rule, and token-contract checks
+every positive outline-offset in the tree against it.
+
 **Stacking order** — The app's own z-index values are tokenized to keep stacking context
 predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane),
 `--z-sticky-bar` (20, pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim),

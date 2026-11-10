@@ -121,7 +121,9 @@ func TestRemoteOwnerServiceAssociationWithoutVisibleLock(t *testing.T) {
 	host, base := ownerCommands(t)
 	// Resolve a service PID from its current definition and process context, then
 	// independently inspect that owner and refresh the supervisor association.
-	commands := []ownerCommand{base[0], {"selected-lock", ""}, base[10], base[12], base[13]}
+	// The completed global read is empty: the candidate proof runs first, finds
+	// no held lock on the reported PID, and leaves the service fallback intact.
+	commands := []ownerCommand{base[0], {"selected-lock", ""}, {selectedLockCandidateRemote("/srv/state", "4242"), ""}, base[10], base[12], base[13]}
 	commands = append(commands, base[4:10]...)
 	commands = append(commands, ownerCommand{serviceLockVnodeRemote("/srv/state", "4242"), "match\n"}, base[11], base[14])
 	commands = append(commands, base[2:17]...)

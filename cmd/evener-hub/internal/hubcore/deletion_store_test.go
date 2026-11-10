@@ -329,6 +329,81 @@ func TestDeletionStoreBeginSkipsOtherProject(t *testing.T) {
 	}
 }
 
+// A session-only record fences its target without becoming the generation a
+// project delete resumes. Both scopes share per-project generation numbering.
+func TestDeletionStoreBeginSessionSeparatesFromProjectDeletion(t *testing.T) {
+	store := newMemDeletionStore(t)
+	const projectID = "project-delete-0123456789"
+	target := deletionTestTarget()
+	sessionRecord, err := store.BeginSession(projectID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sessionRecord.SessionOnly || sessionRecord.WholeProject || len(sessionRecord.Targets) != 1 {
+		t.Fatalf("BeginSession = %+v, want one session-only target", sessionRecord)
+	}
+	retry, err := store.BeginSession(projectID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.Generation != sessionRecord.Generation {
+		t.Fatalf("retry BeginSession generation = %d, want the in-progress %d", retry.Generation, sessionRecord.Generation)
+	}
+	if _, ok := store.DeletingProject(projectID); ok {
+		t.Fatal("DeletingProject resumed a session-only generation")
+	}
+	second := DeletionTarget{Ref: "local:02wMz5Txv1C3Hut0M8GCeC", ThreadID: "02wMz5Txv1C3Hut0M8GCeC"}
+	projectRecord, err := store.Begin(projectID, []DeletionTarget{target, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectRecord.SessionOnly || projectRecord.Generation != sessionRecord.Generation+1 {
+		t.Fatalf("Begin after a session generation = %+v, want the next project generation", projectRecord)
+	}
+	found, ok := store.DeletingProject(projectID)
+	if !ok || found.Generation != projectRecord.Generation || found.SessionOnly {
+		t.Fatalf("DeletingProject = %+v, %v, want the project generation", found, ok)
+	}
+	if state, ok := store.TargetState(target.Ref, target.ThreadID); !ok || state != DeletionStateDeleting {
+		t.Fatalf("TargetState = %q, %v, want deleting", state, ok)
+	}
+	if err := store.MarkDeleted(projectRecord.ProjectID, projectRecord.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.DeletingProject(projectID); ok {
+		t.Fatal("DeletingProject after MarkDeleted = true, want false")
+	}
+	deleting := store.Deleting()
+	if len(deleting) != 1 || !deleting[0].SessionOnly {
+		t.Fatalf("Deleting = %+v, want only the unfinished session generation", deleting)
+	}
+}
+
+// A session generation keeps its scope through the persisted snapshot, so a
+// reopened store still refuses to resume it as a project deletion.
+func TestDeletionStoreSessionRecordRoundTrip(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	store, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.BeginSession("project-session-0123456789", deletionTestTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting := reopened.Deleting()
+	if len(deleting) != 1 || !deleting[0].SessionOnly || deleting[0].Generation != record.Generation {
+		t.Fatalf("reopened Deleting = %+v, want the session generation", deleting)
+	}
+	if _, ok := reopened.DeletingProject(record.ProjectID); ok {
+		t.Fatal("reopened store resumed a session-only generation as a project deletion")
+	}
+}
+
 func TestDeletionStoreMarkDeletedNotFound(t *testing.T) {
 	store, err := NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -336,6 +411,39 @@ func TestDeletionStoreMarkDeletedNotFound(t *testing.T) {
 	}
 	if err := store.MarkDeleted("project-delete-0123456789", 1); err == nil {
 		t.Fatal("MarkDeleted of a generation that was never begun succeeded")
+	}
+}
+
+// Abandon releases a generation whose sweep refused, so an intact session
+// stops reading as a terminal deletion; a deleted generation stays irrevocable.
+func TestDeletionStoreAbandonReleasesAnInProgressGeneration(t *testing.T) {
+	store := newMemDeletionStore(t)
+	record, err := store.BeginSession("project-delete-0123456789", deletionTestTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Abandon(record.ProjectID, record.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := store.TargetState("local:"+deletionStoreTestThreadID, deletionStoreTestThreadID); ok {
+		t.Fatalf("abandoned generation still fences its target with state %q", state)
+	}
+	if deleting := store.Deleting(); deleting != nil {
+		t.Fatalf("Deleting after Abandon = %+v, want nil", deleting)
+	}
+	if err := store.Abandon(record.ProjectID, record.Generation); err == nil {
+		t.Fatal("Abandon of an already-removed generation succeeded")
+	}
+
+	deleted, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDeleted(deleted.ProjectID, deleted.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Abandon(deleted.ProjectID, deleted.Generation); err == nil {
+		t.Fatal("Abandon of a deleted generation succeeded")
 	}
 }
 
@@ -505,6 +613,17 @@ func TestValidateDeletionSnapshot(t *testing.T) {
 		{"invalid project ID", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
 			record("bad", 1, DeletionStateDeleting, target),
 		}}},
+		{"session-only whole project", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{{
+			ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting,
+			WholeProject: true, SessionOnly: true, Targets: target,
+		}}}},
+		{"session-only multiple targets", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{{
+			ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting,
+			SessionOnly: true, Targets: []DeletionTarget{
+				deletionTestTarget(),
+				{Ref: "local:02wMz5Txv1C3Hut0M8GCeC", ThreadID: "02wMz5Txv1C3Hut0M8GCeC"},
+			},
+		}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateDeletionSnapshot(tc.snapshot); err == nil {

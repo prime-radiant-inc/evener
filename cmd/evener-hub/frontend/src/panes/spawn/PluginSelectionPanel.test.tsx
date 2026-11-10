@@ -7,6 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 
 const preview: PluginPreviewResponse = {
@@ -213,7 +214,7 @@ describe("the Details action opens the launcher sheet", () => {
   });
 
   test("Details opens the candidate's sheet, reading Contents by the candidate's own target", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     renderPanel({ client: fake });
@@ -246,7 +247,7 @@ describe("the Details action opens the launcher sheet", () => {
   });
 
   test("the sheet's switch reflects the row's selection and toggles it", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     const { onSelectionChange } = renderPanel({ client: fake });
@@ -270,7 +271,7 @@ describe("the Details action opens the launcher sheet", () => {
   });
 
   test("closing the sheet unmounts it and a reopen reads again", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     renderPanel({ client: fake });
@@ -290,7 +291,7 @@ describe("the Details action opens the launcher sheet", () => {
   });
 
   test("an open sheet follows the current winner and closes when its identity disappears", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     const onSelectionChange = vi.fn();
@@ -330,7 +331,7 @@ describe("the Details action opens the launcher sheet", () => {
   });
 
   test("an installed candidate revision re-reads contents even when its pair stays the same", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     const panel = (current: PluginPreviewResponse) => (

@@ -176,9 +176,19 @@
    * destructive controls whose resting chrome is already danger-colored.
    * Sole deviation: the command palette input's quiet accent-edge typing
    * ring (see token-contract's FOCUS_RING_EXCEPTIONS).
+   *
+   * --focus-ring-scroll-margin is the room a keyboard scroll-into-view must
+   * leave around the focused box so the ring is not clipped at the
+   * scrollport edge. It covers the ring width plus the largest positive
+   * outline-offset (2px), with a small allowance for sub-pixel scroll
+   * rounding: an exact-reach margin still clipped by a measured 1/64px
+   * (issue #5578). global.css applies it to every :focus-visible element;
+   * token-contract checks every positive offset against it.
    */
-  --focus-ring: 2px solid var(--accent);
-  --focus-ring-danger: 2px solid var(--danger);
+  --focus-ring-width: 2px;
+  --focus-ring: var(--focus-ring-width) solid var(--accent);
+  --focus-ring-danger: var(--focus-ring-width) solid var(--danger);
+  --focus-ring-scroll-margin: 6px;
 
   /* --- stacking order --------------------------------------------------
    * The only z-index values in this app's own CSS (see token-contract).
