@@ -53,11 +53,27 @@ func TestSessionConfigCommitProvenanceSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionConfigCommitProvenanceApplyDefaults(t *testing.T) {
+	cfg := SessionConfig{CommitProvenance: " off "}
+	cfg.applyDefaults()
+	if cfg.CommitProvenance != commitprovenance.ModeOff {
+		t.Fatalf("normalized mode = %q, want off", cfg.CommitProvenance)
+	}
+	empty := SessionConfig{}
+	empty.applyDefaults()
+	if empty.CommitProvenance != "" {
+		t.Fatalf("unset mode = %q, want empty default", empty.CommitProvenance)
+	}
+}
+
 func TestSystemPromptWarnsOnInvalidCommitProvenance(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, CommitProvenance: "bogus"}))
 	prompt, warning := s.renderSystemPrompt(s.env)
-	if warning == "" {
-		t.Fatal("invalid mode rendered without a diagnostic")
+	if warning != "" {
+		t.Fatal("configuration diagnostic used the prompt-render failure channel")
+	}
+	if s.commitProvenanceWarning() == "" {
+		t.Fatal("invalid mode produced no configuration diagnostic")
 	}
 	if strings.Contains(prompt, "Co-authored-by: Evener") {
 		t.Fatal("invalid mode still rendered a trailer")

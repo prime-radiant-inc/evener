@@ -422,7 +422,7 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	resumeResolved.Effective.Model = ""
 	resumeResolved.Effective.FastCheapModel = ""
 	resumeResolved.Effective.ModelFallbacks = nil
-	if resumeResolved.Provenance["commit_provenance"] != launchconfig.LayerLaunch {
+	if resumeResolved.Provenance[launchconfig.CommitProvenanceField] != launchconfig.LayerLaunch {
 		// A resume keeps the mode saved with the session. Only an explicit
 		// launch-layer override replaces it.
 		resumeResolved.Effective.CommitProvenance = ""

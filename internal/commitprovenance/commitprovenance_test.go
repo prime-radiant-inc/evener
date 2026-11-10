@@ -28,17 +28,6 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
-func TestValidateAllowsEmpty(t *testing.T) {
-	for _, in := range []string{"", "coauthor", "off"} {
-		if err := Validate(in); err != nil {
-			t.Fatalf("Validate(%q) = %v", in, err)
-		}
-	}
-	if err := Validate("bogus"); err == nil {
-		t.Fatal("Validate(bogus) = nil, want error")
-	}
-}
-
 func TestTrailer(t *testing.T) {
 	got, err := Trailer("0.9.12", "anthropic/claude-opus-4.6", "magic-kingdom", "034uOsahfdjKENyvpnJexm")
 	if err != nil {

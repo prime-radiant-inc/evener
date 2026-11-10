@@ -366,9 +366,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
-	if err := commitprovenance.Validate(cfg.commitProvenance); err != nil {
-		return err
-	}
 	commitProvenance, err := commitprovenance.Normalize(cfg.commitProvenance)
 	if err != nil {
 		return err

@@ -83,10 +83,6 @@ type promptData struct {
 	// CommitTrailer is the exact Co-authored-by line the model is told to end
 	// commit messages with. Empty when provenance is off or cannot be built.
 	CommitTrailer string
-	// CommitProvenanceWarning reports why CommitTrailer is empty when the
-	// session asked for provenance. It is surfaced through the prompt-render
-	// warning path, not rendered into the prompt.
-	CommitProvenanceWarning string
 
 	// Workspace
 	WorkspaceTree string

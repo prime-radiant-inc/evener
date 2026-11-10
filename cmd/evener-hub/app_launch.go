@@ -26,7 +26,7 @@ var errEnabledPluginsPerLaunch = errors.New("enabledPlugins is per-launch only")
 
 // errCommitProvenanceScope refuses persisting the field in a project layer: it
 // is a global default and a per-launch override, never project-specific.
-var errCommitProvenanceScope = errors.New("commit_provenance is available only in the global layer and per launch")
+var errCommitProvenanceScope = errors.New(launchconfig.CommitProvenanceScopeMessage)
 
 // hubLaunchController owns the evener/launch/* RPC handlers.
 type hubLaunchController struct {
@@ -193,7 +193,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 		return appwire.LaunchConfigResolved{}, invalidParamsFor(errEnabledPluginsPerLaunch)
 	}
 	layer := launchconfig.FromWire(params.Config)
-	if params.Layer == "project" && layer.CommitProvenance != "" {
+	if layer.CommitProvenance != "" && !launchconfig.AllowsLayer(launchconfig.CommitProvenanceField, launchconfig.LayerName(params.Layer)) {
 		return appwire.LaunchConfigResolved{}, invalidParamsFor(errCommitProvenanceScope)
 	}
 	if layer.CommitProvenance != "" {

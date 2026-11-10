@@ -654,9 +654,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
 	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
-	if err := commitprovenance.Validate(*lf.commitProvenance); err != nil {
-		return err
-	}
 	commitProvenance, err := commitprovenance.Normalize(*lf.commitProvenance)
 	if err != nil {
 		return err

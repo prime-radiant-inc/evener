@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"primeradiant.com/evener/appwire"
 )
 
 const (
@@ -30,64 +32,26 @@ func Normalize(mode string) (string, error) {
 	}
 }
 
-// Validate accepts an empty mode (meaning "no override") and either known
-// value.
-func Validate(mode string) error {
-	_, err := Normalize(mode)
-	return err
-}
-
 // Trailer returns the exact trailer line. It rejects missing fields and
 // characters that would break the trailer's name or address syntax instead of
 // inventing or rewriting a value.
 func Trailer(version, model, host, session string) (string, error) {
-	for name, value := range map[string]string{
-		"version": version,
-		"model":   model,
-		"host":    host,
-		"session": session,
+	for _, field := range [...]struct{ name, value string }{
+		{"version", version},
+		{"model", model},
 	} {
-		if strings.TrimSpace(value) == "" {
-			return "", fmt.Errorf("commit provenance: %s is empty", name)
+		if strings.TrimSpace(field.value) == "" {
+			return "", fmt.Errorf("commit provenance: %s is empty", field.name)
 		}
-		if hasControl(value) || strings.ContainsAny(value, "<>") {
-			return "", fmt.Errorf("commit provenance: %s contains an unsafe character", name)
+		if strings.ContainsFunc(field.value, unicode.IsControl) || strings.ContainsAny(field.value, "<>") {
+			return "", fmt.Errorf("commit provenance: %s contains an unsafe character", field.name)
 		}
 	}
-	if !validAddressPart(host) {
+	if !appwire.ValidRefPart(host) {
 		return "", fmt.Errorf("commit provenance: host %q is not usable in an address", host)
 	}
-	if !validAddressPart(session) {
+	if !appwire.ValidRefPart(session) {
 		return "", fmt.Errorf("commit provenance: session %q is not usable in an address", session)
 	}
 	return fmt.Sprintf("Co-authored-by: Evener %s (%s) <%s@%s>", version, model, session, host), nil
-}
-
-func hasControl(value string) bool {
-	for _, r := range value {
-		if unicode.IsControl(r) {
-			return true
-		}
-	}
-	return false
-}
-
-// validAddressPart keeps the session and host to the characters an ordinary
-// address can carry. A dot, hyphen and underscore are accepted; whitespace and
-// address delimiters are not.
-func validAddressPart(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '.', r == '-', r == '_':
-		default:
-			return false
-		}
-	}
-	return true
 }

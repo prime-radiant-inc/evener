@@ -1782,6 +1782,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
 	}
+	if warning := s.commitProvenanceWarning(); warning != "" {
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
+			events.WarningData{Message: warning})
+	}
 
 	return s.promptSourceLog, nil
 }

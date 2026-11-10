@@ -85,14 +85,14 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		mergeScalar(&m, &eff.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, "openai_responses_continuation")
 		mergeScalar(&m, &eff.Sandbox, l.Sandbox, "sandbox")
 		if l.CommitProvenance != "" {
-			if name != LayerGlobal && name != LayerLaunch {
+			if !AllowsLayer(CommitProvenanceField, name) {
 				diags = append(diags, Diagnostic{
-					Layer: name, Field: "commit_provenance",
-					Message: "commit_provenance is only honored at the global or launch layer",
+					Layer: name, Field: CommitProvenanceField,
+					Message: CommitProvenanceScopeMessage,
 				})
 			} else if mode, err := commitprovenance.Normalize(l.CommitProvenance); err != nil {
 				diags = append(diags, Diagnostic{
-					Layer: name, Field: "commit_provenance", Message: err.Error(),
+					Layer: name, Field: CommitProvenanceField, Message: err.Error(),
 				})
 			} else {
 				mergeScalar(&m, &eff.CommitProvenance, mode, "commit_provenance")

@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -464,6 +465,11 @@ type spawnConfig struct {
 func (c *SessionConfig) applyDefaults() {
 	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
 		c.ProviderIdleTimeout = "10m"
+	}
+	if c.CommitProvenance != "" {
+		if mode, err := commitprovenance.Normalize(c.CommitProvenance); err == nil {
+			c.CommitProvenance = mode
+		}
 	}
 	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
 	// default of 200 killed long-running agentic sessions doing real work from

@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/commitprovenance"
 )
 
 type LaunchControlKind string
@@ -28,6 +29,14 @@ const (
 )
 
 const LaunchControlPluginSelection LaunchControlKind = "pluginSelection"
+
+// CommitProvenanceScopeMessage is the single wording for the rule that the
+// commit-provenance field is a global default with a per-launch override.
+const CommitProvenanceScopeMessage = "commit_provenance is only available in the global layer and per launch"
+
+// CommitProvenanceField is the launch-layer field name shared by the schema,
+// merge, hub save path and resume policy.
+const CommitProvenanceField = "commit_provenance"
 
 const (
 	LaunchPathNone       LaunchPathKind = ""
@@ -117,7 +126,7 @@ func buildLaunchOptionSchema() []LaunchOption {
 	evenerOnly := map[string]bool{"evener": true}
 	return []LaunchOption{
 		{Field: "agent", WireField: "agent", Label: "Agent", Description: "Name of the agent binary to run. Defaults to evener.", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefault: "default"},
-		{Field: "commit_provenance", WireField: "commitProvenance", Label: "Commit provenance", Description: "Record the Evener version, model, host and session ID in commit messages the model writes. Covers only commits whose message the model drafts. Default on.", Group: LaunchGroupAgent, Kind: LaunchControlSelect, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: true, Choices: commitProvenanceChoices(), DriverSupport: evenerOnly, BuiltinDefault: "coauthor"},
+		{Field: CommitProvenanceField, WireField: "commitProvenance", Label: "Commit provenance", Description: "Record the Evener version, model, host and session ID in commit messages the model writes. Covers only commits whose message the model drafts. Default on.", Group: LaunchGroupAgent, Kind: LaunchControlSelect, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: true, Choices: commitProvenanceChoices(), DriverSupport: evenerOnly, BuiltinDefault: commitprovenance.ModeCoauthor},
 		{Field: "model", WireField: "model", Label: "Model", Description: "Primary model used for the main reasoning loop. Overrides " + envvars.EVENERModel.Name + " env var.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERModel.Name}, DriverSupport: evenerOnly},
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: evenerOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultLabel: "primary model"},
@@ -164,7 +173,28 @@ func reasoningChoices() []LaunchOptionChoice {
 }
 
 func commitProvenanceChoices() []LaunchOptionChoice {
-	return []LaunchOptionChoice{{Value: "", Label: "(inherit)"}, {Value: "coauthor", Label: "Record session details"}, {Value: "off", Label: "Off"}}
+	return []LaunchOptionChoice{{Value: "", Label: "(inherit)"}, {Value: commitprovenance.ModeCoauthor, Label: "Record session details"}, {Value: commitprovenance.ModeOff, Label: "Off"}}
+}
+
+// AllowsLayer reports whether field may be set at layer. The launch schema is
+// the single owner: DefaultableLayers lists the saved layers and PerLaunch
+// decides whether the in-memory launch layer may override them.
+func AllowsLayer(field string, layer LayerName) bool {
+	for _, opt := range LaunchOptionSchema() {
+		if opt.Field != field {
+			continue
+		}
+		if layer == LayerLaunch {
+			return opt.PerLaunch
+		}
+		for _, allowed := range opt.DefaultableLayers {
+			if LayerName(allowed) == layer {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func contextChoices() []LaunchOptionChoice {

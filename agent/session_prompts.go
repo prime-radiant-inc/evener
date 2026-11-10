@@ -95,26 +95,43 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	s.emit(events.WarningData{Message: warning})
 }
 
-// commitTrailerPrompt returns the exact Co-authored-by line and, when
-// provenance was asked for but cannot be built, the warning the prompt-render
-// path should report. It never invents a missing value.
-func (s *Session) commitTrailerPrompt() (string, string) {
+// commitTrailerPrompt returns the exact Co-authored-by line, or "" when
+// provenance is off or cannot be built. It never invents a missing value.
+func (s *Session) commitTrailerPrompt() string {
 	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
-	if err != nil {
-		return "", fmt.Sprintf("commit provenance: %v", err)
-	}
-	if mode == commitprovenance.ModeOff {
-		return "", ""
+	if err != nil || mode == commitprovenance.ModeOff {
+		return ""
 	}
 	host, err := os.Hostname()
 	if err != nil || strings.TrimSpace(host) == "" {
-		return "", "commit provenance: host name unavailable"
+		return ""
 	}
 	line, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
 	if err != nil {
-		return "", fmt.Sprintf("commit provenance: %v", err)
+		return ""
 	}
-	return line, ""
+	return line
+}
+
+// commitProvenanceWarning reports a provenance configuration value the session
+// cannot honor. It is a pending session diagnostic, not a prompt-render
+// failure: the prompt omits the section and the rest of the session proceeds.
+func (s *Session) commitProvenanceWarning() string {
+	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
+	if err != nil {
+		return err.Error()
+	}
+	if mode == commitprovenance.ModeOff {
+		return ""
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "commit provenance: host name unavailable"
+	}
+	if _, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID()); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // buildPromptData assembles a promptData from session state for template
@@ -135,7 +152,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 
 	read := s.memoryContextEnabled()
 	saves := s.memorySaveInstructionsEnabled()
-	commitTrailer, commitWarning := s.commitTrailerPrompt()
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
@@ -162,8 +178,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitStatusUnknown:         s.envInfo.GitStatusUnknown,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
-		CommitTrailer:            commitTrailer,
-		CommitProvenanceWarning:  commitWarning,
+		CommitTrailer:            s.commitTrailerPrompt(),
 		WorkspaceTree:            s.envInfo.Workspace.Tree,
 		BuildInfo:                s.envInfo.Workspace.BuildInfo,
 		ResultToolName:           s.resultToolName(),
@@ -321,5 +336,5 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
 	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
-	return result, data.CommitProvenanceWarning
+	return result, ""
 }

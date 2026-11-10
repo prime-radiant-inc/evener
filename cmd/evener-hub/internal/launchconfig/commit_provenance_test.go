@@ -36,6 +36,15 @@ func TestCommitProvenanceSchema(t *testing.T) {
 	if !slices.Equal(values, []string{"", "coauthor", "off"}) {
 		t.Fatalf("choices = %v, want [ coauthor off ]", values)
 	}
+	if !AllowsLayer("commit_provenance", LayerGlobal) {
+		t.Fatal("global layer should allow commit_provenance")
+	}
+	if !AllowsLayer("commit_provenance", LayerLaunch) {
+		t.Fatal("launch layer should allow commit_provenance")
+	}
+	if AllowsLayer("commit_provenance", LayerRepo) || AllowsLayer("commit_provenance", LayerProject) {
+		t.Fatal("repo/project layers must not allow commit_provenance")
+	}
 }
 
 func TestMergeCommitProvenance(t *testing.T) {
