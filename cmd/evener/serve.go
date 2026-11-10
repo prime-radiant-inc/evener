@@ -155,6 +155,7 @@ type serveServer interface {
 	Close()
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
+	SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure)
 	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
