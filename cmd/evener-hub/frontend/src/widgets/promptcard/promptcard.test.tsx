@@ -229,6 +229,13 @@ test("folding animates from the card's previous height", () => {
   expect(motionMock.animate.mock.calls[0]?.[1]).toEqual({ height: "38px" });
 });
 
+test("the animating card carries the marker that anchors its controls", () => {
+  const { rerender } = render(<LiveCard />);
+  motionMock.animate.mockImplementationOnce(() => ({ finished: new Promise<void>(() => {}), stop: vi.fn() }));
+  rerender(<LiveCard folded />);
+  expect(screen.getByTestId("card").getAttribute("data-animating")).toBe("true");
+});
+
 test("a card returning from ask-pending appears without animating", () => {
   const { rerender } = render(<LiveCard hidden />);
   motionMock.animate.mockClear();

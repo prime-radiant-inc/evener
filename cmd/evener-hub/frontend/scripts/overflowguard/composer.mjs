@@ -94,12 +94,16 @@ export async function typeComposerDraft(send, text = "browser-proof") {
   // the dock. Let that commit before a caller measures a control's point,
   // or the tap can land where the control used to be.
   await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  // The resting composer folds and expands with a height transition; measure
+  // the settled shape, never a frame in the middle of it.
+  await until(send, `document.querySelector('[data-testid="composer-input-card"][data-animating]') === null`);
 }
 async function clearDraft(send) {
   await tap(send, await point(send, editor), false);
   await key(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
   await key(send, "Backspace", "Backspace", 8);
   await until(send, `document.querySelector('${control("stop")}')`);
+  await until(send, `document.querySelector('[data-testid="composer-input-card"][data-animating]') === null`);
 }
 async function tabTo(send, selector) {
   for (let i = 0; i < 30; i++) {

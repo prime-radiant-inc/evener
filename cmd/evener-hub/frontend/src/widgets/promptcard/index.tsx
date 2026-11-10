@@ -84,21 +84,25 @@ export function PromptCard({
     // Height stays auto at rest: the field's own autogrow and any control
     // change reflow normally. Only the fold switch interpolates.
     card.style.removeProperty("height");
+    card.removeAttribute("data-animating");
     const from = wasHidden ? null : priorShape.current.height;
     if (!changed || hidden || reducedMotion || from === null) return undefined;
     const to = card.offsetHeight;
     if (Math.abs(to - from) < 1) return undefined;
     card.style.height = `${from}px`;
+    card.dataset.animating = "true";
     const animation = animate(card, { height: `${to}px` }, spatialTransition());
     animation.finished
       .then(() => {
         card.style.removeProperty("height");
+        card.removeAttribute("data-animating");
       })
       .catch(() => {
         // A newer fold stopped this animation and owns the height now.
       });
     return () => {
       animation.stop();
+      card.removeAttribute("data-animating");
     };
   }, [folded, hidden, reducedMotion]);
 

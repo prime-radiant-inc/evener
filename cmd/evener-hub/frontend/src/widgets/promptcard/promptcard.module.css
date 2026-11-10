@@ -18,6 +18,14 @@
   background: var(--surface-1);
 }
 
+/* While the card's height interpolates, its content is laid out at the new
+ * shape but the box is still short. Bottom-align and clip it so the controls
+ * stay at the footer edge instead of dropping below it. */
+.card[data-animating] {
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
 /* The field's own box is the caller's; this slot only gives it a shrinkable
  * column in the stacked shape and the room left over in the folded one. */
 .field {
