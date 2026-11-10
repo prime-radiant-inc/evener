@@ -190,6 +190,21 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 	}
 }
 
+// When raw capture succeeds, the adapter must rescue the chosen argument
+// string once per tool call, not rescue the fallback and then rescue the raw
+// string again.
+func TestRawArgs_NonStream_RescuesOncePerToolCall(t *testing.T) {
+	calls := 0
+	rescueClaudeXMLArgsHook = func() { calls++ }
+	t.Cleanup(func() { rescueClaudeXMLArgsHook = nil })
+
+	body := rawArgsBody(t, `{"path":"x"}`)
+	decodeRawArgsComplete(t, body)
+	if calls != 1 {
+		t.Fatalf("rescueClaudeXMLArgs calls = %d, want 1 per tool call", calls)
+	}
+}
+
 // TestRawArgs_NonStream_NonCanonicalJSON asserts that non-canonical but
 // valid JSON (spacing/key-order) survives the decode byte-identical — not
 // re-marshaled to canonical form.

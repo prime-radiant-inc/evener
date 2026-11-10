@@ -316,7 +316,7 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 	var rawArgs []json.RawMessage
 	var rawCaptured bool
 	for tcIdx, tc := range choice.Message.ToolCalls {
-		args := rescueClaudeXMLArgs(tc.Function.Arguments)
+		args := tc.Function.Arguments
 		// Decode the raw body once; index this call's byte-faithful token.
 		if !rawCaptured {
 			rawCaptured = true
@@ -328,9 +328,13 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 			// the unescaped content (it returns it unchanged when no XML is
 			// present, preserving raw bytes).
 			if content, cerr := protocolhttp.RawStringContent(rawArgs[tcIdx]); cerr == nil {
-				args = rescueClaudeXMLArgs(string(content))
+				args = string(content)
 			}
 		}
+		// Pick the raw or fallback string first, then rescue once: rescuing
+		// both candidates parses large argument objects twice and throws the
+		// first result away.
+		args = rescueClaudeXMLArgs(args)
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{

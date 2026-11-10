@@ -58,7 +58,15 @@ const claudeXMLParamCloseTag = "</parameter>"
 // array or object (parsedAnyJSONString), that field is inlined and the
 // result is re-marshaled even without XML, since the parsed form differs
 // from the original string.
+//
+// rescueClaudeXMLArgsHook, when non-nil, runs at each call. Tests use it to
+// prove a decode path rescues once per tool call.
+var rescueClaudeXMLArgsHook func()
+
 func rescueClaudeXMLArgs(raw string) string {
+	if rescueClaudeXMLArgsHook != nil {
+		rescueClaudeXMLArgsHook()
+	}
 	if raw == "" {
 		return raw
 	}
