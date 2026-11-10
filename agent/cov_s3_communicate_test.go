@@ -127,6 +127,18 @@ func BenchmarkUsesDefaultCommunicateOutputEnvelope(b *testing.B) {
 	}
 }
 
+func TestS3Cov_PredictionMessage(t *testing.T) {
+	t.Parallel()
+	pinnedLight := predictionMessage(false, lowPressurePredict-0.1)
+	if !strings.HasPrefix(pinnedLight, "Note pinned.") || !strings.Contains(pinnedLight, "Context is light") {
+		t.Fatalf("pinned-light: %q", pinnedLight)
+	}
+	clearedHeavy := predictionMessage(true, lowPressurePredict+0.1)
+	if !strings.HasPrefix(clearedHeavy, "Note cleared.") || !strings.Contains(clearedHeavy, "compaction will run at the seam") {
+		t.Fatalf("cleared-heavy: %q", clearedHeavy)
+	}
+}
+
 func TestS3Cov_CanonicalNodeOutputText(t *testing.T) {
 	t.Parallel()
 	got := canonicalNodeOutputText(map[string]any{"message": "hi"})
