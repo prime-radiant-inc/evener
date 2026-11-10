@@ -110,7 +110,7 @@ func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRo
 		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
-			log.Info(fmt.Sprintf("Private sign-in link (treat as a password): %s", link))
+			log.Info("Private sign-in link (treat as a password): " + link)
 		}
 	} else {
 		log.Info(fmt.Sprintf("cannot advertise browser origin: %v", originErr))
