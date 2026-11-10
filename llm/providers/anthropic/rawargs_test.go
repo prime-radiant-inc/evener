@@ -236,7 +236,6 @@ func TestRawArgs_Stream_ToolCallEndArgumentsOwnBytes(t *testing.T) {
 	releaseCh := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseCh) }) }
-	t.Cleanup(release)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(first))
@@ -246,7 +245,13 @@ func TestRawArgs_Stream_ToolCallEndArgumentsOwnBytes(t *testing.T) {
 		<-releaseCh
 		_, _ = w.Write([]byte(rest))
 	}))
-	t.Cleanup(srv.Close)
+	// Release the handler before closing the server: if the test fails before
+	// the explicit release below, closing first would wait forever on the
+	// handler blocked in <-releaseCh.
+	t.Cleanup(func() {
+		release()
+		srv.Close()
+	})
 
 	res := protoLive(srv)
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(protoReq(""), res), res)
