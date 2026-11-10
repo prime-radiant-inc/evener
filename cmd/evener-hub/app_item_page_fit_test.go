@@ -761,6 +761,35 @@ func TestPackTranscriptItemWindowRecoversWithheldInFlightItemByReread(t *testing
 	}
 }
 
+func TestPackTranscriptItemWindowKeepsRereadRecoveryWhenAWithheldToolRuns(t *testing.T) {
+	items := []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "settled", Text: "settled", Version: 1},
+		{Type: "commandExecution", ID: "running", Text: "running"},
+		{Type: "agentMessage", ID: "queued", Text: "queued", Version: 3},
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-batch"},
+		ItemTypes:  []string{"messages", "commandExecution"},
+	})
+	options.ItemLimit = 1
+
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-batch", items)), nil, options)
+	if err != nil {
+		t.Fatalf("cap-withheld tool suffix: %v", err)
+	}
+	if len(got.Data) != 1 || len(got.Data[0].Items) != 1 || got.Data[0].Items[0].ID != "settled" {
+		t.Fatalf("cap-withheld page = %+v, want the settled item only", got.Data)
+	}
+	elision := got.Data[0].Elision
+	if elision == nil || elision.CapWithheld != 2 {
+		t.Fatalf("cap-withheld elision = %+v, want both withheld items counted", elision)
+	}
+	if elision.CapWithheldRecovery != appwire.ThreadElisionRecoveryRereadSettled || elision.ContinuationCursor != "" {
+		t.Fatalf("recovery = %q cursor = %q, want reread-after-settle with no continuation past the running tool",
+			elision.CapWithheldRecovery, elision.ContinuationCursor)
+	}
+}
+
 func TestTranscriptWindowContinuationRejectsChangedBoundaryItem(t *testing.T) {
 	for _, test := range []struct {
 		name          string

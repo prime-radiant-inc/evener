@@ -830,14 +830,11 @@ func packItemCandidates[T any](
 			if len(selectedCandidates) > itemLimit {
 				preparedTurn.capWithheld = len(selectedCandidates) - itemLimit
 				// An in-flight item has no version, so it cannot fence a
-				// continuation. Anchor on the first settled withheld candidate;
-				// withheld in-flight items are recovered by rereading the turn.
-				for _, withheld := range selectedCandidates[itemLimit:] {
-					if withheld.Item.Version != 0 {
-						first := withheld
-						preparedTurn.firstCapWithheld = &first
-						break
-					}
+				// continuation: resuming at a later item would skip it. A
+				// withheld suffix that starts with one is recovered by
+				// rereading the turn after it settles.
+				if first := selectedCandidates[itemLimit]; first.Item.Version != 0 {
+					preparedTurn.firstCapWithheld = &first
 				}
 				selectedCandidates = selectedCandidates[:itemLimit]
 			}
