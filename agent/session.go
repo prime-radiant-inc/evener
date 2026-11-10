@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -862,6 +863,8 @@ type Session struct {
 	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// jobStatusPolls backs the refusal of repeated job_status calls that carry no news.
+	jobStatusPolls jobStatusPolls
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -1079,8 +1082,8 @@ type Session struct {
 	// operation persisted on the skill lifecycle snapshot
 	// (skillLifecycle.PendingCompaction), which applyPendingForceCompact reads
 	// for instructions and resumeSkillCompaction re-arms after a restart.
-	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
-	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
+	pinnedNoteText string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen  uint64 // bumped on every pinnedNoteText set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
 	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
@@ -1273,6 +1276,7 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
+	s.jobStatusPolls.forget(n.JobID)
 	if n.WatchID != "" && !n.Terminal {
 		for i := range s.pendingJobNotifs {
 			p := &s.pendingJobNotifs[i]
@@ -1282,6 +1286,12 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 				return
 			}
 		}
+	}
+	// A long-running-jobs reminder is a snapshot of the jobs running when it was
+	// built, so a newer one replaces any still undelivered rather than queueing
+	// behind it listing jobs that may have finished.
+	if n.isLongRunningJobsReminder() {
+		s.pendingJobNotifs = slices.DeleteFunc(s.pendingJobNotifs, jobNotification.isLongRunningJobsReminder)
 	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
@@ -1427,7 +1437,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.queueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1522,14 +1532,14 @@ func (s *Session) resetJobNotificationRetry() {
 
 // communicateResult records whether and how the agent delivered a result via
 // the communicate/result tool during the current ProcessInput call. It is
-// transient — reset at the top of each call, then read back by Communicated,
-// CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
+// transient — reset at the top of each call, then read back by communicated,
+// communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
 	called     bool // terminal communicate/result was invoked this turn
 	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
 	text       string
 	reply      string
-	output     string // canonical structured output (CommunicateOutput)
+	output     string // canonical structured output (communicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
 	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
@@ -2282,35 +2292,35 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	}
 }
 
-// Communicated reports whether communicate was called during the most recent
+// communicated reports whether communicate was called during the most recent
 // ProcessInput invocation.
-func (s *Session) Communicated() bool {
+func (s *Session) communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.called
 }
 
-// CommunicateUpdate reports whether a NON-terminal communicate (end_turn=false)
+// communicateUpdate reports whether a NON-terminal communicate (end_turn=false)
 // was called during the most recent ProcessInput invocation. A delegate's
 // missing-report reminder can then acknowledge the update instead of claiming
 // the delegate never called the result tool (#3734).
-func (s *Session) CommunicateUpdate() bool {
+func (s *Session) communicateUpdate() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.updated
 }
 
-// CommunicateOutput returns the canonical structured output from the most recent
+// communicateOutput returns the canonical structured output from the most recent
 // communicate call in the current ProcessInput invocation.
-func (s *Session) CommunicateOutput() string {
+func (s *Session) communicateOutput() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.output
 }
 
-// CommunicateStructured returns the raw structured output object from the most
+// communicateStructured returns the raw structured output object from the most
 // recent communicate call, before normalizeNodeOutput canonicalization.
-func (s *Session) CommunicateStructured() any {
+func (s *Session) communicateStructured() any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.structured

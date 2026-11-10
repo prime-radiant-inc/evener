@@ -119,9 +119,10 @@ export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | und
 
 export function recordConversationOpenParent(pane: OpenPaneRecord, parentRef: string | undefined): void {
   conversationOpenParentRefs.delete(pane);
-  const params = pane.params as { ref?: unknown };
+  const params = pane.params as { ref?: unknown; source?: { type?: unknown } };
+  const presentsSession = pane.type === "session" || (pane.type === "sessionZoom" && params.source?.type === "session");
   if (
-    pane.type === "session" &&
+    presentsSession &&
     typeof parentRef === "string" &&
     parentRef !== "" &&
     parentRef !== params.ref &&
@@ -787,8 +788,24 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       return main.id;
     }
 
-    const id = nextPaneId(type);
     const ref = isConversationPaneType(type) ? refParam(params) : null;
+    // A session link opens its pane before the route settles. Reuse that exact
+    // pane as the new primary instead of discarding and remounting the view;
+    // every other pane still clears, as a primary replacement always did.
+    // Only a session identity is stable across slots; a singleton's params
+    // change in place, so reusing the pane would publish its old section.
+    const reusable =
+      type === "session" ? presentedPanes(state.panes).find((pane) => primaryMatches(pane, type, params)) : undefined;
+    if (reusable !== undefined) {
+      if (ref !== null) cancelCarriedComposerSeat(ref);
+      // Attach in place: paneLifetime keys by the record object, so publishing
+      // a copy would dispose the retained transcript and staged attachments.
+      reusable.slot = "main";
+      set({ panes: [reusable], focusedPaneId: reusable.id });
+      return reusable.id;
+    }
+
+    const id = nextPaneId(type);
     const composerSeatId = ref === null ? undefined : placeComposerSeat(params, []);
     set({
       panes: [{ id, type, params, slot: "main", ...(composerSeatId === undefined ? {} : { composerSeatId }) }],

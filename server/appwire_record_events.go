@@ -151,11 +151,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				if item.TaskStoreOwnerSessionID != "" {
 					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
 				}
-				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
-					routeOwner = ""
-				}
-				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref
@@ -451,11 +447,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					continue
 				}
-				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
-					routeOwner = ""
-				}
-				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref

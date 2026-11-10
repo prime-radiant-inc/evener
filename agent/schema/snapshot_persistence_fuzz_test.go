@@ -2,6 +2,7 @@ package schema
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"sort"
@@ -78,8 +79,8 @@ func FuzzSessionMetaPersistence(f *testing.F) {
 					t.Fatalf("LoadSessionMeta value diverges across filesystems for id=%s", id)
 				}
 			case opList:
-				listOS, failOS, errOS := listSessionMetasFSWithErrors(osFs, dir)
-				listMem, failMem, errMem := listSessionMetasFSWithErrors(memFs, dir)
+				listOS, failOS, errOS := listSessionMetasFSWithErrors(context.Background(), osFs, dir)
+				listMem, failMem, errMem := listSessionMetasFSWithErrors(context.Background(), memFs, dir)
 				requireMetaErrParity(t, "ListSessionMetas", errOS, errMem)
 				if errOS == nil && !bytes.Equal(marshalMetas(t, listOS), marshalMetas(t, listMem)) {
 					t.Fatalf("ListSessionMetas value diverges across filesystems:\n os =%s\n mem=%s",

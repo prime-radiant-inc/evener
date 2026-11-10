@@ -35,7 +35,7 @@ func TestUnnamedContinuationOwnsItsSteering(t *testing.T) {
 	}
 	sess = newTestSessionForEnvctx(t, withSteps(step))
 	serveSessionWithMutationStore(t, sess)
-	if err := sess.SteerKind(drainedText, events.SteeringKindTaskInactive); err != nil {
+	if err := sess.steerKind(drainedText, events.SteeringKindTaskInactive); err != nil {
 		t.Fatalf("queue the steer the continuation drains: %v", err)
 	}
 

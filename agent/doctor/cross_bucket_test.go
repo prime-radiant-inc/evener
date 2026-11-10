@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,7 +175,7 @@ func TestListSessions_BucketDirBase_SweepsSiblingsAndPopulatesBucket(t *testing.
 	writeListedSession(t, bucketA, sidA)
 	writeListedSession(t, bucketB, sidB)
 
-	res, err := ListSessions(bucketA, SessionsOpts{})
+	res, err := ListSessions(context.Background(), bucketA, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions from bucket dir: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestListSessions_UnknownBucketIsExplicitError(t *testing.T) {
 	writeSession(t, bucketA, sidA)
 	writeSession(t, bucketB, sidB)
 
-	_, err := ListSessions(stateHome, SessionsOpts{Bucket: "no-such-bucket-0123456789"})
+	_, err := ListSessions(context.Background(), stateHome, SessionsOpts{Bucket: "no-such-bucket-0123456789"})
 	if err == nil {
 		t.Fatal("unknown bucket filter: want explicit not-found error, got nil (silent empty list)")
 	}
@@ -219,7 +220,7 @@ func TestListSessions_BucketDirBase_BucketFilterAddressesSibling(t *testing.T) {
 	writeListedSession(t, bucketA, sidA)
 	writeListedSession(t, bucketB, sidB)
 
-	res, err := ListSessions(bucketA, SessionsOpts{Bucket: hash2})
+	res, err := ListSessions(context.Background(), bucketA, SessionsOpts{Bucket: hash2})
 	if err != nil {
 		t.Fatalf("ListSessions scoped to sibling bucket %s: %v", hash2, err)
 	}

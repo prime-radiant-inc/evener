@@ -679,7 +679,7 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		drainJobNotificationTurns(sess)
 	case opObserve:
 		_ = sess.State()
-		_ = sess.QueueDepth()
+		_ = sess.queueDepth()
 		_, _, _ = sess.GoalStatus()
 	case opClose:
 		sess.Close()

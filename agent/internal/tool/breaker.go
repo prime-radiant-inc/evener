@@ -296,6 +296,10 @@ func isIntegerLiteral(s string) bool {
 // state they read may have changed, so their repeats always dispatch.
 const breakerThreshold = 2
 
+// ParkPrefix begins the body of every call Evener refuses without executing;
+// layers that count refusals match on it.
+const ParkPrefix = "evener did not execute this call: "
+
 // The intervention texts. Parked results all begin with parkPrefix, which is
 // the stable marker other layers count them by.
 //
@@ -304,7 +308,7 @@ const breakerThreshold = 2
 // observes a streak above that threshold for read-only calls, which are never
 // parked and keep receiving the fixed nudge.
 const (
-	parkPrefix       = "evener did not execute this call: "
+	parkPrefix       = ParkPrefix
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
 
@@ -318,7 +322,7 @@ const repetitionNudgePrefix = "You have now made this same call and received the
 // as a session loops; stating the real count lets a long loop read as
 // escalating rather than repeating the same "twice" wording forever.
 func repetitionNudgeText(count int) string {
-	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // IsBreakerNudge reports whether text is the breaker's intervention text —

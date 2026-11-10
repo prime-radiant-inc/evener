@@ -228,7 +228,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	sess.RegisterTool("block_tool", "blocks until released", map[string]any{}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("block_tool", "blocks until released", map[string]any{}, func(ctx context.Context, args any) (any, error) {
 		select {
 		case <-started:
 		default:

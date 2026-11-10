@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -215,9 +216,26 @@ func cloneSchemaValue(v any) any {
 		return append([]float64(nil), x...)
 	case []bool:
 		return append([]bool(nil), x...)
-	default:
-		return v
 	}
+	if v == nil {
+		return nil
+	}
+	// Other serializable containers must not share mutable state with the
+	// source. Scalars keep their Go types, including existing float64 values.
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct, reflect.Pointer:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return v
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var out any
+		// Marshal produced valid JSON and decoding into a generic value cannot fail.
+		_ = dec.Decode(&out)
+		return out
+	}
+	return v
 }
 
 // normalizeAskUserArgs normalizes ask_user arguments by wrapping the shorthand

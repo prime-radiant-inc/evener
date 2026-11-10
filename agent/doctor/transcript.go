@@ -27,13 +27,19 @@ type transcriptDoc struct {
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
+	return loadTranscriptContext(context.Background(), path)
+}
+
+// loadTranscriptContext is loadTranscript that stops decoding, with ctx's
+// error, once ctx is cancelled.
+func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}
 	defer file.Close() //nolint:errcheck // read-only file
 	var doc transcriptDoc
-	result, err := transcript.Scan(context.Background(), file, transcript.DefaultMaxLineBytes, func(_ []byte, entry transcript.Entry) error {
+	result, err := transcript.Scan(ctx, file, transcript.DefaultMaxLineBytes, func(_ []byte, entry transcript.Entry) error {
 		doc.Entries = append(doc.Entries, entry)
 		return nil
 	})

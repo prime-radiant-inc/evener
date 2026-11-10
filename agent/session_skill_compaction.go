@@ -180,7 +180,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 		// A pending automatic operation is superseded by this explicit request.
 	}
 	if clearOnly {
-		s.pinnedNote = ""
+		s.pinnedNoteText = ""
 		s.pinnedNoteGen++
 		var cancelled *schema.SkillCompactionOperation
 		if existing != nil && existing.Origin == skillCompactionOriginAutomatic && existing.Phase == skillCompactionPhasePending {
@@ -211,7 +211,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 		// The replacing note supersedes the pending automatic acceptance.
 		superseded = s.cancelSkillCompactionLocked(existing.Generation, skillCompactionCancelSupersededNote)
 	}
-	s.pinnedNote = note
+	s.pinnedNoteText = note
 	s.pinnedNoteGen++
 	op := &schema.SkillCompactionOperation{
 		Generation:     gen,
@@ -265,7 +265,7 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 	}
 	gen := s.skillLifecycle.NextOperationGen + 1
 	s.skillLifecycle.NextOperationGen = gen
-	s.pinnedNote = note
+	s.pinnedNoteText = note
 	s.pinnedNoteGen++
 	op := &schema.SkillCompactionOperation{
 		Generation:     gen,

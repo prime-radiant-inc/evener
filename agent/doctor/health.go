@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -143,12 +144,12 @@ type toolCallOccurrence struct {
 // readers. It never re-simulates the runtime (e.g. it does not re-run loop
 // detection) — it reports recorded structure using the runtime's own
 // signature formula.
-func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
+func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return HealthResult{}, err
 	}
-	doc, err := loadTranscript(paths.TranscriptPath)
+	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return HealthResult{}, err
 	}
@@ -225,7 +226,7 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 		}
 	}
 
-	jobEvents, err := jobstore.ReadEvents(paths.JobsPath)
+	jobEvents, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return HealthResult{}, err
 	}

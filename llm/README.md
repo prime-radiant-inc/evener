@@ -57,26 +57,23 @@ may not.
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
 
-## High-level streaming retries
+## Streaming and retry commitment
 
-`StreamGenerate` commits a stream attempt after forwarding nonempty normalized
-text or reasoning deltas, nonempty tool-call arguments (on start, delta, or
-end), or a nonnil object delta. A later transient failure then produces a
-terminal stream error rather than retrying into the same event channel. Empty
-text, reasoning, and tool-argument deltas, and control/start events without
-those payloads, do not prevent retry. Provider-specific `PROVIDER_EVENT`/`Raw`
-passthrough is **not** classified as committed content, even when `Raw` contains
-content; such events can repeat on retry without a reset. See the
-[unresolved Raw replay diagnostic](../docs/formal/llm/README.md#raw-provider-passthrough-replay-unresolved).
-This is the high-level library path; callers using `RetryStream` directly can
-explicitly opt into retry-after-partial with a reset callback.
+`StreamGenerate` retries a stream attempt only while it has not committed
+content: an open failure, a 429/5xx, or a stream that truncated before its
+finish event. A text delta commits the attempt, and so does a content-bearing
+passthrough (below). The normalized reasoning, tool-argument and object deltas
+keep their pre-existing retry behavior; they are not part of this commitment
+yet.
 
-## Completed streaming tool rounds
-
-After `StreamGenerate` completes, `StreamResult.Steps()` and `TotalUsage()`
-retain every completed tool round even if a later stream open fails, a later
-stream truncates, or the caller cancels. The tool results remain in their
-completed steps and their usage counts toward the total. `Response()` still
-returns the terminal error with no successful final response for an errored
-turn; an unfinished later response does not add a step or usage. Successful
-final completions and `StopWhen` retain their usual accounting.
+Text deltas commit an attempt. A `PROVIDER_EVENT` passthrough commits one only
+when the adapter sets `StreamEvent.ContentBearing`, because the adapter is the
+layer that knows which raw frame carries model output rather than lifecycle or
+control traffic. The criterion is "a retry would republish it": if the caller
+has observed the frame's content, the attempt is committed. The Responses
+decoder classifies the frames it knows carry content (`response.refusal.*`,
+audio and transcript deltas, unmappable tool-call fragments) and leaves
+lifecycle frames unclassified, so a control-only stream that truncates still
+retries. The guarantee is scoped to the adapter: a custom adapter that emits
+its own `Raw` payloads must set the flag to get the same no-duplication
+behavior (#4941).

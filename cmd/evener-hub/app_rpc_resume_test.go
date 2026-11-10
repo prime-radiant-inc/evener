@@ -259,7 +259,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 		},
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: "sess_old"})
@@ -334,9 +334,7 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawns != 1 {
 				t.Fatalf("spawns=%d", spawns)
@@ -438,9 +436,7 @@ func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T)
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawned {
 				t.Fatal("spawned despite incomplete ownership discovery")
@@ -512,13 +508,12 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 		},
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:      runDir,
 		Roster:      roster,
 		Spawner:     spawner,
-		Past:        hubcore.NewPastIndex(""),
 		ResumeLocks: hubcore.NewResumeLocks(),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
@@ -607,20 +602,17 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 				},
 			}
 
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 				RunDir:      runDir,
 				Roster:      roster,
 				Spawner:     spawner,
-				Past:        hubcore.NewPastIndex(""),
 				ResumeLocks: hubcore.NewResumeLocks(),
-			})
+			}))
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
 
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 			_, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if err == nil {
 				t.Fatal("ThreadResume succeeded, want the replacement spawn to fail")
@@ -1088,9 +1080,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 			client := dialHubRPC(t, hub)
 			defer client.Close()
 
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 			if err != nil {
 				t.Fatalf("TurnStart: %v", err)

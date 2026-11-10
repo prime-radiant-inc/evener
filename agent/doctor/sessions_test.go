@@ -1,9 +1,11 @@
 package doctor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -173,7 +176,7 @@ func sessionsFixture(t *testing.T) (base, root, child, oldSID string) {
 
 func TestListSessions_EnumeratesAllByDefault(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +190,7 @@ func TestListSessions_EnumeratesAllByDefault(t *testing.T) {
 
 func TestListSessions_SinceFiltersOldSessions(t *testing.T) {
 	base, _, _, oldSID := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +206,7 @@ func TestListSessions_SinceFiltersOldSessions(t *testing.T) {
 
 func TestListSessions_SortedByLastActivityDescending(t *testing.T) {
 	base, _, child, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +227,7 @@ func TestListSessions_SortedByLastActivityDescending(t *testing.T) {
 
 func TestListSessions_ParentLinkageAndSubagentFlag(t *testing.T) {
 	base, root, child, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +250,7 @@ func TestListSessions_ParentLinkageAndSubagentFlag(t *testing.T) {
 
 func TestListSessions_OutcomeHint(t *testing.T) {
 	base, root, child, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +286,7 @@ func TestListSessions_OutcomeHint_TopLevelStatusIsNotDecision(t *testing.T) {
 		nil,
 		time.Now(),
 	)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +300,7 @@ func TestListSessions_OutcomeHint_TopLevelStatusIsNotDecision(t *testing.T) {
 
 func TestListSessions_DelegateAndObserverCounts(t *testing.T) {
 	base, root, _, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +328,7 @@ func TestListSessions_ModelsFromHeaderAndMeta(t *testing.T) {
 		nil,
 		time.Now(),
 	)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +349,7 @@ func TestListSessions_BucketFilter(t *testing.T) {
 	writeSessionsFixtureSession(t, bucketA, sidA, transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
 	writeSessionsFixtureSession(t, bucketB, sidB, transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
 
-	res, err := ListSessions(base, SessionsOpts{Bucket: hash1})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{Bucket: hash1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +377,7 @@ func TestListSessions_UnreadableSessionIsListedNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions should not fail the whole sweep on one corrupt session, got: %v", err)
 	}
@@ -398,7 +401,7 @@ func TestListSessions_UnreadableSessionIsListedNotFatal(t *testing.T) {
 
 func TestListSessions_TranscriptBytes(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +414,7 @@ func TestListSessions_TranscriptBytes(t *testing.T) {
 
 func TestRenderSessions_HumanTable(t *testing.T) {
 	base, root, child, oldSID := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +434,7 @@ func TestRenderSessions_ListsUnreadable(t *testing.T) {
 	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: sidA}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +472,7 @@ func TestRenderSessions_TimesRenderedInUTC(t *testing.T) {
 // is stable and carries the fields a batch study script would parse.
 func TestListSessions_JSONFields(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +561,7 @@ func TestListSessions_CorruptMetaListedAsUnreadable(t *testing.T) {
 
 	before := hashTree(t, base)
 
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -621,7 +624,7 @@ func TestListSessions_SymlinkedMetaListedAsUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -630,5 +633,88 @@ func TestListSessions_SymlinkedMetaListedAsUnreadable(t *testing.T) {
 	}
 	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sid || res.Unreadable[0].Error == "" {
 		t.Fatalf("unreadable = %+v, want one entry naming %s", res.Unreadable, sid)
+	}
+}
+
+// An old session's transcript is never opened when --since excludes it: a
+// deliberately malformed old transcript is neither a row nor Unreadable,
+// while the same malformation on a session inside the window is reported.
+func TestDoctorSessionsSinceSkipsOldTranscriptsUnread(t *testing.T) {
+	base, root, child, _ := sessionsFixture(t)
+	bucket := stateHomeBucket(base, hash1)
+	corrupt := func(sid string, mtime time.Time) {
+		t.Helper()
+		writeSessionsFixtureSession(t, bucket, sid,
+			transcript.Header{CreatedAt: mtime, Model: "anthropic/claude-a"}, nil,
+			schema.SessionMeta{Model: "anthropic/claude-a"}, nil, mtime)
+		path := filepath.Join(bucket, "sessions", sid+".transcript.jsonl")
+		if err := os.WriteFile(path, []byte("not a transcript\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldBad := newSessionsTestSID(t)
+	recentBad := newSessionsTestSID(t)
+	corrupt(oldBad, time.Now().Add(-1000*time.Hour))
+	corrupt(recentBad, time.Now().Add(-time.Hour))
+
+	res, err := ListSessions(context.Background(), base, SessionsOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, r := range res.Sessions {
+		listed[r.SessionID] = true
+	}
+	if !listed[root] || !listed[child] || len(listed) != 2 {
+		t.Errorf("rows = %v, want exactly root and child", listed)
+	}
+	unreadable := map[string]bool{}
+	for _, u := range res.Unreadable {
+		unreadable[u.SessionID] = true
+	}
+	if unreadable[oldBad] {
+		t.Errorf("old malformed session was parsed despite being outside --since: %+v", res.Unreadable)
+	}
+	if !unreadable[recentBad] {
+		t.Errorf("recent malformed session must still be reported unreadable: %+v", res.Unreadable)
+	}
+}
+
+func TestDoctorSessionsStopsWhenContextCancelled(t *testing.T) {
+	base, _, _, _ := sessionsFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := ListSessions(ctx, base, SessionsOpts{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(res.Sessions) != 0 || len(res.Unreadable) != 0 {
+		t.Errorf("cancelled census returned partial data: %+v", res)
+	}
+}
+
+// Cancellation arriving while a session's transcript is being decoded stops
+// the census with the cancellation error, even when that session is the last
+// one (no later between-session check exists to catch it).
+func TestDoctorSessionsCancelDuringSessionRead(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := make([]schema.Turn, 200)
+	for i := range turns {
+		turns[i] = schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("x")}})
+	}
+	writeSessionsFixtureSession(t, bucket, newSessionsTestSID(t),
+		transcript.Header{CreatedAt: time.Now(), Model: "m"}, turns, schema.SessionMeta{Model: "m"}, nil, time.Now())
+
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 20}
+	res, err := ListSessions(ctx, base, SessionsOpts{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(res.Sessions) != 0 || len(res.Unreadable) != 0 {
+		t.Errorf("cancelled census returned partial data: %+v", res)
 	}
 }

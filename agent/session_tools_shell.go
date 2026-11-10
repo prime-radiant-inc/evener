@@ -168,6 +168,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			if err := s.refuseSleepOnlyShell(shellArgs.Command); err != nil {
+				return "", err
+			}
 			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
 			// cwd, or "" if omitted) against env now, once, for both the streaming and
 			// buffered dispatch paths below. Recorded on the job (see
@@ -284,8 +287,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				budget := execenv.NewGlobBudget()
 				matches, excluded, err = g.GlobWithBudget(ctx, pat, path, includeIgnored, budget)
 				truncatedAt = budget.TruncatedAt()
-			case execenv.GlobExcluder:
-				matches, excluded, err = g.GlobWithExclusions(ctx, pat, path, includeIgnored)
 			default:
 				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}

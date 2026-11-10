@@ -204,19 +204,19 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 	return abs, excluded, nil
 }
 
-// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
-// reports how many candidate matches the default dotfile/gitignore exclusion
-// dropped, so a fully-filtered result can be told apart from a genuinely
-// empty one (see the "silent-empty is the enemy" global constraint). The
-// count never includes matches dropped by sandbox masking — that's a
-// separate security boundary, not something to describe to the caller as
-// "gitignored".
+// GlobWithExclusions is Glob's exclusion-reporting core: same matching as
+// Glob, but it also reports how many candidate matches the default
+// dotfile/gitignore exclusion dropped, so a fully-filtered result can be told
+// apart from a genuinely empty one (see the "silent-empty is the enemy" global
+// constraint). The count never includes matches dropped by sandbox masking —
+// that's a separate security boundary, not something to describe to the caller
+// as "gitignored".
 //
 // The budget backing this call belongs to GlobWithExclusions alone, so a
 // caller here has no way to learn a listing was cut short: a truncation
 // comes back as an error rather than a plausible-looking short list. A
-// caller that wants the partial list uses GlobBudgeter.GlobWithBudget with
-// its own budget instead.
+// caller that wants the partial list uses GlobWithBudget with its own budget
+// instead.
 func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
 	budget := NewGlobBudget()
 	matches, excluded, err := e.GlobWithBudget(ctx, pattern, basePath, includeIgnored, budget)

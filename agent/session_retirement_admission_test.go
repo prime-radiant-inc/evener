@@ -220,9 +220,9 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 			_, err := s.ProcessInput(context.Background(), "opaque-input", nil)
 			return err
 		}},
-		{"steer-kind", func(s *Session) error { return s.SteerKind("opaque-input", "") }},
-		{"steer-task", func(s *Session) error { return s.SteerTaskCompletion("opaque-input", nil) }},
-		{"steer-provenance", func(s *Session) error { return s.SteerWithProvenance("opaque-input", nil, "") }},
+		{"steer-kind", func(s *Session) error { return s.steerKind("opaque-input", "") }},
+		{"steer-task", func(s *Session) error { return s.steerTaskCompletion("opaque-input", nil) }},
+		{"steer-provenance", func(s *Session) error { return s.steerWithProvenance("opaque-input", nil, "") }},
 		{"steer-images", func(s *Session) error { return s.SteerWithImages("opaque-input", nil) }},
 		{"steer-user", func(s *Session) error { return s.SteerFromUser("opaque-input") }},
 		{"steer-user-images", func(s *Session) error { return s.SteerFromUserWithImages("opaque-input", nil) }},
@@ -605,7 +605,7 @@ func TestRetirementAdmissionEnqueue(t *testing.T) {
 	if err := root.Enqueue(t.Context(), "opaque-queued"); !errors.Is(err, ErrRetirementUnavailable) {
 		t.Fatalf("Enqueue error: %v", err)
 	}
-	if got := root.QueueDepth(); got != 0 {
+	if got := root.queueDepth(); got != 0 {
 		t.Fatalf("refused enqueue changed queue depth to %d", got)
 	}
 }

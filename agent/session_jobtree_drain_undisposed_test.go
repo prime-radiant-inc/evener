@@ -23,7 +23,7 @@ func startUndisposedBackgroundShell(t *testing.T, sess *Session) string {
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 300","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -122,7 +122,7 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 		t.Fatalf("want exactly one killed-job warning, got %d: %+v", len(warnings), warnings)
 	}
 	msg := warnings[0].Data.(events.WarningData).Message
-	if !strings.Contains(msg, jobID) || !strings.Contains(msg, "sleep 300") {
+	if !strings.Contains(msg, jobID) || !strings.Contains(msg, idleShellCommand) {
 		t.Fatalf("killed-job warning must carry the job id and command text for diagnosis, got: %q", msg)
 	}
 }

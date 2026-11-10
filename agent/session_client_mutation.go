@@ -1208,7 +1208,7 @@ func (s *Session) InterruptClientMutation(
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 	s.steeringMarked(recordedIDs)
 	if returnedClaim {
-		// The durable queue grew a claimed-but-unrun message back. QueueDepth
+		// The durable queue grew a claimed-but-unrun message back. queueDepth
 		// and WireState read the process-local copy, so without this
 		// the message is durably present and invisible. No wake: this Stop parks
 		// the queue, so the returned message waits for the user's next run.
@@ -1453,7 +1453,7 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 	// A steer parked by a Stop (SteeringHeld) is not work to resume: waking for
 	// it at attach would restart the session and deliver the steer the user
 	// just stopped (issue #174, #146 Option C — park in place).
-	if wake != nil && (s.QueueDepth() > 0 || s.hasRunnableUserSteering()) {
+	if wake != nil && (s.queueDepth() > 0 || s.hasRunnableUserSteering()) {
 		// Attach is an external wake: it unparks steering a failed attempt
 		// left (Session.steeringParked).
 		s.mu.Lock()

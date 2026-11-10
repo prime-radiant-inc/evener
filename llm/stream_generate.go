@@ -204,8 +204,9 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 			// openAndConsumeStream opens one stream attempt and drains it.
 			// Returns (finishEv, acc, hasPartialOutput, streamErr).
-			// hasPartialOutput is true once content has been forwarded
-			// to outStream; that flag gates whether the caller may retry.
+			// hasPartialOutput is true once any text delta or content-bearing
+			// passthrough has been forwarded to outStream; that flag gates
+			// whether the caller may retry.
 			openAndConsumeStream := func() (finishEv *StreamEvent, acc *StreamAccumulator, hasPartialOutput bool, streamErr error) {
 				var st Stream
 				st, streamErr = gs.client.Stream(callCtx, req)
@@ -251,15 +252,11 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						outStream.Send(ev)
 					default:
 						outStream.Send(ev)
-						switch ev.Type {
-						case StreamEventTextDelta:
-							hasPartialOutput = hasPartialOutput || ev.Delta != ""
-						case StreamEventReasoningDelta:
-							hasPartialOutput = hasPartialOutput || ev.ReasoningDelta != ""
-						case StreamEventToolCallStart, StreamEventToolCallDelta, StreamEventToolCallEnd:
-							hasPartialOutput = hasPartialOutput || (ev.ToolCall != nil && len(ev.ToolCall.Arguments) > 0)
-						case StreamEventObjectDelta:
-							hasPartialOutput = hasPartialOutput || ev.ObjectDelta != nil
+						// Content-bearing passthroughs commit the attempt like
+						// text deltas (#4941); control-only ones stay retryable.
+						if ev.Type == StreamEventTextDelta ||
+							(ev.Type == StreamEventProviderEvent && ev.ContentBearing) {
+							hasPartialOutput = true
 						}
 					}
 				}

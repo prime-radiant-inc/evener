@@ -984,18 +984,18 @@ func TestCovPendingQueueDepth(t *testing.T) {
 	}
 }
 
-// TestCovQueueDepth covers QueueDepth.
+// TestCovQueueDepth covers queueDepth.
 func TestCovQueueDepth(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if got := s.QueueDepth(); got != 0 {
+	if got := s.queueDepth(); got != 0 {
 		t.Fatalf("empty: got %d", got)
 	}
 
 	s.mu.Lock()
 	s.inputQueue = []queuedInput{{ID: "q1"}, {ID: "q2"}}
 	s.mu.Unlock()
-	if got := s.QueueDepth(); got != 2 {
+	if got := s.queueDepth(); got != 2 {
 		t.Fatalf("with 2: got %d", got)
 	}
 }
@@ -1305,7 +1305,7 @@ func TestCovDeliverHookContext(t *testing.T) {
 	s.deliverHookContext("")
 	// Whitespace text — no-op.
 	s.deliverHookContext("  ")
-	// Valid text — should call SteerKind (which calls trySteerEnqueue,
+	// Valid text — should call steerKind (which calls trySteerEnqueue,
 	// which needs s.mu and checks closingOrClosedLocked; bare Session
 	// with no mu set will work since sync.Mutex zero value is usable).
 	s.deliverHookContext("additional model context")

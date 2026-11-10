@@ -28,6 +28,8 @@ Use this boundary when adding or fixing tests:
 - Do not mock Evener internals to make a test pass. Keep the fake boundary at an
   external dependency: LLM provider, network server, filesystem root, clock, or
   process launcher.
+- When setup is shared, add cases to an existing test or table before adding a
+  test function. A new function is for a code path no existing test reaches.
 
 When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Evener, replace it with
@@ -132,15 +134,22 @@ now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
-Two rules, both absolute.
+Two rules.
 
-**A sighted flake gets a root-cause fix on the spot.** Even one failure, even
-under heavy load, even in code you don't own. "Pre-existing" and "another
+**A flake that repeats gets a root-cause fix.** A fix is warranted when the test
+fails again on rerun, fails on an idle host, or recurs across independent runs,
+even in code you don't own. "Pre-existing" and "another
 session's area" are not exemptions; a deferred flake gets re-triaged at full cost
 by every session that hits it, and it poisons every run's signal in between. The
-fix must address the mechanism, not the symptom. Honest irreproducibility after
+fix must address the mechanism, not the symptom: it removes the test's
+dependence on wall-clock time or ordering. Honest irreproducibility after
 serious looped effort is reportable, but only with mechanism analysis, not a
 shrug.
+
+A failure seen once on a loaded host or runner is recorded on the existing issue
+for that test, when a search finds one. By itself it is no reason for a fix PR.
+A failure that exposes a race in the product is a product bug and gets fixed,
+whatever the host load.
 
 **Never widen or hardcode a timeout to absorb awaitable work.** A widened
 deadline hides a guess that re-flakes as the suite grows, and it converts real
@@ -1010,6 +1019,18 @@ a second non-fuzz run; CI's two Go test lanes and its web lane each check the ro
 their own scope produced. A run that writes no file fails the check rather than
 passing silently.
 
+The budget blocks a pull request's run and a push to main. A merge-group run
+checks with the warn-only policy (`--local`): it reports a breach without
+failing the lane, and still fails on a broken measurement. Each member's
+pull-request run already enforced the budget on that change, and a wall-time
+breach in the group would remove every member from the queue.
+
+The frontend's row is one number for the whole suite, so it cannot say which
+test file grew. The `web-unit` lane keeps the vitest JSON report it was rolled
+up from as the `web-vitest-report-<run>-<attempt>` artifact, pass or fail, for
+seven days: each entry in its `testResults` carries the file's `startTime` and
+`endTime`, which rank the slow files.
+
 ## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class of
@@ -1515,6 +1536,30 @@ scripts/ops/test-inventory.sh go cmd/evener-hub > before.txt
 scripts/ops/test-inventory.sh go cmd/evener-hub > after.txt
 scripts/ops/test-inventory.sh diff before.txt after.txt
 ```
+
+## Deleting and Consolidating Tests
+
+Deleting a test, or merging tests into one test or table, is its own kind of
+change, separate from a file split. Three kinds of test are candidates:
+
+- a test that executes lines and asserts nothing meaningful about them,
+- a test that repeats another test's scenario, and
+- a test whose subject is test-only code.
+
+The change proves no behavior coverage was lost, and the PR description carries
+the proof:
+
+- A seeded mutation of the behavior the removed test covered still fails a
+  remaining test. Name the mutation and the test that catches it.
+- The package's statement coverage under `go test -cover` is the same before
+  and after a merge or the removal of a duplicate.
+- Removing a test that asserted nothing can lower statement coverage. List the
+  statements it alone executed and show that the removed test passed against a
+  seeded mutation of them: it caught nothing there, so nothing is lost.
+
+Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, and
+it goes in the PR description beside the proof. A test folded into a table as
+a subtest appears in that diff as removed; name the subtest that replaces it.
 
 ## Targets
 

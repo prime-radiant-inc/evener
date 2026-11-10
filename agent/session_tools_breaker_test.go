@@ -19,7 +19,7 @@ func TestRerunToolWithGrant_HumanApprovedRetryIsNotParked(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
 	calls := 0
-	s.RegisterTool("denied_probe", "always fails identically", map[string]any{"type": "object"},
+	s.registerTool("denied_probe", "always fails identically", map[string]any{"type": "object"},
 		func(context.Context, any) (any, error) {
 			calls++
 			return nil, errors.New("sandbox denied: /etc/hosts")
@@ -83,7 +83,7 @@ func TestRerunToolWithGrant_RepeatedApprovalsKeepTheCallDispatchable(t *testing.
 		ReasonKind: sandbox.DenialOutsideReadRoots,
 	}
 	dispatches := 0
-	s.RegisterTool("read_file", "denied unless this one invocation was granted", map[string]any{"type": "object"},
+	s.registerTool("read_file", "denied unless this one invocation was granted", map[string]any{"type": "object"},
 		func(ctx context.Context, _ any) (any, error) {
 			dispatches++
 			if _, granted := invocationGrant(ctx); granted {

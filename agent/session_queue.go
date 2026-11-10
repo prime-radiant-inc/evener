@@ -217,17 +217,17 @@ func (s *Session) Steer(msg string) error {
 	return err
 }
 
-// SteerKind queues a text-only steering message naming what it is
+// steerKind queues a text-only steering message naming what it is
 // (events.SteeringKind*). Prefer it over Steer at every daemon injection site:
 // the kind is what a reader's label is built from, and only the site knows it.
-func (s *Session) SteerKind(msg, kind string) error {
+func (s *Session) steerKind(msg, kind string) error {
 	_, err := s.trySteerEnqueue(msg, nil, nil, "", kind)
 	return err
 }
 
-// SteerTaskCompletion queues tasks-done steering with its blocking delegate
+// steerTaskCompletion queues tasks-done steering with its blocking delegate
 // dependencies available as typed data as well as rendered model context.
-func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) error {
+func (s *Session) steerTaskCompletion(msg string, blockingDelegateIDs []string) error {
 	completion := taskCompletionSteeringData(blockingDelegateIDs)
 	_, err := s.trySteerMessage(steeringMessage{
 		Text:           msg,
@@ -269,11 +269,11 @@ func (s *Session) trySteer(msg string) (bool, error) {
 	return s.trySteerWithImages(msg, nil)
 }
 
-// SteerWithProvenance queues a text-only steering message carrying the causal
+// steerWithProvenance queues a text-only steering message carrying the causal
 // watch provenance that produced it (nil for human/system-authored steering).
 // kind names what was injected (events.SteeringKind*), "" when the caller did
 // not say.
-func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal, kind string) error {
+func (s *Session) steerWithProvenance(msg string, p *provenance.Causal, kind string) error {
 	_, err := s.trySteerWithProvenance(msg, p, kind)
 	return err
 }
@@ -319,7 +319,7 @@ func (s *Session) trySteerMessage(entry steeringMessage) (bool, error) {
 	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
 }
 
-// steerKindForFold is SteerKind for a fold flush's last-write-wins steering
+// steerKindForFold is steerKind for a fold flush's last-write-wins steering
 // (the task-list and transcript reminders): the steering is refused, at the
 // moment it would be enqueued, once a newer fold has published.
 func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) error {
@@ -376,7 +376,7 @@ func (s *Session) deliverHookContext(text string) error {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	return s.SteerKind(wrapHookContext(text), events.SteeringKindHookContext)
+	return s.steerKind(wrapHookContext(text), events.SteeringKindHookContext)
 }
 
 // deliverHookUserMessage surfaces a hook's user-visible message via the
@@ -429,26 +429,26 @@ func newQueueEntryID() string {
 	return fmt.Sprintf("q_%d_%s", seq, hex.EncodeToString(b[:]))
 }
 
-// QueueDepth returns the number of messages currently in the input queue.
-func (s *Session) QueueDepth() int {
+// queueDepth returns the number of messages currently in the input queue.
+func (s *Session) queueDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.inputQueue)
 }
 
-// pendingQueueDepth is QueueDepth for the purpose of "is this session
+// pendingQueueDepth is queueDepth for the purpose of "is this session
 // working": it reports zero for a queue parked by a Stop, because parked
 // messages are not work in progress -- nothing will run them until the user
 // asks.
 //
-// QueueDepth itself still counts them. The messages ARE there and the queue
+// queueDepth itself still counts them. The messages ARE there and the queue
 // strip must keep showing them; what changes is only whether their presence
 // makes the session claim to be busy (kata wms7).
 func (s *Session) pendingQueueDepth() int {
 	if s.clientMutations != nil && s.clientMutations.queueHeld() {
 		return 0
 	}
-	return s.QueueDepth()
+	return s.queueDepth()
 }
 
 // firstQueueLine returns the first newline-terminated line of msg with a
@@ -1228,7 +1228,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 // reader reloading the session sees the same label the live transcript
 // showed. For the sites that reach history directly — loop detection, task
 // reminders, hook context, the interrupt marker — rather than through the
-// steering queue's SteerKind/consumeSteeringMessage path, which already
+// steering queue's steerKind/consumeSteeringMessage path, which already
 // persists its own kind.
 func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))

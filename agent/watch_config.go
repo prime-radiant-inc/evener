@@ -405,7 +405,7 @@ func parentObserverRepair(resultTool string) string {
 	if resultTool == "" {
 		resultTool = tool.DefaultResultToolName
 	}
-	return `; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with ` + resultTool + `(end_turn=false), and report findings with ` + resultTool + `(end_turn=true)`
+	return `; parent observers that need communicate messages use source="parent" with events ["communicate"], and read delivered event.message in the frame. ` + tool.ObserverReporting(resultTool)
 }
 
 func validateWatchEventArgs(a watchArgs) error {

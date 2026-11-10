@@ -21,11 +21,11 @@ func TestS2Cov_SessionAccessors(t *testing.T) {
 	if sess.Client() == nil {
 		t.Fatal("Client returned nil")
 	}
-	if got := sess.CommunicateOutput(); got != "" {
+	if got := sess.communicateOutput(); got != "" {
 		t.Fatalf("CommunicateOutput = %q, want empty before any communicate", got)
 	}
-	if sess.ContextPressure() < 0 {
-		t.Fatalf("ContextPressure = %v, want >= 0", sess.ContextPressure())
+	if sess.contextPressure() < 0 {
+		t.Fatalf("ContextPressure = %v, want >= 0", sess.contextPressure())
 	}
 }
 

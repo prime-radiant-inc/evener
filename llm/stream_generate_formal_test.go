@@ -16,13 +16,16 @@ func TestStreamGenerate_RetryAfterPublishedContent(t *testing.T) {
 		name    string
 		prefix  []StreamEvent
 		content StreamEvent
+		// commits is main's retry-commitment rule: a text delta commits the
+		// attempt. Reasoning, tool-argument and object deltas do not, yet.
+		commits bool
 	}{
-		{"text", []StreamEvent{{Type: StreamEventTextStart, TextID: "txt_7"}}, StreamEvent{Type: StreamEventTextDelta, TextID: "txt_7", Delta: "text-7"}},
-		{"reasoning", []StreamEvent{{Type: StreamEventReasoningStart}}, StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "reason-7"}},
-		{"tool arguments in delta", []StreamEvent{{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: tool.ID, Name: tool.Name, Type: tool.Type}}}, StreamEvent{Type: StreamEventToolCallDelta, ToolCall: tool}},
-		{"complete tool arguments in start", nil, StreamEvent{Type: StreamEventToolCallStart, ToolCall: tool}},
-		{"complete tool arguments in end", nil, StreamEvent{Type: StreamEventToolCallEnd, ToolCall: tool}},
-		{"object delta", nil, StreamEvent{Type: StreamEventObjectDelta, ObjectDelta: map[string]any{"item": 7}}},
+		{"text", []StreamEvent{{Type: StreamEventTextStart, TextID: "txt_7"}}, StreamEvent{Type: StreamEventTextDelta, TextID: "txt_7", Delta: "text-7"}, true},
+		{"reasoning", []StreamEvent{{Type: StreamEventReasoningStart}}, StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "reason-7"}, false},
+		{"tool arguments in delta", []StreamEvent{{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: tool.ID, Name: tool.Name, Type: tool.Type}}}, StreamEvent{Type: StreamEventToolCallDelta, ToolCall: tool}, false},
+		{"complete tool arguments in start", nil, StreamEvent{Type: StreamEventToolCallStart, ToolCall: tool}, false},
+		{"complete tool arguments in end", nil, StreamEvent{Type: StreamEventToolCallEnd, ToolCall: tool}, false},
+		{"object delta", nil, StreamEvent{Type: StreamEventObjectDelta, ObjectDelta: map[string]any{"item": 7}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,6 +71,18 @@ func TestStreamGenerate_RetryAfterPublishedContent(t *testing.T) {
 			if got.TextID != tc.content.TextID || got.Delta != tc.content.Delta || got.ReasoningDelta != tc.content.ReasoningDelta || !reflect.DeepEqual(got.ToolCall, tc.content.ToolCall) || !reflect.DeepEqual(got.ObjectDelta, tc.content.ObjectDelta) {
 				t.Fatalf("published payload = %+v, want %+v", got, tc.content)
 			}
+			if !tc.commits {
+				if count := len(a.Requests()); count != 2 {
+					t.Errorf("provider requests = %d, want a retry for non-committing content", count)
+				}
+				if responseErr != nil || response == nil || response.Text() != "settled" {
+					t.Errorf("Response() = (%+v, %v), want the successful retry", response, responseErr)
+				}
+				if len(terminalErrors) != 0 || finishes != 1 {
+					t.Errorf("terminal events: errors=%v, finishes=%d, want none and one FINISH", terminalErrors, finishes)
+				}
+				return
+			}
 			if count := len(a.Requests()); count != 1 {
 				t.Errorf("provider requests = %d, want one after published content", count)
 			}
@@ -83,7 +98,7 @@ func TestStreamGenerate_RetryAfterPublishedContent(t *testing.T) {
 
 	t.Run("control only retries", func(t *testing.T) {
 		a := &scriptedStreamAdapter{name: "openai", scripts: []func(context.Context, Request) (Stream, error){
-			formalScriptedEvents([]StreamEvent{{Type: StreamEventStreamStart}, {Type: StreamEventTextStart, TextID: "txt_7"}, {Type: StreamEventTextDelta, TextID: "txt_7"}, {Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: "call_7", Name: "lookup"}}}),
+			formalScriptedEvents([]StreamEvent{{Type: StreamEventStreamStart}, {Type: StreamEventTextStart, TextID: "txt_7"}, {Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: "call_7", Name: "lookup"}}}),
 			formalScriptedEvents([]StreamEvent{{Type: StreamEventFinish, Response: &Response{Model: "m", Message: Assistant("settled")}}}),
 		}}
 		client := NewClient()

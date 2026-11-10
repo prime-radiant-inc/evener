@@ -203,7 +203,7 @@ func TestSession_PromoteQueuedAsSteer_ExpectedIDMismatch(t *testing.T) {
 	if err := sess.PromoteQueuedAsSteer(context.Background(), 0, ids[1]); err != nil {
 		t.Fatalf("PromoteQueuedAsSteer with correct id: %v", err)
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after promote: got %d, want 0", depth)
 	}
 }

@@ -19,7 +19,7 @@ import (
 const wantFailureNudge = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 
 func wantRepetitionNudge(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // repetitionNudgeMarker is present in the repetition nudge at any count, for

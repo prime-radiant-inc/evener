@@ -132,7 +132,7 @@ func TestRecordedHookDescendantEntriesCarryTheChildSessionID(t *testing.T) {
 	var mu sync.Mutex
 	bySession := map[string][]transcript.Record{}
 	completed := make(chan string, 16)
-	root.SetDescendantRecordedFunc(func(sessionID string, rec transcript.Record) {
+	root.setDescendantRecordedFunc(func(sessionID string, rec transcript.Record) {
 		mu.Lock()
 		bySession[sessionID] = append(bySession[sessionID], rec)
 		mu.Unlock()

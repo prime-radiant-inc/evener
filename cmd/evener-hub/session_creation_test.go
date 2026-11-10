@@ -29,34 +29,31 @@ func TestManagerCreatePostSpawnFailure(t *testing.T) {
 			runDir := t.TempDir()
 			spawned := 0
 			entry := rendezvous.Entry{PID: 404, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemon.URL[len("http"):], SourceID: "local", ThreadID: session, SessionID: session, InstanceID: instance, WorkingDir: t.TempDir(), Model: "gpt-5"}
-			owner := newHubRPCTestServer(t, hubcore.WebConfig{
-				RunDir: runDir, Roster: hubcore.NewRoster(runDir, fakeProber{sessionID: session, status: appwire.ThreadStatusActive}),
+			owner := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+				RunDir: runDir,
+				Roster: hubcore.NewRoster(runDir, fakeProber{sessionID: session, status: appwire.ThreadStatusActive}),
 				Spawner: &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 					spawned++
 					writeRendezvous(t, runDir, entry)
 					return entry, nil
-				}}, Past: hubcore.NewPastIndex(""),
-			})
+				}},
+			}))
 			defer owner.Close()
 			caller := owner
 			params := appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: entry.WorkingDir, Input: skillInputHubSelection()}
 			if remote {
-				controller, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+				controller, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{}))
 				defer controller.Close()
 				remoteClient := dialHubRPC(t, owner)
 				defer remoteClient.Close()
-				if _, err := remoteClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-					t.Fatal(err)
-				}
+				mustInitializeHubClient(t, remoteClient)
 				web.sources.Add(appsource.NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil }))
 				caller = controller
 				params.Source = "host"
 			}
 			client := dialHubRPC(t, caller)
 			defer client.Close()
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			_, err := appwiretest.ThreadStart(t.Context(), client, params)
 			wire, data := wireErrorData(t, err)
 			if wire.Code != appwire.CodeInvalidParams || data.EvenerErrorInfo != appwire.ErrorInvalidParams || data.RetryDisposition == appwire.RetryDispositionAutomatic || data.MutationOutcome == appwire.MutationOutcomeNotAccepted {
@@ -86,19 +83,16 @@ func TestManagerCreatePostSpawnFailure(t *testing.T) {
 
 func TestManagerCreatePostSpawnFailureNoSpawnEvidence(t *testing.T) {
 	spawned := 0
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		Spawner: &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			spawned++
 			return rendezvous.Entry{}, errors.New("spawn refused")
 		}},
-		Past: hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	_, err := appwiretest.ThreadStart(t.Context(), client, appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: t.TempDir()})
 	wire, data := wireErrorData(t, err)
 	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorHubLaunch || spawned != 1 {
