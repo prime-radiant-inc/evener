@@ -237,6 +237,11 @@ type testConfig struct {
 	// released. An inline result can be acknowledged while this seam is held.
 	// Nil in production.
 	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// jobTreeDrainParked observes a session's job-tree drain as it parks: it
+	// has finished a pass over its subtree, and the work it waits on is still
+	// outstanding. It receives the parking session, since child sessions
+	// inherit the hook. Nil in production.
+	jobTreeDrainParked func(*Session)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that

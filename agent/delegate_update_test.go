@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/spf13/afero"
@@ -532,75 +533,77 @@ func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 // no successor generation is started for it.
 func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	t.Parallel()
-	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
-	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
-	releaseReport := sync.OnceFunc(func() { close(reportGate) })
-	defer releaseReport()
-	presented := make(chan string, 1)
-	adapter.script("root",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then end your turn and wait for it.")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
-	)
-	adapter.script("COORD-BRIEF",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the worker") },
-		func(req llm.Request) llm.Response {
-			presented <- messagesText(req.Messages)
-			return agenttest.FinalResponse("told the worker")
-		},
-	)
-	adapter.script("WORKER-BRIEF",
-		func(llm.Request) llm.Response {
-			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
-			return updateResponse("upd", "IDLE_PARENT_UPDATE: which table holds the drain cursor?")
-		},
-		func(llm.Request) llm.Response {
-			awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
-			return agenttest.FinalResponse("worker done")
-		},
-	)
-	root := newMessagingRoot(t, adapter, nil)
-	serveSupervisionRootWakes(t, root)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx := tripwireCtx(t)
-	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	// The coordinator's second request ends its turn; once it is no longer
-	// processing, the worker's update finds it idle.
-	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	coordinator := waitForSoleChildIdle(t, root)
-	close(coordinatorIdle)
-	select {
-	case text := <-presented:
-		if !strings.Contains(text, `kind="update"`) || !strings.Contains(text, "IDLE_PARENT_UPDATE") {
-			t.Fatalf("the coordinator's next turn does not present the update:\n%s", text)
+	synctest.Test(t, func(t *testing.T) {
+		adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
+		coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
+		releaseReport := sync.OnceFunc(func() { close(reportGate) })
+		defer releaseReport()
+		presented := make(chan string, 1)
+		adapter.script("root",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then end your turn and wait for it.")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
+		)
+		adapter.script("COORD-BRIEF",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the worker") },
+			func(req llm.Request) llm.Response {
+				presented <- messagesText(req.Messages)
+				return agenttest.FinalResponse("told the worker")
+			},
+		)
+		adapter.script("WORKER-BRIEF",
+			func(llm.Request) llm.Response {
+				awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+				return updateResponse("upd", "IDLE_PARENT_UPDATE: which table holds the drain cursor?")
+			},
+			func(llm.Request) llm.Response {
+				awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
+				return agenttest.FinalResponse("worker done")
+			},
+		)
+		root := newMessagingRoot(t, adapter, nil)
+		serveSupervisionRootWakes(t, root)
+		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+		ctx := tripwireCtx(t)
+		if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
 		}
-		if strings.Contains(text, `kind="report"`) {
-			t.Fatalf("the coordinator's turn presents the worker's report, so the update did not wake it alone:\n%s", text)
+		// The coordinator's second request ends its turn; once it is no longer
+		// processing, the worker's update finds it idle.
+		adapter.waitForRequests(t, "COORD-BRIEF", 2)
+		coordinator := requireSoleChildIdle(t, root)
+		close(coordinatorIdle)
+		select {
+		case text := <-presented:
+			if !strings.Contains(text, `kind="update"`) || !strings.Contains(text, "IDLE_PARENT_UPDATE") {
+				t.Fatalf("the coordinator's next turn does not present the update:\n%s", text)
+			}
+			if strings.Contains(text, `kind="report"`) {
+				t.Fatalf("the coordinator's turn presents the worker's report, so the update did not wake it alone:\n%s", text)
+			}
+		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+		case <-time.After(30 * time.Second):
+			t.Fatal("the idle coordinator was never woken by its worker's update")
 		}
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	case <-time.After(30 * time.Second):
-		t.Fatal("the idle coordinator was never woken by its worker's update")
-	}
-	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
-		t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
-	}
-	// The scripted adapter answers a request past its script with a plain
-	// final report, so only the count shows a drain pass that ran extra
-	// turns. The script's three steps are the delegate call, the end of the
-	// first turn and the update's turn. The worker is still held, so its
-	// report cannot yet run a turn of its own; where that later turn lands
-	// depends on when the report arrives, so the count is not pinned after.
-	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
-		t.Fatalf("the coordinator made %d model requests, want its 3 scripted steps", got)
-	}
-	releaseReport()
-	awaitRootReport(t, root)
+		if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
+			t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
+		}
+		// The scripted adapter answers a request past its script with a plain
+		// final report, so only the count shows a drain pass that ran extra
+		// turns. The script's three steps are the delegate call, the end of the
+		// first turn and the update's turn. The worker is still held, so its
+		// report cannot yet run a turn of its own; where that later turn lands
+		// depends on when the report arrives, so the count is not pinned after.
+		if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
+			t.Fatalf("the coordinator made %d model requests, want its 3 scripted steps", got)
+		}
+		releaseReport()
+		awaitRootReport(t, root)
+	})
 }
 
 // A coordinator woken in its finalization drain by its worker's update has
@@ -608,73 +611,75 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 // its own update reaches the root ahead of its report.
 func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T) {
 	t.Parallel()
-	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
-	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
-	releaseReport := sync.OnceFunc(func() { close(reportGate) })
-	defer releaseReport()
-	relayResult := make(chan string, 1)
-	adapter.script("root",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
-	)
-	adapter.script("COORD-BRIEF",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.CommunicateResponse(true, "COORD_FINAL: waiting on the worker")
-		},
-		func(llm.Request) llm.Response {
-			return updateResponse("relay", "COORD_RELAY: the worker needs the drain cursor table")
-		},
-		func(req llm.Request) llm.Response {
-			relayResult <- lastToolResultText(req.Messages)
-			releaseReport()
-			return agenttest.FinalResponse("relayed")
-		},
-	)
-	adapter.script("WORKER-BRIEF",
-		func(llm.Request) llm.Response {
-			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
-			return updateResponse("upd", "DRAIN_UPDATE: which table holds the drain cursor?")
-		},
-		func(llm.Request) llm.Response {
-			awaitSignal(t, reportGate, "the coordinator's relay")
-			return agenttest.FinalResponse("worker done")
-		},
-	)
-	root := newMessagingRoot(t, adapter, nil)
-	serveSupervisionRootWakes(t, root)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx := tripwireCtx(t)
-	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	waitForSoleChildIdle(t, root)
-	close(coordinatorIdle)
-	select {
-	case result := <-relayResult:
-		if !strings.Contains(result, `"delivery":"delivered"`) && !strings.Contains(result, `"delivery":"queued"`) {
-			t.Fatalf("the coordinator's relay result = %s, want delivered or queued", result)
+	synctest.Test(t, func(t *testing.T) {
+		adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
+		coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
+		releaseReport := sync.OnceFunc(func() { close(reportGate) })
+		defer releaseReport()
+		relayResult := make(chan string, 1)
+		adapter.script("root",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
+		)
+		adapter.script("COORD-BRIEF",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(true, "COORD_FINAL: waiting on the worker")
+			},
+			func(llm.Request) llm.Response {
+				return updateResponse("relay", "COORD_RELAY: the worker needs the drain cursor table")
+			},
+			func(req llm.Request) llm.Response {
+				relayResult <- lastToolResultText(req.Messages)
+				releaseReport()
+				return agenttest.FinalResponse("relayed")
+			},
+		)
+		adapter.script("WORKER-BRIEF",
+			func(llm.Request) llm.Response {
+				awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+				return updateResponse("upd", "DRAIN_UPDATE: which table holds the drain cursor?")
+			},
+			func(llm.Request) llm.Response {
+				awaitSignal(t, reportGate, "the coordinator's relay")
+				return agenttest.FinalResponse("worker done")
+			},
+		)
+		root := newMessagingRoot(t, adapter, nil)
+		serveSupervisionRootWakes(t, root)
+		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+		ctx := tripwireCtx(t)
+		if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
 		}
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	case <-time.After(30 * time.Second):
-		t.Fatal("the coordinator's drain turn never relayed")
-	}
-	awaitRootReport(t, root)
-	fold := rootAttentionFold(t, root)
-	updateAt := slices.IndexFunc(fold.order, isDelegateUpdateAttentionID)
-	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
-	if updateAt < 0 || reportAt < updateAt {
-		t.Fatalf("root attention order = %v, want the coordinator's update before its report", fold.order)
-	}
-	frame := fold.content[fold.order[updateAt]].Text()
-	if !strings.Contains(frame, `kind="update"`) || !strings.Contains(frame, "COORD_RELAY") {
-		t.Fatalf("the root's first attention = %q, want the coordinator's relayed update", frame)
-	}
+		adapter.waitForRequests(t, "COORD-BRIEF", 2)
+		requireSoleChildIdle(t, root)
+		close(coordinatorIdle)
+		select {
+		case result := <-relayResult:
+			if !strings.Contains(result, `"delivery":"delivered"`) && !strings.Contains(result, `"delivery":"queued"`) {
+				t.Fatalf("the coordinator's relay result = %s, want delivered or queued", result)
+			}
+		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+		case <-time.After(30 * time.Second):
+			t.Fatal("the coordinator's drain turn never relayed")
+		}
+		awaitRootReport(t, root)
+		fold := rootAttentionFold(t, root)
+		updateAt := slices.IndexFunc(fold.order, isDelegateUpdateAttentionID)
+		reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
+		if updateAt < 0 || reportAt < updateAt {
+			t.Fatalf("root attention order = %v, want the coordinator's update before its report", fold.order)
+		}
+		frame := fold.content[fold.order[updateAt]].Text()
+		if !strings.Contains(frame, `kind="update"`) || !strings.Contains(frame, "COORD_RELAY") {
+			t.Fatalf("the root's first attention = %q, want the coordinator's relayed update", frame)
+		}
+	})
 }
 
 // A sibling's report to a coordinator draining its workers gets no turn of its
@@ -682,7 +687,9 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 // coordinator, and that turn carries the report along with it.
 func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 0)
+	synctest.Test(t, func(t *testing.T) {
+		drainingCoordinatorWaitsForAnUpdate(t, 0)
+	})
 }
 
 // When the write that marks the update consumed fails once, the drain retries
@@ -690,7 +697,9 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 // already saw.
 func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 1)
+	synctest.Test(t, func(t *testing.T) {
+		drainingCoordinatorWaitsForAnUpdate(t, 1)
+	})
 }
 
 // When the retry fails too, the update stays pending for the generation's end:
@@ -698,7 +707,9 @@ func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 // workers, nor runs another model turn for an update the model already saw.
 func TestDelegateUpdateConsumedMarkerRetryFailureKeepsTheCoordinatorRunning(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 2)
+	synctest.Test(t, func(t *testing.T) {
+		drainingCoordinatorWaitsForAnUpdate(t, 2)
+	})
 }
 
 // drainingCoordinatorWaitsForAnUpdate runs the draining-coordinator scenario;
@@ -755,16 +766,25 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
-	coordinator := waitForSoleChildIdle(t, root)
+	coordinator := requireSoleChildIdle(t, root)
 	close(coordinatorIdle)
 	coordinator.mu.Lock()
 	path, sessionID := transcriptPath(coordinator.stateDir, coordinator.id), coordinator.id
 	coordinator.mu.Unlock()
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the sibling's report to reach the coordinator", func() bool {
+	pendingAttention := func() []string {
+		t.Helper()
 		fold, err := readDelegateAttentionFold(path, sessionID)
-		return err == nil && len(fold.pendingIDs()) == 1
-	})
+		if err != nil {
+			t.Fatalf("fold the coordinator's attention: %v", err)
+		}
+		return fold.pendingIDs()
+	}
+	// Worker B stays held until the update is released, so once the bubble is
+	// quiet the sibling's report has landed and nothing else has.
+	synctest.Wait()
+	if pending := pendingAttention(); len(pending) != 1 {
+		t.Fatalf("the coordinator holds pending attention %v once quiet, want the sibling's report alone", pending)
+	}
 	if coordinator.hasPendingDelegateUpdateAttention() {
 		t.Fatal("the coordinator's drain counts the sibling's report as an update")
 	}
@@ -785,17 +805,15 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		if failingWrites != nil {
 			// Worker B stays blocked, so no report can run a turn: the only
 			// possible fifth request is a rerun for the update.
-			// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-			waitForCondition(t, 30*time.Second, "the marker writes to fail", func() bool {
-				return failingWrites.injectedFailures() == failedMarkerWrites
-			})
+			synctest.Wait()
+			if got := failingWrites.injectedFailures(); got != failedMarkerWrites {
+				t.Fatalf("%d marker writes failed once quiet, want %d", got, failedMarkerWrites)
+			}
 			if failedMarkerWrites == 1 {
 				// The retry succeeded.
-				// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-				waitForCondition(t, 30*time.Second, "the update to be marked consumed", func() bool {
-					fold, err := readDelegateAttentionFold(path, sessionID)
-					return err == nil && len(fold.pendingIDs()) == 0
-				})
+				if pending := pendingAttention(); len(pending) != 0 {
+					t.Fatalf("the coordinator holds pending attention %v after the marker retry succeeded, want the update consumed", pending)
+				}
 			}
 			if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
 				t.Fatalf("the coordinator made %d model requests after the marker write failed, want 4", got)
@@ -832,86 +850,87 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 // arrive mid-turn: it queues behind its first until that is acknowledged.)
 func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *testing.T) {
 	t.Parallel()
-	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
-	coordinatorIdle, secondGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	releaseReport := sync.OnceFunc(func() { close(reportGate) })
-	defer releaseReport()
-	var coordinator atomic.Pointer[Session]
-	adapter.script("root",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
-	)
-	adapter.script("COORD-BRIEF",
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("a", "WORKER-A: send an update, then finish.")
-		},
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("b", "WORKER-B: send an update, then finish.")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on both workers") },
-		// Worker A's update turn: hold the tool round until worker B has
-		// posted its update, which a running coordinator receives at its next
-		// model boundary, so the next request presents both.
-		func(llm.Request) llm.Response {
-			close(secondGate)
-			adapter.waitForRequests(t, "WORKER-B", 2)
-			return jobListResponse("hold")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("told both workers") },
-	)
-	adapter.script("WORKER-A",
-		func(llm.Request) llm.Response {
-			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
-			return updateResponse("first", "FIRST_UPDATE: which table holds the drain cursor?")
-		},
-		func(llm.Request) llm.Response {
-			awaitSignal(t, reportGate, "the marker writes to fail")
-			return agenttest.FinalResponse("worker a done")
-		},
-	)
-	adapter.script("WORKER-B",
-		func(llm.Request) llm.Response {
-			awaitSignal(t, secondGate, "the coordinator's update turn to start")
-			return updateResponse("second", "SECOND_UPDATE: and which column?")
-		},
-		func(llm.Request) llm.Response {
-			awaitSignal(t, reportGate, "the marker writes to fail")
-			return agenttest.FinalResponse("worker b done")
-		},
-	)
-	root := newMessagingRoot(t, adapter, nil)
-	serveSupervisionRootWakes(t, root)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx := tripwireCtx(t)
-	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	adapter.waitForRequests(t, "COORD-BRIEF", 3)
-	coordinator.Store(waitForSoleChildIdle(t, root))
-	failingWrites := installResolutionSyncFailuresWriter(t, coordinator.Load(), 2)
-	close(coordinatorIdle)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the marker writes to fail", func() bool {
-		return failingWrites.injectedFailures() == 2
+	synctest.Test(t, func(t *testing.T) {
+		adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+		coordinatorIdle, secondGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		releaseReport := sync.OnceFunc(func() { close(reportGate) })
+		defer releaseReport()
+		var coordinator atomic.Pointer[Session]
+		adapter.script("root",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
+		)
+		adapter.script("COORD-BRIEF",
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("a", "WORKER-A: send an update, then finish.")
+			},
+			func(llm.Request) llm.Response {
+				return delegateToolResponse("b", "WORKER-B: send an update, then finish.")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on both workers") },
+			// Worker A's update turn: hold the tool round until worker B has
+			// posted its update, which a running coordinator receives at its next
+			// model boundary, so the next request presents both.
+			func(llm.Request) llm.Response {
+				close(secondGate)
+				adapter.waitForRequests(t, "WORKER-B", 2)
+				return jobListResponse("hold")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("told both workers") },
+		)
+		adapter.script("WORKER-A",
+			func(llm.Request) llm.Response {
+				awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+				return updateResponse("first", "FIRST_UPDATE: which table holds the drain cursor?")
+			},
+			func(llm.Request) llm.Response {
+				awaitSignal(t, reportGate, "the marker writes to fail")
+				return agenttest.FinalResponse("worker a done")
+			},
+		)
+		adapter.script("WORKER-B",
+			func(llm.Request) llm.Response {
+				awaitSignal(t, secondGate, "the coordinator's update turn to start")
+				return updateResponse("second", "SECOND_UPDATE: and which column?")
+			},
+			func(llm.Request) llm.Response {
+				awaitSignal(t, reportGate, "the marker writes to fail")
+				return agenttest.FinalResponse("worker b done")
+			},
+		)
+		root := newMessagingRoot(t, adapter, nil)
+		serveSupervisionRootWakes(t, root)
+		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+		ctx := tripwireCtx(t)
+		if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		adapter.waitForRequests(t, "COORD-BRIEF", 3)
+		coordinator.Store(requireSoleChildIdle(t, root))
+		failingWrites := installResolutionSyncFailuresWriter(t, coordinator.Load(), 2)
+		close(coordinatorIdle)
+		// The workers are still held, so only a rerun for an update could add a
+		// request beyond the five scripted steps. A rerun follows the failed retry
+		// at once; the bubble going quiet, and staying quiet through a second of
+		// its clock, is the absence this test pins.
+		synctest.Wait()
+		if got := failingWrites.injectedFailures(); got != 2 {
+			t.Fatalf("%d marker writes failed once quiet, want 2", got)
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		requests := adapter.requestsFor("COORD-BRIEF")
+		if len(requests) != 5 {
+			t.Fatalf("the coordinator made %d model requests, want its 5 scripted steps", len(requests))
+		}
+		if text := messagesText(requests[4].Messages); !strings.Contains(text, "FIRST_UPDATE") || !strings.Contains(text, "SECOND_UPDATE") {
+			t.Fatalf("the update turn's later request did not present both updates:\n%s", text)
+		}
+		releaseReport()
+		awaitRootReport(t, root)
 	})
-	// The workers are still held, so only a rerun for an update could add a
-	// request beyond the five scripted steps. A rerun follows the failed retry
-	// at once; a quiet second is the absence this test pins.
-	// TRIPWIRE: a bounded negative wait; a passing run costs the full second.
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && len(adapter.requestsFor("COORD-BRIEF")) == 5; {
-		time.Sleep(10 * time.Millisecond)
-	}
-	requests := adapter.requestsFor("COORD-BRIEF")
-	if len(requests) != 5 {
-		t.Fatalf("the coordinator made %d model requests, want its 5 scripted steps", len(requests))
-	}
-	if text := messagesText(requests[4].Messages); !strings.Contains(text, "FIRST_UPDATE") || !strings.Contains(text, "SECOND_UPDATE") {
-		t.Fatalf("the update turn's later request did not present both updates:\n%s", text)
-	}
-	releaseReport()
-	awaitRootReport(t, root)
 }
 
 // A coordinator that is mid-run when its worker's update arrives sees it at
@@ -1240,7 +1259,11 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 	atRelease, releaseGeneration := make(chan struct{}, 1), make(chan struct{})
 	release := sync.OnceFunc(func() { close(releaseGeneration) })
 	defer release()
-	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+	// The coordinator's background shell, when it starts one, runs under a
+	// stand-in launcher that holds it open until cleanup. A real process keeps
+	// its output reader runnable, so the bubble would never go quiet.
+	env := newOwnedJobDrainEnvironment(t.TempDir())
+	root := newMessagingRootIn(t, adapter, env, func(cfg *SessionConfig) {
 		cfg.TurnEndsProcess = undisposedJob
 		cfg.testOnly.subagentBeforeGenerationReleased = func(a *subagent, lease delegateLease) {
 			a.mu.Lock()
@@ -1252,6 +1275,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 			}
 		}
 	})
+	t.Cleanup(env.releaseJob)
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1260,20 +1284,19 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	coordinator := waitForSoleChildIdle(t, root)
+	coordinator := requireSoleChildIdle(t, root)
 	close(coordinatorIdle)
 	awaitSignal(t, atRelease, "the coordinator's first generation to reach its release boundary")
 	// The preview follows the settled run, which is finished while the
 	// generation is held.
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the report preview to settle", func() bool {
-		page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
-		if err != nil || len(page.Delegates) != 1 {
-			return false
-		}
-		preview = page.Delegates[0].ReportPreview
-		return preview != ""
-	})
+	synctest.Wait()
+	page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
+	if err != nil || len(page.Delegates) != 1 {
+		t.Fatalf("the root's delegate activity once quiet = %+v (error %v), want the coordinator alone", page, err)
+	}
+	if preview = page.Delegates[0].ReportPreview; preview == "" {
+		t.Fatal("the coordinator's report preview is empty once its run has settled")
+	}
 	// Counted while the generation is held, before a successor can start.
 	coordinatorRequests = len(adapter.requestsFor("COORD-BRIEF"))
 	release()
@@ -1301,18 +1324,20 @@ func bareTextDrainTurn(llm.Request) llm.Response {
 // and the earlier one stays in the coordinator's transcript.
 func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	frame, preview, transcript, _ := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
-		return agenttest.CommunicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
+	synctest.Test(t, func(t *testing.T) {
+		frame, preview, transcript, _ := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
+		})
+		if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
+			t.Fatalf("the root's report frame = %q, want the drain turn's report B and not A", frame)
+		}
+		if preview != "REPORT_B: told the worker to use the v2 schema" {
+			t.Fatalf("reportPreview = %q, want report B", preview)
+		}
+		if !strings.Contains(transcript, "REPORT_A") {
+			t.Fatal("the coordinator's transcript lost its earlier report A")
+		}
 	})
-	if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
-		t.Fatalf("the root's report frame = %q, want the drain turn's report B and not A", frame)
-	}
-	if preview != "REPORT_B: told the worker to use the v2 schema" {
-		t.Fatalf("reportPreview = %q, want report B", preview)
-	}
-	if !strings.Contains(transcript, "REPORT_A") {
-		t.Fatal("the coordinator's transcript lost its earlier report A")
-	}
 }
 
 // A drain turn whose model never reports ends the turn, not the run: the
@@ -1333,20 +1358,22 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			// Scripted past the attempts, so an extra request would be a model
-			// turn the drain turn should not have made.
-			turns := slices.Repeat([]func(llm.Request) llm.Response{tc.turn}, tc.attempts+1)
-			frame, preview, _, requests := drainingCoordinatorReport(t, false, turns...)
-			if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
-				t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
-			}
-			if preview != "REPORT_A: waiting on the worker" {
-				t.Fatalf("reportPreview = %q, want report A", preview)
-			}
-			// The delegate call, report A, and the drain turn's attempts.
-			if want := 2 + tc.attempts; requests != want {
-				t.Fatalf("the coordinator made %d model requests, want %d", requests, want)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				// Scripted past the attempts, so an extra request would be a model
+				// turn the drain turn should not have made.
+				turns := slices.Repeat([]func(llm.Request) llm.Response{tc.turn}, tc.attempts+1)
+				frame, preview, _, requests := drainingCoordinatorReport(t, false, turns...)
+				if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
+					t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
+				}
+				if preview != "REPORT_A: waiting on the worker" {
+					t.Fatalf("reportPreview = %q, want report A", preview)
+				}
+				// The delegate call, report A, and the drain turn's attempts.
+				if want := 2 + tc.attempts; requests != want {
+					t.Fatalf("the coordinator made %d model requests, want %d", requests, want)
+				}
+			})
 		})
 	}
 }
@@ -1356,20 +1383,22 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 // latest accepted report, never from the text the drain returned.
 func TestDelegateDrainAnnouncementReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	frame, preview, _, _ := drainingCoordinatorReport(t, true,
-		func(llm.Request) llm.Response {
-			return agenttest.CommunicateResponse(true, "REPORT_B: left the job running")
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.CommunicateResponse(true, "REPORT_C: detached the job")
-		},
-	)
-	if !strings.Contains(frame, "REPORT_C") || strings.Contains(frame, "REPORT_A") {
-		t.Fatalf("the root's report frame = %q, want the latest announcement turn's report C alone", frame)
-	}
-	if preview != "REPORT_C: detached the job" {
-		t.Fatalf("reportPreview = %q, want report C", preview)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		frame, preview, _, _ := drainingCoordinatorReport(t, true,
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(true, "REPORT_B: left the job running")
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(true, "REPORT_C: detached the job")
+			},
+		)
+		if !strings.Contains(frame, "REPORT_C") || strings.Contains(frame, "REPORT_A") {
+			t.Fatalf("the root's report frame = %q, want the latest announcement turn's report C alone", frame)
+		}
+		if preview != "REPORT_C: detached the job" {
+			t.Fatalf("reportPreview = %q, want report C", preview)
+		}
+	})
 }
 
 // isDelegateUpdateAttentionID must keep classifying a reopened update row as
