@@ -1799,28 +1799,6 @@ func (s *Session) hookContextAlreadyPresent(text string) bool {
 	return false
 }
 
-func (s *Session) cancelAgent(agentID string) (any, error) {
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-	done, err := sub.requestRunCancel(false)
-	if err != nil {
-		return "", fmt.Errorf("agent %s is %w", agentID, err)
-	}
-	select {
-	case <-done:
-	case <-s.sclock().After(5 * time.Second):
-		return "", fmt.Errorf("timed out cancelling subagent %s", agentID)
-	}
-	sub.mu.Lock()
-	result := sub.resultSnapshotLocked()
-	sub.resultConsumed = true
-	sub.mu.Unlock()
-	b, _ := json.Marshal(result)
-	return string(b), nil
-}
-
 func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
 }
@@ -2123,7 +2101,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 }
 
 // subagentFinalize is everything a finished child run hands to finalizeRun:
-// what the run produced, how it ended, and the ownership it ended under. A run
+// what the run produced, how it ended, and which owner it ended under. A run
 // that never called the model (a SubagentStart hook's continue:false) passes the
 // same fields with the hook's reason as its result.
 type subagentFinalize struct {

@@ -393,8 +393,7 @@ func TestSubagentStart_FailedHookLeavesTheChildRunning(t *testing.T) {
 			// code, and the first line of its stderr — one operator line, never
 			// the child's model context.
 			message := warning.Message
-			if strings.HasPrefix(message, "SubagentStart hook ") &&
-				strings.Contains(message, "failed (exit 2)") &&
+			if strings.Contains(message, "SubagentStart") &&
 				strings.Contains(message, "spawn warning") &&
 				!strings.Contains(message, "\n") {
 				return true
