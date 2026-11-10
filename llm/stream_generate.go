@@ -252,10 +252,10 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						outStream.Send(ev)
 					default:
 						outStream.Send(ev)
-						// Content-bearing passthroughs commit the attempt like
-						// text deltas (#4941); control-only ones stay retryable.
-						if ev.Type == StreamEventTextDelta ||
-							(ev.Type == StreamEventProviderEvent && ev.ContentBearing) {
+						// A published nonempty normalized payload, or a
+						// content-bearing passthrough, commits the attempt:
+						// a retry would duplicate it (#4941, SC-1).
+						if streamEventCommitsAttempt(ev) {
 							hasPartialOutput = true
 						}
 					}
@@ -371,4 +371,26 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 	}()
 
 	return res, nil
+}
+
+// streamEventCommitsAttempt reports whether forwarding ev published a payload
+// the caller observes, so a retry would repeat it. Empty and control-only
+// frames commit nothing: text and reasoning need a nonempty delta, tool calls
+// need arguments on start, delta, or end, object deltas need a nonnil payload,
+// and a provider passthrough must declare itself content-bearing (#4941).
+func streamEventCommitsAttempt(ev StreamEvent) bool {
+	switch ev.Type {
+	case StreamEventTextDelta:
+		return ev.Delta != ""
+	case StreamEventReasoningDelta:
+		return ev.ReasoningDelta != ""
+	case StreamEventToolCallStart, StreamEventToolCallDelta, StreamEventToolCallEnd:
+		return ev.ToolCall != nil && len(ev.ToolCall.Arguments) > 0
+	case StreamEventObjectDelta:
+		return ev.ObjectDelta != nil
+	case StreamEventProviderEvent:
+		return ev.ContentBearing
+	default:
+		return false
+	}
 }

@@ -16,16 +16,18 @@ func TestStreamGenerate_RetryAfterPublishedContent(t *testing.T) {
 		name    string
 		prefix  []StreamEvent
 		content StreamEvent
-		// commits is main's retry-commitment rule: a text delta commits the
-		// attempt. Reasoning, tool-argument and object deltas do not, yet.
+		// commits is the retry-commitment rule: any nonempty normalized payload
+		// published to the caller commits the attempt, and a retry would
+		// duplicate it. Empty and control-only frames stay retryable.
 		commits bool
 	}{
 		{"text", []StreamEvent{{Type: StreamEventTextStart, TextID: "txt_7"}}, StreamEvent{Type: StreamEventTextDelta, TextID: "txt_7", Delta: "text-7"}, true},
-		{"reasoning", []StreamEvent{{Type: StreamEventReasoningStart}}, StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "reason-7"}, false},
-		{"tool arguments in delta", []StreamEvent{{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: tool.ID, Name: tool.Name, Type: tool.Type}}}, StreamEvent{Type: StreamEventToolCallDelta, ToolCall: tool}, false},
-		{"complete tool arguments in start", nil, StreamEvent{Type: StreamEventToolCallStart, ToolCall: tool}, false},
-		{"complete tool arguments in end", nil, StreamEvent{Type: StreamEventToolCallEnd, ToolCall: tool}, false},
-		{"object delta", nil, StreamEvent{Type: StreamEventObjectDelta, ObjectDelta: map[string]any{"item": 7}}, false},
+		{"empty text delta", nil, StreamEvent{Type: StreamEventTextDelta, TextID: "txt_7"}, false},
+		{"reasoning", []StreamEvent{{Type: StreamEventReasoningStart}}, StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: "reason-7"}, true},
+		{"tool arguments in delta", []StreamEvent{{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: tool.ID, Name: tool.Name, Type: tool.Type}}}, StreamEvent{Type: StreamEventToolCallDelta, ToolCall: tool}, true},
+		{"complete tool arguments in start", nil, StreamEvent{Type: StreamEventToolCallStart, ToolCall: tool}, true},
+		{"complete tool arguments in end", nil, StreamEvent{Type: StreamEventToolCallEnd, ToolCall: tool}, true},
+		{"object delta", nil, StreamEvent{Type: StreamEventObjectDelta, ObjectDelta: map[string]any{"item": 7}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

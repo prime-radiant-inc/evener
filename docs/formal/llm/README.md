@@ -1,4 +1,4 @@
-# Bounded LLM-core audit: two fixes, Raw replay unresolved
+# Bounded LLM-core audit: two fixes, unclassified Raw replay remains
 
 TLC found two families; both are now **confirmed Go bugs and fixed**:
 
@@ -9,11 +9,12 @@ TLC found two families; both are now **confirmed Go bugs and fixed**:
   of `StreamResult.Steps()` and `TotalUsage()`. A public-boundary regression
   failed before completed-round publication and passed afterward.
 
-**Unresolved:** provider-specific `PROVIDER_EVENT`/`Raw` passthrough can
-repeat after a transient stream failure, including a nonempty content payload.
-The two fixes and passing bounded models cover the enumerated normalized
-events and completed-round accounting, **not** a universal no-replay guarantee
-for provider events. See [Raw provider passthrough replay](#raw-provider-passthrough-replay-unresolved)
+**Unresolved:** a provider-specific `PROVIDER_EVENT`/`Raw` frame the adapter
+leaves unclassified can repeat after a transient stream failure. The two fixes
+and passing bounded models cover the enumerated normalized events and
+completed-round accounting, **not** a universal no-replay guarantee for
+arbitrary provider or custom-adapter frames. See
+[Raw provider passthrough replay](#raw-provider-passthrough-replay-unclassified-events-only)
 and [issue #4941](https://github.com/prime-radiant-inc/evener/issues/4941).
 
 Of the 17 documented configurations, 12 finish without violations. Four retain
@@ -229,35 +230,38 @@ confirms the fixed empty-text retry and the tool-start/end and object cases.
 No production agent-session `StreamGenerate` caller was found; the demonstrated
 impact is limited to public `llm` library consumers.
 
-### Raw provider passthrough replay, unresolved
+### Raw provider passthrough replay, unclassified events only
 
 A separate public-library diagnostic against the fixed source used a scripted
 adapter with the real `Client` and `StreamGenerate`. On attempt 1 it emitted a
 `PROVIDER_EVENT` with `Raw: {"type":"response.refusal.delta",
-"delta":"I cannot help with that."}` and then closed without `FINISH`. On
-attempt 2 it emitted the same event followed by `FINISH` with response text
-`settled`. With `MaxRetries: 1`, the observed result was **2 requests, 2
-Raw content events, a successful `"settled"` response, and no error**. The
-complete diagnostic source and reproduction command are in
+"delta":"I cannot help with that."}` and then closed without `FINISH`. The
+frame did not set `StreamEvent.ContentBearing`, so the stream classified it as
+control. On attempt 2 it emitted the same event followed by `FINISH` with
+response text `settled`. With `MaxRetries: 1`, the observed result was **2
+requests, 2 Raw content events, a successful `"settled"` response, and no
+error**. The complete diagnostic source and reproduction command are in
 [issue #4941](https://github.com/prime-radiant-inc/evener/issues/4941).
 
-`llm/stream_generate.go:268-280` forwards provider passthrough but sets
-`hasPartialOutput` only for nonempty normalized text/reasoning, nonempty tool
-arguments on start/delta/end, or a nonnil object delta. `RetryStream` uses the
+`streamEventCommitsAttempt` in `llm/stream_generate.go` classifies the forwarded
+event, and `hasPartialOutput` is set for nonempty normalized text/reasoning, nonempty tool
+arguments on start/delta/end, a nonnil object delta, or a `PROVIDER_EVENT`
+whose adapter sets `StreamEvent.ContentBearing`. `RetryStream` uses the
 caller's `PartialOutput` report to gate another attempt
-(`llm/stream_retry.go:129-130`). Source inspection shows that the Responses
-adapter's default branch can forward unrecognized frames as `PROVIDER_EVENT`
-with `Raw` (`llm/providers/responses/stream.go:537-555`); the diagnostic
-scripted the adapter and **did not** exercise that decoder or a live provider.
+(`llm/stream_retry.go:129-130`). The built-in Responses adapter classifies the
+refusal deltas and their `.done` siblings, output text/audio and transcript
+siblings, and reasoning-summary/text done frames as content-bearing
+(`responsesContentBearingPassthrough`); lifecycle frames and unknown types
+stay unclassified and retryable.
 
-Whether each adapter's opaque payload is content or control remains
-undecided. Marking **every** `Raw` event as partial output would also prevent
-recovery after control-only failures; special-casing refusal deltas would not
-settle other adapters' content semantics. This is a deferred contract and
-adapter decision, **not** a new fixed regression or a claim of live-provider
-or agent-session impact. Neither the fixed StreamCommit model nor its Go
-regression checks opaque `Raw` replay; the bounded normalized-event result
-does not prove a universal no-replay property.
+What remains is the boundary of that adapter contract: a frame the adapter
+does not classify, or one a custom adapter emits as `Raw` without setting
+`ContentBearing`, can still replay. The diagnostic's scripted event did
+exactly that, so it demonstrates unclassified/custom-adapter replay rather
+than a failure of the built-in classifier. Neither the fixed StreamCommit
+model nor its Go regression checks provider events; the bounded
+normalized-event result does not prove a universal no-replay property for
+arbitrary adapters.
 
 ## RetryBudget: admission and bounded liveness
 
@@ -423,9 +427,11 @@ this finite abstraction cannot prove the Go implementation or live provider path
   checks object deltas, arguments specifically on START and END, and empty
   text/control-only recovery. The historical model excludes empty text, which
   old Go incorrectly marked partial. Model checks do not inspect exact payload
-  bytes, empty-text behavior, or the event position of tool arguments. Opaque
-  provider `PROVIDER_EVENT`/`Raw` passthrough is outside both StreamCommit modes
-  and can replay as documented above.
+  bytes, empty-text behavior, or the event position of tool arguments. Provider
+  `PROVIDER_EVENT`/`Raw` passthrough is outside both StreamCommit modes; a
+  frame the adapter marks `ContentBearing` commits the attempt, while a frame
+  it leaves unclassified, or a custom adapter emits without the flag, can
+  replay as documented above.
 - More than two modeled events per attempt, explicit reset-enabled RetryStream
   callers, fail-fast streak/cap rules, backoff numeric overflow, time moving
   backwards, real clock/deadline epoch interactions, and concurrent
