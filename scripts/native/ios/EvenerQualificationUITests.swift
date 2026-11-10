@@ -370,7 +370,10 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// end of the last line. An empty field reads as its own placeholder,
 	/// so that reading counts as empty too — no journey types its
 	/// placeholder into a field. Secure fields hide their text, so they are
-	/// checked by their bullet count.
+	/// checked by their bullet count. The verdict is always the field's own
+	/// reading: every burst is read back before the deadline is consulted,
+	/// because on a slow app a single burst can outlast the whole bound and
+	/// still land whole.
 	private func typeWholeText(
 		_ app: XCUIApplication,
 		_ field: XCUIElement,
@@ -379,10 +382,11 @@ final class EvenerQualificationUITests: XCTestCase {
 		landed: (String) -> Bool
 	) {
 		let deadline = Date().addingTimeInterval(tripwire)
-		while Date() < deadline {
+		while true {
 			if let value = field.value as? String, landed(value) {
 				return
 			}
+			guard Date() < deadline else { break }
 			// Clear what the field holds — an empty field costs one read —
 			// then type the whole text again.
 			let remove = app.keyboards.keys["delete"]
