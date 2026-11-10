@@ -101,7 +101,9 @@ tool, rather than waiting for the automatic pressure-triggered layers.
 `compact_context` schedules no compaction only when `note_to_self` is empty,
 `compaction_instructions` is empty or absent, and `reload_skills` is absent or `null`;
 that call clears the note. Any other call that passes argument validation requests a
-compaction. An accepted request queues a force-compaction at the tool-round tail and
+compaction, except below the pressure floor (0.30): there the call is a no-op that
+schedules nothing, pins no note, and returns a structured "not needed" result carrying
+the current pressure. An accepted request queues a force-compaction at the tool-round tail and
 the tool returns a prediction (not past-tense confirmation, since the compaction
 hasn't happened yet). A request rejected because a forced compaction is already
 pending or any compaction operation is still being delivered changes nothing.
