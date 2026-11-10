@@ -364,8 +364,11 @@ func TestQuarantineSetsAsideUnprovenWhenCustodyIsIncomplete(t *testing.T) {
 	}
 	cases := map[string]string{
 		"truncated json": `{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[`,
-		"unknown field":  `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"futureKey":0}`,
-		"version 2":      `{"version":2,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
+		// An unknown top-level key at the current version is a file this store did
+		// not write, so it is corruption, not a newer build: a build that adds a
+		// key bumps storeVersion in the same change, and the higher version is
+		// refused in place by TestQuarantineRefusesANewerStoreVersionAndLeavesItInPlace.
+		"unknown field": `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"futureKey":0}`,
 		"invalid record": `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			strings.Replace(record, `"pending"`, `"queued"`, 1) + `,` + terminal("00000000000000000002", 2) + `]}`,
 		// A gap below the high-water mark: id 2 is missing with no removal
@@ -391,6 +394,47 @@ func TestQuarantineSetsAsideUnprovenWhenCustodyIsIncomplete(t *testing.T) {
 				t.Fatalf("Open on an incomplete-custody store: %v, want the unproven set-aside", err)
 			}
 			requireUnprovenReplacement(t, store, path, []byte(body))
+		})
+	}
+}
+
+// TestQuarantineRefusesANewerStoreVersionAndLeavesItInPlace pins the
+// version-skew rule: a file written by a newer build is not damage. Open refuses
+// it with the load path's own class, so the caller serves hub.toml with host
+// changes paused, and it leaves the file and its directory untouched so the
+// build that reads it finds it again. A build that adds a top-level key bumps
+// storeVersion in the same change, so a newer key always arrives with a version
+// this build refuses; an unknown key at the current version is not a newer
+// build's file and stays on the corrupt-store path.
+func TestQuarantineRefusesANewerStoreVersionAndLeavesItInPlace(t *testing.T) {
+	cases := map[string]string{
+		"a higher version": `{"version":2,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
+		"a higher version with a new top-level key": `{"version":2,"sequence":0,"allocatorHighWaterMark":0,` +
+			`"records":[],"futureKey":0}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			before := mustReadFile(t, path)
+
+			store, err := Open(path)
+			if store != nil {
+				t.Fatalf("Open on a newer-version store returned a handle serving %+v", store.Records())
+			}
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("Open = %v, want an ErrStoreCorrupt refusal", err)
+			}
+			if got := mustReadFile(t, path); !bytes.Equal(got, before) {
+				t.Fatalf("the newer-version file was disturbed:\n got %q\nwant %q", got, before)
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				t.Fatalf("the refusal wrote quarantine artifacts beside the store: %v", entries)
+			}
 		})
 	}
 }

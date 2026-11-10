@@ -74,10 +74,12 @@ type custodyFile struct {
 	// keeps for its hosts instead of losing them with the operation history. It
 	// is absent when the corrupt file had imported none.
 	HostRecords json.RawMessage `json:"hostRecords,omitempty"`
-	// AllocatorFloor is the id range no store of this lineage issued: the
-	// replacement store records it in its own file, so a later quarantine
-	// accounts for the range after these artifacts are cleaned away. Zero when
-	// no unproven set-aside is in the lineage.
+	// AllocatorFloor is the id prefix this lineage accounts for without
+	// evidence: every id at or below it was never issued by a store of the
+	// lineage, or was issued and then deliberately dropped by a quarantine's
+	// replacement. The replacement store records it in its own file, so a later
+	// quarantine accounts for the prefix after these artifacts are cleaned away.
+	// Zero when the lineage accounts for no such prefix.
 	AllocatorFloor uint64 `json:"allocatorFloor,omitempty"`
 	// Unproven marks a custody file written for a corrupt store that could not
 	// yield a complete snapshot: it carries no fences or ownership, and the
@@ -366,7 +368,7 @@ type custodyIOError struct{ err error }
 func (e *custodyIOError) Error() string { return e.err.Error() }
 func (e *custodyIOError) Unwrap() error { return e.err }
 
-// accountedPrefix is the highest id this custody file accounts for without
+// accountedPrefix is the id prefix this custody file accounts for without
 // evidence: its floor, its allocator mark, and any id it handed out. A file
 // written before allocatorFloor existed has the last two only.
 func (c custodyFile) accountedPrefix() uint64 {
@@ -513,10 +515,10 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 // corrupt file's own high-water mark, so a later quarantine can never mint an id
 // an earlier custody file still references: an id-only resolve (§5) must never
 // alias an unrelated record.
-// lineageFloor is the highest allocator floor an unproven set-aside gave this
-// store's lineage (zero when there is none), from the store's own file and the
-// custody files. The store never issued an id at or below it, so those ids are
-// accounted for without evidence.
+// lineageFloor is the id prefix this store's lineage accounts for without
+// evidence (zero when there is none), from the store's own file and the custody
+// files: every id at or below it was never issued, or was issued and then
+// deliberately dropped by a quarantine's replacement.
 // priorImports maps every id an existing custody file already handed out to the
 // entry that carries it. A fence import reusing such an id is refused unless it
 // is the same record identity — the same lineage's repeated fence keeps its
@@ -594,8 +596,8 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	//     lands — has no evidence at all. Both refuse.
 	//
 	// present counts the ids in [from, to] the file accounts for: the retained
-	// ones, plus every id at or below unprovenFloor, which no store of this
-	// lineage issued.
+	// ones, plus every id at or below skipped, which the lineage accounts for
+	// without evidence.
 	lineageFloor = max(lineageFloor, state.AllocatorFloor)
 	skipped := min(lineageFloor, state.AllocatorHighWaterMark)
 	present := func(from, to uint64) uint64 {

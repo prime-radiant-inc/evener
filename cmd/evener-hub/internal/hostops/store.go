@@ -26,6 +26,12 @@ import (
 const (
 	// storeVersion is the on-disk store-file version. A file carrying any other
 	// version is schema-invalid, never a guess.
+	//
+	// Adding a top-level key bumps this value in the same change. That is what
+	// lets an older build tell a newer build's file from damage: the load refuses
+	// both, but the quarantine refuses a higher version in place (quarantine.go)
+	// and sets aside only a file at this version carrying an unknown key, which
+	// no build wrote.
 	storeVersion = 1
 	// storeSubdir and storeFilename place the store under the hub's state root
 	// beside the other durable stores. The spec's quarantine intent and custody
@@ -104,11 +110,14 @@ type snapshot struct {
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
-	// AllocatorFloor is the highest id this lineage of stores never issued: an
-	// unproven set-aside starts the replacement's allocator above ids the
-	// corrupt file might have issued, and the skipped range is accounted for
-	// by this value, not by any quarantine artifact. Optional on read; zero
-	// means no id range was skipped.
+	// AllocatorFloor is the id prefix this lineage of stores accounts for
+	// without evidence: every id at or below it was never issued, or was issued
+	// and then deliberately dropped by a quarantine's replacement. An unproven
+	// set-aside starts the replacement's allocator above ids the corrupt file
+	// might have issued, and a proven quarantine also raises the floor to the
+	// file's allocator mark, so a later quarantine does not read the ids it
+	// dropped as lost. Optional on read; zero means the lineage accounts for no
+	// such prefix.
 	AllocatorFloor uint64 `json:"allocatorFloor,omitempty"`
 	// CompactSeq is §4's durable compaction sequence: advanced by every
 	// compacting write, pinned by every minted cursor (§8). Optional on read

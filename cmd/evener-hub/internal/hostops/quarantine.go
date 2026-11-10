@@ -151,8 +151,9 @@ type quarantineArtifacts struct {
 	// operator-visible signal over the survivors instead of handing back one
 	// naming a file it just deleted.
 	custodySignals map[string]QuarantineSignal
-	// lineageFloor is the highest id any custody file accounts for without
-	// evidence: ids at or below it were never issued by the store.
+	// lineageFloor is the id prefix the custody files account for without
+	// evidence: every id at or below it was never issued by a store of this
+	// lineage, or was issued and then deliberately dropped by a quarantine.
 	lineageFloor uint64
 	// sidecarEpoch is the durable counter the sidecar file carried on its own
 	// (zero when there is none). resolveStoreFS persists the live epoch whenever
@@ -570,6 +571,20 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	} else if err := rejectNonStoreFileKind(path, info); err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
+	// A file a newer build wrote is not damage and is never set aside: this build
+	// cannot read its shape, so it refuses the load and leaves the file where it
+	// is. The caller serves hub.toml with host changes paused, and the build that
+	// reads the file finds it again. The version rule is what tells the two
+	// apart: adding a top-level key bumps storeVersion (store.go), so an unknown
+	// key at this version is a file this store did not write and stays on the
+	// corrupt path below.
+	if version, newer, err := newerStoreVersion(fs, path); err != nil {
+		return snapshot{}, 0, nil, err
+	} else if newer {
+		return snapshot{}, 0, nil, fmt.Errorf(
+			"%w: %s carries store version %d, newer than this build's %d; host changes pause until a build that reads it runs",
+			ErrStoreCorrupt, path, version, storeVersion)
+	}
 	now := time.Now().UTC()
 	custody, err := custodyForCorruptStore(fs, path, epoch+1, now, artifacts)
 	if _, isIO := errors.AsType[*custodyIOError](err); isIO {
@@ -972,6 +987,29 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 		return custodyFile{}, err
 	}
 	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.lineageFloor, artifacts.priorImports)
+}
+
+// newerStoreVersion reports the version a corrupt file's bytes carry when it is
+// above this build's storeVersion. The strict load refused the file for its
+// shape, and this check separates the two reasons that can have: bytes a newer
+// build wrote, which must be left in place for that build, and damage this
+// build may quarantine. Only the top-level version is read, and only a document
+// that parses as JSON carrying a numeric version qualifies.
+func newerStoreVersion(fs afero.Fs, path string) (uint64, bool, error) {
+	raw, err := afero.ReadFile(fs, path)
+	if err != nil {
+		return 0, false, &custodyIOError{fmt.Errorf("read corrupt store %s: %w", path, err)}
+	}
+	var header struct {
+		Version *uint64 `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil || header.Version == nil {
+		return 0, false, nil
+	}
+	if *header.Version <= storeVersion {
+		return 0, false, nil
+	}
+	return *header.Version, true, nil
 }
 
 // allocatorEpochStride is the id space one quarantine epoch owns when its
