@@ -405,17 +405,16 @@ def seconds_error(value):
 		return "too large for a float"
 	return "got " + json.dumps(value)
 
-def _object_without_duplicate_keys(pairs):
-	# json.load silently keeps the LAST of two identical keys. The per-test
-	# ceiling map is hand-edited, and a test named twice with different numbers
-	# would otherwise enforce whichever the editor happened to write second, with
-	# nothing naming the collision — the flat map has no "one class only" rule to
-	# catch it any more. Reject a repeated key inside perTestCeiling only; a
-	# duplicate anywhere else stays as it was.
+def _pairs_to_object(pairs):
+	# json.load silently keeps the LAST of two identical keys. Parse with the
+	# pairs preserved so a repeat can be seen at all.
+	return dict(pairs)
+
+def _reject_duplicate_keys(pairs, where):
 	seen = set()
 	for key, _ in pairs:
 		if key in seen:
-			fail_malformed("lists perTestCeiling[" + json.dumps(key) + "] more than once")
+			fail_malformed(where + "[" + json.dumps(key) + "] more than once")
 		seen.add(key)
 	return dict(pairs)
 
@@ -429,33 +428,30 @@ except FileNotFoundError:
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
 if isinstance(budget, dict) and isinstance(budget.get("perTestCeiling"), dict):
-	# Re-read just that object from the raw text: json.load has already collapsed
-	# any duplicate, so the collision is only visible in the source.
+	# The per-test ceiling map is hand-edited, so a test named twice must fail
+	# naming the collision: json.load keeps whichever the editor wrote second,
+	# and the flat map no longer has a "one class only" rule to catch it.
+	#
+	# Locate the value STRUCTURALLY, by re-parsing the whole file with pairs
+	# preserved and taking the top-level "perTestCeiling" pair. Scanning the raw
+	# text for the key name would also match it inside another value: a
+	# metadata string that merely mentions "perTestCeiling" sits above
+	# "packages", and a substring scan would hand back the packages map as the
+	# ceilings.
 	with open(budget_path) as fh:
-		raw = fh.read()
-	# Scan EVERY occurrence and keep the last, matching json.load's own
-	# last-wins. Reading only the first would let a file that repeats the key
-	# replace its populated map with an earlier empty one, dropping every
-	# ceiling to warn-only.
-	decoder = json.JSONDecoder(object_pairs_hook=_object_without_duplicate_keys)
-	pos = 0
-	per_test_obj = None
-	while True:
-		key_at = raw.find('"perTestCeiling"', pos)
-		if key_at < 0:
-			break
-		brace = raw.find("{", key_at)
-		if brace < 0:
-			break
 		try:
-			value, consumed = decoder.raw_decode(raw[brace:])
+			top_pairs = json.load(fh, object_pairs_hook=lambda pairs: pairs)
 		except ValueError:
-			value, consumed = None, 1
-		if isinstance(value, dict):
-			per_test_obj = value
-		pos = brace + consumed
-	if per_test_obj is not None:
-		budget["perTestCeiling"] = per_test_obj
+			top_pairs = None
+	if isinstance(top_pairs, list):
+		# The top-level key can repeat too, and json.load keeps the last one, so
+		# take the last pair rather than stopping at the first.
+		ceiling_pairs = None
+		for key, value in top_pairs:
+			if key == "perTestCeiling" and isinstance(value, list):
+				ceiling_pairs = value
+		if ceiling_pairs is not None:
+			budget["perTestCeiling"] = _reject_duplicate_keys(ceiling_pairs, "perTestCeiling")
 
 # A budget whose TOP level is not an object is a broken config, not an empty one:
 # budget.get below would crash a list, number, string, null or bool with an
@@ -538,6 +534,9 @@ def test_ceiling(name):
 		if parent in per_test_ceilings:
 			return parent, per_test_ceilings[parent]
 	return None, None
+
+no_baseline = len(packages) == 0
+had_metric = budget.get("metric") == WALL_METRIC
 
 no_baseline = len(packages) == 0
 had_metric = budget.get("metric") == WALL_METRIC

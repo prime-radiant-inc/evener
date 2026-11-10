@@ -419,6 +419,26 @@ func TestTimingBudgetKeepsTheLastOfTwoCeilingMaps(t *testing.T) {
 	}
 }
 
+// TestTimingBudgetIgnoresTheKeyNameInsideAValue pins that the ceiling map is
+// located structurally. Here the key appears twice in the raw text: once as the
+// real top-level key, and once inside a metadata VALUE that sits above
+// "packages". A raw-text scan takes the LAST occurrence, lands on "packages", and
+// enforces that map as the ceilings, so a 20s test it never names falls back to
+// the flat 3s warn. The real map names that test at 30s, which is the assertion.
+func TestTimingBudgetIgnoresTheKeyNameInsideAValue(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t20.00\n"
+	budget := `{"perTestCeiling":{"TestClassed":30},` +
+		`"note":"perTestCeiling",` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil {
+		t.Fatalf("a named test under its ceiling must pass:\n%s", out)
+	}
+	if strings.Contains(out, "WARN") || strings.Contains(out, "FAIL") {
+		t.Fatalf("the metadata mention displaced the real ceiling map:\n%s", out)
+	}
+}
+
 func TestTimingBudgetRejectsATestNamedTwice(t *testing.T) {
 	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
