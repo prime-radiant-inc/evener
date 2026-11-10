@@ -408,21 +408,21 @@ func TestClearedWatchResumesEscalation(t *testing.T) {
 	}
 }
 
-// TestClearedWatchStartsAFreshAnnouncementEpisode drives the real budget
-// auto-clear transition. The first announcement arms a watch, the next matched
-// event crosses watchDeliveryBudget and clears it, and the cleared notification
-// is then drained before the same job set is considered again. That new episode
-// must start with the first announcement, not jump straight to Final notice.
+// TestClearedWatchStartsAFreshAnnouncementEpisode drives a watch end through
+// the drain. The first announcement arms a watch, the model's own clear ends it
+// while the episode is held open, and the drain then considers the same job set
+// again. That new episode must start with the first announcement, not jump
+// straight to Final notice.
 func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	t.Parallel()
 	var jobID string
 	watchArmed := make(chan struct{})
-	// budgetCrossed holds the watch-arming turn open until the test has driven
+	// watchCleared holds the watch-arming turn open until the test has driven
 	// the budget crossing. The escalation is turn-paced, so without the hold the
 	// drain can complete that turn and reach the final warning before the
 	// cleared notification is queued, and the fresh-episode assertions then read
 	// an episode the notification never interrupted.
-	budgetCrossed := make(chan struct{})
+	watchCleared := make(chan struct{})
 	kickReady := make(chan struct{})
 	kickRelease := make(chan struct{})
 	var kickReadyOnce sync.Once
@@ -436,7 +436,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			close(watchArmed)
-			<-budgetCrossed
+			<-watchCleared
 			return agenttest.FinalResponse("watching; it will finish")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("the watch was cleared; reconsidering") },
@@ -474,7 +474,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	// Registered after the join above so it runs before it: a t.Fatal between
 	// here and the release below would otherwise strand the held turn and leave
 	// the join waiting on a drain that can never finish.
-	releaseWatchTurn := sync.OnceFunc(func() { close(budgetCrossed) })
+	releaseWatchTurn := sync.OnceFunc(func() { close(watchCleared) })
 	t.Cleanup(releaseWatchTurn)
 	select {
 	case <-watchArmed:
@@ -483,37 +483,19 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	}
 
 	sess.jobManager.mu.Lock()
-	var watched *watchConfig
+	var watchID string
 	for _, cfg := range sess.jobManager.watches {
 		if cfg != nil && cfg.target == jobID {
-			watched = cfg
-			break
-		}
-	}
-	if watched == nil {
-		sess.jobManager.mu.Unlock()
-		t.Fatalf("live watch for %s disappeared before budget crossing", jobID)
-	}
-	// One condition fire short of the budget: the breaker latches on
-	// conditionFires, and a watch that has fired 49 times has delivered 49 times.
-	watched.deliveries = watchDeliveryBudget - 1
-	watched.conditionFires = watchDeliveryBudget - 1
-	sess.jobManager.mu.Unlock()
-
-	// This real output match crosses the actual budget auto-clear path rather
-	// than merely deleting jm.watches.
-	feedJob(sess.jobManager, jobID, []byte("READY\n"))
-	sess.jobManager.mu.Lock()
-	stillLive := false
-	for _, cfg := range sess.jobManager.watches {
-		if cfg == watched {
-			stillLive = true
+			watchID = cfg.watchID
 			break
 		}
 	}
 	sess.jobManager.mu.Unlock()
-	if stillLive {
-		t.Fatal("budget-crossing delivery left the watch live")
+	if watchID == "" {
+		t.Fatalf("live watch for %s disappeared before the clear", jobID)
+	}
+	if _, err := sess.jobManager.clearWatchByID(watchID); err != nil {
+		t.Fatalf("clear watch: %v", err)
 	}
 	releaseWatchTurn()
 	select {
@@ -528,12 +510,14 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		t.Fatalf("drain error: %v", d.err)
 	}
 	reqs := adapter.Requests()
-	if len(reqs) != 5 {
-		t.Fatalf("model requests = %d, want 5 after one watch notification and two fresh-episode escalation turns", len(reqs))
+	if len(reqs) != 4 {
+		t.Fatalf("model requests = %d, want 4: the turn that armed the watch, its held turn, and two fresh-episode escalation turns", len(reqs))
 	}
-	last := reqs[2].Messages[len(reqs[2].Messages)-1].Text()
-	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, `event="watch"`) {
-		t.Fatalf("request 3 did not carry the structured watch notification: %q", last)
+	lastText := func(i int) string { return reqs[i].Messages[len(reqs[i].Messages)-1].Text() }
+	// The episode after the clear opens with the same first announcement the
+	// original episode did, then escalates.
+	if lastText(2) != lastText(0) || lastText(3) == lastText(2) {
+		t.Fatal("the episode after a watch clear did not restart at the first announcement")
 	}
 }
 

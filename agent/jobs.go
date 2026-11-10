@@ -103,6 +103,12 @@ type jobManager struct {
 	// self-influence depth metric consults so a coalesced-away (never delivered)
 	// predecessor cannot inflate depth. Guarded by jm.mu.
 	deliveredWatchSendIDs map[string]struct{}
+	// transcribedWatchSends holds the caller-frame delivery IDs whose frame is
+	// already in the receiver's transcript but whose delivered marker has not
+	// settled, each with its count of failed settle retries. A frame in it is
+	// never rendered again: the rail only retries the settle
+	// (settleTranscribedWatchSend). Guarded by jm.mu.
+	transcribedWatchSends map[string]int
 	// deliveringWatchSends is the set of watch-send delivery IDs a process-local
 	// executor currently owns. deliverPendingWatchSend claims the id under jm.mu
 	// before touching the store and releases it on every exit, so two executors
@@ -588,6 +594,15 @@ type jobNotification struct {
 	// orphaned tick once its watch detaches. Job-targeted fires, teardown
 	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
 	OriginWatchID string
+	// backstopFires, when set, is how many times the originating watch has
+	// delivered within watchBackstopWindow; the rendered notification then
+	// carries the hourly backstop notice (watchBackstopNotice).
+	backstopFires int
+	// ownMessageHops, when set, is how many of the receiving session's own
+	// messages this fire's event descends from; the rendered notification then
+	// says the event was caused by the receiver's own message
+	// (ownMessageNotice).
+	ownMessageHops int
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

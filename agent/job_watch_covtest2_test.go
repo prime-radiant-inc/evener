@@ -310,50 +310,6 @@ func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
 	}
 }
 
-// TestCovRecordWatchDeliveryLocked covers recordWatchDeliveryLocked including
-// the nil guard and the budget crossing. Every real caller is a condition-fire
-// site that has bumped conditionFires just before, so the test drives that
-// counter the same way.
-func TestCovRecordWatchDeliveryLocked(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-
-	// nil cfg — returns false.
-	if jm.recordWatchDeliveryLocked(nil) {
-		t.Fatal("nil cfg should return false")
-	}
-
-	// Normal increment — not yet at budget.
-	cfg := &watchConfig{conditionFires: 1}
-	if jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("first delivery should not cross budget")
-	}
-	if cfg.deliveries != 1 {
-		t.Fatalf("deliveries = %d, want 1", cfg.deliveries)
-	}
-
-	// Periodic ticks push deliveries far past the budget without ever reaching
-	// this function: the crossing must still be waiting on the budget-th fire.
-	cfg.deliveries = watchDeliveryBudget * 2
-
-	// One fire short of the budget — not yet crossing.
-	cfg.conditionFires = watchDeliveryBudget - 1
-	if jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("delivery at budget-1 condition fires should not cross")
-	}
-
-	// The budget-th condition fire crosses, exactly once.
-	cfg.conditionFires = watchDeliveryBudget
-	if !jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("the budget-th condition fire should cross")
-	}
-	// Beyond budget — should not cross again.
-	cfg.conditionFires++
-	if jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("a condition fire beyond the budget should not cross again")
-	}
-}
-
 // TestCovWatchKeyForConfigLocked covers watchKeyForConfigLocked.
 func TestCovWatchKeyForConfigLocked(t *testing.T) {
 	t.Parallel()

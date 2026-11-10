@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -275,8 +276,9 @@ const (
 // travels the delegate delivery path, which has never carried a watch's causal
 // provenance. A feedback loop between an observer and the parent it watches is
 // bounded the same way for updates as for reports: the update is a communicate
-// event, which the watch on the sender counts toward watchDeliveryBudget, and
-// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
+// event, which the watch on the sender delivers through its every setting, the
+// runaway self-influence guard on its send rail, and the folding of its
+// undelivered frames.
 func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
 		return nil
@@ -292,6 +294,11 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
+	// The parent's turn that consumes the update adopts this turn's lineage
+	// plus the update itself, so what the parent does in reply is known to
+	// descend from this session's message.
+	attentionID := delegateAttentionID(deliveryID)
+	s.delegateController.attentionCauses.remember(attentionID, provenance.WithMessage(s.activeCausalProvenance(), s.id, attentionID))
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		// The update is durable in the journal. A delivery that failed stays
 		// pending there, and executeDelegateMutationPlans has queued the

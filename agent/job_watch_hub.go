@@ -632,10 +632,9 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	}
 	// every throttles matching observations the way the ordinary path's
 	// every-Nth trigger does: each Nth selected observation delivers, the rest
-	// count silently and stay clear of the condition-fire breaker, which on
-	// the ordinary path never sees a throttled event either. A suppressed
-	// observation commits its dedup marker so a replay of the same entry is
-	// not a new occurrence. Completion is the watch's terminal condition and
+	// count silently and are not condition fires, as on the ordinary path. A
+	// suppressed observation commits its dedup marker so a replay of the same
+	// entry is not a new occurrence. Completion is the watch's terminal condition and
 	// replay-gap evidence is recovery information, so neither is throttled.
 	// The counter is the ordinary path's own cfg.eventCount, which the
 	// ordinary evaluator never advances for a hub config (see
@@ -648,14 +647,8 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 			return nil
 		}
 	}
-	crossedBudget := false
 	if m.CausalKnown && !complete {
-		var accepted bool
-		accepted, crossedBudget = noteConditionFireLocked(cfg)
-		if !accepted {
-			jm.mu.Unlock()
-			return nil
-		}
+		cfg.conditionFires++
 	}
 	// The completion's dedup marker commits only after its terminal send
 	// persists (in the end retry below): a failed end leaves the watch
@@ -671,6 +664,9 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	}
 	root := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Provenance: m.Causal}
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
+	if m.CausalKnown && !complete {
+		delivery = jm.conditionFireSendLocked(delivery)
+	}
 	jm.mu.Unlock()
 	if complete {
 		if err := jm.endHubWatchUntilPersisted(watchID, "completed", &delivery); err != nil {
@@ -687,9 +683,6 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		return nil
 	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-	if crossedBudget {
-		jm.autoClearWatchOverBudget(cfg)
-	}
 	return nil
 }
 

@@ -75,7 +75,7 @@ agent/internal/tool/repair/repair_fuzz_test.go	3
 agent/job_close_budget_test.go	1
 agent/job_stop_live_watches_test.go	2
 agent/job_transcript_read_test.go	3
-agent/job_watch_branches_test.go	15
+agent/job_watch_branches_test.go	14
 agent/job_watch_config_test.go	15
 agent/job_watch_core_config_fuzz_test.go	1
 agent/job_watch_events_output_fuzz_test.go	1

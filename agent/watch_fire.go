@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -14,28 +16,27 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
+		// A watch never wakes its receiver with the receiver's own event.
+		if cfg.receiverSessionID != "" && ev.SessionID == cfg.receiverSessionID {
+			continue
+		}
 		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
 		cfg.eventCount = dec.eventCount
 		if !dec.matched {
 			continue
 		}
-		// The match is offered to the breaker before the rails split: the send
-		// rail counts its delivery only when the frame settles, which a frame the
-		// receiver never takes never reaches, so latching at the match is what
-		// bounds an unsettled watch. A refused match is a match this watch is no
-		// longer entitled to, so nothing is built from it.
-		accepted, crossedBudget := noteConditionFireLocked(cfg)
-		if !accepted {
-			continue
-		}
+		cfg.conditionFires++
 		if dec.send {
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
+			deliveries = append(deliveries, jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance))))
 		} else {
-			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			n, fired := jm.conditionFireNotificationLocked(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			if !fired {
+				notifications = append(notifications, n...)
+				continue
+			}
 			// A self/parent-target job.notification watch must deliver the
 			// concrete completed job's own identity (kata 673k), not the thin
 			// generic watch shape watchNotificationFromWatch builds by default —
@@ -43,16 +44,13 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			// send-coalescing key deliberately stays target-shaped; only the
 			// notify-branch frame identity is fixed here).
 			if data, ok := jobFinishedEventData(ev.Data); ok && data.JobID != "" {
-				n = jobFinishedEventIdentity(n, data)
+				n[0] = jobFinishedEventIdentity(n[0], data)
 			}
-			notifications = append(notifications, n)
+			notifications = append(notifications, n...)
 			jm.countWatchDeliveryLocked(cfg)
 		}
-		if crossedBudget {
-			overBudget = append(overBudget, cfg)
-		}
 	}
-	emitting := len(notifications) > 0 || len(overBudget) > 0
+	emitting := len(notifications) > 0
 	if emitting {
 		jm.noticesInFlight++
 	}
@@ -60,20 +58,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
-	//
-	// The fired sends are recorded BEFORE the over-budget teardown, the way the
-	// output rail and the attach scan already order it, so the frame whose match
-	// crossed the budget is pending by the time its watch is torn down and
-	// leaves on the terminal-flush rail: the budget bounds how many times a
-	// watch may fire, not whether a frame it already produced reaches its
-	// receiver. The teardown's cleared notification still rides out with this
-	// event's matched notifications, so the model is woken once for both.
 	jm.recordWatchSendsAndKick(deliveries)
-	for _, cfg := range overBudget {
-		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
-			notifications = append(notifications, notification)
-		}
-	}
 	jm.enqueueWatchNotifications(notifications)
 	if emitting {
 		jm.noteNoticeEmission(-1)
@@ -214,6 +199,196 @@ func (jm *jobManager) fuseDepthLocked(cfg *watchConfig, p *provenance.Causal) in
 	return provenance.SelfInfluenceDepth(p, cfg.watchID, "", jm.watchSendDeliveredLocked)
 }
 
+// conditionFireNotificationLocked builds what a no-send watch delivers for one
+// condition fire. fired reports a real delivery of the fire, which the caller
+// counts. The notification carries a delivery id on its lineage entry, so an
+// event the resulting notification turn emits descends from it. A fire
+// descending from runawaySelfInfluenceDepth of this watch's own fires is the
+// runaway the send rail's fuse drops too: the first one queues a runaway notice
+// and records the chain's fires, and any later fire whose lineage holds one of
+// them drops silently. The notice carries the triggering lineage unchanged, so
+// it is not a fire: a turn it causes stays in the stopped chain however long
+// that lineage grows (or truncates). A fire from outside the chain starts again
+// at 0, and the watch stays armed. The caller must hold jm.mu.
+func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, reason string, root *provenance.Causal) (notifications []jobNotification, fired bool) {
+	own := ownWatchFires(root, cfg.watchID)
+	if slices.ContainsFunc(own, cfg.inStoppedRunawayChain) {
+		return nil, false
+	}
+	if len(own) >= runawaySelfInfluenceDepth {
+		cfg.rememberStoppedRunawayChain(own)
+		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
+		diagnostic.Provenance = provenance.Clone(root)
+		return []jobNotification{diagnostic}, false
+	}
+	n := jm.watchNotificationWithDelivery(cfg, jobID, reason, root, jobstore.NewWatchSendDeliveryID())
+	n.backstopFires = jm.watchBackstopNoticeLocked(cfg)
+	n.ownMessageHops = provenance.MessagesFrom(root, jm.watchReceiverSession(cfg))
+	return []jobNotification{n}, true
+}
+
+// conditionFireSendLocked counts a send watch's condition fire toward the
+// hourly backstop and marks d to carry the notice when it is due. The caller
+// must hold jm.mu.
+func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDelivery {
+	// A send watch's backstop counts delivered frames, not matches: the frame
+	// is marked as a condition frame here and counted when it settles
+	// (completeWatchSendSettle), and the notice rides whichever frame survives
+	// to delivery (watchSendBackstopFiresLocked).
+	if d.cfg.conditionFrames == nil {
+		d.cfg.conditionFrames = make(map[string]struct{})
+	}
+	d.cfg.conditionFrames[d.deliveryID] = struct{}{}
+	d.ownMessageHops = provenance.MessagesFrom(d.triggerProvenance, jm.watchReceiverSession(d.cfg))
+	return d
+}
+
+// watchReceiverSession is the session cfg delivers to: its receiver, or this
+// manager's own session.
+func (jm *jobManager) watchReceiverSession(cfg *watchConfig) string {
+	if cfg.receiverSessionID != "" {
+		return cfg.receiverSessionID
+	}
+	return jm.sessionID
+}
+
+// ownMessageNotice marks a delivery whose event was directly caused by the
+// receiving session's own message, hops of them in this back-and-forth.
+func ownMessageNotice(hops int) string {
+	return systemNotificationf("This event was directly caused by your own message (exchange %d of this back-and-forth).", hops)
+}
+
+// watchBackstopNoticeLocked records one condition delivery of cfg and returns
+// the watch's delivery count within watchBackstopWindow when this delivery is
+// to carry the hourly backstop notice: past watchBackstopFires, at most once
+// per window. It returns 0 otherwise. The caller must hold jm.mu.
+func (jm *jobManager) watchBackstopNoticeLocked(cfg *watchConfig) int {
+	now := jm.now()
+	count := jm.noteConditionDeliveryLocked(cfg)
+	if !watchBackstopDue(cfg, count, now) {
+		return 0
+	}
+	cfg.lastBackstopNotice = now
+	return count
+}
+
+// noteConditionDeliveryLocked records one condition delivery of cfg now and
+// returns its delivery count within watchBackstopWindow. The caller must hold
+// jm.mu.
+func (jm *jobManager) noteConditionDeliveryLocked(cfg *watchConfig) int {
+	now := jm.now()
+	cfg.recentDeliveries = append(recentWithinBackstopWindow(cfg.recentDeliveries, now), now)
+	return len(cfg.recentDeliveries)
+}
+
+func recentWithinBackstopWindow(deliveries []time.Time, now time.Time) []time.Time {
+	cutoff := now.Add(-watchBackstopWindow)
+	stale := 0
+	for stale < len(deliveries) && !deliveries[stale].After(cutoff) {
+		stale++
+	}
+	return slices.Delete(deliveries, 0, stale)
+}
+
+// watchBackstopDue reports whether a delivery that brings cfg to count within
+// the window carries the notice: past watchBackstopFires, at most once per
+// window.
+func watchBackstopDue(cfg *watchConfig, count int, now time.Time) bool {
+	return count > watchBackstopFires && (cfg.lastBackstopNotice.IsZero() || now.Sub(cfg.lastBackstopNotice) >= watchBackstopWindow)
+}
+
+// watchSendBackstopFiresLocked returns the delivery count the frame state is
+// to carry the backstop notice with, or 0. It is decided once per frame, so a
+// retried delivery renders the same content; the notice counts as given when
+// the frame settles. The caller must hold jm.mu.
+func (jm *jobManager) watchSendBackstopFiresLocked(cfg *watchConfig, state jobstore.WatchSendState) int {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.backstopNoticeFrame != "" && cfg.backstopNoticeFrame == state.DeliveryID {
+		return cfg.backstopNoticeCount
+	}
+	if _, condition := cfg.conditionFrames[state.DeliveryID]; !condition {
+		return 0
+	}
+	now := jm.now()
+	count := len(recentWithinBackstopWindow(cfg.recentDeliveries, now)) + 1
+	if !watchBackstopDue(cfg, count, now) {
+		return 0
+	}
+	cfg.backstopNoticeFrame, cfg.backstopNoticeCount = state.DeliveryID, count
+	return count
+}
+
+// watchSendBackstopFires is watchSendBackstopFiresLocked taking jm.mu.
+func (jm *jobManager) watchSendBackstopFires(cfg *watchConfig, state jobstore.WatchSendState) int {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watchSendBackstopFiresLocked(cfg, state)
+}
+
+// settleConditionFrameLocked counts a settled condition frame toward cfg's
+// backstop and, when it carried the notice, records the notice as given. It
+// also forgets condition frames that no longer pend (superseded). The caller
+// must hold jm.mu.
+func (jm *jobManager) settleConditionFrameLocked(cfg *watchConfig, deliveryID string) {
+	if cfg == nil {
+		return
+	}
+	if _, condition := cfg.conditionFrames[deliveryID]; condition {
+		jm.noteConditionDeliveryLocked(cfg)
+		if cfg.backstopNoticeFrame == deliveryID {
+			cfg.lastBackstopNotice = jm.now()
+			cfg.backstopNoticeFrame, cfg.backstopNoticeCount = "", 0
+		}
+	}
+	for id := range cfg.conditionFrames {
+		if !slices.ContainsFunc(cfg.pendingOrder, func(key jobstore.WatchSendKey) bool {
+			state := cfg.pending[key]
+			return state != nil && state.DeliveryID == id
+		}) {
+			delete(cfg.conditionFrames, id)
+		}
+	}
+}
+
+// watchBackstopNotice is the hourly backstop's notice for watchID, which has
+// delivered fires times within watchBackstopWindow.
+func watchBackstopNotice(watchID string, fires int) string {
+	return systemNotificationf("Watch %s has delivered %d times in the last hour. Its deliveries continue. To get fewer, re-create it with a higher `every`; to stop them, clear it with job_watch(operation=\"clear\", watch_id=%q).", watchID, fires, watchID)
+}
+
+// ownWatchFires returns the distinct delivery ids of watchID's own fires in
+// p's lineage.
+func ownWatchFires(p *provenance.Causal, watchID string) []string {
+	if p == nil {
+		return nil
+	}
+	var ids []string
+	for _, entry := range p.Chain {
+		if entry.Kind == "watch" && entry.WatchID == watchID && entry.DeliveryID != "" && !slices.Contains(ids, entry.DeliveryID) {
+			ids = append(ids, entry.DeliveryID)
+		}
+	}
+	return ids
+}
+
+// inStoppedRunawayChain reports whether fire is one of the fires of a chain the
+// runaway guard has stopped. The caller must hold jm.mu.
+func (cfg *watchConfig) inStoppedRunawayChain(fire string) bool {
+	return slices.Contains(cfg.stoppedRunawayFires, fire)
+}
+
+// rememberStoppedRunawayChain records the fires of a chain the runaway guard
+// has stopped, keeping the newest maxStoppedRunawayFires. The caller must hold
+// jm.mu.
+func (cfg *watchConfig) rememberStoppedRunawayChain(fires []string) {
+	cfg.stoppedRunawayFires = append(cfg.stoppedRunawayFires, fires...)
+	if extra := len(cfg.stoppedRunawayFires) - maxStoppedRunawayFires; extra > 0 {
+		cfg.stoppedRunawayFires = slices.Delete(cfg.stoppedRunawayFires, 0, extra)
+	}
+}
+
 // selfInfluenceNotice is the breaker's worker-facing line for a self-influenced
 // delivery: terse when shallow, pointed as the loop tightens (or when the chain
 // truncated, so the exact depth is unknown). Empty when not self-influenced.
@@ -315,7 +490,6 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Union(jobProvenanceForWatch(jm, jobID), p)}
 	jm.mu.Lock()
@@ -334,28 +508,17 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
-			accepted, crossedBudget := noteConditionFireLocked(cfg)
-			if !accepted {
-				break
-			}
+			cfg.conditionFires++
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
-				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
+				deliveries = append(deliveries, jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance))))
 			} else {
-				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
-				jm.countWatchDeliveryLocked(cfg)
-			}
-			if crossedBudget {
-				overBudget = append(overBudget, cfg)
-				// The matcher hands back every match in the chunk at once, and
-				// the teardown this crossing schedules cannot run until jm.mu is
-				// released. Without this break the rest of the chunk would fire a
-				// watch that is already over budget — one chunk carrying a
-				// thousand matches would deliver a thousand frames. The crossing
-				// match itself has been recorded above: it is inside the budget,
-				// and it is the last one this watch gets.
-				break
+				n, fired := jm.conditionFireNotificationLocked(cfg, jobID, "output_match: "+match.Text, match.Provenance)
+				notifications = append(notifications, n...)
+				if fired {
+					jm.countWatchDeliveryLocked(cfg)
+				}
 			}
 		}
 	}
@@ -363,7 +526,6 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 // prepareAttachScanLocked primes a freshly installed output_match matcher for a
@@ -446,32 +608,21 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		accepted, crossedBudget := noteConditionFireLocked(cfg)
-		if !accepted {
-			jm.mu.Unlock()
-			return false
-		}
-		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
+		cfg.conditionFires++
+		delivery := jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, jobID, reason, root))
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-		if crossedBudget {
-			jm.autoClearWatchOverBudget(cfg)
-		}
 		return true
 	}
+	root := jobProvenanceForWatch(jm, jobID)
 	jm.mu.Lock()
-	accepted, crossedBudget := noteConditionFireLocked(cfg)
-	if accepted {
+	cfg.conditionFires++
+	notifications, fired := jm.conditionFireNotificationLocked(cfg, jobID, reason, root)
+	if fired {
 		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
-	if !accepted {
-		return false
-	}
-	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
-	if crossedBudget {
-		jm.autoClearWatchOverBudget(cfg)
-	}
+	jm.enqueueWatchNotifications(notifications)
 	return true
 }
 

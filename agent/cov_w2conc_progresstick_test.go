@@ -63,12 +63,11 @@ func TestW2Conc_FireProgressTickJobTargetGoneBails(t *testing.T) {
 	}
 }
 
-// TestW2Conc_FireProgressTickAtBudgetStaysInstalled pins the periodic-tick
-// accounting arm: a notification tick that reaches the per-watch delivery
-// budget counts its delivery but does NOT trip the circuit breaker. The budget
-// bounds condition fires; a periodic tick (job progress or a timer) is a clock,
-// not a condition, so a watch that only ever ticks stays installed.
-func TestW2Conc_FireProgressTickAtBudgetStaysInstalled(t *testing.T) {
+// TestW2Conc_FireProgressTickCountsDeliveryAndStaysInstalled pins the
+// periodic-tick accounting arm: a notification tick counts its delivery and
+// leaves the watch installed. A periodic tick (job progress or a timer) is a
+// clock, not a condition, so it never ends the watch.
+func TestW2Conc_FireProgressTickCountsDeliveryAndStaysInstalled(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -82,14 +81,13 @@ func TestW2Conc_FireProgressTickAtBudgetStaysInstalled(t *testing.T) {
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
 	jm.mu.Lock()
 	jm.watches[key] = cfg
-	cfg.deliveries = watchDeliveryBudget - 1 // next delivery reaches the budget
 	jm.mu.Unlock()
 
 	if !jm.fireProgressTick(key, cfg) {
 		t.Fatal("fireProgressTick returned false for a live watch, want true")
 	}
-	if cfg.deliveries != watchDeliveryBudget {
-		t.Fatalf("deliveries = %d, want %d (budget reached)", cfg.deliveries, watchDeliveryBudget)
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", cfg.deliveries)
 	}
 	if len(notified) != 1 {
 		t.Fatalf("notifications = %+v, want the one progress tick", notified)
@@ -98,7 +96,7 @@ func TestW2Conc_FireProgressTickAtBudgetStaysInstalled(t *testing.T) {
 	_, stillInstalled := jm.watches[key]
 	jm.mu.Unlock()
 	if !stillInstalled {
-		t.Fatal("a periodic tick at the budget auto-cleared the watch; the budget bounds condition fires only")
+		t.Fatal("a periodic tick cleared the watch")
 	}
 }
 

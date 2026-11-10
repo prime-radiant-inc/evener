@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/foldcache"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -1295,8 +1296,16 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 // its turn until a settled request presents it. The accept path and the
 // restart of an owed generation both set it.
 func (s *Session) holdAcceptedTrigger(attentionID string) {
+	// The accept resolves the trigger before its generation runs, and the
+	// resolution drops the controller's copy of its cause; the latch keeps the
+	// cause for the request that presents the trigger.
+	var cause *provenance.Causal
+	if s.delegateController != nil {
+		cause = s.delegateController.attentionCauses.union([]string{attentionID})
+	}
 	s.attentionMu.Lock()
 	s.attentionAcceptedID = attentionID
+	s.attentionAcceptedCause = cause
 	s.attentionMu.Unlock()
 }
 
@@ -1669,14 +1678,16 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	staged := s.attentionStagedIDs
 	s.attentionStagedIDs = nil
 	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
+		s.attentionMu.Unlock()
 		return
 	}
+	var acceptedCause *provenance.Causal
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		s.attentionAcceptedID = ""
+		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}
 	covered := s.attentionCoveredIDs
 	if covered == nil {
@@ -1684,6 +1695,15 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	}
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
+	s.attentionMu.Unlock()
+	// The model has now seen these items, so what the turn does next descends
+	// from what caused them. This is where every attention item's cause joins
+	// a turn: a trigger the accept already resolved, an item presented at turn
+	// start, and one that arrived mid-turn alike.
+	s.unionActiveProvenance(acceptedCause)
+	if s.delegateController != nil {
+		s.unionActiveProvenance(s.delegateController.attentionCauses.union(slices.Collect(maps.Keys(staged))))
+	}
 }
 
 // resetAttentionCoverage clears the per-turn coverage at turn start. It runs
@@ -2300,6 +2320,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		if verified.resolutions[attentionID] != disposition || verified.resumeGenerations[attentionID] != resumeGeneration {
 			return fmt.Errorf("attention %q resolution was not durably appended", attentionID)
 		}
+	}
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.forget(ids...)
 	}
 	return nil
 }

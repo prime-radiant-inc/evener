@@ -1247,6 +1247,10 @@ type Session struct {
 	// trigger as consumed first, so only this latch tells a fold to keep its
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
+	// attentionAcceptedCause is the cause of attentionAcceptedID, kept for the
+	// request that presents it (promoteStagedAttentionCoverage). Guarded by
+	// attentionMu.
+	attentionAcceptedCause *provenance.Causal
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
 	// from automatic drives: the stopped generation's commit left the
 	// delegate armed for every other pending row, and that stale armed wake

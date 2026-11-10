@@ -150,3 +150,27 @@ func truncateChain(p *Causal) {
 	p.Chain = next
 	p.ChainTruncated = true
 }
+
+// EntryKindMessage marks a lineage entry for a message one session sent
+// another, such as a delegate's update to its parent.
+const EntryKindMessage = "message"
+
+// WithMessage extends base with an entry for the message deliveryID that
+// sessionID sent.
+func WithMessage(base *Causal, sessionID, deliveryID string) *Causal {
+	return Union(base, &Causal{Chain: []Entry{{Kind: EntryKindMessage, SessionID: sessionID, DeliveryID: deliveryID}}})
+}
+
+// MessagesFrom counts the distinct messages sessionID sent in p's lineage.
+func MessagesFrom(p *Causal, sessionID string) int {
+	if p == nil || sessionID == "" {
+		return 0
+	}
+	var seen []string
+	for _, entry := range p.Chain {
+		if entry.Kind == EntryKindMessage && entry.SessionID == sessionID && !slices.Contains(seen, entry.DeliveryID) {
+			seen = append(seen, entry.DeliveryID)
+		}
+	}
+	return len(seen)
+}
