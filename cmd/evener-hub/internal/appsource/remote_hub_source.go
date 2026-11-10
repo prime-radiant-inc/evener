@@ -2,6 +2,8 @@ package appsource
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1030,7 +1032,7 @@ func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, para
 	if retained {
 		cursorIdentity = state.identity
 	} else {
-		cursorIdentity = s.mintRemoteItemIdentity(key)
+		cursorIdentity = s.compatRemoteItemIdentity(key)
 	}
 	if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
 		cursorIdentity.Incarnation = response.Snapshot.Incarnation
@@ -1041,6 +1043,21 @@ func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, para
 		Exhausted:  response.OlderCursor == "",
 		History:    ReadHistoryIdentity(response),
 	}, nil
+}
+
+// compatRemoteItemIdentity names the history a compatibility conversion came
+// from when the peer reported neither a snapshot nor ordinary paging state. It
+// is a function of the thread alone, so every conversion of that thread mints
+// the same identity: an unchanged window's continuation and fetch keep
+// validating instead of failing stale the moment a conversion runs again. A
+// fresh incarnation here would make each conversion a different view.
+func (s *RemoteHubSource) compatRemoteItemIdentity(key string) appitempaging.CursorIdentity {
+	sum := sha256.Sum256([]byte(key))
+	return appitempaging.CursorIdentity{
+		ThreadRef:         key,
+		Incarnation:       "remote-hub-compat-" + hex.EncodeToString(sum[:8]),
+		ProjectionVersion: remoteHubItemCursorProjectionVersion,
+	}
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its

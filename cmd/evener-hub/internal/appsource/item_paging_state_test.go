@@ -81,6 +81,38 @@ func TestRemoteLegacyPageConversionLeavesRetainedPagingState(t *testing.T) {
 	}
 }
 
+func TestRemoteLegacyPageConversionKeepsAStableIdentityWithoutSnapshot(t *testing.T) {
+	source := NewRemoteHubSource("remote", nil, nil)
+	position := appwire.ThreadItemPosition{Entry: 1}
+	response := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{
+			ID: "thread-1", SessionID: "thread-1", Evener: appwire.EvenerThread{Ref: "remote:thread-1"},
+			Turns: []appwire.Turn{{
+				ID: "turn-1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+				Items: []appwire.ThreadItem{{
+					ID: "item", Type: "agentMessage", TurnID: "turn-1", TranscriptKey: "item",
+					Position: &position, Version: 1,
+				}},
+			}},
+		},
+	}
+	params := appwire.ThreadReadParams{Ref: "remote:thread-1", ThreadID: "thread-1"}
+	first, err := source.ItemCandidatesFromLegacyPage(t.Context(), params, response)
+	if err != nil {
+		t.Fatalf("first legacy conversion: %v", err)
+	}
+	second, err := source.ItemCandidatesFromLegacyPage(t.Context(), params, response)
+	if err != nil {
+		t.Fatalf("second legacy conversion: %v", err)
+	}
+	if first.Identity.Incarnation == "" {
+		t.Fatal("a conversion without a snapshot minted no incarnation")
+	}
+	if first.Identity != second.Identity {
+		t.Fatalf("conversions of one unchanged window minted %+v and %+v, so its continuation or fetch fails stale", first.Identity, second.Identity)
+	}
+}
+
 func typeContains(current, target reflect.Type, seen map[reflect.Type]bool) bool {
 	if current == target {
 		return true
