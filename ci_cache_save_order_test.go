@@ -202,9 +202,8 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 // whether on a finding, a timing budget or a timeout from running cold,
 // has still filled its caches; a save behind the implicit success() would
 // leave the lane restoring nothing, so it runs cold, fails again and never
-// saves. go-cache-save's own steps carry (success() || failure()) as well,
-// since a composite step's implicit success() is evaluated on its own; the
-// runner refuses to load a composite action whose step calls cancelled().
+// saves. go-cache-save's own steps carry !cancelled() as well, since a
+// composite step's implicit success() is evaluated on its own.
 func TestCacheSavesRunAfterAFailedStep(t *testing.T) {
 	for _, path := range goCacheWorkflows {
 		for name, job := range readCacheWorkflow(t, path) {
@@ -227,11 +226,45 @@ func TestCacheSavesRunAfterAFailedStep(t *testing.T) {
 	}
 
 	for _, step := range readActionSteps(t, ".github/actions/go-cache-save/action.yml") {
-		if !strings.Contains(step.If, "(success() || failure())") {
-			t.Errorf("go-cache-save step %q: if %q lacks (success() || failure())", step.Name, step.If)
+		if !strings.Contains(step.If, "!cancelled()") {
+			t.Errorf("go-cache-save step %q: if %q lacks !cancelled()", step.Name, step.If)
 		}
-		if strings.Contains(step.If, "cancelled()") {
-			t.Errorf("go-cache-save step %q: if %q calls cancelled(), which the runner rejects in a composite action", step.Name, step.If)
+	}
+}
+
+// The runner evaluates ${{ }} anywhere in a composite action's metadata,
+// descriptions included, and refuses to load the action when an expression
+// there uses a function it does not allow in that place: every job calling
+// the action then fails at that step. Descriptions name expressions in plain
+// words instead.
+func TestCompositeActionDescriptionsHoldNoExpressions(t *testing.T) {
+	paths := []string{
+		".github/actions/go-cache-restore/action.yml",
+		".github/actions/go-cache-save/action.yml",
+		".github/actions/setup-toolchain/action.yml",
+		".github/actions/enforcing-sandbox/action.yml",
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var action struct {
+			Description string `yaml:"description"`
+			Inputs      map[string]struct {
+				Description string `yaml:"description"`
+			} `yaml:"inputs"`
+		}
+		if err := yaml.Unmarshal(data, &action); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if strings.Contains(action.Description, "${{") {
+			t.Errorf("%s: description holds an expression: %q", path, action.Description)
+		}
+		for name, input := range action.Inputs {
+			if strings.Contains(input.Description, "${{") {
+				t.Errorf("%s: input %s description holds an expression: %q", path, name, input.Description)
+			}
 		}
 	}
 }

@@ -5,9 +5,9 @@ description: >-
   does nothing: a pull request's saves are readable only by that pull
   request's branch and would crowd main's entries out of the repository's
   10GB limit. A re-run whose restore hit this commit's key exactly also skips
-  that save. Put it after the job's last Go build or test step, with
-  `if: ${{ !cancelled() }}` and `job-status: ${{ job.status }}`, so a failing
-  step cannot leave the lane building cold on every later run.
+  that save. Put it after the job's last Go build or test step, conditioned
+  on !cancelled() and given the job's status as job-status, so a failing step
+  cannot leave the lane building cold on every later run.
 inputs:
   job-status:
     description: >-
@@ -26,10 +26,9 @@ inputs:
 runs:
   using: composite
   steps:
-    # Every condition starts with (success() || failure()), the not-cancelled
-    # test a composite step accepts (it rejects cancelled()), so none carries
-    # the implicit success(): the caller already runs this after a failed
-    # step on purpose.
+    # Every condition starts with !cancelled() so none carries the implicit
+    # success(): the caller already runs this after a failed step on
+    # purpose.
     #
     # go-cache-restore dated every restored entry two hours back, and Go
     # refreshes an entry's mtime whenever it uses one that is over an hour
@@ -38,21 +37,21 @@ runs:
     # trim does, keeps a saved entry the size of one job's build instead of
     # every main commit's leftovers.
     - name: Drop build cache entries this job did not use
-      if: ${{ (success() || failure()) && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true' && inputs.job-status == 'success' }}
+      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true' && inputs.job-status == 'success' }}
       shell: bash
       run: |
         find "$GO_BUILD_CACHE_DIR" -type f -name '*-[ad]' ! -newermt "@$((GO_CACHE_RESTORED_AT - 3600))" -delete
         du -sh "$GO_BUILD_CACHE_DIR"
 
     - name: Save Go build cache
-      if: ${{ (success() || failure()) && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true' }}
+      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true' }}
       uses: actions/cache/save@v6
       with:
         path: ${{ env.GO_BUILD_CACHE_DIR }}
         key: ${{ env.GO_CACHE_KEY }}
 
     - name: Save Go module cache
-      if: ${{ (success() || failure()) && inputs.modules == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_MODULES_EXACT_HIT != 'true' }}
+      if: ${{ !cancelled() && inputs.modules == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_MODULES_EXACT_HIT != 'true' }}
       uses: actions/cache/save@v6
       with:
         path: ${{ env.GO_MOD_CACHE_DIR }}
