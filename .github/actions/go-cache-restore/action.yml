@@ -1,58 +1,87 @@
 name: Restore Go caches
 description: >-
-  Restore this job kind's newest Go build and module caches, and record the
-  key and paths .github/actions/go-cache-save needs. Run it after Go is
-  installed; run go-cache-save after the job's last Go build or test step.
+  Restore this job kind's newest Go build cache and the newest shared Go
+  module cache, and record the keys and paths .github/actions/go-cache-save
+  needs. Run it after Go is installed; run go-cache-save after the job's last
+  Go build or test step.
 inputs:
   kind:
     description: >-
       Which build this job does. Jobs whose compiled output differs (race and
       non-race tests, lint, vet) must use different kinds so each restores a
-      cache full of the entries it actually uses.
+      cache full of the entries it actually uses. `modules` is taken by the
+      shared module cache.
     required: true
 runs:
   using: composite
   steps:
-    # The key ends in the commit, so every save on main is a new entry and
-    # every run restores the newest entry for its kind by prefix. The Go
-    # version is in the prefix because a toolchain bump makes every older
-    # entry dead weight. The module cache rides in the same entry, so it holds
-    # the modules this kind downloads and picks up new ones on every save.
-    - name: Resolve Go cache key
+    # The keys end in the commit, so every save on main is a new entry and
+    # every run restores the newest entry by prefix. The Go version is in the
+    # prefix because a toolchain bump makes every older entry dead weight.
+    # The build cache is per kind; the module cache is one entry every kind
+    # shares, saved by static-build alone (go-cache-save's `modules`), so the
+    # repository's cache budget holds one copy of it instead of one per kind.
+    - name: Resolve Go cache keys
       id: keys
       shell: bash
       env:
         KIND: ${{ inputs.kind }}
       run: |
-        prefix="go-${KIND}-${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
+        suffix="${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
         {
           echo "build-dir=$(go env GOCACHE)"
           echo "mod-dir=$(go env GOMODCACHE)"
-          echo "prefix=$prefix"
+          echo "prefix=go-${KIND}-${suffix}"
+          echo "modules-prefix=go-modules-${suffix}"
         } >> "$GITHUB_OUTPUT"
         {
           echo "GO_BUILD_CACHE_DIR=$(go env GOCACHE)"
           echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
-          echo "GO_CACHE_KEY=${prefix}${GITHUB_SHA}"
+          echo "GO_CACHE_KEY=go-${KIND}-${suffix}${GITHUB_SHA}"
+          echo "GO_MODULES_CACHE_KEY=go-modules-${suffix}${GITHUB_SHA}"
           echo "GO_CACHE_RESTORED_AT=$(date +%s)"
         } >> "$GITHUB_ENV"
 
-    - name: Restore Go build and module caches
+    - name: Restore Go build cache
       id: restore
       uses: actions/cache/restore@v6
       with:
-        path: |
-          ${{ steps.keys.outputs.build-dir }}
-          ${{ steps.keys.outputs.mod-dir }}
+        path: ${{ steps.keys.outputs.build-dir }}
         key: ${{ steps.keys.outputs.prefix }}${{ github.sha }}
         restore-keys: ${{ steps.keys.outputs.prefix }}
 
-    # A re-run on a main commit whose entry this kind already saved restores
-    # that exact key. go-cache-save then skips the save: actions/cache/save
-    # would archive the whole cache only to have the reservation refused and
+    - name: Restore Go module cache
+      id: restore-modules
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.keys.outputs.mod-dir }}
+        key: ${{ steps.keys.outputs.modules-prefix }}${{ github.sha }}
+        restore-keys: ${{ steps.keys.outputs.modules-prefix }}
+
+    # A re-run on a main commit whose entry was already saved restores that
+    # exact key. go-cache-save then skips that save: actions/cache/save would
+    # archive the whole cache only to have the reservation refused and
     # logged, without failing the job.
-    - name: Record exact cache hit
+    - name: Record exact cache hits
       shell: bash
       env:
         HIT: ${{ steps.restore.outputs.cache-hit }}
-      run: echo "GO_CACHE_EXACT_HIT=$HIT" >> "$GITHUB_ENV"
+        MODULES_HIT: ${{ steps.restore-modules.outputs.cache-hit }}
+      run: |
+        echo "GO_CACHE_EXACT_HIT=$HIT" >> "$GITHUB_ENV"
+        echo "GO_MODULES_EXACT_HIT=$MODULES_HIT" >> "$GITHUB_ENV"
+
+    # go-cache-save keeps only the build cache entries this job used, and
+    # Go marks an entry used by refreshing its mtime only when the mtime is
+    # over an hour old. Restored entries keep the mtime of the run that wrote
+    # them, so an entry a main run wrote less than an hour earlier would read
+    # as used and ride along unused into every later save. Dating every
+    # restored entry two hours back makes each use visible. A cold restore
+    # leaves no directory, and nothing to date.
+    - name: Date restored build cache entries before this job
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        if [ -d "$GO_BUILD_CACHE_DIR" ]; then
+          find "$GO_BUILD_CACHE_DIR" -type f -name '*-[ad]' -exec touch -m -d "@$((GO_CACHE_RESTORED_AT - 7200))" {} +
+        fi
