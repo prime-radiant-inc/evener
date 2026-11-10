@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test  test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-race check-mermaid-freshness merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -77,6 +77,18 @@ test-hub-integration:
 # only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
 # can still load their module graph. The scripts run under no gate, so nothing
 # noticed when they stopped resolving.
+## Fail if the committed mermaid bundle is stale (matches no rebuild).
+## proves: src/generated/mermaidPage.ts equals `npx tsx
+##   scripts/build-mermaid-page.mts`, so the offline WebView page matches the
+##   generator and the shared sanitize constants it substitutes.
+## trigger: Local pre-merge when the generator, mermaid, DOMPurify, or the
+##   shared sanitize constants change; merge-approval-gate.
+## requires: mobile-native's real node_modules install (esbuild, tsx).
+## fails-when: The committed module differs from a rebuild; the message names
+##   the regeneration command.
+check-mermaid-freshness: native-preflight
+	@cd mobile-native && npx tsx scripts/check-mermaid-freshness.mts
+
 ## The native iPhone app gate.
 ## proves: Metro bundles the real iOS entry point, the native
 ##   Vitest suites plus strict native TypeScript compilation
@@ -255,7 +267,7 @@ merge-approval-gate:
 		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
 		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
 		$(MAKE) test-hub-integration && \
-		$(MAKE) test-native test-api-package
+		$(MAKE) test-native check-mermaid-freshness test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
 # keeps the agent wave at the runner's measured cap: under -race (~10x slower),

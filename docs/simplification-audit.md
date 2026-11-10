@@ -366,9 +366,12 @@ derivation. **Delta:** −150 lines now, one source of truth for the rest.
 
 **F30. A 3.5 MB generated module is rebuilt on every native test run.**
 `mobile-native/src/generated/mermaidPage.ts` is a two-line file whose second line
-is a 3.5 MB string; `mermaidPage.test.ts:26` re-bundles mermaid+DOMPurify and
-compares, every `npm test`. **Change:** move the freshness assertion behind a
-Make target; the committed bundle stays (it is what makes the WebView offline).
+is a 3.5 MB string; `mermaidPage.test.ts:26` re-bundled mermaid+DOMPurify and
+compared it, every `npm test`. **Done:** the freshness assertion moved to
+`make check-mermaid-freshness` (`scripts/check-mermaid-freshness.mts`), so
+the rebuild no longer rides every test run; the test keeps its five string
+assertions on the committed bundle. The bundle stays, because it is what makes
+the WebView work offline.
 **Risk:** low. **Delta:** one esbuild run per test run. The bundle stays in the
 module graph either way, because `MermaidDiagram.tsx` and
 `mermaidPageContent.ts` import it directly.

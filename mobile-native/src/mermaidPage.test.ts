@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // `.mjs` (not `.mts`) is the repo's convention for importing a scripts/*.mts
 // tool from a test: TypeScript's bundler resolution maps it to the `.mts` file
 // while an explicit `.mts` specifier trips TS5097. Precedent: demo-hub.test.ts.
-import { buildMermaidPageHtml, mermaidPageDefines } from "../scripts/build-mermaid-page.mjs";
+import { mermaidPageDefines } from "../scripts/build-mermaid-page.mjs";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
 
 const mermaid = vi.hoisted(() => ({
@@ -14,6 +14,10 @@ vi.mock("mermaid", () => ({ default: mermaid }));
 const purify = vi.hoisted(() => ({ sanitize: vi.fn((svg: string) => svg) }));
 vi.mock("dompurify", () => ({ default: purify }));
 
+// The bundle's freshness (matches a rebuild) is `make check-mermaid-freshness`,
+// not a case here: rebuilding is an esbuild run over mermaid and DOMPurify,
+// and every test run paid it. The assertions below are string checks on the
+// committed bundle and cost nothing.
 describe("MERMAID_PAGE_HTML", () => {
 	it("carries the lockdown CSP meta", () => {
 		expect(MERMAID_PAGE_HTML).toContain("default-src 'none'");
@@ -38,9 +42,6 @@ describe("MERMAID_PAGE_HTML", () => {
 		const defines = mermaidPageDefines();
 		expect(JSON.parse(defines.MERMAID_FORBID_TAGS)).toEqual([...MERMAID_FORBID_TAGS]);
 		expect(JSON.parse(defines.MERMAID_SANITIZE_CONFIG)).toEqual(MERMAID_SANITIZE_CONFIG);
-	});
-	it("is fresh (matches a rebuild)", async () => {
-		expect(await buildMermaidPageHtml()).toBe(MERMAID_PAGE_HTML);
 	});
 });
 
