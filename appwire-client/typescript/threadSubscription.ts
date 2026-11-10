@@ -25,10 +25,7 @@ export interface ThreadSubscriptionLease {
 }
 
 function copyStatus(status: ThreadStatus): ThreadStatus {
-  return {
-    type: status.type,
-    ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}),
-  };
+  return { type: status.type, ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}) };
 }
 
 interface Membership {
@@ -159,9 +156,7 @@ class ThreadSubscriptions {
   private admitEscalation(
     notification: Extract<
       AnyNotification,
-      {
-        method: "evener/sandbox/escalation/requested" | "evener/sandbox/escalation/resolved";
-      }
+      { method: "evener/sandbox/escalation/requested" | "evener/sandbox/escalation/resolved" }
     >,
   ): void {
     const { ref, threadId, escalationId } = notification.params;

@@ -63,11 +63,7 @@ interface ActivityPage {
   context: SessionActivityContext;
   scope: SessionActivityScope;
   rows: readonly ActivityRow[];
-  page: {
-    nextCursor?: string;
-    complete: boolean;
-    issues: SessionActivityIssue[];
-  };
+  page: { nextCursor?: string; complete: boolean; issues: SessionActivityIssue[] };
 }
 interface RefreshWalk {
   advance: boolean;
@@ -166,11 +162,7 @@ export class SessionActivityStore {
   private generation = 0;
   private runtimeThreadId: string | null = null;
   private statusRevision = 0;
-  private statusUpdate: {
-    revision: number;
-    threadId: string;
-    status: ThreadStatus;
-  } | null = null;
+  private statusUpdate: { revision: number; threadId: string; status: ThreadStatus } | null = null;
   /** The applied merge order per loaded delegate row: a frame is admitted over
    * it only by a strictly greater revision (the row itself carries the
    * independent latestActivityAt maximum). Keyed by the row's identity, because
@@ -213,11 +205,7 @@ export class SessionActivityStore {
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
-    options: {
-      scope?: SessionActivityScope;
-      clock?: SessionActivityClock;
-      retained?: SessionActivitySnapshot;
-    } = {},
+    options: { scope?: SessionActivityScope; clock?: SessionActivityClock; retained?: SessionActivitySnapshot } = {},
   ) {
     if (!ref.trim()) throw new TypeError("Session activity requires a session ref");
     this.scope = options.scope ?? "session";
@@ -450,12 +438,7 @@ export class SessionActivityStore {
         this.releaseIdle();
       });
     read.inFlight = running;
-    this.change(resource, {
-      loading: true,
-      error: null,
-      unavailable: false,
-      permanent: false,
-    });
+    this.change(resource, { loading: true, error: null, unavailable: false, permanent: false });
     return running;
   }
   private async drain(resource: SessionActivityResource): Promise<void> {
@@ -667,10 +650,7 @@ export class SessionActivityStore {
           });
           if (resource === "delegates") this.settleBufferedFrames(rowsFinal);
           if (dropped()) continue;
-          this.publish({
-            context: page.context,
-            runtime: this.runtimeFor(page.context, statusRevision),
-          });
+          this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           if (dropped()) continue;
           this.noteContext(page.context);
           // Collection reads can warm retained count indexes without emitting
@@ -717,17 +697,9 @@ export class SessionActivityStore {
         read.pageQueued = false;
         read.failures += 1;
         const permanent = permanentError(error);
-        const update = {
-          error,
-          permanent,
-          unavailable: unavailableError(error),
-          pending: false,
-        };
+        const update = { error, permanent, unavailable: unavailableError(error), pending: false };
         if (resource === "summary") {
-          this.publish({
-            summary: null,
-            summaryState: { ...this.state.summaryState, ...update },
-          });
+          this.publish({ summary: null, summaryState: { ...this.state.summaryState, ...update } });
         } else {
           this.change(resource, update);
         }
@@ -1087,17 +1059,10 @@ export class SessionActivityStore {
     resource: SessionActivityResource,
     cursor?: string,
   ): Promise<SessionActivitySummary | ActivityPage> {
-    const params = {
-      ref: this.ref,
-      scope: this.scope,
-      ...(cursor ? { cursor } : {}),
-    };
+    const params = { ref: this.ref, scope: this.scope, ...(cursor ? { cursor } : {}) };
     switch (resource) {
       case "summary":
-        return this.client.request("evener/thread/activity/read", {
-          ref: this.ref,
-          scope: this.scope,
-        });
+        return this.client.request("evener/thread/activity/read", { ref: this.ref, scope: this.scope });
       case "delegates": {
         const response = await this.client.request("evener/thread/delegates/list", params);
         return { ...response, rows: response.delegates };
@@ -1192,12 +1157,7 @@ export class SessionActivityStore {
           notification.params.threadId === metadata.threadId &&
           this.state.context?.sessionId === metadata.sessionId
         )
-          this.publish({
-            runtime: this.seedEscalations({
-              ...metadata,
-              status: this.statusUpdate.status,
-            }),
-          });
+          this.publish({ runtime: this.seedEscalations({ ...metadata, status: this.statusUpdate.status }) });
         return;
       }
       case "evener/sandbox/escalation/requested":
@@ -1209,11 +1169,7 @@ export class SessionActivityStore {
         else this.pendingEscalations.delete(notification.params.escalationId);
         const ids = [...this.pendingEscalations].sort();
         this.publish({
-          runtime: {
-            ...runtime,
-            approvalPending: ids.length > 0,
-            pendingEscalationIds: ids,
-          },
+          runtime: { ...runtime, approvalPending: ids.length > 0, pendingEscalationIds: ids },
         });
         return;
       }
