@@ -23,6 +23,7 @@ export type DraftStorage = Pick<
 	| "imageInputs"
 	| "refsWithDrafts"
 	| "beginTransfer"
+	| "recordPendingTransferCompletions"
 	| "outstandingTransfers"
 	| "pendingTransfersTo"
 	| "transferById"
@@ -312,7 +313,7 @@ export class DraftLibrary {
 		// commit, which never writes without the evidence.
 		const owed = this.resolvedObligationsAt(transfer.from, snapshot.record);
 		if (owed === undefined) return false;
-		const { completed, released } = mergeObligationEvidence(snapshot.record, owed);
+		const { completed, released } = mergeHopEvidence(snapshot.record, owed, transfer);
 		// A destination that consumed its composition keeps only its
 		// historical settlement markers. Markers are evidence about work
 		// already done, never work: they must not strand an incoming hop at
@@ -448,7 +449,7 @@ export class DraftLibrary {
 		// completed commands and prior releases as much as the still-cited
 		// sources - or the rows a retarget already moved could restore content
 		// an executed command consumed.
-		const { completed, released } = mergeObligationEvidence(record, owed);
+		const { completed, released } = mergeHopEvidence(record, owed, transfer);
 		try {
 			if (completed.length && !destination.adoptCompletedCommandRecovery(completed)) return;
 			if (released.length && !destination.releaseRecoverySources(released)) return;
@@ -652,19 +653,16 @@ export class DraftLibrary {
 			// acknowledgment rather than guessing.
 			for (const transfer of this.repository().outstandingTransfers()) {
 				if (transfer.deliveredHash === null) {
-					// An uncommitted hop out of the completion's origin has
-					// already taken that identity's recovery rows with it -
-					// the retarget moved them when the hop was recorded. Its
+					// An uncommitted hop out of the completion's origin or out
+					// of the capture's current owner has taken that identity's
+					// recovery rows with it when the hop was recorded. Its
 					// destination must hold the executed command's markers
-					// before the obligation may acknowledge: the source
-					// screen's own cleanup - its target-scoped deletion finds
-					// the retargeted rows gone - strips the source record's
-					// markers, and the recovered hop would otherwise settle
-					// from a marker-free source with the executed input
-					// restorable at the destination. A destination that
-					// cannot take them defers the acknowledgment to the
-					// next pass.
-					if (!sameDestination(transfer.from, origin)) continue;
+					// before acknowledgment: the owner's own cleanup strips its
+					// record markers, so the row must still carry the evidence
+					// when it later commits or refuses. A destination that
+					// cannot take them defers the acknowledgment.
+					if (!sameDestination(transfer.from, origin) && !sameDestination(transfer.from, owner)) continue;
+					this.repository().recordPendingTransferCompletions(transfer.transferId, completion.completedCommandIds);
 					seen.set(transfer.to.hubId + "\u0000" + transfer.to.sessionRef, transfer.to);
 					continue;
 				}
@@ -901,6 +899,22 @@ function mergeObligationEvidence(
 	return {
 		completed: [...new Set([...(record.completedCommandRecoveryIds ?? []), ...owed.completed])],
 		released: [...new Set([...releasedSources(record), ...owed.released])],
+	};
+}
+
+/** A hop's owed dispositions: the source record's markers, the obligations
+ * still owing delivery, and the evidence the pending row already carries.
+ * The row's evidence outlives the owner's capture and marker cleanup, so a
+ * completion delivered before the hop moved still travels with it. */
+function mergeHopEvidence(
+	record: DraftRecord,
+	owed: { completed: string[]; released: string[] },
+	transfer: DraftTransfer,
+): { completed: string[]; released: string[] } {
+	const merged = mergeObligationEvidence(record, owed);
+	return {
+		completed: [...new Set([...transfer.completedCommandRecoveryIds, ...merged.completed])],
+		released: [...new Set([...transfer.releasedRecoveryIds, ...merged.released])],
 	};
 }
 

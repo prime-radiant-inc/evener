@@ -255,6 +255,29 @@ export class DraftRepository {
 		};
 	}
 
+	/** Preserve a resolved completion's markers on a pending hop. The
+	 * destination may be unwritable when the completion is delivered, and the
+	 * owner's capture and marker cleanup can precede the hop's recovery: the
+	 * row's own evidence then travels with the hop when it commits or is
+	 * refused. Idempotent - routing retries re-add the same ids. */
+	recordPendingTransferCompletions(transferId: string, completedCommandRecoveryIds: readonly string[]): void {
+		const row = this.db.getFirstSync<{ completed_command_recovery_ids: string | null }>(
+			"SELECT completed_command_recovery_ids FROM draft_transfer_log WHERE transfer_id = ? AND delivered_hash IS NULL",
+			transferId,
+		);
+		if (row === null) return;
+		const existing = decodeIdList(row.completed_command_recovery_ids);
+		const completed = [...new Set([...existing, ...completedCommandRecoveryIds])];
+		if (completed.length === existing.length) return;
+		this.db.runSync(
+			`UPDATE draft_transfer_log SET completed_command_recovery_ids = ?, state_changed_at = ?
+      WHERE transfer_id = ? AND delivered_hash IS NULL`,
+			JSON.stringify(completed),
+			this.now(),
+			transferId,
+		);
+	}
+
 	/** The pending handoff hops, oldest first: the retry pass's whole diet. */
 	outstandingTransfers(): DraftTransfer[] {
 		return this.db

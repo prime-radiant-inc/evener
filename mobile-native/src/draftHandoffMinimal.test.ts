@@ -127,6 +127,56 @@ describe("durable minimal handoffs", () => {
 		expect(recovered.hasUndeliveredCompletions()).toBe(false);
 	});
 
+	it("a completion under an uncommitted hop from the capture's new owner keeps its evidence", async () => {
+		const { repository, db, library } = setup();
+		const x = destination("x");
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(x, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-x"] },
+		});
+		const live = library();
+		const source = live.open(x);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// An earlier hop commits and carries the running built-in's capture
+		// from X to A; a later A→B hop is recorded but cannot commit.
+		expect(live.handoff(x, a)).toBe(true);
+		db.exec(
+			"CREATE TRIGGER reject_b_insert BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
+		);
+		db.exec(
+			"CREATE TRIGGER reject_b_update BEFORE UPDATE ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
+		);
+		const owner = live.open(a);
+		expect(live.handoff(a, b)).toBe(false);
+		// The built-in completes while B is unavailable, so its completion is
+		// delivered only at A and clears the capture there. The pending A→B hop
+		// must preserve the executed command's evidence on its own row: A's
+		// cleanup then strips its inline markers, and the cleared capture no
+		// longer ties the resolved obligation to A when the hop recovers.
+		finish();
+		await submitted;
+		expect(owner.finishCompletedCommandRecovery(["recovered-x"])).toBe(true);
+		db.exec("DROP TRIGGER reject_b_insert");
+		db.exec("DROP TRIGGER reject_b_update");
+		const recovered = library();
+		expect(recovered.handoff(a, b)).toBe(true);
+		expect(repository.read(b)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-x"],
+		});
+		recovered.retryPendingHandoffs();
+		expect(recovered.hasUndeliveredCompletions()).toBe(false);
+	});
+
 	it("a restarted handoff refuses an occupied destination without stranding its cited sources", () => {
 		const { repository, ledger, library } = setup();
 		const a = destination("a");
