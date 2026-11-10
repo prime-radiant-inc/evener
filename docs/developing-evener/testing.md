@@ -1054,7 +1054,21 @@ budgets were taken once, when the CPU measure was introduced and no run on main
 had CPU rows yet, as the per-package maximum over that change's own CI runs (its
 first run of the tests lanes and three reruns of the same commit); its
 `wallPackages` kept the wall budgets recorded on main. Every later rebaseline
-follows the rule above. A budget file without the marker holds numbers in
+follows the rule above.
+
+A package whose tests compile Go as a child process (`go build`, `go test -c`,
+`go run`, `go vet`, a cross-compile) counts that compile as its own CPU, and a
+compile costs more on a cold build cache, which CI runs on whenever its cache is
+evicted or a toolchain bump changes the key. The slowest legitimate observation
+for such a package is therefore a cold one: its CPU budget is the larger of its
+warm and cold-cache measurements. Those packages are the root package,
+`agent`, `cmd/evener`, `cmd/evener-dev`, `cmd/evener-hub` and its `sshconn`,
+`cmd/evener-internalcheck`, the `mcp-server` extension example and
+`tools/tool-fluency/cmd/evener-fluency`. In practice the gap is small: most of
+what a test's child compile needs, the enclosing `go test` has just compiled
+into the same cache. On a run whose cache restored nothing, the largest
+difference was the `mcp-server` example, about 20% above its warm runs and still
+under its 2s floor. A budget file without the marker holds numbers in
 other units and downgrades every ratio failure to a warning with its numbers; a
 full rebaseline on a CI-class host records the marker, while a narrowed
 `--modules`/`--no-web` rebaseline never adds it and only preserves one already
