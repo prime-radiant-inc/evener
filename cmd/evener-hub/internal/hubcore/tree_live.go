@@ -35,6 +35,7 @@ type treeLive struct {
 	runningSubagentIDs    map[string]bool
 	reportedBy            map[string]string
 	runningSubagentStates map[string]string
+	childQuotaWaits       map[string]*appwire.ThreadFailure // in-process children waiting out a usage limit
 	metaMap               map[string]schema.SessionMeta
 	sessionIsIndexed      map[string]bool
 }
@@ -48,6 +49,7 @@ func newTreeLive(metas []schema.SessionMeta, live []LiveEntry, sessionIsIndexed 
 	// only parent link a child has before its meta reaches the past index.
 	reportedBy := make(map[string]string)
 	runningSubagentStates := make(map[string]string)
+	childQuotaWaits := make(map[string]*appwire.ThreadFailure)
 	for _, le := range live {
 		if le.SessionID != "" {
 			liveMap[le.SessionID] = le
@@ -70,6 +72,9 @@ func newTreeLive(metas []schema.SessionMeta, live []LiveEntry, sessionIsIndexed 
 				if state := le.RunningSubagentStates[childID]; state != "" {
 					runningSubagentStates[childID] = state
 				}
+				if wait := le.ChildQuotaWaits[childID]; wait != nil {
+					childQuotaWaits[childID] = wait
+				}
 			}
 		}
 	}
@@ -86,6 +91,7 @@ func newTreeLive(metas []schema.SessionMeta, live []LiveEntry, sessionIsIndexed 
 		runningSubagentIDs:    runningSubagentIDs,
 		reportedBy:            reportedBy,
 		runningSubagentStates: runningSubagentStates,
+		childQuotaWaits:       childQuotaWaits,
 		metaMap:               metaMap,
 		sessionIsIndexed:      sessionIsIndexed,
 	}
@@ -166,10 +172,16 @@ func (lv *treeLive) pendingQuestionFor(id string) *appwire.PendingQuestion {
 // say it crashed whatever it last reported; an errored entry names the
 // summary its daemon reported, and so does a working session whose model
 // call waits out a usage limit (its summary names when the call resumes);
-// any other session names none, whatever its entry still carries. Each row
-// gets its own copy.
+// a local delegate, which has no entry, names the wait its root's entry
+// carries for it; any other session names none, whatever its entry still
+// carries. Each row gets its own copy.
 func (lv *treeLive) failureFor(id string) *appwire.ThreadFailure {
-	entry := lv.liveMap[id]
+	entry, listed := lv.liveMap[id]
+	if !listed && lv.runningSubagentIDs[id] {
+		// A local delegate has no entry of its own: its root's entry
+		// carries its usage-limit wait, as it carries its state.
+		return appwire.CloneThreadFailure(lv.childQuotaWaits[id])
+	}
 	if entry.Crashed {
 		return &appwire.ThreadFailure{Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed}}
 	}

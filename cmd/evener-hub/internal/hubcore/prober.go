@@ -140,7 +140,10 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 
 	delegateStates := subagentStatesFromDelegates(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
-		if delegateStates[id] == appwire.ThreadStatusIdle {
+		// A finished delegate whose notification turn waits out a usage limit
+		// is working although its lifecycle reads idle: its quota summary
+		// says so, and its row keeps its own active status.
+		if delegateStates[id] == appwire.ThreadStatusIdle && childQuotaWaits[id] == nil {
 			if runningSubagentStates == nil {
 				runningSubagentStates = make(map[string]string)
 			}
