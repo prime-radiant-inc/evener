@@ -190,9 +190,10 @@ const (
 	// failed-turn path emits nothing else), and a snapshot shows that summary
 	// only while the status is systemError, so one left over once the next
 	// turn starts is never read. Mid-turn it is the summary of a model call
-	// waiting out a usage limit: MODEL_RETRY announces the wait, and the
-	// call's next answer (ASSISTANT_TEXT_END) or a model switch (MODEL_CHANGED)
-	// follows its end.
+	// waiting out a usage limit: MODEL_RETRY announces the wait, and another
+	// MODEL_RETRY, with no delay, announces the retry that ends it; the
+	// call's next answer (ASSISTANT_TEXT_END) and a model switch
+	// (MODEL_CHANGED) re-sample it too.
 	facetTurnFailure
 )
 
@@ -304,7 +305,8 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventGoalEnded:        facetGoal,
 
 	// A model call waiting out a usage limit announces the wait as a retry
-	// whose delay runs to the reset (facetTurnFailure above).
+	// whose delay runs to the reset, and the retry that ends it as one with no
+	// delay (facetTurnFailure above).
 	events.EventModelRetry: facetTurnFailure,
 
 	// Sandbox escalations block a tool call awaiting a human.

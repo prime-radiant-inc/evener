@@ -7,10 +7,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -1299,4 +1301,61 @@ func TestCapacityReclamationDoesNotRaceALaunchingDrive(t *testing.T) {
 	if fatal {
 		t.Fatal("the drive's turn failed")
 	}
+}
+
+// When a steer wakes a wait before its reset, the wait is over at once:
+// the retry it starts announces itself (a model retry with no delay),
+// which is what makes a session list drop the quota wait from the row,
+// rather than leaving it until the retry's response ends.
+func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
+	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var mu sync.Mutex
+	var retries []events.ModelRetryData
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.ModelRetryData); ok {
+			mu.Lock()
+			retries = append(retries, data)
+			mu.Unlock()
+		}
+	}, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s, trip)
+
+	// The retry's response does not come until the test lets it.
+	answer := make(chan struct{})
+	recoverProvider(adapter)
+	adapter.mu.Lock()
+	respond := adapter.streamScript
+	adapter.streamScript = func(st *llm.ChanStream) {
+		<-answer
+		respond(st)
+	}
+	adapter.mu.Unlock()
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-ends-wait",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the quota is back"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	waitUntil(t, trip, "the steer dispatches the retry", func() bool { return streamCalls(adapter) == 2 })
+	waitUntil(t, trip, "the retry is announced", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(retries) == 2
+	})
+	mu.Lock()
+	announced := retries[1]
+	mu.Unlock()
+	if announced.DelayMS != 0 {
+		t.Fatalf("the retry after the wait announced a %d ms delay, want none", announced.DelayMS)
+	}
+	if failure := s.RestingFailure(); failure != nil {
+		t.Fatalf("while the retry streams the session still reports the wait %+v", failure)
+	}
+	close(answer)
+	run.awaitEnd(t, trip, "the retry finishes the turn")
 }
