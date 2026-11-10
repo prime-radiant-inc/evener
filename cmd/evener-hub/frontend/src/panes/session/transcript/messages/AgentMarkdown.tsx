@@ -54,28 +54,29 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       ownerRef && paneID && cwd
         ? { sessionRef: ownerRef, cwd, sourcePaneId: paneID, artifactsDir, scratchDir }
         : undefined;
+    let removeClickHold = () => {};
     if (!context && ownerRef && paneID) {
-      const onClick = (event: MouseEvent) => {
-        if (
-          event.defaultPrevented ||
-          event.button !== 0 ||
-          event.ctrlKey ||
-          event.metaKey ||
-          event.shiftKey ||
-          event.altKey
-        ) {
-          return;
-        }
+      const holdOrGuard = (event: MouseEvent) => {
+        if (event.defaultPrevented) return;
         const target = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
         if (!target || !element.contains(target)) return;
         if (target.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) return;
         const href = target.getAttribute("href") ?? "";
         if (!deferrableFileHref(href)) return;
         event.preventDefault();
-        pendingFileClick.current = { href, sessionRef: ownerRef, sourcePaneId: paneID };
+        if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+          pendingFileClick.current = { href, sessionRef: ownerRef, sourcePaneId: paneID };
+        }
       };
-      element.addEventListener("click", onClick, true);
-      return () => element.removeEventListener("click", onClick, true);
+      const onAuxClick = (event: MouseEvent) => {
+        if (event.button === 1) holdOrGuard(event);
+      };
+      element.addEventListener("click", holdOrGuard, true);
+      element.addEventListener("auxclick", onAuxClick, true);
+      removeClickHold = () => {
+        element.removeEventListener("click", holdOrGuard, true);
+        element.removeEventListener("auxclick", onAuxClick, true);
+      };
     }
     if (context) {
       const held = pendingFileClick.current;
@@ -110,6 +111,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const entityResult = enhanceEntityText(element);
     setPortals([...affordances, ...entityResult.portals]);
     return () => {
+      removeClickHold();
       entityResult.cleanup();
       restoreFiles();
       for (const slot of slots) slot.remove();
