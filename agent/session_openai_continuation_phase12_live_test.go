@@ -116,7 +116,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	// its own call frame, never on the request, so rebuild it here from the
 	// history as it stood when the delta round was planned — the delta's own
 	// system prefix plus every turn up to the last user input.
-	fullHistory := responsesContinuationDeltaMessages(deltaReq.Messages, phase12HistoryThroughLastUserInput(sess.history))
+	fullHistory := responsesContinuationDeltaMessages(deltaReq.Messages, phase12HistoryThroughLastUserInput(sess.history), nil)
 	if !requestMessagesContainText(fullHistory, priorMarker) ||
 		!requestMessagesContainText(fullHistory, currentMarker) {
 		t.Fatalf("rebuilt full history missing proof markers: %+v", fullHistory)

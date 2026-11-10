@@ -125,7 +125,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "read_file", Content: text}},
 			}}),
 		}
-		if len(responsesContinuationDeltaMessages(base, turns)) < 2 || len(responsesContinuationTurnKinds(turns)) != len(turns) || len(expandHistory(turns, replayScope{})) != 3 {
+		if len(responsesContinuationDeltaMessages(base, turns, nil)) < 2 || len(responsesContinuationTurnKinds(turns)) != len(turns) || len(expandHistory(turns, replayScope{})) != 3 {
 			t.Fatal("history expansion lost deterministic turns")
 		}
 

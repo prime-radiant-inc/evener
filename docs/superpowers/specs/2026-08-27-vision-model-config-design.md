@@ -370,7 +370,13 @@ the unset default assumes the session's chosen model consumes its own images,
 and a session that expects to hand history to a sightless model pins an
 explicit `vision_model` (or `off`) instead. Extending the model-switch
 preflight to warn about or reject switches that would orphan undescribed
-inline images is an open product choice (#4217).
+inline images is an open product choice (#4217). **Settled by the 2026-11-09
+provider-content ruling:** the switch is allowed. Request assembly drops
+tool-result media bytes the target cannot see (the result's text still reaches
+the model), and the persisted switch marker names how many tool-result media
+items are now out of the model's view. No describing call runs at switch time;
+a session that wants descriptions instead pins an explicit `vision_model`
+before switching.
 
 ## Revision (2026-10-12): the Anthropic builder carries documents (#4209)
 
