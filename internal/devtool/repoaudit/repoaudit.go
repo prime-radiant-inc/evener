@@ -41,13 +41,17 @@ var checks = []check{
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
 	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
+	{"test-sleeps-within-baseline", testSleepsStayWithinBaseline},
 }
 
-// audit collects one check's findings. Errorf records a finding and the check
-// goes on; Fatalf records one and ends the check, for a check that cannot read
-// what it holds a rule over.
+// audit collects one check's findings and notes. Errorf records a finding and
+// the check goes on; Fatalf records one and ends the check, for a check that
+// cannot read what it holds a rule over. Notef records a note, which is
+// reported without failing the run: a ratchet uses it to ask for its baseline
+// to come down.
 type audit struct {
 	findings []string
+	notes    []string
 }
 
 // stopCheck is the panic value Fatal and Fatalf end a check with; runCheck
@@ -62,6 +66,10 @@ func (a *audit) Errorf(format string, args ...any) {
 	a.findings = append(a.findings, fmt.Sprintf(format, args...))
 }
 
+func (a *audit) Notef(format string, args ...any) {
+	a.notes = append(a.notes, fmt.Sprintf(format, args...))
+}
+
 func (a *audit) Fatal(args ...any) {
 	a.Error(args...)
 	panic(stopCheck{})
@@ -72,8 +80,8 @@ func (a *audit) Fatalf(format string, args ...any) {
 	panic(stopCheck{})
 }
 
-// runCheck runs one check and returns its findings.
-func runCheck(c check) (findings []string) {
+// runCheck runs one check and returns its findings and notes.
+func runCheck(c check) (findings, notes []string) {
 	a := &audit{}
 	defer func() {
 		if r := recover(); r != nil {
@@ -81,14 +89,14 @@ func runCheck(c check) (findings []string) {
 				panic(r)
 			}
 		}
-		findings = a.findings
+		findings, notes = a.findings, a.notes
 	}()
 	c.run(a)
-	return a.findings
+	return a.findings, a.notes
 }
 
 // Run runs every check against the repository in the working directory, which
-// must be its root, and reports each finding under its check's name. It
+// must be its root, and reports each note and finding under its check's name. It
 // returns 1 when any check found something and 0 otherwise.
 func Run(stdout io.Writer) int {
 	return runChecks(checks, stdout)
@@ -97,15 +105,19 @@ func Run(stdout io.Writer) int {
 // runChecks runs cs concurrently, since the copy-only scans dominate the wall
 // time, and reports them in order so the output is stable.
 func runChecks(cs []check, stdout io.Writer) int {
-	results := make([][]string, len(cs))
+	findings := make([][]string, len(cs))
+	notes := make([][]string, len(cs))
 	var wg sync.WaitGroup
 	for i, c := range cs {
-		wg.Go(func() { results[i] = runCheck(c) })
+		wg.Go(func() { findings[i], notes[i] = runCheck(c) })
 	}
 	wg.Wait()
 	status := 0
 	for i, c := range cs {
-		for _, finding := range results[i] {
+		for _, note := range notes[i] {
+			_, _ = fmt.Fprintf(stdout, "NOTE %s: %s\n", c.name, note)
+		}
+		for _, finding := range findings[i] {
 			status = 1
 			_, _ = fmt.Fprintf(stdout, "FAIL %s: %s\n", c.name, finding)
 		}
