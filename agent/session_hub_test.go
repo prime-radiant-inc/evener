@@ -358,6 +358,7 @@ func managerRequestGolden(request llm.Request) []byte {
 	}
 	// Runtime facts and installed skill paths vary by machine, not by Manager mode.
 	text := regexp.MustCompile(`(?s)<environment>.*?</environment>`).ReplaceAllString(out.String(), "<environment>\n[runtime facts]\n</environment>")
+	text = regexp.MustCompile(`(?m)^Co-authored-by: Evener .*$`).ReplaceAllString(text, "Co-authored-by: Evener [version] ([instance]/[model]) <[session]@[host]>")
 	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener\]`).ReplaceAllString(text, "[skill-path/doctoring-evener]")
 	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener/SKILL\.md\]`).ReplaceAllString(text, "[skill-path/doctoring-evener/SKILL.md]")
 	var defs []llm.ToolDefinition

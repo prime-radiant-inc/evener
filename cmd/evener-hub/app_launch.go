@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/commitprovenance"
 )
 
 // errNoLaunchConfigRoot is what a launch settings write answers when no user
@@ -22,6 +23,10 @@ var errNoLaunchConfigRoot = errors.New("launch config is unavailable: no user co
 // errEnabledPluginsPerLaunch refuses persisting a plugin selection: it belongs
 // to one launch, never to a saved layer.
 var errEnabledPluginsPerLaunch = errors.New("enabledPlugins is per-launch only")
+
+// errCommitProvenanceScope refuses persisting the field in a project layer: it
+// is a global default and a per-launch override, never project-specific.
+var errCommitProvenanceScope = errors.New(launchconfig.CommitProvenanceScopeMessage)
 
 // hubLaunchController owns the evener/launch/* RPC handlers.
 type hubLaunchController struct {
@@ -188,6 +193,16 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 		return appwire.LaunchConfigResolved{}, invalidParamsFor(errEnabledPluginsPerLaunch)
 	}
 	layer := launchconfig.FromWire(params.Config)
+	if layer.CommitProvenance != "" && !launchconfig.AllowsLayer(launchconfig.CommitProvenanceField, launchconfig.LayerName(params.Layer)) {
+		return appwire.LaunchConfigResolved{}, invalidParamsFor(errCommitProvenanceScope)
+	}
+	if layer.CommitProvenance != "" {
+		mode, err := commitprovenance.Normalize(layer.CommitProvenance)
+		if err != nil {
+			return appwire.LaunchConfigResolved{}, appwire.InvalidParams(err.Error())
+		}
+		layer.CommitProvenance = mode
+	}
 	// Refuse credential keys in env before persisting.
 	for k := range layer.Env {
 		if launchconfig.IsCredentialEnvKey(k) {

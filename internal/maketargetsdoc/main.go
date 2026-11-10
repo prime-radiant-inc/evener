@@ -28,7 +28,7 @@ var stemToDoc = map[string]string{
 }
 
 func main() {
-	mode := flag.String("mode", "generate", `"generate" (default) rewrites the doc tables; "help" prints make help's grouped target listing to stdout`)
+	mode := flag.String("mode", "generate", `"generate" (default) rewrites the doc tables`)
 	// go generate runs a directive with the cwd set to the package's own
 	// directory, not the repo root, so doc.go's directive passes -root ../..
 	// to point back at the tree that holds make/ and docs/. The default suits
@@ -40,10 +40,8 @@ func main() {
 	switch *mode {
 	case "generate":
 		err = generate(*root)
-	case "help":
-		err = printHelp(os.Stdout, *root)
 	default:
-		fmt.Fprintf(os.Stderr, "maketargetsdoc: unknown -mode %q; want \"generate\" or \"help\"\n", *mode)
+		fmt.Fprintf(os.Stderr, "maketargetsdoc: unknown -mode %q; want \"generate\"\n", *mode)
 		os.Exit(2)
 	}
 	if err != nil {

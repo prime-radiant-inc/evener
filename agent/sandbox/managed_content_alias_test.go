@@ -36,7 +36,7 @@ func TestManagedWalkExemptDataVolumeAliases(t *testing.T) {
 func TestSeatbeltManagedAliasSkipsLinkedTargetWalk(t *testing.T) {
 	t.Parallel()
 	host := seatbeltHost()
-	host.Home = t.TempDir()
+	host.Home = canonicalTempDir(t)
 	cache := filepath.Join(host.Home, ".config", "evener", "plugins", "cache")
 	target := filepath.Join(cache, "market", "plugin", "revision", "metadata")
 	if err := os.MkdirAll(target, 0o755); err != nil {

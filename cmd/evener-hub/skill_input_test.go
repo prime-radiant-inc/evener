@@ -274,15 +274,14 @@ func TestSkillInputHubGatesStartSteerQueueDrainOnTargetCapability(t *testing.T) 
 			})
 			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive})
 			roster.Refresh()
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 				RunDir:      runDir,
 				Roster:      roster,
-				Past:        hubcore.NewPastIndex(""),
 				ResumeLocks: hubcore.NewResumeLocks(),
 				Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 					return rendezvous.Entry{}, errors.New("live daemon must not be replaced")
 				}},
-			})
+			}))
 			defer hub.Close()
 			client := dialSkillInputHub(t, hub)
 			defer client.Close()
@@ -393,14 +392,13 @@ func TestSkillInputHubCapabilityReadFailureIsARejection(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
 		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{}, errors.New("live daemon must not be replaced")
 		}},
-	})
+	}))
 	defer hub.Close()
 	client := dialSkillInputHub(t, hub)
 	defer client.Close()
@@ -453,12 +451,11 @@ func TestSkillInputHubColdStartGatesInitialInputOnTargetCapability(t *testing.T)
 				return entry, nil
 			}}
 			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive})
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 				RunDir:  runDir,
 				Roster:  roster,
 				Spawner: spawner,
-				Past:    hubcore.NewPastIndex(""),
-			})
+			}))
 			defer hub.Close()
 			client := dialSkillInputHub(t, hub)
 			defer client.Close()

@@ -11,7 +11,7 @@ import type { AppwireClientLike } from "./clientLike";
 import { errorText } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { hostRequest } from "./hostRouting";
-import type { LaunchConfigLayer, PluginPreviewResponse } from "./types.gen";
+import type { LaunchConfigLayer, PluginComponentsResult, PluginPreviewResponse } from "./types.gen";
 
 export const SCOPED_HOST_READ_DEBOUNCE_MS = 250;
 
@@ -147,5 +147,51 @@ export function pluginPreviewReadInputs(args: PluginPreviewReadArgs): ScopedHost
         "evener/plugin/preview",
         Object.keys(launchOverrides).length > 0 ? { cwd, launchOverrides } : { cwd },
       ),
+  };
+}
+
+/** The one result row a requested target's components answer is read through:
+ * the hub's own row for the target, or - when the answer carries none - a
+ * row that reports the absence as an error. A well-formed request always gets
+ * exactly one row per target (the batch echoes its targets in order), so an
+ * absent row is an off-spec answer, and reporting it as an error row is what
+ * keeps it from reading as a loadable plugin with no components: the hub
+ * spells that case "neither components nor error". Shared with the settings
+ * store's per-key landing, which owes the same tolerance. */
+export function pluginComponentsResultOrMissing(result: PluginComponentsResult | undefined): PluginComponentsResult {
+  return result ?? { error: "the hub returned no result for this target" };
+}
+
+export interface PluginComponentsReadArgs {
+  client: Pick<AppwireClientLike, "request">;
+  /** The selected host: the components are read by that host's own hub
+   * through evener/host/request; "local" keeps the plain call. */
+  host?: string;
+  /** Exactly one of the two forms - an installed plugin/marketplace pair, or
+   * a directory path. The union cannot express the wire's malformed targets
+   * (both forms set, or neither), so this read never sends one. */
+  target: { plugin: string; marketplace: string } | { path: string };
+}
+
+/** The scoped read of one plugin's component inventory, for a host. The
+ * launcher reads one target; the method is batch-shaped (the installed list
+ * reads all its rows in one call), so this read sends a one-target batch and
+ * takes that target's row back. */
+export function pluginComponentsReadInputs(
+  args: PluginComponentsReadArgs,
+): ScopedHostReadInputs<PluginComponentsResult> {
+  const { client, host = "local", target } = args;
+  return {
+    client,
+    host,
+    // The target names the plugin directory outright - an installed pair, or
+    // a path the caller resolved - so the read has no project to be scoped to.
+    cwd: "",
+    inputKey: JSON.stringify(target),
+    enabled: true,
+    read: async () => {
+      const response = await hostRequest(client, host, "evener/plugin/components", { targets: [target] });
+      return pluginComponentsResultOrMissing(response.results[0]);
+    },
   };
 }

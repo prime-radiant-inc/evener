@@ -56,11 +56,16 @@ class FailingStorage extends MemoryStorage {
 }
 
 beforeAll(() => {
+  // The store's default channel factory is deliberately inert in test mode.
+  // These cases exercise the production cross-tab path through the
+  // file-scoped channel installed below.
+  vi.stubEnv("MODE", "production");
   installLocalStorage(new MemoryStorage());
   if (fileScopedBroadcastChannel !== undefined) globalThis.BroadcastChannel = fileScopedBroadcastChannel;
 });
 
 afterAll(() => {
+  vi.unstubAllEnvs();
   if (typeof unscopedBroadcastChannel === "function") globalThis.BroadcastChannel = unscopedBroadcastChannel;
 });
 

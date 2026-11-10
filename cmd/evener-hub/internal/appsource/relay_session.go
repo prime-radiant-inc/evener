@@ -28,10 +28,11 @@ type relaySession struct {
 	// waiting for downstream acknowledgement. Revocation closes the epoch's
 	// fence before taking the write side so a blocked send can be interrupted
 	// without allowing a revoked epoch to enter a listener after replacement.
-	publishBoundary  sync.RWMutex
-	publishEntryHook func()
-	publicationEpoch uint64
-	publicationFence *relayPublicationFence
+	publishBoundary          sync.RWMutex
+	publishEntryHook         func()
+	invalidateConnectionHook func(*relaySession)
+	publicationEpoch         uint64
+	publicationFence         *relayPublicationFence
 
 	mu             sync.Mutex
 	epoch          uint64
@@ -538,6 +539,34 @@ func (s *relaySession) disconnect(epoch uint64) {
 	s.maybeIdle()
 	if startRecovery {
 		go s.recoverCanonicalFeed()
+	}
+}
+
+// invalidateConnection drops the current daemon link so the next command
+// redials through the source's current roster route. It is the transport-loss
+// path: listeners get the pending resync and recovery, and an in-flight
+// capture is revoked. A relay session is keyed by the canonical ref, so a
+// replacement daemon reuses the same session and must not inherit the
+// superseded daemon's socket.
+func (s *relaySession) invalidateConnection() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	connection := s.connection
+	if connection == nil {
+		// Advance the epoch under this lock. A dial that resolved the
+		// pre-replacement route installs under the same lock, so it observes
+		// the revocation and cannot leave a stale connection installed.
+		s.advanceEpochLocked()
+	}
+	s.mu.Unlock()
+	if hook := s.invalidateConnectionHook; hook != nil {
+		hook(s)
+	}
+	if connection != nil {
+		s.disconnect(connection.epoch)
 	}
 }
 

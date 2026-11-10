@@ -14,13 +14,7 @@ import type {
   TurnQueueResponse,
   TurnStartResponse,
 } from "@evener/appwire-client";
-import {
-  AppwireClient,
-  acquireThreadSubscription,
-  RequestTimeoutError,
-  type ThreadSubscriptionLease,
-  WireError,
-} from "@evener/appwire-client";
+import { AppwireClient, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
@@ -34,8 +28,17 @@ import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import "./humanNoteDrafts";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import {
+  establishedMemberships,
+  establishMembership,
+  readResponse,
+  runScheduledHydrationRetry,
+  type ScheduledHydrationRetry,
+  scheduledHydrationRetries,
+} from "./threadHydrationTestUtils";
 import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
@@ -43,15 +46,6 @@ import {
   threadsStore,
 } from "./threads";
 import { flushIndexedDBUntil } from "./threadsSessionActionsTestUtils";
-
-const establishedMemberships: ThreadSubscriptionLease[] = [];
-async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
-  fake.on("thread/read", () => readResponse(ref));
-  const lease = acquireThreadSubscription(fake, ref);
-  establishedMemberships.push(lease);
-  await lease.ensure();
-  fake.calls.length = 0;
-}
 
 // flushUntil drains microtask turns until `done()` reports true (or a bounded
 // number of turns elapse, so a genuine hang fails fast instead of silently).
@@ -91,10 +85,6 @@ function nextHandledRequest<M extends MethodName>(
 // this task's report - which fires each owner-wait arm and requires the
 // matching test to fail - is what would catch it.
 const settleCallerContinuations = nextMacrotask;
-
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
 
 // readResponse derives the wire thread id as thr_<ref>. The routing-index
 // tests need models with known and sometimes SHARED thread ids (a lean watch
@@ -164,17 +154,6 @@ function connectMutationClient(): FakeClient {
   return fake;
 }
 
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
-
 // This suite exercises the ordinary entry route (the route production takes
 // when no fixture or adapter override is installed). Its storage boundary is a
 // fresh real SessionEntryCache over a private fake-IDB database, so no fixture
@@ -191,24 +170,7 @@ function mutationReceipt(clientMutationId: string, disposition = "applied") {
 // a delay. Installing it for EVERY test also keeps the production backoff's
 // real setTimeout out of the suite entirely, so a failing read in an unrelated
 // test cannot leave a live timer behind.
-interface ScheduledHydrationRetry {
-  attempt: number;
-  retry: () => void;
-  cancelled: boolean;
-}
-
-let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
-
-// runScheduledHydrationRetry invokes exactly one scheduled retry, proving first
-// that it exists and was not cancelled - a cancelled entry that still fires
-// would make every "release/swap cancels the retry" assertion below vacuous.
-function runScheduledHydrationRetry(index = 0): void {
-  const scheduled = scheduledHydrationRetries[index];
-  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
-  expect(scheduled?.cancelled).toBe(false);
-  scheduled?.retry();
-}
 
 beforeEach(async () => {
   resetConnectionStoreForTests();
@@ -219,7 +181,7 @@ beforeEach(async () => {
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
-  scheduledHydrationRetries = [];
+  scheduledHydrationRetries.length = 0;
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
     scheduledHydrationRetries.push(scheduled);

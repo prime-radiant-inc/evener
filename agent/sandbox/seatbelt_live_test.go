@@ -716,10 +716,7 @@ func runUnderSeatbeltCanon(t *testing.T, rp ResolvedPolicy, cwd string, canon Ca
 // freely.
 func TestSeatbeltLiveSymlinkReadRootSpellings(t *testing.T) {
 	requireLiveSeatbelt(t)
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := canonicalTempDir(t)
 	target := filepath.Join(dir, "target")
 	link := filepath.Join(dir, "link")
 	writeFile(t, target, "EVENER-LIVE-SYMLINK-42\n")
@@ -763,10 +760,7 @@ func TestSeatbeltLiveSymlinkReadRootSpellings(t *testing.T) {
 // resolver's, and the verdict is the real kernel's.
 func TestSeatbeltLiveGitCredentialsStayMasked(t *testing.T) {
 	requireLiveSeatbelt(t)
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := canonicalTempDir(t)
 	config := filepath.Join(home, ".gitconfig")
 	credentials := filepath.Join(home, ".git-credentials")
 	const secret = "EVENER-LIVE-GIT-CREDENTIAL-42"

@@ -259,3 +259,23 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 	})
 	return pending
 }
+
+// settleSendDelivery acknowledges the result a send's inline wait returned,
+// as the tool round that records the send's reply does, so the result is not
+// left admitted for the root's Close to wait out. A send that returned no
+// result has nothing to acknowledge.
+func settleSendDelivery(t *testing.T, root *Session, outcome delegateSendOutcome) {
+	t.Helper()
+	if outcome.commit == nil {
+		return
+	}
+	completed, err := completeDelegateDeliveryCommits(append(slices.Clone(outcome.earlierCommits), outcome.commit))
+	if err != nil {
+		t.Fatalf("acknowledge the send's result: %v", err)
+	}
+	for _, plans := range completed {
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatalf("execute the send's acknowledgement: %v", err)
+		}
+	}
+}

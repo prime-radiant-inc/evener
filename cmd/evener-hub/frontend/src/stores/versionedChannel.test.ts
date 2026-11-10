@@ -4,7 +4,7 @@ import {
   type TranscriptDisplayConfigV1,
   type ViewportClass,
 } from "@evener/appwire-client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
@@ -38,6 +38,7 @@ function channelFixture(createChannel?: (name: string) => BroadcastChannel | nul
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("versioned channel", () => {
@@ -187,6 +188,12 @@ function browserFixture() {
 }
 
 describe("transcript display channel compatibility", () => {
+  beforeEach(() => {
+    // These cases exercise the production default factory; test mode
+    // deliberately creates no channel.
+    vi.stubEnv("MODE", "production");
+  });
+
   it("keeps the five-field envelope, strict validation and per-attachment source ids", () => {
     const transports: TestChannel[] = [];
     vi.stubGlobal(

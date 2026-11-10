@@ -309,6 +309,7 @@ no router (reserved).
 | `evener/marketplace/edit` | hub | [MarketplaceEditParams](#marketplaceeditparams) | [MarketplaceListResponse](#marketplacelistresponse) | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | [MarketplaceBrowseParams](#marketplacebrowseparams) | [MarketplaceBrowseResponse](#marketplacebrowseresponse) | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | [EmptyParams](#emptyparams) | [PluginListResponse](#pluginlistresponse) | Lists installed plugins. |
+| `evener/plugin/components` | hub | [PluginComponentsParams](#plugincomponentsparams) | [PluginComponentsResponse](#plugincomponentsresponse) | Returns plugins' loaded components - skills, agents, commands, hook events, and MCP server names - plus load diagnostics; one target per installed plugin by name or any directory by path, results fail-soft per target. |
 | `evener/plugin/install` | hub | [PluginRefParams](#pluginrefparams) | [PluginListResponse](#pluginlistresponse) | Installs a plugin from a marketplace; returns the updated list. |
 | `evener/plugin/upgrade` | hub | [PluginRefParams](#pluginrefparams) | [PluginListResponse](#pluginlistresponse) | Upgrades an installed plugin to its marketplace's latest; returns the updated list. |
 | `evener/plugin/remove` | hub | [PluginRefParams](#pluginrefparams) | [PluginListResponse](#pluginlistresponse) | Removes an installed plugin; returns the updated list. |
@@ -1289,6 +1290,7 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string | yes |  |
 | `parentRef` | string | yes |  |
 | `kind` | string | yes |  |
+| `forkLabel` | string | yes |  |
 | `profile` | string | yes |  |
 | `turnCount` | int | yes |  |
 | `activeTurnId` | string | yes |  |
@@ -2482,6 +2484,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `openAIResponsesContinuation` | string | yes |  |
 | `providerIdleTimeout` | string | yes |  |
 | `sandbox` | string | yes |  |
+| `commitProvenance` | string | yes |  |
 | `sandboxNet` | \*bool | yes |  |
 | `maxRounds` | \*int | yes |  |
 | `maxSubagentDepth` | \*int | yes |  |
@@ -3175,6 +3178,50 @@ Underlying Go kind: `string` (no struct fields).
 | `errors` | []string | yes |  |
 
 
+### `PluginComponents`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `skills` | []string | yes |  |
+| `agents` | []string | yes |  |
+| `commands` | []string | yes |  |
+| `hooks` | [][appwire.PluginHookEvent](#pluginhookevent) | yes |  |
+| `mcpServers` | []string | yes |  |
+| `warnings` | []string | yes |  |
+
+
+### `PluginComponentsParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `targets` | [][appwire.PluginComponentsTarget](#plugincomponentstarget) |  |  |
+
+
+### `PluginComponentsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `results` | [][appwire.PluginComponentsResult](#plugincomponentsresult) |  |  |
+
+
+### `PluginComponentsResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `PluginComponentsTarget` | [appwire.PluginComponentsTarget](#plugincomponentstarget) |  | yes |
+| `components` | \*[appwire.PluginComponents](#plugincomponents) | yes |  |
+| `error` | string | yes |  |
+
+
+### `PluginComponentsTarget`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugin` | string | yes |  |
+| `marketplace` | string | yes |  |
+| `path` | string | yes |  |
+
+
 ### `PluginDiagnostic`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3200,6 +3247,14 @@ Underlying Go kind: `string` (no struct fields).
 | `installedAt` | int64 |  |  |
 | `lastUpdated` | int64 |  |  |
 | `updateAvailable` | bool | yes |  |
+
+
+### `PluginHookEvent`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `event` | string |  |  |
+| `count` | int |  |  |
 
 
 ### `PluginLaunchCandidate`

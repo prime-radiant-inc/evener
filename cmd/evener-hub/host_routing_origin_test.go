@@ -43,9 +43,7 @@ func TestServeAppWireRPCStampsBridgeOrigin(t *testing.T) {
 		client := appwire.NewClient(transport)
 		client.Start(t.Context())
 		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 		var out string
 		if err := client.Request(t.Context(), "test/origin", struct{}{}, &out); err != nil {
 			t.Fatalf("test/origin: %v", err)

@@ -277,7 +277,7 @@ func TestRestoreSeesADeliveredPlanInTheTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}
-	defer root.Close()
+	t.Cleanup(root.Close)
 	sub := restoreFixtureDelegate(t, root, fixture.delegateID)
 
 	if got := countPlanSteering(sub.sess); got != 0 {
@@ -307,7 +307,9 @@ func writeDeliveredPlanTranscript(t *testing.T, stateDir, childID, parentID stri
 	}
 }
 
-// restoreFixtureDelegate runs one cold restore of a committed delegate.
+// restoreFixtureDelegate runs one cold restore of a committed delegate. Its
+// cleanup fails the restored start, which must run before root closes, so the
+// caller registers root's Close with t.Cleanup before calling it.
 func restoreFixtureDelegate(t *testing.T, root *Session, delegateID string) *subagent {
 	t.Helper()
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), delegateID)

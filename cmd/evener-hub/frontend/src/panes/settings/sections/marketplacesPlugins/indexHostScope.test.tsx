@@ -1,4 +1,4 @@
-import type { HostRow, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import type { MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { hostsStore } from "../../../../stores/hosts";
+import { hostRow } from "../../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -14,18 +15,6 @@ import { MarketplacesPluginsHostScope } from "./index";
 // The Marketplaces & Plugins settings surface's host scope (component 07b): a
 // remote selection shows THAT host's own marketplaces and plugins and changes
 // them back through evener/host/request, never this hub's.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function plugin(name: string): PluginEntry {
   return {

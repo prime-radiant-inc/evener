@@ -1,10 +1,10 @@
-import type { HostRow } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { HostScopedSurface } from "./hostScopedSurface";
@@ -17,18 +17,6 @@ import { HostScopedSurface } from "./hostScopedSurface";
 // therefore has to REMOUNT the body, not merely re-render it: a re-render
 // leaves that state in place, where it can be shown against the new host's
 // data and written to the new host.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 /** Body stands in for any pane's host-scoped body: it renders the host it was
  * handed and holds one draft of its own. */

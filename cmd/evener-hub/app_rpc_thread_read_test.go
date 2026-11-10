@@ -194,11 +194,10 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 102, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)
@@ -2878,7 +2877,7 @@ func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testi
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg := testWebConfig(t, hubcore.WebConfig{})
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	relays := newHubRelay(server, cfg, sources)
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
@@ -2941,7 +2940,7 @@ func TestManagerSnapshotReadDoesNotAskDaemonForSubscription(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg := testWebConfig(t, hubcore.WebConfig{})
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	relays := newHubRelay(server, cfg, sources)
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
@@ -3030,7 +3029,7 @@ func TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed(t *testing.T) {
 	sourcesB.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}}}
 	}, http.DefaultClient))
-	cfgB := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfgB := testWebConfig(t, hubcore.WebConfig{})
 	serverB := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	relaysB := newHubRelay(serverB, cfgB, sourcesB)
 	operationsB := &sessionOperations{cfg: cfgB, sources: sourcesB, relays: relaysB, server: serverB}
@@ -3048,7 +3047,7 @@ func TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed(t *testing.T) {
 	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(ctx context.Context, host string) (*appwire.Client, error) {
 		return dialHubRPCInitialized(t, hubB), nil
 	}))
-	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfgA := testWebConfig(t, hubcore.WebConfig{})
 	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	relaysA := newHubRelay(serverA, cfgA, sourcesA)
 	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: relaysA, server: serverA}
@@ -3087,7 +3086,7 @@ func TestHubRPCThreadReadLiveOnlyRejectsRemoteDaemonlessHistory(t *testing.T) {
 	}
 	sourcesB := appsource.NewRegistry()
 	sourcesB.Add(&relaySessionTestSource{thread: liveRetryingThread(sessionID), lease: lease})
-	serverB := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past}, sourcesB)
+	serverB := newHubAppServer(testWebConfig(t, hubcore.WebConfig{Past: past}), sourcesB)
 	hubB := httptest.NewServer(http.HandlerFunc(serverB.ServeWebSocket))
 	t.Cleanup(hubB.Close)
 	remote := dialHubRPCInitialized(t, hubB)
@@ -3096,7 +3095,7 @@ func TestHubRPCThreadReadLiveOnlyRejectsRemoteDaemonlessHistory(t *testing.T) {
 	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
 		return remote, nil
 	}))
-	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfgA := testWebConfig(t, hubcore.WebConfig{})
 	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
 	params := appwire.ThreadReadParams{Ref: "host-b:" + sessionID, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit}
@@ -3155,7 +3154,7 @@ func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
 	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	sourcesB := appsource.NewRegistry()
 	sourcesB.Add(&relaySessionTestSource{thread: liveRetryingThread(sessionID), lease: lease})
-	serverB := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past}, sourcesB)
+	serverB := newHubAppServer(testWebConfig(t, hubcore.WebConfig{Past: past}), sourcesB)
 	hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
 	}))
@@ -3167,9 +3166,7 @@ func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
 	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
 		return remote, nil
 	}))
-	cfgA := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
+	cfgA := testWebConfig(t, hubcore.WebConfig{
 		RelayHooks: hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context, _ appwire.ThreadReadParams) error {
 			if reads.Add(1) == 1 {
 				return nil
@@ -3177,7 +3174,7 @@ func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		}},
-	}
+	})
 	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
 	_, err := operationsA.read(t.Context(), appwire.ThreadReadParams{
@@ -3229,7 +3226,7 @@ func TestHubRPCThreadReadLiveOnlyRemoteSubscriptionSanitizesParams(t *testing.T)
 	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
 		return remote, nil
 	}))
-	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfgA := testWebConfig(t, hubcore.WebConfig{})
 	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
 	_, err := operationsA.read(t.Context(), appwire.ThreadReadParams{
@@ -3272,7 +3269,7 @@ func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 		SessionID: sessionID,
 		Status:    "errored",
 	})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 
@@ -3393,10 +3390,9 @@ func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         past,
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		Past: past,
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
@@ -3454,10 +3450,9 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         past,
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		Past: past,
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
@@ -3492,10 +3487,9 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 		thread:  thread,
 		readErr: appwire.SessionUnavailable("non-atomic live read failed"),
 	})
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         past,
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		Past: past,
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
@@ -3865,7 +3859,7 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			}, http.DefaultClient)
 			sources := appsource.NewRegistry()
 			sources.Add(source)
-			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
@@ -3983,7 +3977,7 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 			}, http.DefaultClient)
 			sources := appsource.NewRegistry()
 			sources.Add(source)
-			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
 			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 			defer hub.Close()
 			client := dialHubRPC(t, hub)

@@ -80,6 +80,9 @@ type promptData struct {
 	// the template omits them rather than render a clean-repo number.
 	GitStatusUnknown      bool
 	GitRecentCommitTitles []string
+	// CommitTrailer is the exact Co-authored-by line the model is told to end
+	// commit messages with. Empty when provenance is off or cannot be built.
+	CommitTrailer string
 
 	// Workspace
 	WorkspaceTree string

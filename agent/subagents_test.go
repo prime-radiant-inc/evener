@@ -930,3 +930,29 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 	})
 }
+
+func TestMintBootGenerationWithoutStateDirServesWithoutCounterFile(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.stateDir = ""
+	if err := s.mintBootGeneration(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.BootGeneration(); got != "1" {
+		t.Fatalf("boot generation = %q, want 1", got)
+	}
+}
+
+func TestMintBootGenerationPersistsAndAdvancesWithStateDir(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.stateDir = t.TempDir()
+	for _, want := range []string{"1", "2"} {
+		if err := s.mintBootGeneration(); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.BootGeneration(); got != want {
+			t.Fatalf("boot generation = %q, want %s", got, want)
+		}
+	}
+}

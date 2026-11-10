@@ -16,8 +16,10 @@ package dev
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -149,6 +151,37 @@ func browserGuardSpec(guard, root string) guardSpec {
 	}
 }
 
+// browserGuardShards splits the gate across CI's web-browser runners, one
+// shard per runner, so the lane's wall time is its slowest shard instead of
+// every guard on one runner's four cores. Each shard is built around one long
+// guard (overflowguard, skillguard, cascadeguard) with shorter guards beside
+// it. Every guard belongs to exactly one shard, and the workflow's matrix
+// names every shard.
+var browserGuardShards = map[string][]string{
+	"overflow": {"layoutguard", "overflowguard", "spawnguard", "transcriptscrollguard", retirementGuard, "mermaidguard", "memoryguard"},
+	"skill":    {"shellguard", skillGuard},
+	"cascade":  {cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard},
+}
+
+// browserShardGuards is shard's guards in verdict order (BROWSER_GUARD_SHARD),
+// or every guard when shard is empty. A name that is no shard is an error.
+func browserShardGuards(shard string) ([]string, error) {
+	if shard == "" {
+		return browserGuards, nil
+	}
+	members, ok := browserGuardShards[shard]
+	if !ok {
+		return nil, fmt.Errorf("no browser guard shard %q (shards: %s)", shard, strings.Join(slices.Sorted(maps.Keys(browserGuardShards)), ", "))
+	}
+	var guards []string
+	for _, guard := range browserGuards {
+		if slices.Contains(members, guard) {
+			guards = append(guards, guard)
+		}
+	}
+	return guards, nil
+}
+
 // browserGuardSlots reads BROWSER_GUARD_CONCURRENCY: digits only, read as
 // decimal (08 is eight, 00 is zero), and at least one, so no value can leave
 // the gate with no slot to start a guard in.
@@ -167,10 +200,16 @@ func browserGuardSlots(value string) int {
 // repository root.
 func runWebBrowserGuards(args []string) int {
 	if len(args) != 0 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots)")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots, BROWSER_GUARD_SHARD runs one shard)")
+		return 2
+	}
+	guards, err := browserShardGuards(os.Getenv("BROWSER_GUARD_SHARD"))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "evener-dev dev web-browser-guards: %v\n", err)
 		return 2
 	}
 	gate := newBrowserGate(browserGuardSlots(os.Getenv("BROWSER_GUARD_CONCURRENCY")), !frontendBuilt(frontendDir))
+	gate.checks = guards
 	return runWebGate(gate, "evener-test-web-browser")
 }
 

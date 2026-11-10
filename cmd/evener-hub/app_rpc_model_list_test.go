@@ -202,11 +202,10 @@ exit 2
 `
 	writeFakeEvener(t, bin, script)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),
 		Spawner: &HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
-		Past:    hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	var resp struct {

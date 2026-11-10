@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -442,6 +443,11 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren map[string]drainGraceChild
+	// drainParkMu guards drainParked, the channel nextDrainPark hands out and
+	// the job-tree drain closes when it parks.
+	// LOCK ORDER: leaf.
+	drainParkMu sync.Mutex
+	drainParked chan struct{}
 	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
 	// its own — nothing is acquired under it — and is deliberately separate from
 	// drainAbandonedMu so the send-start claim never couples to drain state.
@@ -862,6 +868,15 @@ type Session struct {
 	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// jobStatusPolls backs the refusal of repeated job_status calls that carry no news.
+	jobStatusPolls jobStatusPolls
+	// jobNotifsAwaitingRequest holds the durable completions whose reminder
+	// is in the transcript but which no dispatched model request has carried
+	// yet. They settle as delivered when one is dispatched; until then they
+	// stay owed, so a turn that ends first leaves them to the next wake, which
+	// carries them without writing their reminder again. Guarded by
+	// pendingJobNotifsMu.
+	jobNotifsAwaitingRequest []awaitedJobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -985,6 +1000,9 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
+	// priorReads remembers each read_file path and range with the file's state
+	// at that read. Guarded by readFilesMu.
+	priorReads map[readRangeKey]priorRead
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	// Guarded by mu; read and written only in session_end.go.
@@ -1273,6 +1291,13 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
+	if n.JobID == "" {
+		// A self timer is about no one job: the recheck it schedules is news
+		// for every running target.
+		s.jobStatusPolls.forgetAll()
+	} else {
+		s.jobStatusPolls.forget(n.JobID)
+	}
 	if n.WatchID != "" && !n.Terminal {
 		for i := range s.pendingJobNotifs {
 			p := &s.pendingJobNotifs[i]
@@ -1282,6 +1307,12 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 				return
 			}
 		}
+	}
+	// A long-running-jobs reminder is a snapshot of the jobs running when it was
+	// built, so a newer one replaces any still undelivered rather than queueing
+	// behind it listing jobs that may have finished.
+	if n.isLongRunningJobsReminder() {
+		s.pendingJobNotifs = slices.DeleteFunc(s.pendingJobNotifs, jobNotification.isLongRunningJobsReminder)
 	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
@@ -1367,14 +1398,21 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
-// peekNotifications reports how many notifications are pending WITHOUT draining
-// them. The drain-loop tail uses it to decide whether to run a notification turn
-// next; the actual drain stays in acceptNotificationInput so the queue is consumed
-// exactly once, inside the turn that surfaces it.
+// peekNotifications reports how many notifications are still owed to the model
+// WITHOUT draining them: those queued, and those whose reminder no dispatched
+// request has carried yet. The drain-loop tail uses it to decide whether to run
+// a notification turn next; the actual drain stays in acceptNotificationInput so
+// the queue is consumed exactly once, inside the turn that surfaces it.
 func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	return len(s.pendingJobNotifs)
+	return s.owedJobNotificationsLocked()
+}
+
+// owedJobNotificationsLocked counts the notifications a notification wake still
+// has to bring to the model. The caller holds pendingJobNotifsMu.
+func (s *Session) owedJobNotificationsLocked() int {
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
 }
 
 // countJobNotificationsDelivered records n job notifications delivered to the
@@ -1408,7 +1446,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
-	pending := len(s.pendingJobNotifs) > 0
+	pending := s.owedJobNotificationsLocked() > 0
 	s.pendingJobNotifsMu.Unlock()
 	// The USER's steering and queued input both count as pending work here for
 	// the same reason the rest does. Either one accepted durably and then lost
@@ -1501,7 +1539,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		pending := len(s.pendingJobNotifs) > 0
+		pending := s.owedJobNotificationsLocked() > 0
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
@@ -1512,7 +1550,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingJobNotifsMu.Lock()
-	if len(s.pendingJobNotifs) > 0 {
+	if s.owedJobNotificationsLocked() > 0 {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}

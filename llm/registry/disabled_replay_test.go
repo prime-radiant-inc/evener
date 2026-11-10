@@ -201,6 +201,17 @@ func TestModelDisabledPinnedVerdicts(t *testing.T) {
 			want: false,
 		},
 		{
+			// opencode has no curated overlay layer, so the overlay's top-level
+			// glob replays at the overlay tag's position through the missing-tag
+			// prologue, before the config row. Without that prologue the glob
+			// would land after the config row and win here.
+			name:     "overlay top glob on a record with no overlay layer loses to a config row",
+			overlay:  "[models.\"claude-opus-4-5*\"]\ndisabled = true\n",
+			config:   "[providers.opencode.models.\"claude-opus-4-5\"]\ndisabled = false\n",
+			instance: "opencode", model: "claude-opus-4-5",
+			want: false,
+		},
+		{
 			// The reference matches only *4-6; the canonical row matches both,
 			// so the longer pattern is a target match and applies last.
 			name:     "region-prefixed reference replays canonical-row globs",

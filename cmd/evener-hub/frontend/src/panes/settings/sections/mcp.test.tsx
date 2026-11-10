@@ -12,7 +12,8 @@ import { connectionStore, resetConnectionStoreForTests } from "../../../stores/c
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
-import { McpSection, type SettingsOverviewLike } from "./mcp";
+import { McpSection } from "./mcp";
+import { overviewHook } from "./mcpTestUtils";
 
 // Both launch-layer editors mount together once the layer has loaded.
 async function launchLayerLoaded(): Promise<void> {
@@ -21,17 +22,6 @@ async function launchLayerLoaded(): Promise<void> {
 
 function discoveredBlock(): Element | null {
   return document.querySelector("[data-section='mcp-discovered']");
-}
-
-function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {
-  const state: SettingsOverviewLike = {
-    data: null,
-    loading: false,
-    error: null,
-    fetch: vi.fn(async () => {}),
-    ...overrides,
-  };
-  return () => state;
 }
 
 beforeEach(() => {

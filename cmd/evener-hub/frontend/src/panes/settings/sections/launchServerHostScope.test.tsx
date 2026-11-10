@@ -1,10 +1,11 @@
-import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
@@ -18,18 +19,6 @@ import { LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS } from "./useConnectedEffect";
 // changes from here. Local is today's plain-call section; a remote selection
 // routes every launch call through evener/host/request and never touches the
 // controller's launch config.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function schema(description: string): LaunchOptionSchemaResponse {
   return {

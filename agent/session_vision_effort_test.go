@@ -344,12 +344,7 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: dir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("m")), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	t.Cleanup(func() { sess.Close() })
 	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{
 		ID:        "c1",

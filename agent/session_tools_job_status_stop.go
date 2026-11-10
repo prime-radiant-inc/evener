@@ -314,6 +314,9 @@ type jobStatusResult struct {
 }
 
 type delegateStatusResult struct {
+	// pollState is the lifecycle, phase, attention flag and activity-report
+	// count a repeated status check compares (never the elapsed clocks); it is not part of the wire result.
+	pollState          string                 `json:"-"`
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
@@ -360,6 +363,7 @@ func projectDelegateStatus(now time.Time, snapshot delegateSnapshot) delegateSta
 		LastOutcome:        snapshot.lastOutcome,
 		Cwd:                descriptor.WorkingDir,
 		Isolation:          descriptor.Isolation,
+		pollState:          fmt.Sprintf("%s/%s/%t/%d", snapshot.lifecycle, snapshot.phase, snapshot.needsAttention, snapshot.activityReports),
 	}
 	if descriptor.Sandbox != nil {
 		out.SandboxMode = descriptor.Sandbox.Mode

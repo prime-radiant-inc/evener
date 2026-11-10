@@ -188,7 +188,6 @@ cmd/evener-hub/internal/fspaths/app_paths_test.go	12
 cmd/evener-hub/internal/hostlock/hostlock_test.go	1
 cmd/evener-hub/internal/hostops/ops_test.go	1
 cmd/evener-hub/internal/hostops/retention_test.go	1
-cmd/evener-hub/internal/hubcore/pin_section_retry_test.go	5
 cmd/evener-hub/internal/hubedge/auth_token_test.go	2
 cmd/evener-hub/internal/launchconfig/coverage_test.go	2
 cmd/evener-hub/internal/launchconfig/io_test.go	4

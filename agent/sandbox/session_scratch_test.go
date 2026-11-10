@@ -16,10 +16,7 @@ import (
 // same scratch the allocator made.
 func TestSessionScratchDirPathMatchesTheAllocatedScratch(t *testing.T) {
 	t.Parallel()
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := canonicalTempDir(t)
 	opened, err := OpenSessionScratch(base, t.TempDir(), "ROOTP", "ROOTP")
 	if err != nil {
 		t.Fatalf("open scratch: %v", err)

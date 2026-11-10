@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -268,6 +269,11 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	return DefDelegateWithResultTool(agentTypes, sandboxSchema, DefaultResultToolName)
 }
 
+// DelegateRoleWriteNote tells the model which role may write files. The
+// explorer role has no edit tools, so a seat that must write (a reviewer that
+// files its report, an implementer) takes subagent.
+const DelegateRoleWriteNote = "explorer is read-only and cannot edit or write files; a seat that must write files uses subagent."
+
 // DefDelegateWithResultTool is DefDelegateWithSandbox for a session whose
 // result tool is named resultTool.
 func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
@@ -275,7 +281,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{
 		"type":        "string",
-		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
+		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section. " + DelegateRoleWriteNote,
 	}
 	if len(agentTypes) > 0 {
 		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)
@@ -522,10 +528,30 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 }
 
 func DefJobStatus() llm.ToolDefinition {
+	return DefJobStatusNamed(DefaultResultToolName, false)
+}
+
+// EndTurnToWait is the guidance for an agent that has nothing else to do until
+// its background work finishes: end the turn and let the completion wake it.
+// It is the one wording shared by the job tool descriptions and the refusals of
+// wait-shaped calls. hasEndReason is whether the session's result tool takes
+// end_reason (only a root with a human partner does); advice to pass it
+// elsewhere would fail the tool's schema.
+func EndTurnToWait(resultTool string, hasEndReason bool) string {
+	call := "call `" + resultTool + "` with `end_turn=true`"
+	if hasEndReason {
+		call += " and `end_reason=\"waiting_on_work\"`"
+	}
+	return "When you have nothing else to do until your background work finishes, end your turn: " + call + ". Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`."
+}
+
+// DefJobStatusNamed is DefJobStatus for a session whose result tool is named
+// resultTool and does (hasEndReason) or does not take end_reason.
+func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool, hasEndReason) + " Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -539,7 +565,7 @@ func DefJobStatus() llm.ToolDefinition {
 }
 
 func DefJobList() llm.ToolDefinition {
-	return DefJobListNamed(DefaultResultToolName)
+	return DefJobListNamed(DefaultResultToolName, false)
 }
 
 var jobListStatusEnum = func() []any {
@@ -553,13 +579,13 @@ var jobListStatusEnum = func() []any {
 
 // DefJobListNamed is DefJobList for a session whose result tool is named
 // resultTool.
-func DefJobListNamed(resultTool string) llm.ToolDefinition {
+func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 	strictFalse := false
 	statusEnum := append([]any(nil), jobListStatusEnum...)
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1020,11 +1046,20 @@ func DoctorEvenerCommands() []string {
 // schema and the errors cannot drift apart.
 const DoctorEvenerSelectorDialect = "local:<id>, proj:<project-id>:<id>, or bare <id>"
 
+// DoctorSessionsDefaultSince bounds a doctor_evener sessions census that names
+// no since. A state root can hold tens of thousands of sessions; an unbounded
+// census from a turn would run for the better part of an hour.
+const DoctorSessionsDefaultSince = 7 * 24 * time.Hour
+
+// doctorSessionsDefaultSinceText renders the default in the duration syntax
+// the since argument accepts.
+var doctorSessionsDefaultSinceText = fmt.Sprintf("%dh", int(DoctorSessionsDefaultSince.Hours()))
+
 func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1063,7 +1098,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 				},
 				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
 				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
-				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h)."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit has no default."},
 				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
 				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
 				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},

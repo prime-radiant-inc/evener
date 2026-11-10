@@ -792,7 +792,7 @@ func TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSy
 		t.Fatal(err)
 	}
 
-	events, _, err := ReadEventsWithDiagnostics(path)
+	events, _, err := ReadEventsWithDiagnostics(context.Background(), path)
 	if err == nil {
 		t.Fatalf("ReadEventsWithDiagnostics accepted a semantically invalid history (orphan event, no preceding Created): events=%+v", events)
 	}

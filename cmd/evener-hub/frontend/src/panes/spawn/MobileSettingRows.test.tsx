@@ -1,4 +1,5 @@
 import type { PluginPreviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
@@ -31,6 +32,7 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     onAccessChange: vi.fn(),
     pluginPreview: { status: "ready", response: { plugins: [] } as PluginPreviewResponse },
     pluginSelection: { mode: "default" },
+    pluginClient: new FakeClient(),
     onPluginSelectionChange: vi.fn(),
     onPluginRetry: vi.fn(),
     ...overrides,
@@ -211,6 +213,54 @@ test("plugin sheet stays open across toggles, Done applies, and Cancel restores 
   await user.click(within(secondDialog).getByRole("button", { name: "Cancel" }));
   expect(onPluginSelectionChange).toHaveBeenCalledTimes(1);
   expect(document.activeElement).toBe(rowButton);
+});
+
+test("Escape closes only plugin Details and preserves the mobile selection draft", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  const pluginClient = new FakeClient();
+  pluginClient.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((target) => ({ ...target, components: { skills: ["draft-skill"] } })),
+  }));
+  renderRows({
+    pluginClient,
+    onPluginSelectionChange,
+    pluginPreview: {
+      status: "ready",
+      response: {
+        plugins: [
+          {
+            name: "alpha",
+            source: "directory",
+            path: "/tmp/alpha",
+            selected: true,
+            skillCount: 1,
+            agentCount: 0,
+            commandCount: 0,
+            hookCount: 0,
+            mcpCount: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Plugins: 1 of 1" }));
+  const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
+  await user.click(within(parent).getByRole("switch", { name: "alpha" }));
+  await user.click(within(parent).getByRole("button", { name: "Details" }));
+  const details = screen.getByRole("dialog", { name: "alpha" });
+  const included = within(details).getByRole("switch", { name: "Included in this session" });
+  expect(included.getAttribute("aria-checked")).toBe("false");
+  included.focus();
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", { name: "alpha" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
+  expect(within(parent).getByRole("switch", { name: "alpha" }).getAttribute("aria-checked")).toBe("false");
+  expect(onPluginSelectionChange).not.toHaveBeenCalled();
+  await user.click(within(parent).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
 });
 
 test("plugin preview error allows only safe removal from the last preview and exposes retry", async () => {

@@ -125,12 +125,13 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, workerHTTP.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test",
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		HubID: "hub-test",
 		Roster: hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{Entry: entries[0].Entry, SessionID: managerID, Status: "active"},
 			hubcore.LiveEntry{Entry: entries[1].Entry, SessionID: worker.ID(), Status: "active"},
 		),
-	}
+	})
 	web := NewWebServer(cfg)
 	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	var workers sync.WaitGroup

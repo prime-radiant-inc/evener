@@ -1345,7 +1345,7 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 	}
 	full := strings.Join(lines, "\n")
 
-	got := truncateHeadCount(full, 10, 0)
+	got, _ := truncateHeadCountReason(full, 10, 0)
 
 	// No front-truncation: the first 10 entries must all be present, in order.
 	for i := range 10 {
@@ -1369,7 +1369,7 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 
 func TestTruncateHeadCount_UnderLimitReturnsUnchanged(t *testing.T) {
 	full := "a\nb\nc"
-	got := truncateHeadCount(full, 10, 0)
+	got, _ := truncateHeadCountReason(full, 10, 0)
 	if got != full {
 		t.Fatalf("expected unchanged output under the cap, got:\n%s", got)
 	}
@@ -1385,7 +1385,7 @@ func TestTruncateHeadCount_AppliesCharCapAfterLineCap(t *testing.T) {
 	lines := []string{longLine, longLine, longLine, longLine, longLine} // 5 lines, well under maxEntries
 	full := strings.Join(lines, "\n")
 
-	got := truncateHeadCount(full, 100, 8_000)
+	got, _ := truncateHeadCountReason(full, 100, 8_000)
 
 	if len([]rune(got)) > 8_000 {
 		t.Fatalf("expected char cap to hold, got %d chars", len([]rune(got)))
@@ -1403,7 +1403,7 @@ func TestTruncateHeadCount_AppliesCharCapAfterLineCap(t *testing.T) {
 // lines that's already within maxEntries can still be too many characters.
 func TestTruncateHeadCount_CharCapAppliesEvenUnderLineCap(t *testing.T) {
 	full := strings.Repeat("y", 50_000)
-	got := truncateHeadCount(full, 500, 20_000)
+	got, _ := truncateHeadCountReason(full, 500, 20_000)
 	if len([]rune(got)) > 20_000 {
 		t.Fatalf("expected char cap to hold even though line count never exceeded maxEntries, got %d chars", len([]rune(got)))
 	}

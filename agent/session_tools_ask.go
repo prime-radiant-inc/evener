@@ -106,6 +106,22 @@ func (s *Session) SetBootGeneration(generation string) {
 	s.bootGeneration = generation
 }
 
+// mintBootGeneration installs the session's durable boot generation. A session
+// without a state dir has no persisted history for clients to hold a
+// generation against, so it serves at generation 1 without a counter file.
+func (s *Session) mintBootGeneration() error {
+	generation := uint64(1)
+	if s.stateDir != "" {
+		var err error
+		generation, err = schema.NextBootGeneration(s.stateDir, s.ID(), 0)
+		if err != nil {
+			return err
+		}
+	}
+	s.SetBootGeneration(appwire.BootGeneration(generation))
+	return nil
+}
+
 // BootGeneration returns the installed durable serving generation.
 func (s *Session) BootGeneration() string {
 	s.mu.Lock()

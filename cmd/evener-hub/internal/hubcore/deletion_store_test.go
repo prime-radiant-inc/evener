@@ -3,9 +3,12 @@ package hubcore
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 const deletionStoreTestThreadID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -230,5 +233,364 @@ func TestDeletionStateRejectsMalformedPersistentAuthority(t *testing.T) {
 	}
 	if _, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{}); err == nil {
 		t.Fatal("malformed deletion authority loaded successfully")
+	}
+}
+
+func deletionTestTarget() DeletionTarget {
+	return DeletionTarget{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}
+}
+
+func newMemDeletionStore(t *testing.T) *DeletionStore {
+	t.Helper()
+	store, err := newDeletionStoreFS(afero.NewMemMapFs(), "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+// An unconfigured (nil) store refuses writes and reports nothing in progress.
+func TestDeletionStoreNilGuards(t *testing.T) {
+	var s *DeletionStore
+	if _, err := s.Begin("project-delete-0123456789", nil); err == nil {
+		t.Fatalf("nil Begin should error")
+	}
+	if _, err := s.BeginProject("project-delete-0123456789", nil, true); err == nil {
+		t.Fatalf("nil BeginProject should error")
+	}
+	if err := s.MarkDeleted("project-delete-0123456789", 1); err == nil {
+		t.Fatalf("nil MarkDeleted should error")
+	}
+	if records := s.Deleting(); records != nil {
+		t.Fatalf("nil Deleting should return nil")
+	}
+	if _, ok := s.DeletingProject("project-delete-0123456789"); ok {
+		t.Fatalf("nil DeletingProject should return false")
+	}
+	if _, ok := s.TargetState("local:"+deletionStoreTestThreadID, deletionStoreTestThreadID); ok {
+		t.Fatalf("nil TargetState should return false")
+	}
+}
+
+// TestDeletionStoreBeginProjectRejectsInvalidInput pins that a deletion with a
+// malformed project ID or target set is refused before anything is fenced.
+func TestDeletionStoreBeginProjectRejectsInvalidInput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		projectID string
+		targets   []DeletionTarget
+	}{
+		{name: "invalid project ID", projectID: "invalid-id", targets: []DeletionTarget{deletionTestTarget()}},
+		{name: "no targets", projectID: "project-delete-0123456789"},
+		{name: "invalid thread ID", projectID: "project-delete-0123456789", targets: []DeletionTarget{{Ref: "local:bad", ThreadID: "bad"}}},
+		{name: "non-local ref", projectID: "project-delete-0123456789", targets: []DeletionTarget{{Ref: "remote:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
+		{name: "ref names another thread", projectID: "project-delete-0123456789", targets: []DeletionTarget{{Ref: "local:02wMz5Txv1C3Hut0M8GCeC", ThreadID: deletionStoreTestThreadID}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemDeletionStore(t)
+			if _, err := store.BeginProject(tc.projectID, tc.targets, true); err == nil {
+				t.Fatal("BeginProject accepted invalid input")
+			}
+			if records := store.Deleting(); records != nil {
+				t.Fatalf("a refused BeginProject fenced %+v", records)
+			}
+		})
+	}
+}
+
+func TestDeletionStoreBeginReturnsExistingDeleting(t *testing.T) {
+	store := newMemDeletionStore(t)
+	first, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation != first.Generation {
+		t.Fatalf("second Begin generation = %d, want the in-progress generation %d", second.Generation, first.Generation)
+	}
+}
+
+// Generations are numbered per project: another project's records do not
+// advance this one's.
+func TestDeletionStoreBeginSkipsOtherProject(t *testing.T) {
+	store := newMemDeletionStore(t)
+	if _, err := store.Begin("project-aaaaaaaa-0123456789", []DeletionTarget{deletionTestTarget()}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Begin("project-bbbbbbbb-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ProjectID != "project-bbbbbbbb-0123456789" || record.Generation != 1 {
+		t.Fatalf("Begin = %+v, want a first generation for the second project", record)
+	}
+}
+
+func TestDeletionStoreMarkDeletedNotFound(t *testing.T) {
+	store, err := NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDeletionStore: %v", err)
+	}
+	if err := store.MarkDeleted("project-delete-0123456789", 1); err == nil {
+		t.Fatal("MarkDeleted of a generation that was never begun succeeded")
+	}
+}
+
+// Marking a generation deleted twice is idempotent and leaves nothing in
+// progress.
+func TestDeletionStoreMarkDeletedAlreadyDeleted(t *testing.T) {
+	store, err := NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDeletionStore: %v", err)
+	}
+	record, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := store.MarkDeleted(record.ProjectID, record.Generation); err != nil {
+		t.Fatalf("first MarkDeleted: %v", err)
+	}
+	if err := store.MarkDeleted(record.ProjectID, record.Generation); err != nil {
+		t.Fatalf("second MarkDeleted: %v", err)
+	}
+	if got := store.Deleting(); got != nil {
+		t.Fatalf("Deleting after idempotent MarkDeleted = %#v, want nil", got)
+	}
+}
+
+func TestDeletionStoreDeletingAndDeletingProject(t *testing.T) {
+	store := newMemDeletionStore(t)
+	record, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting := store.Deleting()
+	if len(deleting) != 1 || deleting[0].ProjectID != record.ProjectID {
+		t.Fatalf("Deleting = %+v, want 1 record for %s", deleting, record.ProjectID)
+	}
+	found, ok := store.DeletingProject(record.ProjectID)
+	if !ok || found.ProjectID != record.ProjectID {
+		t.Fatalf("DeletingProject = %+v, %v", found, ok)
+	}
+	if _, ok := store.DeletingProject("project-delete-9999999999"); ok {
+		t.Fatalf("DeletingProject for nonexistent project should return false")
+	}
+	if err := store.MarkDeleted(record.ProjectID, record.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.Deleting()) != 0 {
+		t.Fatalf("Deleting after MarkDeleted should be empty")
+	}
+}
+
+// A begun generation survives reopening the store from disk.
+func TestDeletionStoreStateRoundTrip(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	store, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.BeginProject("project-roundtrip-0123456789", []DeletionTarget{deletionTestTarget()}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.WholeProject {
+		t.Fatalf("WholeProject should be false")
+	}
+	reopened, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, ok := reopened.DeletingProject("project-roundtrip-0123456789")
+	if !ok || found.Generation != record.Generation {
+		t.Fatalf("round-trip DeletingProject = %+v, %v", found, ok)
+	}
+}
+
+// A target can be looked up by its ref alone or by its thread ID alone; the
+// lookup normalizes either to the stored local ref.
+func TestDeletionStoreTargetStateWithParsedRef(t *testing.T) {
+	store := newMemDeletionStore(t)
+	if _, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()}); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := store.TargetState("local:"+deletionStoreTestThreadID, "")
+	if !ok || state != DeletionStateDeleting {
+		t.Fatalf("TargetState(full ref, empty threadID) = %q, %v, want deleting, true", state, ok)
+	}
+	state, ok = store.TargetState("", deletionStoreTestThreadID)
+	if !ok || state != DeletionStateDeleting {
+		t.Fatalf("TargetState(empty ref, threadID) = %q, %v, want deleting, true", state, ok)
+	}
+}
+
+// TestLoadDeletionSnapshotRejectsUnreadableState pins that a state file the
+// store cannot read back exactly fails the open instead of loading as empty.
+func TestLoadDeletionSnapshotRejectsUnreadableState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(fs afero.Fs) error
+	}{
+		{"not JSON", func(fs afero.Fs) error {
+			return afero.WriteFile(fs, "/state/deletions/state.json", []byte("not json"), 0o600)
+		}},
+		{"trailing JSON value", func(fs afero.Fs) error {
+			return afero.WriteFile(fs, "/state/deletions/state.json", []byte(`{"version":1,"records":[]} {"extra": true}`), 0o600)
+		}},
+		{"unknown field", func(fs afero.Fs) error {
+			return afero.WriteFile(fs, "/state/deletions/state.json", []byte(`{"version":1,"records":[],"unknown_field":"value"}`), 0o600)
+		}},
+		{"state path is a directory", func(fs afero.Fs) error {
+			return fs.MkdirAll("/state/deletions/state.json", 0o700)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := afero.NewMemMapFs()
+			if err := tc.write(fs); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{}); err == nil {
+				t.Fatal("the deletion store opened over an unreadable state file")
+			}
+		})
+	}
+}
+
+// With no state root the store keeps nothing on disk: loading yields an empty
+// current-version snapshot and saving succeeds without writing.
+func TestDeletionSnapshotWithoutStateRoot(t *testing.T) {
+	state, err := loadDeletionSnapshotFS(afero.NewMemMapFs(), "")
+	if err != nil {
+		t.Fatalf("loadDeletionSnapshotFS: %v", err)
+	}
+	if state.Version != deletionSnapshotVersion {
+		t.Fatalf("version = %d, want %d", state.Version, deletionSnapshotVersion)
+	}
+	fs := afero.NewMemMapFs()
+	renamed, err := saveDeletionSnapshotFS(fs, "", deletionSnapshot{Version: deletionSnapshotVersion}, deletionStoreFaults{})
+	if err != nil || !renamed {
+		t.Fatalf("saveDeletionSnapshotFS = %v, %v; want true, nil", renamed, err)
+	}
+	if entries, _ := afero.ReadDir(fs, "/"); len(entries) != 0 {
+		t.Fatalf("saving with no state root wrote %d entries", len(entries))
+	}
+}
+
+func TestValidateDeletionSnapshot(t *testing.T) {
+	target := []DeletionTarget{deletionTestTarget()}
+	record := func(projectID string, generation uint64, state DeletionState, targets []DeletionTarget) DeletionRecord {
+		return DeletionRecord{ProjectID: projectID, Generation: generation, State: state, Targets: targets}
+	}
+	for _, tc := range []struct {
+		name     string
+		snapshot deletionSnapshot
+	}{
+		{"unsupported version", deletionSnapshot{Version: 99}},
+		{"zero generation", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
+			record("project-delete-0123456789", 0, DeletionStateDeleting, target),
+		}}},
+		{"invalid state", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
+			record("project-delete-0123456789", 1, "bogus", target),
+		}}},
+		{"no targets", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
+			record("project-delete-0123456789", 1, DeletionStateDeleting, nil),
+		}}},
+		{"duplicate generation", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
+			record("project-delete-0123456789", 1, DeletionStateDeleting, target),
+			record("project-delete-0123456789", 1, DeletionStateDeleted, target),
+		}}},
+		{"invalid project ID", deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
+			record("bad", 1, DeletionStateDeleting, target),
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateDeletionSnapshot(tc.snapshot); err == nil {
+				t.Fatal("validateDeletionSnapshot accepted an invalid snapshot")
+			}
+		})
+	}
+}
+
+// Saving refuses a snapshot that would not load back, and surfaces a failure
+// to create the state directory.
+func TestSaveDeletionSnapshotRefusesWhatItCannotPersist(t *testing.T) {
+	if _, err := saveDeletionSnapshotFS(afero.NewMemMapFs(), "/state", deletionSnapshot{Version: 99}, deletionStoreFaults{}); err == nil {
+		t.Fatal("saveDeletionSnapshotFS accepted an unsupported version")
+	}
+	errMkdir := errors.New("mkdir failed")
+	broken := failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errMkdir}
+	if _, err := saveDeletionSnapshotFS(broken, "/state", deletionSnapshot{Version: deletionSnapshotVersion}, deletionStoreFaults{}); !errors.Is(err, errMkdir) {
+		t.Fatalf("saveDeletionSnapshotFS with no state directory = %v, want the directory failure", err)
+	}
+}
+
+// The persisted snapshot names its format version under the "version" key.
+func TestDeletionStoreSnapshotVersion(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	store, err := newDeletionStoreFS(fs, "/state", deletionStoreFaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin("project-delete-0123456789", []DeletionTarget{deletionTestTarget()}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := afero.ReadFile(fs, "/state/deletions/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Version uint64 `json:"version"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Version != deletionSnapshotVersion {
+		t.Fatalf("version = %d, want %d", raw.Version, deletionSnapshotVersion)
+	}
+}
+
+func TestNormalizeDeletionLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name, ref, threadID   string
+		wantRef, wantThreadID string
+	}{
+		{name: "ref only", ref: "local:" + deletionStoreTestThreadID, wantRef: "local:" + deletionStoreTestThreadID, wantThreadID: deletionStoreTestThreadID},
+		{name: "thread ID only", threadID: deletionStoreTestThreadID, wantRef: "local:" + deletionStoreTestThreadID, wantThreadID: deletionStoreTestThreadID},
+		{name: "bare session ID as ref", ref: deletionStoreTestThreadID, wantRef: deletionStoreTestThreadID, wantThreadID: deletionStoreTestThreadID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref, threadID := normalizeDeletionLookup(tc.ref, tc.threadID)
+			if ref != tc.wantRef || threadID != tc.wantThreadID {
+				t.Fatalf("normalizeDeletionLookup(%q, %q) = %q, %q; want %q, %q", tc.ref, tc.threadID, ref, threadID, tc.wantRef, tc.wantThreadID)
+			}
+		})
+	}
+}
+
+// Targets normalize to one entry per ref, sorted by ref.
+func TestNormalizeDeletionTargetsSortsAndDedups(t *testing.T) {
+	firstID := hubtest.SessionID(t)
+	secondID := hubtest.SessionID(t)
+	targets := []DeletionTarget{
+		{ThreadID: secondID, Ref: "local:" + secondID},
+		{ThreadID: firstID, Ref: "local:" + firstID},
+		{ThreadID: secondID, Ref: "local:" + secondID},
+	}
+	normalized, err := normalizeDeletionTargets(targets)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []DeletionTarget{
+		{ThreadID: firstID, Ref: "local:" + firstID},
+		{ThreadID: secondID, Ref: "local:" + secondID},
+	}
+	if strings.Compare(want[0].Ref, want[1].Ref) > 0 {
+		want[0], want[1] = want[1], want[0]
+	}
+	if !reflect.DeepEqual(normalized, want) {
+		t.Fatalf("normalized = %#v, want sorted unique targets %#v", normalized, want)
 	}
 }

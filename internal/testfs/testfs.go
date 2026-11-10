@@ -13,7 +13,7 @@ import (
 //
 // This is the one implementation of that fixture step. Command tests used to
 // carry three spellings of it (#4426); a local copy is drift by construction,
-// so TestNoCommandTestMintsItsOwnCanonicalTempDir fails one.
+// so `make lint`'s canonical-temp-dir-one-helper check fails one.
 func CanonicalTempDir(t testing.TB) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())

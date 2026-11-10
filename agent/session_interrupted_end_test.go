@@ -27,10 +27,7 @@ func TestInterruptedSessionEndCarriesTheWireState(t *testing.T) {
 			}}}
 		},
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	_ = sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "slow", Description: "Wait for cancellation."},
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {

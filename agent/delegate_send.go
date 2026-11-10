@@ -87,7 +87,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 	for ok {
 		if !channelClosed(finalizing.released) {
 			if expired {
-				return nil, errDelegateTargetBusy
+				return nil, finalizationOutwaited()
 			}
 			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
 				observe()
@@ -102,7 +102,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 				// The ceiling covers the whole attempt: it fires once.
 				expired = true
 				if !channelClosed(finalizing.released) {
-					return nil, errDelegateTargetBusy
+					return nil, finalizationOutwaited()
 				}
 			}
 		}
@@ -110,6 +110,24 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 		finalizing, ok = errors.AsType[delegateFinalizingError](err)
 	}
 	return reservation, err
+}
+
+// withBusyReason gives a target_busy refusal that reached the send without a
+// reason (a race after the reservation, in CommitStart or AttachRuntime) the
+// concurrent_send reason. Any other error, and a busy error that already
+// carries a reason, is returned as is.
+func withBusyReason(err error) error {
+	if !errors.Is(err, errDelegateTargetBusy) {
+		return err
+	}
+	if _, typed := errors.AsType[delegateBusyError](err); typed {
+		return err
+	}
+	return busyBecause(delegateBusyConcurrentSend)
+}
+
+func finalizationOutwaited() error {
+	return busyBecause(delegateBusyFinalizing)
 }
 
 // channelClosed reports whether ch is closed, without blocking. A nil channel
@@ -134,7 +152,7 @@ func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Sessio
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) delegateSendOutcome {
 	s := runtime.owner
 	failed := func(err error) delegateSendOutcome {
-		return delegateSendOutcome{result: sendMessageFailed(delegateID, err)}
+		return delegateSendOutcome{result: sendMessageFailed(delegateID, withBusyReason(err))}
 	}
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))
@@ -202,7 +220,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if committedChildID != "" {
 		if !s.claimChildCommittedSendStart(committedChildID) {
 			_ = s.delegateController.AbortStart(reservation)
-			return failed(errDelegateTargetBusy)
+			return failed(busyBecause(delegateBusyConcurrentSend))
 		}
 		committedClaimHeld = true
 	}
@@ -251,7 +269,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if resident := s.subagents.get(committedChildID); resident != nil && resident.sess != nil {
 			if !s.takeSendDriveGuard(resident) {
 				_ = s.delegateController.AbortStart(reservation)
-				return failed(errDelegateTargetBusy)
+				return failed(busyBecause(delegateBusyConcurrentSend))
 			}
 			guarded = resident
 		}
@@ -333,7 +351,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
-			cause := errDelegateTargetBusy
+			cause := busyBecause(delegateBusyConcurrentSend)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
 				finishRestore(sub, nil)
 			})

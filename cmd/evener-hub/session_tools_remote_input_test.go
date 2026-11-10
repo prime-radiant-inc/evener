@@ -29,7 +29,7 @@ func TestManagerRemoteInputRequiresIdentifiedBridge(t *testing.T) {
 		{name: "unsupported method", bridge: true, peer: "hub-a", caller: "local:manager", method: appwire.MethodThreadShutdown, code: appwire.CodeMethodNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-b"})
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{StateDir: t.TempDir(), HubID: "hub-b"}))
 			defer hub.Close()
 			headers := http.Header{}
 			if tc.bridge {
@@ -37,9 +37,7 @@ func TestManagerRemoteInputRequiresIdentifiedBridge(t *testing.T) {
 			}
 			client := dialHubRPCWithHeaders(t, hub, headers)
 			defer client.Close()
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			if tc.peer != "" {
 				if _, err := client.IdentifySessionToolsPeer(t.Context(), appwire.SessionToolsPeerParams{HubID: tc.peer}); err != nil {
 					t.Fatal(err)

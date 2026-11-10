@@ -27,6 +27,9 @@ func ToArgs(r Resolved) []string {
 	if e.ReasoningEffort != "" {
 		add("--reasoning-effort", e.ReasoningEffort)
 	}
+	if e.CommitProvenance != "" {
+		add("--commit-provenance", e.CommitProvenance)
+	}
 	if e.ContextStrategy != "" {
 		add("--context-strategy", e.ContextStrategy)
 	}

@@ -125,11 +125,10 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 		}},
 	})
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPC(t, hub)
@@ -171,11 +170,10 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusAwaiting})
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)
@@ -283,7 +281,7 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		hubcore.LiveEntry{Entry: newer, SessionID: newer.SessionID},
 	)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})

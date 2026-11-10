@@ -33,8 +33,7 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 			Definition: tool.DefDoctorEvener(),
 			ReadOnly:   true,
 			Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				_ = ctx
-				return execDoctorEvener(deps, args)
+				return execDoctorEvener(ctx, deps, args)
 			},
 			Limit: schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars, Strategy: schema.TruncTail},
 		},
@@ -85,7 +84,7 @@ var doctorBundledSkills = bundled.Skills
 // so the tool and `evener doctor --json` cannot disagree on shape.
 // Command-option precedence mirrors the CLI exactly (count, then health,
 // then render; validate over health on apilog).
-func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
+func execDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return nil, fmt.Errorf("doctor_evener requires a command (one of: %s)", strings.Join(doctorEvenerCommandNames, ", "))
@@ -117,7 +116,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, err
 	}
 
-	res, err := dispatchDoctorEvener(deps, args, command, stateBase, selector)
+	res, err := dispatchDoctorEvener(ctx, deps, args, command, stateBase, selector)
 	if err != nil {
 		// One seam for every command: a doctor miss is an explicit error and
 		// no data. The doctor functions return their zero structs alongside
@@ -135,7 +134,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 // agent/doctor package. execDoctorEvener's error seam above is what makes a
 // miss explicit on this surface; the branches here may return the doctor
 // functions' (value, err) pairs directly.
-func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
+func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
 	switch command {
 	case "locate":
 		return doctor.Locate(stateBase, selector)
@@ -145,7 +144,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return doctor.Count(stateBase, selector, v)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.TranscriptHealth(stateBase, selector)
+			return doctor.TranscriptHealth(ctx, stateBase, selector)
 		}
 		// No format argument: the tool returns the CLI's --json struct shape,
 		// where render format doesn't apply (the CLI's --format governs its own
@@ -169,7 +168,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return doctor.ValidateAPILog(stateBase, selector)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.APIHealth(stateBase, selector)
+			return doctor.APIHealth(ctx, stateBase, selector)
 		}
 		opts := doctor.APILogOpts{}
 		opts.EmptyOnly = shellBoolArg(args, "empty")
@@ -180,7 +179,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		}
 		opts.SummaryOnly = shellBoolArg(args, "summary")
 		opts.Recompute = shellBoolArg(args, "recompute")
-		return doctor.APILog(stateBase, selector, opts)
+		return doctor.APILog(ctx, stateBase, selector, opts)
 
 	case "jobs":
 		opts := doctor.JobOpts{}
@@ -216,7 +215,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		return doctor.ScanTurnIDs(stateBase)
 
 	case "sessions":
-		opts := doctor.SessionsOpts{}
+		opts := doctor.SessionsOpts{Since: tool.DoctorSessionsDefaultSince}
 		if v := stringArg(args, "since"); v != "" {
 			d, err := time.ParseDuration(v)
 			if err != nil {
@@ -227,7 +226,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		if v := stringArg(args, "bucket"); v != "" {
 			opts.Bucket = v
 		}
-		res, err := doctor.ListSessions(stateBase, opts)
+		res, err := doctor.ListSessions(ctx, stateBase, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -256,7 +255,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			}
 			opts.Since = d
 		}
-		res, err := doctor.RunAudit(stateBase, runbook, opts)
+		res, err := doctor.RunAudit(ctx, stateBase, runbook, opts)
 		return res, err
 
 	case "plugins":

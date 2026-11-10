@@ -142,10 +142,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 		}},
 	}, adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
 	if err := sess.SetModel("gpt-5.5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
@@ -173,10 +170,7 @@ func TestSessionSetModelListsExactlyOnce(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
 	// Discard the init-time listing; count only the ones SetModel triggers.
 	adapter.listCalls = 0

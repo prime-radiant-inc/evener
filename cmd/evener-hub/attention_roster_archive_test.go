@@ -29,9 +29,9 @@ func TestHubRosterArchivedLiveSession(t *testing.T) {
 				Entry:     rendezvous.Entry{WorkspaceRef: "local:worker", SessionID: "worker"},
 				SessionID: "worker", Status: "awaiting", PendingAsk: true,
 			}
-			hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
-				Past: hubcore.NewPastIndex(""), Roster: hubcore.NewRosterWithEntries(live),
-			})
+			hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
+				Roster: hubcore.NewRosterWithEntries(live),
+			}))
 			defer hub.Close()
 			setArchived := func() {
 				t.Helper()

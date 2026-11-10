@@ -28,6 +28,8 @@ Use this boundary when adding or fixing tests:
 - Do not mock Evener internals to make a test pass. Keep the fake boundary at an
   external dependency: LLM provider, network server, filesystem root, clock, or
   process launcher.
+- When setup is shared, add cases to an existing test or table before adding a
+  test function. A new function is for a code path no existing test reaches.
 
 When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Evener, replace it with
@@ -93,8 +95,8 @@ Two audits enforce the rule against tests whose whole claim is that some copy
 exists. Each fails on a test whose name says it shows, renders or says
 something and whose every check compares output with production copy:
 
-- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
-  over every tracked Go test. Its allowlist is
+- `make lint-repo-audit`'s `copy-only-tests` check (part of `make lint`) runs
+  `internal/devtool/copyonly` over every tracked Go test. Its allowlist is
   `internal/devtool/copyonly/allowlist.tsv`.
 - `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
   `make test-web`) reads every tracked TypeScript test in the frontend,
@@ -111,7 +113,8 @@ and the reason it is kept, tab-separated. Rows are keyed by file and test name,
 not line. Each audit also fails on a row whose test is no longer flagged, so
 remove the row when you convert, delete or rename the test.
 
-A third audit covers Go tests that are not named for wording. It counts the
+A third audit, `lint-repo-audit`'s `error-text-assertions` check, covers Go
+tests that are not named for wording. It counts the
 checks of an error's text against a phrase from production source
 (`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
 allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
@@ -132,15 +135,22 @@ now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
-Two rules, both absolute.
+Two rules.
 
-**A sighted flake gets a root-cause fix on the spot.** Even one failure, even
-under heavy load, even in code you don't own. "Pre-existing" and "another
+**A flake that repeats gets a root-cause fix.** A fix is warranted when the test
+fails again on rerun, fails on an idle host, or recurs across independent runs,
+even in code you don't own. "Pre-existing" and "another
 session's area" are not exemptions; a deferred flake gets re-triaged at full cost
 by every session that hits it, and it poisons every run's signal in between. The
-fix must address the mechanism, not the symptom. Honest irreproducibility after
+fix must address the mechanism, not the symptom: it removes the test's
+dependence on wall-clock time or ordering. Honest irreproducibility after
 serious looped effort is reportable, but only with mechanism analysis, not a
 shrug.
+
+A failure seen once on a loaded host or runner is recorded on the existing issue
+for that test, when a search finds one. By itself it is no reason for a fix PR.
+A failure that exposes a race in the product is a product bug and gets fixed,
+whatever the host load.
 
 **Never widen or hardcode a timeout to absorb awaitable work.** A widened
 deadline hides a guess that re-flakes as the suite grows, and it converts real
@@ -195,8 +205,9 @@ that keep scratch on failure or reclaim it across runs: the directory is named
 abandons nothing, and the next run reclaims leftovers whose pid suffix no longer
 answers `kill -0` (scripts/lib/covscratch-lib.sh). Every remaining variable-fed
 recursive delete in the repository's shell (scripts/ and the repo-root
-install.sh) lives on `TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned
-list with the reason it is allowed to exist. The list grows only with an
+install.sh) lives on the count-pinned list of `make lint-repo-audit`'s
+`script-recursive-delete` check (`recursiveDeleteAllowedLines` in
+internal/devtool/repoaudit) with the reason it is allowed to exist. The list grows only with an
 explicitly reviewed reason and shrinks as scripts convert or retire.
 
 Two parts of the rule the audit cannot hold. Its scan is textual, so `find -exec
@@ -1010,6 +1021,18 @@ a second non-fuzz run; CI's two Go test lanes and its web lane each check the ro
 their own scope produced. A run that writes no file fails the check rather than
 passing silently.
 
+The budget blocks a pull request's run and a push to main. A merge-group run
+checks with the warn-only policy (`--local`): it reports a breach without
+failing the lane, and still fails on a broken measurement. Each member's
+pull-request run already enforced the budget on that change, and a wall-time
+breach in the group would remove every member from the queue.
+
+The frontend's row is one number for the whole suite, so it cannot say which
+test file grew. The `web-unit` lane keeps the vitest JSON report it was rolled
+up from as the `web-vitest-report-<run>-<attempt>` artifact, pass or fail, for
+seven days: each entry in its `testResults` carries the file's `startTime` and
+`endTime`, which rank the slow files.
+
 ## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class of
@@ -1088,6 +1111,26 @@ The full-stack skill guard is a different KIND of check:
 
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs Chrome.
+
+The gate runs its guards side by side in slots. Locally the slot count is the
+machine's spare cores (`scripts/lib/load-aware-workers.sh`);
+`BROWSER_GUARD_CONCURRENCY` overrides it. Run serially, the guards take about
+eleven minutes on a CI runner, and three of them take most of that:
+overflowguard and skillguard near three minutes each, cascadeguard near one
+and a half. So CI splits the gate into shards, one runner each, and the lane
+takes as long as its slowest shard instead of the sum. `browserGuardShards` in
+`cmd/evener-dev/webbrowser.go` builds each shard around one long guard
+(`overflow`, `skill`, `cascade`) with shorter guards beside it, and
+`BROWSER_GUARD_SHARD=<shard> make test-web-browser` runs one shard. Every guard
+belongs to exactly one shard, and the `web-browser` job's matrix names every
+shard; `TestBrowserGuardShardsPartitionTheGuards` and
+`TestCIWebBrowserMatrixRunsEveryShard` hold both, so a new guard cannot land
+in no shard and never run in CI. A shard runs two guards at a time. The load
+average is no measure on a CI runner: it still carries the frontend build when
+the gate sizes its slots. Two at a time is the contention the guards are known
+to pass at, a long guard beside a short one. The `cascade` shard also runs the
+failed-turn continuation journey (`TestRetryContinuation*`), which needs the
+native and shared client installs.
 
 Three traps each produce a false green.
 
@@ -1365,6 +1408,17 @@ on nothing else in the repository) and keeps its own helper. A fixture builder
 that wants to prove it never copies a repository while git maintenance is still
 writing into it wraps its runner in `gittest.MaintenanceProbe`.
 
+`gittest.Env` covers only the fixture's own commands. Code under test spawns git
+with the process environment, so a package whose tests run that code against a
+real repository calls `gittest.IsolateProcess` from `TestMain`: it points
+`GIT_CONFIG_GLOBAL` at one file with automatic maintenance and gc off, sets
+`GIT_CONFIG_NOSYSTEM`, and drops ambient config injection, so every git the
+process spawns is isolated the same way. A detached maintenance writer would
+otherwise outlive the command and race the test's cleanup. Pin the wiring with
+`gittest.RequireIsolated`, passing the runner the code under test uses. The
+`agent`, `agent/execenv`, `internal/plugins`, `cmd/evener-hub` and
+`tools/tool-fluency/cmd/evener-fluency` test binaries do this.
+
 ### Adding a worktree test
 
 Default to the scripted boundary. Reach for real git only when you can name the
@@ -1515,6 +1569,30 @@ scripts/ops/test-inventory.sh go cmd/evener-hub > before.txt
 scripts/ops/test-inventory.sh go cmd/evener-hub > after.txt
 scripts/ops/test-inventory.sh diff before.txt after.txt
 ```
+
+## Deleting and Consolidating Tests
+
+Deleting a test, or merging tests into one test or table, is its own kind of
+change, separate from a file split. Three kinds of test are candidates:
+
+- a test that executes lines and asserts nothing meaningful about them,
+- a test that repeats another test's scenario, and
+- a test whose subject is test-only code.
+
+The change proves no behavior coverage was lost, and the PR description carries
+the proof:
+
+- A seeded mutation of the behavior the removed test covered still fails a
+  remaining test. Name the mutation and the test that catches it.
+- The package's statement coverage under `go test -cover` is the same before
+  and after a merge or the removal of a duplicate.
+- Removing a test that asserted nothing can lower statement coverage. List the
+  statements it alone executed and show that the removed test passed against a
+  seeded mutation of them: it caught nothing there, so nothing is lost.
+
+Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, and
+it goes in the PR description beside the proof. A test folded into a table as
+a subtest appears in that diff as removed; name the subtest that replaces it.
 
 ## Targets
 

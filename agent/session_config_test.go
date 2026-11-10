@@ -238,10 +238,7 @@ func TestSession_TrackReadFile_Concurrent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	var wg sync.WaitGroup
@@ -368,10 +365,7 @@ func TestSearchToolsDefaultPathAndFilterWhenOmitted(t *testing.T) {
 	}
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "google"})
-	sess, err := NewSession(c, newGeminiProfile("gemini-test"), env, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newGeminiProfile("gemini-test")), withEnv(env), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// glob with no path must default to the working dir. Regression: an omitted
@@ -408,10 +402,7 @@ func TestSession_CoreTools_ListDir(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "google"})
-	sess, err := NewSession(c, newGeminiProfile("gemini-test"), env, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newGeminiProfile("gemini-test")), withEnv(env), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// list_dir
@@ -943,10 +934,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	marker := filepath.Join(dir, "notification-hook")
@@ -1198,10 +1186,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{}))
 	// Register a slow read-only tool that blocks until the test releases it.
 	// ReadOnly: true ensures the ordered-group algorithm batches both calls
 	// for parallel execution (non-read-only tools are serialized).
@@ -1286,10 +1271,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{}))
 	makeTool := func(name string, readOnly bool) tool.RegisteredTool {
 		return tool.RegisteredTool{
 			Definition: llm.ToolDefinition{
@@ -1317,7 +1299,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "run tools", nil)
+	_, err := sess.ProcessInput(ctx, "run tools", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1475,10 +1457,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	}}
 	c.Register(f)
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Register a custom tool after session creation.
@@ -1530,10 +1509,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -1611,10 +1587,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -1704,10 +1677,7 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -1768,10 +1738,7 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -1799,10 +1766,7 @@ func TestSession_RegisterTool(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	sess.registerTool("my_tool", "a custom tool", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
@@ -1840,10 +1804,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	// Opus 4.5 is the 200K/1M pair: its [1m] alias still moves the window, so a
 	// stale profile after SetModel shows up as an unchanged pressure. Sonnet 4.5
 	// is 1M on its base row now and would make both readings identical.
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// After first ProcessInput, contextMgr has InputTokens from 200K profile.
@@ -2046,10 +2007,7 @@ func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withEnv(env), withConfig(SessionConfig{}))
 	defer sess.Close()
 	ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: the adapter is scripted in-process, but the session runs against a real `git init`-ed workspace and write_file performs a real file write to disk; only fires on a genuine hang.
 	defer cancel()

@@ -24,7 +24,15 @@ import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
+import {
+  emitAtResponseCut,
+  markResponseCut,
+  runScheduledHydrationRetry,
+  type ScheduledHydrationRetry,
+  scheduledHydrationRetries,
+} from "./threadHydrationTestUtils";
 import {
   installHydrationRetrySchedulerForTests,
   readMutationPersistence,
@@ -46,14 +54,6 @@ import {
   settleCallerContinuations,
 } from "./threadsSessionActionsTestUtils";
 
-interface ScheduledHydrationRetry {
-  attempt: number;
-  retry: () => void;
-  cancelled: boolean;
-}
-
-let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
-
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 let cache: SessionEntryCache;
@@ -64,7 +64,7 @@ beforeEach(async () => {
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
-  scheduledHydrationRetries = [];
+  scheduledHydrationRetries.length = 0;
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
     scheduledHydrationRetries.push(scheduled);
@@ -91,46 +91,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
-  return {
-    ...response,
-    get olderCursor(): string | undefined {
-      cut.reached = true;
-      return response.olderCursor;
-    },
-  };
-}
-
-async function emitAtResponseCut(
-  cut: { reached: boolean },
-  ref: string,
-  emit: () => void,
-  published: () => boolean = () => threadsStore.getState().threads.has(ref),
-): Promise<void> {
-  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
-  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
-  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
-  emit();
-}
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
-
-function runScheduledHydrationRetry(index = 0): void {
-  const scheduled = scheduledHydrationRetries[index];
-  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
-  expect(scheduled?.cancelled).toBe(false);
-  scheduled?.retry();
-}
 
 describe("Manager start-time projection", () => {
   const ref = "local:historical";

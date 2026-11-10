@@ -22,6 +22,7 @@ import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { readResponse } from "./threadHydrationTestUtils";
 import { pendingThreadHydrationUpdatesForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
@@ -66,10 +67,6 @@ async function flushUntil(done: () => boolean): Promise<void> {
 
 async function flushMicrotasks(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
-}
-
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
 }
 
 // Echo the actual transport request without inspecting response getters early.

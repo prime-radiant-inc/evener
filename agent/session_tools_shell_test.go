@@ -352,8 +352,8 @@ func TestShellToolIntentLandsOnJobRecord(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:   "c-intent",
 		Name: "shell",
-		Arguments: json.RawMessage(
-			`{"command":"sleep 30","mode":"background","intent":"Running the suite to find the failure"}`),
+		Arguments: idleShellJSON(
+			`,"mode":"background","intent":"Running the suite to find the failure"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -391,7 +391,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -443,7 +443,7 @@ func TestShellToolBackgroundModelOutputRetainsJobIDUnderRegistryLimits(t *testin
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -546,7 +546,7 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 func TestParseShellToolArgsClampsSmallMaxRuntime(t *testing.T) {
 	t.Parallel()
 	args, err := parseShellToolArgs(context.Background(), map[string]any{
-		"command":        "sleep 30",
+		"command":        idleShellCommand,
 		"max_runtime_ms": float64(1),
 	})
 	if err != nil {
@@ -594,7 +594,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	}{
 		{
 			name: "default",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
+			args: json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -679,7 +679,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -744,7 +744,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("child shell returned error: %s", res.Output)
@@ -805,7 +805,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 							ToolCall: &llm.ToolCallData{
 								ID:        "late-shell",
 								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+								Arguments: idleShellJSON(`,"mode":"background"`),
 								Type:      "function",
 							},
 						}},
@@ -1796,4 +1796,43 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 			t.Fatalf("detached process %d did not report completion", receipts[0].pid)
 		}
 	})
+}
+
+func TestShellCwdWithShellOperatorsGetsPathHint(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory names with ; are POSIX-only")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "a;b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(env.Cleanup)
+
+	got, err := resolveShellWorkingDir(env, "a;b")
+	if err != nil || got != filepath.Join(root, "a;b") {
+		t.Fatalf("existing directory a;b = %q, %v; want it accepted", got, err)
+	}
+	for _, fragment := range []string{
+		"missing 2>/dev/null || sed -n 1p x",
+		"missing && ls",
+		"missing | head",
+		"missing; ls",
+		"cd missing",
+		"ls -la missing",
+		"git -C missing status",
+	} {
+		if _, err := resolveShellWorkingDir(env, fragment); !errors.Is(err, errShellCwdIsCommand) {
+			t.Fatalf("cwd %q error = %v, want errShellCwdIsCommand", fragment, err)
+		}
+	}
+	_, err = resolveShellWorkingDir(env, "my missing dir")
+	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
+		t.Fatalf("missing path with spaces error = %v, want only errShellCwdNotFound", err)
+	}
+	_, err = resolveShellWorkingDir(env, "missing")
+	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
+		t.Fatalf("plain missing path error = %v, want only errShellCwdNotFound", err)
+	}
 }

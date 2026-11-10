@@ -29,6 +29,7 @@ import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTest
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds, toastReasons } from "../../../../widgets/toast/toastTestUtils";
 import { CredentialsSection } from "./CredentialsSection";
+import { instance } from "./credentialsTestUtils";
 
 // The section's outcomes, read from their markers rather than from the words
 // shown for them: toasts by kind and reason, a row by its credential state, and
@@ -48,19 +49,6 @@ const testResultShown = (status: string): boolean =>
  * starts work must not drop the keyboard, so the pending/busy state is
  * aria-disabled (Button/Switch swallow the activation themselves). */
 const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 const WORK = instance({
   name: "work",

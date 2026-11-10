@@ -24,7 +24,8 @@ test-web: web-preflight build-dev
 # The gate (`evener-dev dev web-browser-guards`, run from the prebuilt evener-dev
 # binary so an interrupt reaches it) runs every guard so one missing browser or
 # failing case does not hide the remaining guard's verdict; exit status is the
-# first nonzero one.
+# first nonzero one. BROWSER_GUARD_SHARD=<shard> runs one shard of the guards
+# instead, as each CI web-browser runner does.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard,
 ## retirementguard, mermaidguard) plus the

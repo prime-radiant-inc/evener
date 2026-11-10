@@ -22,13 +22,11 @@ func TestManagerProjectionPreservesSessionProperty(t *testing.T) {
 }
 
 func TestManagerHasNoToggleRPC(t *testing.T) {
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: t.TempDir(), Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{StateDir: t.TempDir()}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	for _, enabled := range []bool{false, true} {
 		var response appwire.EmptyResponse
 		err := client.Request(t.Context(), "evener/thread/manager/set", map[string]any{"ref": "local:workspace", "enabled": enabled}, &response)
@@ -52,9 +50,7 @@ func TestManagerLegacySavedSessionRemainsOrdinary(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + id})
 	if err != nil {
 		t.Fatal(err)
