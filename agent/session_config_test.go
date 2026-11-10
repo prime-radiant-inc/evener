@@ -2071,17 +2071,25 @@ func TestSessionConfigDisableSubagentsSnapshotRoundTrip(t *testing.T) {
 // the disable rule: a root session launched with the disable choice keeps a
 // zero delegation allowance and does not register the root-only delegate tool.
 // manage_worktree stays with the root: it is the session's own worktree
-// lifecycle, independent of delegation. The default keeps both.
+// lifecycle, independent of delegation. The default keeps both, and a leaf
+// child keeps neither.
 func TestSessionConfigDisableSubagentsRemovesDelegation(t *testing.T) {
 	t.Parallel()
+	leafCfg := SessionConfig{StateDir: t.TempDir(), DisableSubagents: true}
+	leafCfg.spawn.depth = 1
+	leafCfg.spawn.parentSessionID = "parent-session"
+	leafCfg.spawn.delegationAllowance = 0
+
 	for _, tc := range []struct {
-		name         string
-		cfg          SessionConfig
-		wantAllow    int
-		wantRootOnly bool
+		name               string
+		cfg                SessionConfig
+		wantAllow          int
+		wantDelegate       bool
+		wantManageWorktree bool
 	}{
-		{"default keeps delegation", SessionConfig{}, 2, true},
-		{"disable removes delegation", SessionConfig{DisableSubagents: true}, 0, false},
+		{"default keeps delegation", SessionConfig{}, 2, true, true},
+		{"disable removes delegation but keeps the root worktree tool", SessionConfig{DisableSubagents: true}, 0, false, true},
+		{"leaf child keeps neither", leafCfg, 0, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2089,15 +2097,17 @@ func TestSessionConfigDisableSubagentsRemovesDelegation(t *testing.T) {
 			if sess.delegationAllowance != tc.wantAllow {
 				t.Fatalf("delegation allowance = %d, want %d", sess.delegationAllowance, tc.wantAllow)
 			}
-			wantTools := map[string]bool{}
-			for _, name := range rootOnlySubagentTools() {
-				wantTools[name] = tc.wantRootOnly
+			if got := sess.reg.Get("delegate") != nil; got != tc.wantDelegate {
+				t.Errorf("delegate registered = %v, want %v", got, tc.wantDelegate)
 			}
-			wantTools["manage_worktree"] = true
-			for name, want := range wantTools {
-				if got := sess.reg.Get(name) != nil; got != want {
-					t.Errorf("root-only tool %q registered = %v, want %v", name, got, want)
-				}
+			if got := sess.reg.Get("manage_worktree") != nil; got != tc.wantManageWorktree {
+				t.Errorf("manage_worktree registered = %v, want %v", got, tc.wantManageWorktree)
+			}
+			if got := hasCachedCallableToolDefinition(sess, "delegate"); got != tc.wantDelegate {
+				t.Errorf("delegate advertised = %v, want %v", got, tc.wantDelegate)
+			}
+			if got := hasCachedCallableToolDefinition(sess, "manage_worktree"); got != tc.wantManageWorktree {
+				t.Errorf("manage_worktree advertised = %v, want %v", got, tc.wantManageWorktree)
 			}
 		})
 	}
