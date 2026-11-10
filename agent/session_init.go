@@ -242,7 +242,11 @@ func writeInheritedContextRecord(w *transcript.Writer, parentSessionID string, r
 	}
 	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
 	record.Fold = &schema.FoldRecord{FoldID: "inherited-" + parentSessionID, RetainedSeqs: retained}
-	if _, err := w.Append(record); err != nil {
+	// This record is the only thing that names the inherited tail after a
+	// restart. Write it through the synced door: a buffered Append with the
+	// writer's 1s SyncInterval can return success for a record an immediate
+	// crash loses, leaving the child to resume from the parent's summary alone.
+	if _, err := w.AppendSynced(record); err != nil {
 		return fmt.Errorf("record inherited delegate context: %w", err)
 	}
 	return nil
