@@ -20,7 +20,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type ownedJobDrainEnvironment struct {
+// heldJobEnvironment stands in for the process launcher: its one streamed
+// command runs until releaseJob or a Signal, then reports a fixed output. No
+// host process exists, so nothing outside a synctest bubble keeps it busy.
+type heldJobEnvironment struct {
 	execenv.ExecutionEnvironment
 	started     chan struct{}
 	release     chan struct{}
@@ -29,8 +32,8 @@ type ownedJobDrainEnvironment struct {
 	signalOnce  sync.Once
 }
 
-func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
-	return &ownedJobDrainEnvironment{
+func newHeldJobEnvironment(dir string) *heldJobEnvironment {
+	return &heldJobEnvironment{
 		ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir),
 		started:              make(chan struct{}),
 		release:              make(chan struct{}),
@@ -38,11 +41,11 @@ func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
 	}
 }
 
-func (e *ownedJobDrainEnvironment) releaseJob() {
+func (e *heldJobEnvironment) releaseJob() {
 	e.releaseOnce.Do(func() { close(e.release) })
 }
 
-func (e *ownedJobDrainEnvironment) StreamCommand(_ context.Context, _, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+func (e *heldJobEnvironment) StreamCommand(_ context.Context, _, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
 	close(e.started)
 	return &execenv.StreamHandle{
 		Wait: func() (int, error) {
@@ -104,7 +107,7 @@ func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
 type ownedJobDrainFixture struct {
 	parent       *Session
 	child        *subagent
-	env          *ownedJobDrainEnvironment
+	env          *heldJobEnvironment
 	adapter      *fakeAdapter
 	shellHandled chan struct{}
 	freshHandled chan struct{}
@@ -148,7 +151,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	env := newOwnedJobDrainEnvironment(t.TempDir())
+	env := newHeldJobEnvironment(t.TempDir())
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
@@ -731,7 +734,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		}
 		client := llm.NewClient()
 		client.Register(adapter)
-		env := newOwnedJobDrainEnvironment(t.TempDir())
+		env := newHeldJobEnvironment(t.TempDir())
 		parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
@@ -1037,7 +1040,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	env := newOwnedJobDrainEnvironment(t.TempDir())
+	env := newHeldJobEnvironment(t.TempDir())
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,

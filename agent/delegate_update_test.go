@@ -768,21 +768,10 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
 	coordinator := requireSoleChildIdle(t, root)
 	close(coordinatorIdle)
-	coordinator.mu.Lock()
-	path, sessionID := transcriptPath(coordinator.stateDir, coordinator.id), coordinator.id
-	coordinator.mu.Unlock()
-	pendingAttention := func() []string {
-		t.Helper()
-		fold, err := readDelegateAttentionFold(path, sessionID)
-		if err != nil {
-			t.Fatalf("fold the coordinator's attention: %v", err)
-		}
-		return fold.pendingIDs()
-	}
 	// Worker B stays held until the update is released, so once the bubble is
 	// quiet the sibling's report has landed and nothing else has.
 	synctest.Wait()
-	if pending := pendingAttention(); len(pending) != 1 {
+	if pending := rootAttentionFold(t, coordinator).pendingIDs(); len(pending) != 1 {
 		t.Fatalf("the coordinator holds pending attention %v once quiet, want the sibling's report alone", pending)
 	}
 	if coordinator.hasPendingDelegateUpdateAttention() {
@@ -811,7 +800,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 			}
 			if failedMarkerWrites == 1 {
 				// The retry succeeded.
-				if pending := pendingAttention(); len(pending) != 0 {
+				if pending := rootAttentionFold(t, coordinator).pendingIDs(); len(pending) != 0 {
 					t.Fatalf("the coordinator holds pending attention %v after the marker retry succeeded, want the update consumed", pending)
 				}
 			}
@@ -1262,7 +1251,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 	// The coordinator's background shell, when it starts one, runs under a
 	// stand-in launcher that holds it open until cleanup. A real process keeps
 	// its output reader runnable, so the bubble would never go quiet.
-	env := newOwnedJobDrainEnvironment(t.TempDir())
+	env := newHeldJobEnvironment(t.TempDir())
 	root := newMessagingRootIn(t, adapter, env, func(cfg *SessionConfig) {
 		cfg.TurnEndsProcess = undisposedJob
 		cfg.testOnly.subagentBeforeGenerationReleased = func(a *subagent, lease delegateLease) {
