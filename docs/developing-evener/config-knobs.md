@@ -11,7 +11,7 @@ reference that only names a variable (in a message or a list) counts, so the
 audit catches a knob with no reference at all, not one whose reads are dead. The tables are generated from
 the `envvars` registry and the decoder in `cmd/evener-hub/config.go`, so
 a knob that nothing reads shows up as "none" in the Consumer column, and
-`internal/knobtable`'s repo test fails on it. Delete such a knob, and list a
+`make lint-repo-audit` fails on it. Delete such a knob, and list a
 removed `hub.toml` key in `removedKnobs` so a file that still sets it starts
 with a warning.
 

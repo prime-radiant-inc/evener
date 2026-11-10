@@ -1,6 +1,7 @@
-package evener_test
+package repoaudit
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -12,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"testing"
 )
 
 // scenarioGoCitation matches a card pointing at a place inside a Go file: a
@@ -36,19 +36,13 @@ var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-
 // needle in the suite matched a `.tsx` path at all.
 //
 // The `#symbol` alternative carries its own capture group so
-// TestScenarioSourceSymbolsAreDeclared can read the symbol half without a
+// scenarioSourceSymbolsAreDeclared can read the symbol half without a
 // Go-only regex (issue #157); the `:line` alternative does not name anything
 // worth capturing here.
 var scenarioSourceCitation = regexp.MustCompile(
 	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#([A-Za-z0-9_.]+)|:[0-9][0-9,-]*)`")
 
-// scenarioSourceCitationGroups is the length FindStringSubmatch returns for a
-// scenarioSourceCitation match: the whole span, its captured path, and its
-// captured symbol (empty when the anchor is a `:line` range rather than a
-// `#symbol`).
-const scenarioSourceCitationGroups = 3
-
-// TestScenarioSourceCitationsResolve keeps a card's pointer into source code
+// scenarioSourceCitationsResolve keeps a card's pointer into source code
 // attached to a file that still exists. Kata 2mzk's audit deliberately exempts
 // source paths from the no-line-numbers rule, because code has no headings to
 // anchor to; that exemption said nothing about whether the paths were right.
@@ -65,14 +59,14 @@ const scenarioSourceCitationGroups = 3
 // What this does NOT check is the anchor behind the path: `DocPane.tsx:133`
 // and `DocPane.tsx:1` are the same claim here. Line ranges rot faster than
 // paths do, and nothing in the suite reads one.
-func TestScenarioSourceCitationsResolve(t *testing.T) {
-	byBase := scenarioSourceFilesByBase(t)
+func scenarioSourceCitationsResolve(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
 	var findings []string
 	resolved := 0
-	for _, path := range scenarioCardFiles(t) {
+	for _, path := range scenarioCardFiles(a) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
+			a.Fatalf("reading %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
@@ -91,12 +85,12 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 	// apart. Cards cite source by the hundred today, so zero resolutions means
 	// the citation needle broke, not that the citations left.
 	if resolved == 0 {
-		t.Fatalf("the source-citation needle matched nothing across the corpus — " +
+		a.Fatalf("the source-citation needle matched nothing across the corpus — " +
 			"the detector is dead and this audit is checking nothing")
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("a scenario card that points into a source file must name a file "+
+		a.Fatalf("a scenario card that points into a source file must name a file "+
 			"that is still there — a package move, a rename, or a deleted "+
 			"component silently turns every citation into it into a pointer at "+
 			"nothing, and no other audit sees it (katas ypwb, yj52). Repoint at "+
@@ -105,7 +99,7 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 	}
 }
 
-// TestScenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a source
+// scenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a source
 // citation resolvable. `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`
 // survives every edit to that file — which is the entire reason kata ypwb moved
 // the corpus off `:12` — but only until the symbol is renamed or moved to
@@ -127,16 +121,16 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 // exports, re-exports, and `declare`-block members are not. That gap fails in
 // the safe direction — a real symbol the scan misses turns the audit red, not
 // a fake one it accepts.
-func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
-	byBase := scenarioSourceFilesByBase(t)
+func scenarioSourceSymbolsAreDeclared(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
 	declaredGo := map[string]map[string]bool{}
 	declaredTS := map[string]map[string]bool{}
 	var findings []string
 	checked := 0
-	for _, path := range scenarioCardFiles(t) {
+	for _, path := range scenarioCardFiles(a) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
+			a.Fatalf("reading %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
@@ -157,7 +151,7 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 						names, err = scenarioTSDeclarationsIn(declaredTS, file)
 					}
 					if err != nil {
-						t.Fatalf("parsing %s cited by %s: %v", file, path, err)
+						a.Fatalf("parsing %s cited by %s: %v", file, path, err)
 					}
 					if names[symbol] {
 						found = true
@@ -176,12 +170,12 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	// apart. The corpus carries symbol anchors today, so zero checks means the
 	// `#symbol` needle broke, not that the anchors left.
 	if checked == 0 {
-		t.Fatalf("the `#symbol` needle matched nothing across the corpus — " +
+		a.Fatalf("the `#symbol` needle matched nothing across the corpus — " +
 			"the detector is dead and this audit is checking nothing")
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("a scenario card's `file.go#symbol` anchor must name something "+
+		a.Fatalf("a scenario card's `file.go#symbol` anchor must name something "+
 			"that file still declares — a rename or a move to another file "+
 			"leaves the anchor parsing fine and pointing at nothing, which is "+
 			"the failure the line numbers it replaced had by construction "+
@@ -191,18 +185,15 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 }
 
 // scenarioDir is the one directory this audit reads, relative to the repo root
-// that `go test` runs it from, and scenarioCardFiles is its card corpus plus
-// the one prose file that carries citations of the same shape. Both lived in
-// scenarioport_audit_test.go until that audit was deleted with the rest of the
-// framework.
+// the audit runs from, and scenarioCardFiles is its card corpus plus the one
+// prose file that carries citations of the same shape.
 const scenarioDir = "test" + string(filepath.Separator) + "scenarios"
 
-func scenarioCardFiles(t *testing.T) []string {
-	t.Helper()
+func scenarioCardFiles(a *audit) []string {
 	var files []string
 	entries, err := os.ReadDir(scenarioDir)
 	if err != nil {
-		t.Fatalf("reading %s: %v", scenarioDir, err)
+		a.Fatalf("reading %s: %v", scenarioDir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
@@ -240,48 +231,19 @@ func scenarioSourceExtensionAlternation() string {
 	return strings.Join(quoted, "|")
 }
 
-// TestScenarioSourceCitationNeedleReadsEveryCompiledExtension pins the widening
-// itself. The audit above is a corpus scan, so it is green both when the corpus
-// is clean and when the needle quietly stops matching a language; the resolved
-// floor catches a needle that matches NOTHING, and this catches one that
-// matches only Go again.
-func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
-	for extension := range scenarioNeedleSourceExtensions {
-		cited := "panes/session/composer/Composer" + extension
-		// scenarioSourceCitation captures two groups, the path and the symbol,
-		// so a match is [whole, path, symbol]. Any other length means the
-		// needle lost a group.
-		m := scenarioSourceCitation.FindStringSubmatch("(`" + cited + ":641-643`)")
-		if len(m) != scenarioSourceCitationGroups || m[1] != cited || m[2] != "" {
-			t.Fatalf("the source-citation needle does not read a %s citation: %v", extension, m)
-		}
-		symbolCited := "Composer" + extension
-		m = scenarioSourceCitation.FindStringSubmatch("`" + symbolCited + "#handleSteerClick`")
-		if len(m) != scenarioSourceCitationGroups || m[1] != symbolCited || m[2] != "handleSteerClick" {
-			t.Fatalf("the source-citation needle does not read a %s symbol anchor: %v", extension, m)
-		}
-	}
-	// An anchorless path is a mention, not a citation — "the package was
-	// extracted out of `cmd/evener-tui/pending.go`" names a file on purpose.
-	for _, mention := range []string{"`Composer.tsx`", "`docs/job-control.md:940`", "`fixture.tsx.snap:12`"} {
-		if m := scenarioSourceCitation.FindStringSubmatch(mention); m != nil {
-			t.Fatalf("the source-citation needle read %s as a citation: %v", mention, m)
-		}
-	}
-}
-
 // scenarioSourceFilesByBase indexes the tracked compiled-source files in the
 // worktree by base name.
-func scenarioSourceFilesByBase(t *testing.T) map[string][]string {
-	t.Helper()
+func scenarioSourceFilesByBase(a *audit) map[string][]string {
 	byBase, err := scenarioTrackedFilesByBase(".", scenarioNeedleSourceExtensions)
 	if err != nil {
-		t.Fatalf("listing tracked source files: %v", err)
+		a.Fatalf("listing tracked source files: %v", err)
 	}
 	return byBase
 }
 
-func TestScenarioDeviceFlowCitationCitesPackageDefault(t *testing.T) {
+// scenarioDeviceFlowCitesPackageDefault keeps the device-code-flow card citing
+// the issuer default where the openai auth package declares it.
+func scenarioDeviceFlowCitesPackageDefault(a *audit) {
 	const (
 		cardPath = "test/scenarios/cli-device-code-flow.md"
 		cited    = "auth/openai/config.go"
@@ -289,7 +251,7 @@ func TestScenarioDeviceFlowCitationCitesPackageDefault(t *testing.T) {
 	)
 	raw, err := os.ReadFile(cardPath)
 	if err != nil {
-		t.Fatalf("reading %s: %v", cardPath, err)
+		a.Fatalf("reading %s: %v", cardPath, err)
 	}
 	for _, m := range scenarioGoCitation.FindAllStringSubmatch(string(raw), -1) {
 		if m[1] != cited || m[2] != symbol {
@@ -297,199 +259,14 @@ func TestScenarioDeviceFlowCitationCitesPackageDefault(t *testing.T) {
 		}
 		names, err := scenarioDeclarationsIn(map[string]map[string]bool{}, cited)
 		if err != nil {
-			t.Fatalf("parsing %s: %v", cited, err)
+			a.Fatalf("parsing %s: %v", cited, err)
 		}
 		if !names[symbol] {
-			t.Fatalf("%s package default %q does not resolve", cited, symbol)
+			a.Fatalf("%s package default %q does not resolve", cited, symbol)
 		}
 		return
 	}
-	t.Fatalf("%s must cite the package default `%s#%s`", cardPath, cited, symbol)
-}
-
-func TestScenarioDeclarationsPreserveReceiverQualification(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "methods.go")
-	const source = `package fixture
-
-const IssuerBaseURL = "https://auth.example.test"
-
-type Alpha struct {
-	Field int
-}
-type Beta struct {
-	Field int
-}
-type Config struct {
-	IssuerBaseURL string
-}
-type Contract interface {
-	Do()
-}
-
-func (Alpha) Run() {}
-func (*Beta) Run() {}
-`
-	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	names, err := scenarioDeclarationsIn(map[string]map[string]bool{}, path)
-	if err != nil {
-		t.Fatalf("scenarioDeclarationsIn: %v", err)
-	}
-	for _, want := range []string{"fixture.IssuerBaseURL", "Alpha.Run", "Beta.Run", "Alpha.Field", "Config.IssuerBaseURL", "Contract.Do"} {
-		if !names[want] {
-			t.Fatalf("declarations missing qualified method %q: %v", want, names)
-		}
-	}
-	for _, ambiguous := range []string{"IssuerBaseURL", "Run", "Field"} {
-		if names[ambiguous] {
-			t.Fatalf("ambiguous unqualified declaration %q was accepted: %v", ambiguous, names)
-		}
-	}
-	if !names["Do"] {
-		t.Fatalf("unique unqualified interface method was rejected: %v", names)
-	}
-}
-
-// TestScenarioTSDeclarationsRecognizeExportForms pins scenarioTSDeclarationsIn
-// against every declaration shape the RCA behind issue #157 specified, plus
-// the two forms it names as known imprecision (destructured exports,
-// re-exports), which must NOT be matched.
-func TestScenarioTSDeclarationsRecognizeExportForms(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fixture.tsx")
-	const source = `import { useState } from "react";
-
-export function Composer() {}
-export async function loadModels() {}
-export default function App() {}
-function helperOnly() {}
-
-export const ModelField = () => {};
-const localValue = 1;
-
-export class Widget {}
-class Internal {}
-
-export interface Props {}
-interface Hidden {}
-
-export type Alias = string;
-type Private = number;
-
-export enum Mode { Fast, Slow }
-enum Quiet { On, Off }
-
-export const { a, b } = destructure();
-export { Reexported } from "./elsewhere";
-`
-	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	names, err := scenarioTSDeclarationsIn(map[string]map[string]bool{}, path)
-	if err != nil {
-		t.Fatalf("scenarioTSDeclarationsIn: %v", err)
-	}
-	for _, want := range []string{
-		"Composer", "loadModels", "App", "helperOnly",
-		"ModelField", "localValue",
-		"Widget", "Internal",
-		"Props", "Hidden",
-		"Alias", "Private",
-		"Mode", "Quiet",
-	} {
-		if !names[want] {
-			t.Fatalf("declaration missing %q: %v", want, names)
-		}
-	}
-	for _, notMatched := range []string{"a", "b", "destructure", "Reexported", "elsewhere"} {
-		if names[notMatched] {
-			t.Fatalf("declaration wrongly matched %q (known imprecision, issue #157): %v", notMatched, names)
-		}
-	}
-}
-
-// TestScenarioTSDeclarationsIgnoreBlockComments pins the PR #271 review
-// finding: a declaration-shaped line sitting inside a `/* ... */` (or JSDoc
-// `/** ... */`) block comment must not register as declared, and a real
-// declaration sharing a line with an inline block comment must still be
-// found.
-func TestScenarioTSDeclarationsIgnoreBlockComments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fixture.tsx")
-	const source = `export function RealSymbol() {}
-
-/*
- * TODO: someday resurrect this:
-function BlockCommentedFake() {}
- */
-
-/**
-const JsDocFake = 1;
- */
-
-export /* eslint-disable-next-line */ function InlineCommented() {}
-`
-	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	names, err := scenarioTSDeclarationsIn(map[string]map[string]bool{}, path)
-	if err != nil {
-		t.Fatalf("scenarioTSDeclarationsIn: %v", err)
-	}
-	for _, want := range []string{"RealSymbol", "InlineCommented"} {
-		if !names[want] {
-			t.Fatalf("declaration missing %q: %v", want, names)
-		}
-	}
-	for _, notMatched := range []string{"BlockCommentedFake", "JsDocFake"} {
-		if names[notMatched] {
-			t.Fatalf("declaration wrongly matched %q — it exists only inside a block comment (PR #271 review): %v", notMatched, names)
-		}
-	}
-}
-
-func TestScenarioTrackedFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go", "excluded.tsx"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte("package fixture\n"), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-	for _, args := range [][]string{{"init", "--quiet"}, {"add", "tracked.go", "deleted.go", "excluded.tsx"}} {
-		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	if err := os.Remove(filepath.Join(root, "deleted.go")); err != nil {
-		t.Fatalf("remove deleted fixture: %v", err)
-	}
-
-	byBase, err := scenarioTrackedFilesByBase(root, map[string]bool{".go": true})
-	if err != nil {
-		t.Fatalf("scenarioTrackedFilesByBase: %v", err)
-	}
-	if got := byBase["tracked.go"]; len(got) != 1 || got[0] != "tracked.go" {
-		t.Fatalf("tracked Go files = %v, want tracked.go only", got)
-	}
-	if _, ok := byBase["untracked.go"]; ok {
-		t.Fatalf("untracked Go file appeared in tracked index: %v", byBase["untracked.go"])
-	}
-	if _, ok := byBase["deleted.go"]; ok {
-		t.Fatalf("deleted Go file appeared in checkout index: %v", byBase["deleted.go"])
-	}
-	if _, ok := byBase["excluded.tsx"]; ok {
-		t.Fatalf("file outside the requested extensions appeared in the index: %v", byBase["excluded.tsx"])
-	}
-	withTSX, err := scenarioTrackedFilesByBase(root, map[string]bool{".go": true, ".tsx": true})
-	if err != nil {
-		t.Fatalf("scenarioTrackedFilesByBase with .tsx: %v", err)
-	}
-	if got := withTSX["excluded.tsx"]; len(got) != 1 || got[0] != "excluded.tsx" {
-		t.Fatalf("requested .tsx files = %v, want excluded.tsx", got)
-	}
+	a.Fatalf("%s must cite the package default `%s#%s`", cardPath, cited, symbol)
 }
 
 // scenarioDeclarationsIn returns every name a Go file declares — funcs and
@@ -650,7 +427,7 @@ func scenarioStripTSBlockComments(source string) string {
 // scenarioTSDeclarationsIn returns every top-level name a TypeScript or
 // JavaScript file declares, memoized across citations into the same file.
 // Mirrors scenarioDeclarationsIn's map[string]map[string]bool cache shape so
-// TestScenarioSourceSymbolsAreDeclared can dispatch on file extension without
+// scenarioSourceSymbolsAreDeclared can dispatch on file extension without
 // changing how either side is called (issue #157).
 func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
 	if names, ok := cache[path]; ok {
@@ -676,7 +453,7 @@ func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (ma
 // given extensions by base name, so a cited path suffix can be resolved without
 // rewalking the tree per citation.
 func scenarioTrackedFilesByBase(root string, extensions map[string]bool) (map[string][]string, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-z")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", root, "ls-files", "-z")
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
@@ -857,7 +634,7 @@ func scenarioSourceLineCount(cache map[string]int, path string) (int, error) {
 // reason, and say why here.
 const scenarioMinBareLineAnchors = 80
 
-// TestScenarioBareLineAnchorsResolve reads the citation shape the rest of this
+// scenarioBareLineAnchorsResolve reads the citation shape the rest of this
 // file cannot see: a `:NNN` anchor with the path left implicit. It resolves
 // each one against the nearest preceding source path and checks two things —
 // that a path is actually there to resolve against, and that the anchor's lines
@@ -874,15 +651,15 @@ const scenarioMinBareLineAnchors = 80
 // that is stable — the path resolves and the anchor is not past the file's end.
 // No exemption list is needed: unlike a literal search, "does the file reach
 // the cited line" has no plausible-but-wrong match to excuse.
-func TestScenarioBareLineAnchorsResolve(t *testing.T) {
-	byBase := scenarioSourceFilesByBase(t)
+func scenarioBareLineAnchorsResolve(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
 	counts := map[string]int{}
 	var findings []string
 	checked := 0
-	for _, path := range scenarioCardFiles(t) {
+	for _, path := range scenarioCardFiles(a) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
+			a.Fatalf("reading %s: %v", path, err)
 		}
 		for _, resolved := range scenarioBareLineAnchorResolutions(string(raw)) {
 			if resolved.cited == "" {
@@ -903,7 +680,7 @@ func TestScenarioBareLineAnchorsResolve(t *testing.T) {
 			for _, candidate := range candidates {
 				count, err := scenarioSourceLineCount(counts, candidate)
 				if err != nil {
-					t.Fatalf("reading %s cited by %s: %v", candidate, path, err)
+					a.Fatalf("reading %s cited by %s: %v", candidate, path, err)
 				}
 				if last <= count {
 					covered = true
@@ -918,7 +695,7 @@ func TestScenarioBareLineAnchorsResolve(t *testing.T) {
 		}
 	}
 	if checked < scenarioMinBareLineAnchors {
-		t.Fatalf("this audit read %d bare line anchors, below the floor of %d: "+
+		a.Fatalf("this audit read %d bare line anchors, below the floor of %d: "+
 			"either the `:NNN` needle stopped matching (check "+
 			"scenarioBareLineAnchor), or the cards dropped their abbreviated "+
 			"anchors. Restore the shape, or lower the floor deliberately and say "+
@@ -926,42 +703,12 @@ func TestScenarioBareLineAnchorsResolve(t *testing.T) {
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("a bare `:NNN` anchor must resolve against a source path that "+
+		a.Fatalf("a bare `:NNN` anchor must resolve against a source path that "+
 			"is still there and still reaches the cited lines — a renamed file, "+
 			"or code deleted from under the anchor, leaves the citation parsing "+
 			"fine and pointing at nothing, and the path-carrying needle cannot "+
 			"see the shape at all (issue #158). Give the anchor its path, or "+
 			"repoint it at the file that carries the code now:\n%s",
 			strings.Join(findings, "\n"))
-	}
-}
-
-// TestScenarioBareLineAnchorResolutionPinsTheRule pins
-// scenarioBareLineAnchorResolutions itself: which preceding path a bare anchor
-// binds to, and that it binds to none when there is nothing before it in the
-// paragraph.
-func TestScenarioBareLineAnchorResolutionPinsTheRule(t *testing.T) {
-	const card = "`Composer.tsx` introduces the table below.\n" +
-		"\n" +
-		"| Hook | What it is |\n" +
-		"|---|---|\n" +
-		"| steer | only while busy (`:382`) |\n" +
-		"\n" +
-		"`Rail.tsx:509` names a row, and a bare `:113-138` follows.\n" +
-		"\n" +
-		"A trailing paragraph keeps its own `:999`.\n"
-	want := []scenarioBareLineAnchorResolution{
-		{line: 5, anchor: ":382", cited: "Composer.tsx"},
-		{line: 7, anchor: ":113-138", cited: "Rail.tsx"},
-		{line: 9, anchor: ":999", cited: ""},
-	}
-	got := scenarioBareLineAnchorResolutions(card)
-	if len(got) != len(want) {
-		t.Fatalf("resolved %d bare anchors, want %d: %+v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("bare anchor %d = %+v, want %+v", i, got[i], want[i])
-		}
 	}
 }

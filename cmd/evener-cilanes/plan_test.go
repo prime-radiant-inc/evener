@@ -388,21 +388,52 @@ func TestRootPackageChangeRunsOnlyTheRootModuleLanes(t *testing.T) {
 	}, goSourceLanes...)...)
 }
 
-// A test that walks the repository reads every file, and no name says
-// which, so every change reaches it: agent/leaf's change and a frontend
-// source alike run the llm module's lanes.
+// A test that walks or lists the repository from its root reads every file,
+// and no name says which, so every change reaches it: agent/leaf's change
+// and a frontend source alike run the llm module's lanes. A file that names
+// the root and walks any directory counts, since the rule does not follow
+// where a walk starts.
 func TestTestWalkingTheWholeRepositoryIsReachedByEveryChange(t *testing.T) {
 	for name, audit := range map[string]string{
-		"walks the root": `package audit
+		"walks from a climb to the root": `package audit
 
-import "path/filepath"
+import (
+	"io/fs"
+	"path/filepath"
+)
 
-var root = filepath.Join("..", "..")
+var _ = filepath.WalkDir(filepath.Join("..", ".."), func(string, fs.DirEntry, error) error { return nil })
 `,
-		"lists tracked files": `package audit
+		"walks the root through fs": `package audit
+
+import (
+	"io/fs"
+	"os"
+)
+
+var _ = fs.WalkDir(os.DirFS("../.."), ".", nil)
+`,
+		"lists tracked files from a climb to the root": `package audit
 
 import "os/exec"
 
+var list = exec.Command("git", "-C", "../..", "ls-files", "-z")
+`,
+		"names the root and walks another directory": `package audit
+
+import (
+	"io/fs"
+	"path/filepath"
+)
+
+var root = filepath.Join("..", "..")
+var _ = filepath.WalkDir("/tmp/state", func(string, fs.DirEntry, error) error { return nil })
+`,
+		"lists tracked files from git's top level": `package audit
+
+import "os/exec"
+
+var top = exec.Command("git", "rev-parse", "--show-toplevel")
 var list = exec.Command("git", "ls-files", "-z")
 `,
 	} {
@@ -419,6 +450,67 @@ var list = exec.Command("git", "ls-files", "-z")
 				"tests-parts/nonroot",
 				"race-module-shards/nonagent",
 			}, typeScriptLanes...)...)
+		})
+	}
+}
+
+// A root package test runs at the repository root, so listing files there
+// lists the whole repository with no climb to name it.
+func TestRootPackageTestListingFilesIsReachedByEveryChange(t *testing.T) {
+	extra := map[string]string{"audit_test.go": `package evener_test
+
+import "os/exec"
+
+var list = exec.Command("git", "ls-files", "-z")
+`}
+	requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/rest",
+	}, typeScriptLanes...)...)
+}
+
+// A climb to the root only says where the paths a test names start: a test
+// that builds or reads named paths from there depends on those paths, which
+// the names already show. A walk or a listing reads the whole repository
+// only when it starts at the root, so walking a temporary directory or
+// listing a temporary repository, and a ".." the test hands its code as
+// input, reach nothing a change here touches.
+func TestTestNamingTheRootWithoutReadingItIsNotReachedByEveryChange(t *testing.T) {
+	for name, test := range map[string]string{
+		"climbs to the root to build from it": `package audit
+
+import (
+	"os/exec"
+	"path/filepath"
+)
+
+var build = exec.Command("go", "build", "./cmd/evener")
+var dir = filepath.Join("..", "..")
+`,
+		"lists a temporary repository": `package audit
+
+import "os/exec"
+
+var list = exec.Command("git", "-C", "/tmp/fixture", "ls-files", "-z")
+`,
+		"walks a temporary directory": `package audit
+
+import (
+	"io/fs"
+	"path/filepath"
+)
+
+var _ = filepath.WalkDir("/tmp/fixture", func(string, fs.DirEntry, error) error { return nil })
+`,
+		"hands its code a climb as input": `package audit
+
+var hostile = []string{"..", "../..", "a/b"}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			extra := map[string]string{"llm/audit/audit_test.go": test}
+			requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), typeScriptLanes...)
 		})
 	}
 }

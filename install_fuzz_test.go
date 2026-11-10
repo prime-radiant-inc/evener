@@ -10,7 +10,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
+
+// makefileSourcePaths returns repoaudit.MakefileSources: the root Makefile
+// plus the family files it includes, root first.
+//
+// t is testing.TB rather than *testing.T because installedBins reads the
+// Makefile from a *testing.F, which is not a *testing.T but does satisfy
+// testing.TB.
+func makefileSourcePaths(t testing.TB) []string {
+	t.Helper()
+	paths, err := repoaudit.MakefileSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}
 
 // installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
 // single source of truth for which binaries a release install contains, and
