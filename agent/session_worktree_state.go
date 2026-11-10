@@ -636,8 +636,64 @@ func rejectUntrustedExternalGitLayout(retained *sandbox.ResolvedPolicy, layout s
 	if identifier.PathUnder(filepath.Clean(layout.WorktreeRoot), trusted) {
 		return nil
 	}
+	if err := rejectUntrustedExternalGitPointer(layout, retained); err != nil {
+		return err
+	}
 	if retained.Git.CommonDir == "" || !sameCanonicalPath(layout.CommonDir, retained.Git.CommonDir) {
 		return fmt.Errorf("%w: external Git target %s belongs to another repository", errUntrustedWorktreeProject, layout.WorktreeRoot)
+	}
+	return nil
+}
+
+// rejectUntrustedExternalGitPointer checks the external target's own .git
+// pointer before its resolved CommonDir is trusted. A linked checkout points at
+// an admin dir; that textual path must already sit under the retained common
+// dir and every component from there must be a real entry, not a symlink. A
+// nested repository's .git replaced by a link into the launch repository's
+// metadata therefore cannot forge CommonDir equality (#3724 review).
+func rejectUntrustedExternalGitPointer(layout sandbox.GitLayout, retained *sandbox.ResolvedPolicy) error {
+	common := filepath.Clean(retained.Git.CommonDir)
+	if common == "" || common == "." {
+		return fmt.Errorf("%w: external Git target has no retained repository to belong to", errUntrustedWorktreeProject)
+	}
+	target := filepath.Clean(layout.WorktreeRoot)
+	dotGit := filepath.Join(target, ".git")
+	info, err := os.Lstat(dotGit)
+	if err != nil {
+		return fmt.Errorf("%w: external target .git is unreadable", errUntrustedWorktreeProject)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: external target .git is not a regular pointer file", errUntrustedWorktreeProject)
+	}
+	file, err := os.OpenFile(dotGit, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("%w: external target .git cannot be opened", errUntrustedWorktreeProject)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, commondirReadLimit))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return fmt.Errorf("%w: external target .git cannot be read", errUntrustedWorktreeProject)
+	}
+	pointer, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir: ")
+	if !ok {
+		return fmt.Errorf("%w: external target .git is not a gitdir pointer", errUntrustedWorktreeProject)
+	}
+	pointer = strings.TrimSpace(pointer)
+	if !filepath.IsAbs(pointer) {
+		pointer = filepath.Join(target, pointer)
+	}
+	pointer = filepath.Clean(pointer)
+	rel, err := filepath.Rel(common, pointer)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: external target .git pointer is outside the retained repository metadata", errUntrustedWorktreeProject)
+	}
+	current := common
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		entry, err := os.Lstat(current)
+		if err != nil || entry.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: external target .git pointer crosses a symlink", errUntrustedWorktreeProject)
+		}
 	}
 	return nil
 }

@@ -1675,3 +1675,67 @@ func TestWorktreeSwitch_TrustAnchorSurvivesNestedRepositorySwitch(t *testing.T) 
 	}
 	requireSwitchKeptScope(t, s, nested, nested, external, filepath.Join(external, ".git"))
 }
+
+// Replacing a nested repository's .git with a symlink into the launch
+// repository's metadata makes the external checkout's pointer resolve to a
+// fabricated admin dir whose CommonDir is the launch repository's. The
+// pointer's own textual path must be proven under the retained common dir with
+// no symlinked component before CommonDir equality is trusted (#3724 review).
+func TestWorktreeSwitchByPath_RejectsExternalCheckoutThroughSymlinkedNestedGit(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-pointerlink-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	nested := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyWorktreeBaseRepo(t, nested)
+	_, head := worktreeBaseRepo(t)
+	external := canonicalFixtureTempDir(t, "worktree-pointerlink-external-*")
+	wtGit(t, nested, "worktree", "add", "-q", "-b", "nested-lane", external, head)
+
+	// The session can reach its own .git/worktrees, so it can point the nested
+	// repository's .git there and fabricate the admin dir the external
+	// checkout's existing pointer names.
+	if err := os.RemoveAll(filepath.Join(nested, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, ".git"), filepath.Join(nested, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	admin := filepath.Join(repo, ".git", "worktrees", "nested-lane")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "gitdir"), []byte(filepath.Join(external, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/nested-lane\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	layout, err := sandbox.ClassifyWorkspace(external)
+	if err != nil {
+		t.Fatalf("classify external checkout: %v", err)
+	}
+	if !sameCanonicalPath(layout.CommonDir, filepath.Join(repo, ".git")) {
+		t.Fatalf("fixture CommonDir = %q, want the launch repository's .git", layout.CommonDir)
+	}
+
+	_, _, env := newSandboxedFixtureSession(t, repo, "worktree-pointerlink-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	if err := rejectUntrustedSwitchTarget(env, external); err == nil {
+		t.Fatal("switch target accepted an external checkout whose pointer crosses a nested .git symlink")
+	}
+	next := &execenv.LocalExecutionEnvironment{
+		RootDir: external,
+		Sandbox: &sandbox.ResolvedPolicy{Git: layout},
+	}
+	if err := rejectUntrustedCandidateEnvironment(env, next); err == nil {
+		t.Fatal("candidate environment accepted an external checkout whose pointer crosses a nested .git symlink")
+	}
+}
