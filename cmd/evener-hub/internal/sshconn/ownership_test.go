@@ -168,21 +168,22 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 		name             string
 		step             int
 		old, replacement string
+		emptyGlobalRead  bool
 	}{
-		{"wrong record PID", 0, `"pid":4242`, `"pid":5151`},
-		{"missing lock owner", 1, "4242", ""},
-		{"ambiguous lock owner", 1, "4242", "4242\n5151"},
-		{"wrong effective user", 3, "dev", "other"},
-		{"wrong config", 4, "/srv/selected.toml", "/srv/other.toml"},
-		{"wrong executable", 6, "/opt/evener", "/other/evener"},
-		{"wrong service user", 13, "User=dev", "User=other"},
-		{"wrong service config", 13, "/srv/selected.toml", "/srv/other.toml"},
-		{"wrong service cwd", 13, "WorkingDirectory=/srv", "WorkingDirectory=/other"},
-		{"ambiguous definition", 13, " }", " } { path=/other ; }"},
-		{"two associated services", 14, "MainPID=6161", "MainPID=4242"},
-		{"changed start ticks", 16, "12500", "12501"},
-		{"rebooted owner", 16, "kernel-boot", "other-boot"},
-		{"changed lock owner", 17, "4242", "5151"},
+		{name: "wrong record PID", step: 0, old: `"pid":4242`, replacement: `"pid":5151`},
+		{name: "missing lock owner", step: 1, old: "4242", replacement: "", emptyGlobalRead: true},
+		{name: "ambiguous lock owner", step: 1, old: "4242", replacement: "4242\n5151"},
+		{name: "wrong effective user", step: 3, old: "dev", replacement: "other"},
+		{name: "wrong config", step: 4, old: "/srv/selected.toml", replacement: "/srv/other.toml"},
+		{name: "wrong executable", step: 6, old: "/opt/evener", replacement: "/other/evener"},
+		{name: "wrong service user", step: 13, old: "User=dev", replacement: "User=other"},
+		{name: "wrong service config", step: 13, old: "/srv/selected.toml", replacement: "/srv/other.toml"},
+		{name: "wrong service cwd", step: 13, old: "WorkingDirectory=/srv", replacement: "WorkingDirectory=/other"},
+		{name: "ambiguous definition", step: 13, old: " }", replacement: " } { path=/other ; }"},
+		{name: "two associated services", step: 14, old: "MainPID=6161", replacement: "MainPID=4242"},
+		{name: "changed start ticks", step: 16, old: "12500", replacement: "12501"},
+		{name: "rebooted owner", step: 16, old: "kernel-boot", replacement: "other-boot"},
+		{name: "changed lock owner", step: 17, old: "4242", replacement: "5151"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, commands := ownerCommands(t)
@@ -193,11 +194,11 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 			if tc.step == 1 {
 				// A completed empty global read is supplemented by the
 				// per-process candidate proof; an ambiguous read is not.
-				if tc.replacement == "" {
-					commands = append(commands[:2], ownerCommand{selectedLockCandidateRemote("/srv/state", "4242"), ""}, ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
-				} else {
-					commands = append(commands[:2], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
+				extra := []ownerCommand{}
+				if tc.emptyGlobalRead {
+					extra = append(extra, ownerCommand{selectedLockCandidateRemote("/srv/state", "4242"), ""})
 				}
+				commands = append(commands[:2], append(extra, ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})...)
 			}
 			if tc.name == "wrong config" {
 				commands = append(commands[:9], ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})

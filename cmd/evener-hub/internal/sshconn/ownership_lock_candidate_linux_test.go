@@ -19,10 +19,10 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-// localShellRunner executes a remote probe through the local /bin/sh. intercept
-// rewrites the global /proc/locks read to a successful empty observation, the
-// shape concurrent lock churn produced in real runs, without touching the
-// candidate's own fdinfo read.
+// localShellRunner executes a remote probe through the local /bin/sh. When
+// omitGlobal is set, it rewrites the global /proc/locks read to a successful
+// empty observation, the shape concurrent lock churn produced in real runs,
+// without touching the candidate's own fdinfo read.
 func localShellRunner(t *testing.T, omitGlobal bool) *fakeRunner {
 	t.Helper()
 	env := append(selectedLockToolEnv(t), "PATH=/usr/bin:/bin")
