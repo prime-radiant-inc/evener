@@ -13,3 +13,17 @@ func openPluginSourceLink(root, path string) (*os.File, error) {
 	}
 	return openRegularNoBlock(path)
 }
+
+// refuseGitSymlink refuses a source symlink whose lexical or resolved target
+// names a .git component. Ordinary links keep copyTree's existing dereference
+// behavior; only links into Git metadata are refused.
+func refuseGitSymlink(src, path string) error {
+	reachesGit, err := symlinkReachesGit(src, path)
+	if err != nil {
+		return err
+	}
+	if reachesGit {
+		return gitSymlinkError(src, path)
+	}
+	return nil
+}

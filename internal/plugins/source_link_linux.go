@@ -4,7 +4,6 @@ package plugins
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -14,25 +13,29 @@ import (
 // the link, which is the race the descriptor check exists to close.
 var pluginSourceBeforeLinkOpen = func(string) {}
 
-// openPluginSourceLink opens the target a source symlink names and verifies
-// that the opened descriptor's own resolved path does not reach Git metadata.
-// The name check and the bytes copied must share one identity: a link
-// retargeted after an earlier path check cannot change what this descriptor
-// reads, and /proc/self/fd names the file the descriptor actually holds.
+// openPluginSourceLink refuses a source symlink whose lexical target names Git
+// metadata, then opens the link path itself and verifies that the opened
+// descriptor's own resolved path does not reach Git metadata. The lexical
+// check catches a .git that is itself a symlink out of the tree; the
+// descriptor check catches a retarget the name check cannot see, because
+// /proc/self/fd names the file the descriptor actually holds.
 func openPluginSourceLink(root, path string) (*os.File, error) {
-	target, err := os.Readlink(path)
+	target, err := readLinkTarget(path)
 	if err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(path), target)
+	if targetTouchesGit(root, target) {
+		return nil, gitSymlinkError(root, path)
 	}
 	pluginSourceBeforeLinkOpen(path)
-	in, err := openRegularNoBlock(target)
+	// Open the link path, not the lexical join: Join collapses ".." before the
+	// kernel resolves intermediate symlinks, which can name different bytes.
+	// The descriptor check below is the authority on what was opened.
+	in, err := openRegularNoBlock(path)
 	if err != nil {
 		return nil, err
 	}
-	opened, err := os.Readlink(filepath.Join("/proc/self/fd", strconv.Itoa(int(in.Fd()))))
+	opened, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(int(in.Fd())))
 	if err != nil {
 		_ = in.Close()
 		return nil, err
