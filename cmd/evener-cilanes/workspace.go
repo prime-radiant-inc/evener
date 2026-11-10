@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,27 +25,43 @@ type workspace struct {
 	// or tools outside the workspace.
 	foreignModuleDirs map[string]bool
 	packages          map[string]*goPackage
+	// wholeTreeTesters are packages whose tests read the whole repository:
+	// they list its tracked files, or walk from its root. No name says which
+	// files they read, so every change reaches them.
+	wholeTreeTesters []string
 }
 
-// goPackage is one package directory's dependencies.
+// goPackage is one package directory's dependencies, split as go test
+// splits them: what the package builds from, which its importers build from
+// too, and what only its own tests add.
 type goPackage struct {
-	dir string
-	// dependsOn holds the package directories it imports, and every path
-	// its source names: a test that builds ./cmd/evener depends on that
-	// command as surely as an import would.
-	dependsOn map[string]bool
-	// dependsOnTrees are directories named with a trailing /..., which
-	// cover every package below them.
-	dependsOnTrees []string
-	// names are the repository paths its source names, read by the tree
-	// rule: a Go test that reads a frontend file by path runs when that
-	// file changes.
-	names map[string]bool
+	dir   string
+	build dependencies
+	test  dependencies
+}
+
+// dependencies are the package directories a set of Go files imports and
+// every path they name: a test that builds ./cmd/evener depends on that
+// command as surely as an import would, and one that reads a frontend file
+// by path depends on that file.
+type dependencies struct {
+	paths map[string]bool
+	// trees are directories named with a trailing /..., which cover every
+	// package below them.
+	trees []string
+}
+
+func (d *dependencies) add(p string) {
+	if d.paths == nil {
+		d.paths = map[string]bool{}
+	}
+	d.paths[p] = true
 }
 
 // parsedFile is what one Go file contributes before import paths resolve.
 type parsedFile struct {
 	dir     string
+	test    bool
 	imports []string
 	names   []string
 }
@@ -93,7 +110,7 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 		}
 		files = append(files, parsed)
 		if ws.packages[parsed.dir] == nil {
-			ws.packages[parsed.dir] = &goPackage{dir: parsed.dir, dependsOn: map[string]bool{}, names: map[string]bool{}}
+			ws.packages[parsed.dir] = &goPackage{dir: parsed.dir}
 		}
 	}
 
@@ -107,26 +124,34 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 		importDirs[importPath] = dir
 	}
 	for _, file := range files {
-		pkg := ws.packages[file.dir]
+		deps := &ws.packages[file.dir].build
+		if file.test {
+			deps = &ws.packages[file.dir].test
+		}
 		for _, imp := range file.imports {
 			if dir, ok := importDirs[imp]; ok {
-				pkg.dependsOn[dir] = true
+				deps.add(dir)
 			}
 		}
 		for _, name := range file.names {
+			if file.test && readsWholeTree(name, file.dir) && !slices.Contains(ws.wholeTreeTesters, file.dir) {
+				ws.wholeTreeTesters = append(ws.wholeTreeTesters, file.dir)
+			}
 			if dir, ok := importDirs[name]; ok {
-				pkg.dependsOn[dir] = true
+				deps.add(dir)
 				continue
 			}
 			for _, candidate := range pathCandidates(name, file.dir, ws.moduleOf(file.dir)) {
-				pkg.names[candidate] = true
 				if tree, ok := strings.CutSuffix(candidate, "/..."); ok {
-					pkg.dependsOnTrees = append(pkg.dependsOnTrees, tree)
+					deps.trees = append(deps.trees, tree)
 					continue
 				}
-				pkg.dependsOn[candidate] = true
-				if strings.HasSuffix(candidate, ".go") {
-					pkg.dependsOn[path.Dir(candidate)] = true
+				deps.add(candidate)
+				// A named Go file stands for its package, except at the
+				// repository root, where "main.go" resolves from any
+				// package's literal and names the root package by accident.
+				if dir := path.Dir(candidate); strings.HasSuffix(candidate, ".go") && dir != "." {
+					deps.add(dir)
 				}
 			}
 		}
@@ -173,7 +198,7 @@ func (ws *workspace) packageSource(file string) (string, bool) {
 // (filepath.Join(root, "cmd", "evener-hub", "frontend") names the frontend,
 // while its "frontend" alone names nothing), and each //go:embed pattern.
 func parseGoFile(fset *token.FileSet, root, file string) (parsedFile, error) {
-	parsed := parsedFile{dir: path.Dir(file)}
+	parsed := parsedFile{dir: path.Dir(file), test: strings.HasSuffix(file, "_test.go")}
 	f, err := parser.ParseFile(fset, filepath.Join(root, filepath.FromSlash(file)), nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
 		return parsed, err
@@ -255,6 +280,20 @@ func embedDir(pattern string) string {
 	return pattern
 }
 
+// readsWholeTree reports whether a test naming s reads the whole
+// repository: s is git's ls-files command, or a chain of ".." that climbs
+// from the test's package directory to the repository root. Production code
+// that lists files lists the user's repository, so only tests count.
+func readsWholeTree(s, pkgDir string) bool {
+	if s == "ls-files" {
+		return true
+	}
+	if pkgDir == "." || strings.Trim(strings.ReplaceAll(s, "..", ""), "/") != "" {
+		return false
+	}
+	return path.Join(pkgDir, s) == "."
+}
+
 // pathCandidates are the repository paths a string could name when a
 // package in pkgDir uses it: relative to the repository root, where root
 // package tests and repository-root helpers run; to the module root; and to
@@ -278,63 +317,89 @@ func pathCandidates(s, pkgDir, moduleDir string) []string {
 	return out
 }
 
-// dependents returns every package directory that depends, directly or
-// through other packages, on one of the seeds, with the seeds themselves.
-// Each maps to the seed's value: the changed path that reached it.
-func (ws *workspace) dependents(seeds map[string]string) map[string]string {
-	importers := map[string][]string{}
-	type treeDependent struct{ tree, dir string }
-	var treeDependents []treeDependent
+// affected returns every package whose tests a change reaches, mapped to a
+// changed path that reaches it. buildSeeds are packages whose build changed;
+// a changed build reaches every package that depends on it, through imports
+// and named paths. testSeeds are packages whose tests alone changed. A
+// package's tests are reached when its build is, when they change, or when
+// they depend on a reached package's build.
+func (ws *workspace) affected(buildSeeds, testSeeds map[string]string) map[string]string {
+	builders := map[string][]string{}
 	for _, pkg := range ws.packages {
-		for dep := range pkg.dependsOn {
-			importers[dep] = append(importers[dep], pkg.dir)
-		}
-		for _, tree := range pkg.dependsOnTrees {
-			treeDependents = append(treeDependents, treeDependent{tree, pkg.dir})
+		for p := range pkg.build.paths {
+			builders[p] = append(builders[p], pkg.dir)
 		}
 	}
-	reached := map[string]string{}
-	var queue []string
-	for dir, why := range seeds {
-		reached[dir] = why
-		queue = append(queue, dir)
-	}
-	slices.Sort(queue)
+	built := maps.Clone(buildSeeds)
+	queue := slices.Sorted(maps.Keys(buildSeeds))
 	for len(queue) > 0 {
 		dir := queue[0]
 		queue = queue[1:]
-		next := slices.Clone(importers[dir])
-		for _, td := range treeDependents {
-			if atOrUnder(dir, td.tree) {
-				next = append(next, td.dir)
+		next := slices.Clone(builders[dir])
+		for _, pkg := range ws.packages {
+			if pkg.build.coversTree(dir) {
+				next = append(next, pkg.dir)
 			}
 		}
 		slices.Sort(next)
 		for _, d := range next {
-			if _, ok := reached[d]; !ok {
-				reached[d] = reached[dir]
+			if _, ok := built[d]; !ok {
+				built[d] = built[dir]
 				queue = append(queue, d)
 			}
 		}
 	}
-	return reached
-}
 
-// readersOf are the packages whose source names file, or a directory
-// holding it, inside tree. A name above the tree (the repository root,
-// "cmd") is not counted: those are walks whose reach a name cannot show.
-func (ws *workspace) readersOf(file, tree string) []string {
-	var readers []string
+	tested := maps.Clone(built)
+	for dir, why := range testSeeds {
+		if _, ok := tested[dir]; !ok {
+			tested[dir] = why
+		}
+	}
+	builtDirs := slices.Sorted(maps.Keys(built))
 	for _, pkg := range ws.packages {
-		for name := range pkg.names {
-			if atOrUnder(name, tree) && atOrUnder(file, name) {
-				readers = append(readers, pkg.dir)
+		if _, ok := tested[pkg.dir]; ok {
+			continue
+		}
+		for _, dir := range builtDirs {
+			if pkg.test.paths[dir] || pkg.test.coversTree(dir) {
+				tested[pkg.dir] = built[dir]
 				break
 			}
 		}
 	}
-	slices.Sort(readers)
-	return readers
+	return tested
+}
+
+// coversTree reports whether a /... name covers the package in dir.
+func (d dependencies) coversTree(dir string) bool {
+	return slices.ContainsFunc(d.trees, func(tree string) bool { return atOrUnder(dir, tree) })
+}
+
+// readersOf are the packages whose build, and those whose tests alone, name
+// file or a directory holding it inside tree. A name above the tree (the
+// repository root, "cmd") is not counted: those are walks whose reach a name
+// cannot show.
+func (ws *workspace) readersOf(file, tree string) (build, test []string) {
+	reads := func(d dependencies) bool {
+		for p := range d.paths {
+			if atOrUnder(p, tree) && atOrUnder(file, p) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, pkg := range ws.packages {
+		switch {
+		case reads(pkg.build):
+			build = append(build, pkg.dir)
+		case reads(pkg.test):
+			test = append(test, pkg.dir)
+		}
+	}
+	slices.Sort(build)
+	slices.Sort(test)
+	return build, test
 }
 
 // atOrUnder reports whether p is dir or inside it.

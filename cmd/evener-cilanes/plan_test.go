@@ -49,10 +49,23 @@ var _, _ = os.ReadFile(filepath.Join("frontend", "src", "turn.ts"))
 `,
 		"cmd/evener/main.go": `package main
 
-import "fixture.test/repo/cmd/evener/internal/cli"
+import (
+	_ "fixture.test/repo/cmd/evener-hub"
+	"fixture.test/repo/cmd/evener/internal/cli"
+)
 
 func main() { cli.Run() }
 `,
+		// Like internal/devtool/shardrun: production code naming the
+		// command it builds, which agent tests import.
+		"internal/prebuilt/prebuilt.go": "package prebuilt\n\nconst Target = \"./cmd/evener\"\n",
+		"agent/leaf/leaf_test.go": `package leaf
+
+import "fixture.test/repo/internal/prebuilt"
+
+var _ = prebuilt.Target
+`,
+		"agent/session/session_test.go":  "package session\n",
 		"cmd/evener/internal/cli/cli.go": "package cli\n\nfunc Run() {}\n",
 		"cmd/evener-dev/bin/main.go": `package main
 
@@ -66,7 +79,7 @@ func main() { tool.Use() }
 		"agent/go.mod":                        "module fixture.test/repo/agent\n\ngo 1.27.0\n",
 		"agent/session/session.go":            "package session\n\nconst Name = \"s\"\n",
 		"agent/tool/tool.go":                  "package tool\n\nfunc Use() {}\n",
-		"agent/leaf/leaf.go":                  "package leaf\n\nimport \"strings\"\n\nvar _ = strings.Split(\"a.b\", \".\")\nvar _ = \"..\"\n",
+		"agent/leaf/leaf.go":                  "package leaf\n\nimport \"strings\"\n\nvar _ = strings.Split(\"a.b\", \".\")\nvar _ = \"..\"\nvar _ = \"main.go\"\n",
 		"agent/testdata/task/go.mod":          "module task\n",
 		"agent/testdata/task/task.go":         "package task\n",
 		"llm/go.mod":                          "module fixture.test/repo/llm\n\ngo 1.27.0\n",
@@ -120,7 +133,15 @@ func writeFixture(t *testing.T, files map[string]string) (string, []string) {
 
 func planFixture(t *testing.T, changed ...string) plan {
 	t.Helper()
-	root, tracked := writeFixture(t, fixtureFiles())
+	return planFixtureWith(t, nil, changed...)
+}
+
+// planFixtureWith plans a change against the fixture plus extra files.
+func planFixtureWith(t *testing.T, extra map[string]string, changed ...string) plan {
+	t.Helper()
+	files := fixtureFiles()
+	maps.Copy(files, extra)
+	root, tracked := writeFixture(t, files)
 	ws, err := loadWorkspace(root, tracked)
 	if err != nil {
 		t.Fatal(err)
@@ -219,17 +240,29 @@ func TestLeafAgentPackageRunsOnlyTheAgentModuleLanes(t *testing.T) {
 	}, goSourceLanes...)...)
 }
 
-// The hub imports agent/session, so a change there reaches every lane that
-// runs the hub, and the root module lanes, through the import graph.
+// The hub imports agent/session and cmd/evener imports the hub, so a change
+// there reaches every lane that runs either, through the import graph; and
+// agent/leaf's tests build cmd/evener through internal/prebuilt.
 func TestImportedAgentPackageRunsTheLanesOfItsImporters(t *testing.T) {
 	requireRuns(t, planFixture(t, "agent/session/session.go"), append([]string{
 		"fuzz",
 		"tests-parts/root",
 		"tests-parts/nonroot",
 		"race-root-parts/hub",
+		"race-root-parts/rest",
 		"race-module-shards/agent",
 		"hub-integration",
 		"web-browser",
+	}, goSourceLanes...)...)
+}
+
+// A package's tests are not part of what its importers build, so a change
+// to them runs only the lanes that run the package itself.
+func TestTestOnlyChangeRunsOnlyItsOwnPackagesLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "agent/session/session_test.go"), append([]string{
+		"fuzz",
+		"tests-parts/nonroot",
+		"race-module-shards/agent",
 	}, goSourceLanes...)...)
 }
 
@@ -247,14 +280,17 @@ func TestDevBinaryDependencyRunsWebUnit(t *testing.T) {
 	}, goSourceLanes...)...)
 }
 
-// The hub's tests build ./cmd/evener, so a package the command imports
-// reaches the hub's lanes although the hub never imports it.
+// The hub's tests build ./cmd/evener, and agent/leaf's tests import
+// internal/prebuilt, which names it; so a package the command imports
+// reaches both packages' lanes although neither imports it.
 func TestPackageBuiltByATestRunsThatTestsLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "cmd/evener/internal/cli/cli.go"), append([]string{
 		"fuzz",
 		"tests-parts/root",
+		"tests-parts/nonroot",
 		"race-root-parts/hub",
 		"race-root-parts/rest",
+		"race-module-shards/agent",
 		"hub-integration",
 		"web-browser",
 	}, goSourceLanes...)...)
@@ -282,7 +318,8 @@ func TestDeletedPackageStillRunsItsModuleLanes(t *testing.T) {
 var typeScriptLanes = []string{"web-unit", "web-browser", "native", "api-package", "static-build"}
 
 // The hub's tests read frontend/src by path, so a frontend change runs the
-// hub's lanes; packages that name no frontend path stay skipped.
+// hub's lanes. Only its tests read it, so the hub's importers (cmd/evener,
+// and through it agent/leaf's tests) stay skipped.
 func TestFrontendChangeRunsTheGoPackagesThatReadIt(t *testing.T) {
 	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/src/turn.ts"), append([]string{
 		"fuzz",
@@ -307,12 +344,16 @@ func TestFrontendFileNoGoPackageNamesRunsOnlyTheTypeScriptLanes(t *testing.T) {
 	}
 }
 
-// //go:embed names a path the package compiles in.
+// //go:embed names a path the package compiles in, so what embeds it is
+// changed for every importer too: cmd/evener, and agent/leaf's tests.
 func TestEmbeddedFileRunsTheEmbeddingPackagesLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/dist/PLACEHOLDER"), append([]string{
 		"fuzz",
 		"tests-parts/root",
+		"tests-parts/nonroot",
 		"race-root-parts/hub",
+		"race-root-parts/rest",
+		"race-module-shards/agent",
 		"hub-integration",
 	}, typeScriptLanes...)...)
 }
@@ -345,6 +386,53 @@ func TestRootPackageChangeRunsOnlyTheRootModuleLanes(t *testing.T) {
 		"tests-parts/root",
 		"race-root-parts/rest",
 	}, goSourceLanes...)...)
+}
+
+// A test that walks the repository reads every file, and no name says
+// which, so every change reaches it: agent/leaf's change and a frontend
+// source alike run the llm module's lanes.
+func TestTestWalkingTheWholeRepositoryIsReachedByEveryChange(t *testing.T) {
+	for name, audit := range map[string]string{
+		"walks the root": `package audit
+
+import "path/filepath"
+
+var root = filepath.Join("..", "..")
+`,
+		"lists tracked files": `package audit
+
+import "os/exec"
+
+var list = exec.Command("git", "ls-files", "-z")
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			extra := map[string]string{"llm/audit/audit_test.go": audit}
+			requireRuns(t, planFixtureWith(t, extra, "agent/leaf/leaf.go"), append([]string{
+				"fuzz",
+				"tests-parts/nonroot",
+				"race-module-shards/agent",
+				"race-module-shards/nonagent",
+			}, goSourceLanes...)...)
+			requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), append([]string{
+				"fuzz",
+				"tests-parts/nonroot",
+				"race-module-shards/nonagent",
+			}, typeScriptLanes...)...)
+		})
+	}
+}
+
+// Production code that lists a repository's files lists the user's
+// repository, not this one, so it reads nothing of a change here.
+func TestProductionListingTrackedFilesIsNotAWholeRepositoryRead(t *testing.T) {
+	extra := map[string]string{"llm/worktree.go": `package llm
+
+import "os/exec"
+
+var list = exec.Command("git", "ls-files", "-z")
+`}
+	requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), typeScriptLanes...)
 }
 
 func TestMixedChangeRunsTheUnionOfItsFilesLanes(t *testing.T) {

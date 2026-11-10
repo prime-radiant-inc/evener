@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -46,8 +47,8 @@ func planLanes(ws *workspace, changed []string) plan {
 		p.markAll("(no changed paths)")
 		return p
 	}
-	seeds := map[string]string{}
-	seed := func(dir, why string) {
+	buildSeeds, testSeeds := map[string]string{}, map[string]string{}
+	seed := func(seeds map[string]string, dir, why string) {
 		if _, ok := seeds[dir]; !ok {
 			seeds[dir] = why
 		}
@@ -62,7 +63,11 @@ func planLanes(ws *workspace, changed []string) plan {
 			continue
 		}
 		if isPackageSource {
-			seed(pkgDir, file)
+			if strings.HasSuffix(file, "_test.go") {
+				seed(testSeeds, pkgDir, file)
+			} else {
+				seed(buildSeeds, pkgDir, file)
+			}
 			for _, l := range catalog {
 				if l.goSource {
 					p.mark(l, file)
@@ -75,17 +80,20 @@ func planLanes(ws *workspace, changed []string) plan {
 					p.mark(l, file)
 				}
 			}
-			for _, reader := range ws.readersOf(file, tree) {
-				seed(reader, file)
+			build, test := ws.readersOf(file, tree)
+			for _, reader := range build {
+				seed(buildSeeds, reader, file)
+			}
+			for _, reader := range test {
+				seed(testSeeds, reader, file)
 			}
 		}
 	}
-	reached := ws.dependents(seeds)
-	dirs := make([]string, 0, len(reached))
-	for dir := range reached {
-		dirs = append(dirs, dir)
+	for _, dir := range ws.wholeTreeTesters {
+		seed(testSeeds, dir, changed[0])
 	}
-	slices.Sort(dirs)
+	reached := ws.affected(buildSeeds, testSeeds)
+	dirs := slices.Sorted(maps.Keys(reached))
 	for _, l := range catalog {
 		if l.runsPackage == nil {
 			continue
