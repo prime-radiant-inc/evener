@@ -58,11 +58,10 @@ func newSourceRetryHub(t *testing.T, republish bool, configure ...func(*hubcore.
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         past,
-		Roster:       hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID}),
-	}
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		Past:   past,
+		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID}),
+	})
 	for _, apply := range configure {
 		apply(&cfg)
 	}

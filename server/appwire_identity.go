@@ -277,6 +277,16 @@ func (s *Server) SetDescendantLiveWatchesFunc(fn func(threadIDs []string) map[st
 	s.mu.Unlock()
 }
 
+// SetDescendantQuotaWaitsFunc installs the resolver the thread LIST path
+// consults for the descendant rows whose model call is waiting out a usage
+// limit (appDescendantQuotaWaitsFunc). Like SetDescendantLiveWatchesFunc it
+// answers a whole page and is called after releasing s.mu. nil disables it.
+func (s *Server) SetDescendantQuotaWaitsFunc(fn func(threadIDs []string) map[string]*appwire.ThreadFailure) {
+	s.mu.Lock()
+	s.appDescendantQuotaWaitsFunc = fn
+	s.mu.Unlock()
+}
+
 // SetSubagentTallyFunc installs the seam the thread LIST path reads the root
 // session's subagent tally through (S3). Like SetDescendantLiveWatchesFunc it
 // reaches across the delegate-controller boundary, so the list calls it after

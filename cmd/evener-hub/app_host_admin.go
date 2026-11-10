@@ -40,10 +40,11 @@ import (
 //
 // The read-only remainder — the families whose effect is a lookup or a
 // refetch, so an identical retry is harmless: instance/list, launch/{resolve,
-// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview,
-// checkUpdates}, auth/{status,test,list}, settings/agentsDoc/get, the discovery
-// helpers (paths/complete, path/validate, projects/recent, harnesses/list,
-// spawn/slashCatalog, git/head), and model/list — stays on AdminCall.
+// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,components,
+// preview,checkUpdates}, auth/{status,test,list}, settings/agentsDoc/get, the
+// discovery helpers (paths/complete, path/validate, projects/recent,
+// harnesses/list, spawn/slashCatalog, git/head), and model/list — stays on
+// AdminCall.
 var remoteHostAdminMutationMethods = map[string]struct{}{
 	// Provider instances: create/edit/remove/setDefault all write the host's
 	// instance config.

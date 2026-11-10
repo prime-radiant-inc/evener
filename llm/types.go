@@ -354,7 +354,7 @@ type Request struct {
 	TopP                 *float64          `json:"top_p,omitempty"`
 	MaxTokens            *int              `json:"max_tokens,omitempty"`
 	StopSequences        []string          `json:"stop_sequences,omitempty"`
-	ReasoningEffort      *string           `json:"reasoning_effort,omitempty"` // low|medium|high|none
+	ReasoningEffort      *string           `json:"reasoning_effort,omitempty"` // minimal|low|medium|high|xhigh|max|none
 	Metadata             map[string]string `json:"metadata,omitempty"`
 	ClientMetadata       map[string]string `json:"client_metadata,omitempty"`
 	Include              []string          `json:"include,omitempty"`
@@ -659,6 +659,14 @@ func ReasoningBudget(effort string) int {
 // of the lattice.
 func ReasoningEffortVocabulary() []string {
 	return effort.Tiers()
+}
+
+// AcceptedReasoningEfforts returns every value a session entry point accepts:
+// the six ranked levels plus the explicit off sentinel. It is the set a tool
+// schema or CLI flag should advertise, so a surface cannot enumerate fewer
+// levels than ValidateReasoningEffort allows.
+func AcceptedReasoningEfforts() []string {
+	return append(ReasoningEffortVocabulary(), ReasoningEffortNone)
 }
 
 // ValidateReasoningEffort reports whether effort is a value NewSession, a

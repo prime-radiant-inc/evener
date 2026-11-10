@@ -2432,3 +2432,11 @@ func TestRosterConfirmedReplacementOnAPIDAnnouncesTheOldSessionGone(t *testing.T
 		t.Fatalf("the next refresh announced the departure again: %v", announced)
 	}
 }
+
+// An empty session ID names no child, so SubagentState never reports it live.
+func TestRosterSubagentStateEmptyID(t *testing.T) {
+	r := NewRoster("", nil)
+	if state, ok := r.SubagentState(""); ok || state != "" {
+		t.Fatalf("SubagentState(\"\") = %q, %v, want empty and not live", state, ok)
+	}
+}

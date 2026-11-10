@@ -34,7 +34,7 @@ func TestManagerWatchSharedDaemonReconnect(t *testing.T) {
 			local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 				return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, SourceID: "local", SessionID: "manager", InstanceID: "manager", WorkspaceRef: "local:manager"}, SessionID: "manager", Manager: true}}
 			}, nil)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			server := newHubAppServer(cfg, sources)
 			defer server.Shutdown(ctx)
 			owner := &sessionOperations{cfg: cfg, sources: sources, server: server}

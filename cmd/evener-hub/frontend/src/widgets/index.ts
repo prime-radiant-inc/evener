@@ -50,7 +50,7 @@ export { FailureGlyph } from "./failureglyph";
 export type { FocusScopeProps } from "./focusscope";
 // --- overlays batch (W2T3) ---
 export { FocusScope } from "./focusscope";
-export { useFocusRehome } from "./focusscope/rehome";
+export { rehomeFocus, useFocusRehome } from "./focusscope/rehome";
 export type { FormRowProps } from "./formrow";
 export { FormRow } from "./formrow";
 export type { HoverCardProps } from "./hovercard";

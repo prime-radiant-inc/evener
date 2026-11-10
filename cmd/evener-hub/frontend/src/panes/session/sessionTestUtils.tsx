@@ -2,12 +2,18 @@ import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
-import type { vi } from "vitest";
+import { vi } from "vitest";
+import * as StatusBarModule from "../../shell/statusbar/StatusBar";
+import type { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
+import * as SessionChromeModule from "./chrome/SessionChrome";
+import * as ComposerModule from "./composer/Composer";
+import { refreshPendingTurnsProjection } from "./composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import "./index";
 import "./testing/editorGeometry";
 
@@ -174,3 +180,50 @@ export const emitDaemonGoneResync = (client: FakeClient) =>
   act(async () => {
     client.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
   });
+
+// The session footer's composer boundary is swapped for a visible stub ONLY to
+// prove Session.tsx mounts it with the right ref and no longer adds a
+// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
+// owns the inline SessionChrome; its marker is mirrored inside this boundary so
+// a Session suite can pin the Session-level placement without duplicating
+// Composer's own behavior tests.
+//
+// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
+// Composer/SessionChrome back mid-file and render them. A suite re-stubs in
+// its beforeEach too, not just once at load: a test that restores a slot
+// without re-stubbing it (test.each has no onTestFinished) would otherwise
+// leave the real component in place for every later test in that file.
+export function stubSessionSlots(): void {
+  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
+    <div data-testid="composer-slot">
+      {ref}
+      <div data-testid="session-chrome-inline" />
+    </div>
+  ));
+  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
+    <div data-testid="session-chrome">{ref}</div>
+  ));
+  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
+}
+
+/** Durably enqueues one pending "hello" turn/start for `ref` in
+ * `mutationStorage`, optionally marked attempted, and settles the pending-turns
+ * projection; returns its client mutation id. */
+export async function seedPendingSend(
+  mutationStorage: MutationOutboxIndexedDB,
+  ref = "ref_a",
+  options: { attempted?: boolean } = {},
+): Promise<string> {
+  const record = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
+  await refreshPendingTurnsProjection(ref);
+  await flushPendingTurnsProjectionForTests();
+  return record.clientMutationId;
+}

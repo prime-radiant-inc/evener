@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -437,6 +439,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	s.inputsInFlight.Add(1)
+	defer s.inputsInFlight.Add(-1)
 	// A delegate child's turn keeps the marker parent's activity evidence
 	// fresh for its whole life, silent stretches included; see
 	// startLaneEvidenceTicker. Stopped before the retirement release, so no
@@ -1059,6 +1063,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
+	// Only an input that reached its round loop was admitted as a turn; a wake
+	// that stood down earlier (an unnameable turn, a parked rail) does not
+	// count toward an owed completion's undispatched turns.
+	admittedToRounds := false
+	defer func() { s.endTurnForJobNotificationsAwaitingRequest(admittedToRounds) }()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	// Consume the deliveries this turn's settled rounds presented, armed
@@ -1414,6 +1423,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
+	admittedToRounds = true
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -1460,7 +1470,63 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		var (
+			profile, usedProfile *provider.Profile
+			sys, reqEffort       string
+			req                  llm.Request
+			fullHistory          []llm.Message
+			modelResp            sessionModelResponse
+			attempt              ModelAttemptMetadata
+			tPhaseStart          time.Time
+			err, prepareErr      error
+		)
+		// A call that waited out a usage limit (waitOutUsageLimit) makes the
+		// round's request again: prepared afresh, so it runs on a model
+		// switched to meanwhile and carries steering and notifications that
+		// arrived meanwhile, and within the same round, so waiting spends no
+		// round.
+		for {
+			// Notifications that arrived since the opener's drain or the
+			// previous request join this request, including a pause_turn
+			// continuation, which does not advance the round. They count as
+			// delivered only once a request is dispatched (below), so any exit
+			// before that leaves them owed.
+			if kind == EntryNotification {
+				s.injectLaterJobNotifications(ctx)
+			}
+			profile, sys, _, req, fullHistory, reqEffort, prepareErr = s.prepareModelRequestWithError(ctx, round, &timings)
+			if prepareErr != nil {
+				break
+			}
+			// --- Phase: LLMCall ---
+			tPhaseStart = s.sclock().Now()
+			quotaWakes := s.quotaWakeCount()
+			s.noteParentJobActivity(jobPhaseAwaitingModel)
+			// Completions awaiting a request settle only once one built from
+			// the transcript holding their reminders has actually been handed
+			// to the provider; the client reports that moment. A provider
+			// error after it still settles them (the turn fails visibly, or
+			// waits and retries from the same transcript), while a Stop, an
+			// admission refusal or any other failure before it leaves them
+			// owed.
+			var requestSent atomic.Bool
+			sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
+			modelResp, req, attempt, usedProfile, err = s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
+			if requestSent.Load() {
+				s.settleJobNotificationsCarriedByRequest(ctx)
+			}
+			for _, callID := range modelResp.CommunicatePreviewCallIDs {
+				communicatePreviewCalls[callID] = struct{}{}
+			}
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			if waitErr != nil {
+				err = waitErr
+			}
+			if !retry {
+				break
+			}
+			s.resetCommunicatePreviews(communicatePreviewCalls)
+		}
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
@@ -1470,14 +1536,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				continue
 			}
 			return "", progressed, prepareErr
-		}
-		// --- Phase: LLMCall ---
-		tPhaseStart := s.sclock().Now()
-
-		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
-		for _, callID := range modelResp.CommunicatePreviewCallIDs {
-			communicatePreviewCalls[callID] = struct{}{}
 		}
 		resp := modelResp.Response
 
@@ -1730,10 +1788,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
-		// A managed job can finish while this tool batch is running. Yield before
-		// another ordinary model round so the outer drain delivers that completion
-		// as an EntryNotification turn. Notification turns already own their current
-		// batch and leave any later arrivals for the next wake.
+		// A managed job can finish while this tool batch is running. An ordinary
+		// turn yields before another model round so the outer drain delivers that
+		// completion as an EntryNotification turn. A notification turn is that
+		// delivery already: it folds the arrival in at the start of its next
+		// round, once that round is certain to make a model request.
 		if kind != EntryNotification && s.peekNotifications() > 0 {
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil

@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -653,5 +657,140 @@ func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T
 				t.Fatal("client copied without timeout policy")
 			}
 		})
+	}
+}
+
+// A transport error whose cause is a net.OpError wrapping the adapter's own
+// deadline is the transport timeout, not an opaque failure.
+func TestAPITimeoutSourceForTransportUnwrapsANetOpDeadline(t *testing.T) {
+	opErr := &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}
+	urlErr := &url.Error{Op: "Post", URL: "https://provider.test/api", Err: opErr}
+	got := APITimeoutSourceForTransport(context.Background(), context.Background(), urlErr)
+	if got != APITimeoutTransport {
+		t.Fatalf("APITimeoutSourceForTransport(net.OpError→DeadlineExceeded) = %q, want %q", got, APITimeoutTransport)
+	}
+}
+
+// After the request was written, a read failure that is not a timeout passes
+// through untouched rather than being reported as a response-header timeout.
+func TestResponseHeaderTimeoutTransportPassesANonTimeoutErrorThrough(t *testing.T) {
+	sentinel := &scriptedPostWriteReadError{}
+	conn := newScriptedPostWriteConn(sentinel)
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = nil
+	base.DisableKeepAlives = true
+	base.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return conn, nil
+	}
+	transport := &responseHeaderTimeoutTransport{base: base}
+	request, err := http.NewRequest(http.MethodGet, "http://provider.test/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := transport.RoundTrip(request)
+	if response != nil {
+		t.Fatalf("RoundTrip response = %#v, want nil", response)
+	}
+	if reflect.TypeOf(err) != reflect.TypeOf(sentinel) || reflect.ValueOf(err).Pointer() != reflect.ValueOf(sentinel).Pointer() {
+		t.Fatalf("RoundTrip error = %T %v, want exact sentinel %p", err, err, sentinel)
+	}
+	if !conn.wrote.Load() {
+		t.Fatal("scripted connection observed no successful request write")
+	}
+}
+
+type scriptedPostWriteConn struct {
+	readErr error
+	wrote   atomic.Bool
+	written chan struct{}
+	once    sync.Once
+}
+
+func newScriptedPostWriteConn(readErr error) *scriptedPostWriteConn {
+	return &scriptedPostWriteConn{readErr: readErr, written: make(chan struct{})}
+}
+
+func (c *scriptedPostWriteConn) Read([]byte) (int, error) {
+	<-c.written
+	return 0, c.readErr
+}
+
+func (c *scriptedPostWriteConn) Write(p []byte) (int, error) {
+	c.wrote.Store(true)
+	c.once.Do(func() { close(c.written) })
+	return len(p), nil
+}
+
+func (*scriptedPostWriteConn) Close() error                     { return nil }
+func (*scriptedPostWriteConn) LocalAddr() net.Addr              { return scriptedPostWriteAddr("local") }
+func (*scriptedPostWriteConn) RemoteAddr() net.Addr             { return scriptedPostWriteAddr("remote") }
+func (*scriptedPostWriteConn) SetDeadline(time.Time) error      { return nil }
+func (*scriptedPostWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (*scriptedPostWriteConn) SetWriteDeadline(time.Time) error { return nil }
+func (a scriptedPostWriteAddr) Network() string                 { return "scripted" }
+func (a scriptedPostWriteAddr) String() string                  { return string(a) }
+
+type scriptedPostWriteReadError struct{}
+type scriptedPostWriteAddr string
+
+func (*scriptedPostWriteReadError) Error() string { return "scripted post-write read failure" }
+
+func TestAPILogTransportUsesStandardCompression(t *testing.T) {
+	transport := &responseHeaderTimeoutTransport{base: &http.Transport{DisableCompression: false}}
+	if !transport.APILogTransportUsesStandardCompression() {
+		t.Fatal("transport with compression should return true")
+	}
+	transport2 := &responseHeaderTimeoutTransport{base: &http.Transport{DisableCompression: true}}
+	if transport2.APILogTransportUsesStandardCompression() {
+		t.Fatal("transport without compression should return false")
+	}
+	transport3 := &responseHeaderTimeoutTransport{}
+	if transport3.APILogTransportUsesStandardCompression() {
+		t.Fatal("nil-base transport should return false")
+	}
+}
+
+// CloseIdleConnections reaches the wrapped transport: a kept-alive connection
+// sitting idle in its pool is closed.
+func TestResponseHeaderTimeoutTransportCloseIdleConnections(t *testing.T) {
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closeOnce.Do(func() { close(closed) })
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	transport := &responseHeaderTimeoutTransport{base: &http.Transport{}}
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
+	}
+
+	transport.CloseIdleConnections()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the idle connection stayed open after CloseIdleConnections")
+	}
+}
+
+// A response-header timeout declares itself a timeout without the caller
+// unwrapping it.
+func TestDeclaredKindOfAResponseHeaderTimeout(t *testing.T) {
+	if got := DeclaredKind(newResponseHeaderTimeoutError("", "test timeout", nil)); got != KindTimeout {
+		t.Fatalf("DeclaredKind(responseHeaderTimeoutError) = %q, want %q", got, KindTimeout)
 	}
 }

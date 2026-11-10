@@ -691,8 +691,17 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Ref == "" {
 		live.Evener.Ref = past.Evener.Ref
 	}
+	if live.Evener.ParentRef == "" {
+		live.Evener.ParentRef = past.Evener.ParentRef
+	}
+	if live.Evener.Kind == "" {
+		live.Evener.Kind = past.Evener.Kind
+	}
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
+	}
+	if live.Evener.ForkLabel == "" {
+		live.Evener.ForkLabel = past.Evener.ForkLabel
 	}
 	if live.Evener.Tasks == nil {
 		live.Evener.Tasks = past.Evener.Tasks
@@ -900,10 +909,38 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 // the same from thread/list and thread/read (#1840).
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
+	thread = stampHubThreadKind(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
 	thread.Evener.Capabilities.VoiceArm = hubVoiceArm(cfg, thread)
 	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
 	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
+	return thread
+}
+
+// stampHubThreadKind names a live fork child or subagent from the hub's own
+// session metadata when the serving daemon's projection omits the kind. A
+// fork child's transcript opens with a verbatim copy of the parent's prefix,
+// so clients need the kind to avoid charging that inherited spend to the
+// child. Saved reads already name it (pastEntryThread); this is the live-path
+// counterpart, applied at the one seam every hub-served read passes through.
+func stampHubThreadKind(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	if thread.Evener.Kind != "" || cfg.Past == nil {
+		return thread
+	}
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
+		return thread
+	}
+	entry, ok := cfg.Past.Find(ref.ThreadID)
+	if !ok {
+		return thread
+	}
+	switch {
+	case entry.Meta.IsSubagent:
+		thread.Evener.Kind = "subagent"
+	case entry.Meta.ParentSessionID != "":
+		thread.Evener.Kind = "fork"
+	}
 	return thread
 }
 
@@ -1253,6 +1290,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Manager:               entry.Meta.Manager,
 			ParentRef:             parentRef,
 			Kind:                  kind,
+			ForkLabel:             entry.Meta.ForkLabel,
 			Profile:               entry.Meta.ProfileID,
 			Goal:                  persistedGoalState(entry.Meta.Goal),
 			HumanNote:             entry.Meta.HumanNote,

@@ -16,7 +16,8 @@ import (
 func TestEchoStdioProtocol(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "echo-server")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	// This protocol fixture needs no VCS metadata or repository-wide Git probes.
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, output)
 	}

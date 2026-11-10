@@ -47,7 +47,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	configureObservationTargetSessionTools(daemon, source)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
@@ -133,7 +133,7 @@ func TestManagerRemoteObservationWatchRequiresNegotiatedSessionTools(t *testing.
 			sources := appsource.NewRegistry()
 			sources.Add(local)
 			sources.Add(remote)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+			cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 			server := newHubAppServer(cfg, sources)
 			defer server.Shutdown(ctx)
 			owner := &sessionOperations{cfg: cfg, sources: sources, server: server}
@@ -242,7 +242,7 @@ func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
 	})
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	server := appserver.NewServer(appserver.ServerConfig{})
 	defer server.Shutdown(ctx)
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
@@ -378,7 +378,7 @@ func TestManagerObservationStartupWindowDoesNotCancelBinding(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})})
 	web := NewWebServer(cfg)
 	hubServer := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
@@ -531,7 +531,7 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)

@@ -91,6 +91,7 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 	// single walk of the live tree, where resolving each row on its own searched
 	// that tree once per row.
 	s.attachLiveWatches(data)
+	s.attachDescendantQuotaWaits(data[1:])
 	s.attachSubagentTally(&data[0])
 	return appwire.ThreadListResponse{Data: data}, nil
 }

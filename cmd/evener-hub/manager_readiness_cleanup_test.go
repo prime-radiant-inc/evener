@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -42,6 +43,7 @@ const managerCleanupCompositionChildEnv = "EVENER_MANAGER_CLEANUP_COMPOSITION_CH
 const managerCleanupCompositionReportEnv = "EVENER_MANAGER_CLEANUP_COMPOSITION_REPORT"
 const managerCleanupClosedDelayEnv = "EVENER_MANAGER_CLEANUP_CLOSED_DELAY"
 const managerCleanupClosedExitEnv = "EVENER_MANAGER_CLEANUP_CLOSED_EXIT_WITHOUT_SIGNAL"
+const managerCleanupClosedOutputMarkerEnv = "EVENER_MANAGER_CLEANUP_CLOSED_OUTPUT_MARKER"
 const hostCleanupBoundaryEnv = "EVENER_HOST_CLEANUP_BOUNDARY"
 const hostCleanupBoundaryReportEnv = "EVENER_HOST_CLEANUP_BOUNDARY_REPORT"
 const hostCleanupBoundaryMarkEnv = "EVENER_HOST_CLEANUP_BOUNDARY_MARK"
@@ -161,6 +163,9 @@ func TestManagerReadinessCleanupProcessHelper(t *testing.T) {
 					time.Sleep(parsed)
 				}
 				if os.Getenv(managerCleanupClosedExitEnv) == "1" {
+					if marker := os.Getenv(managerCleanupClosedOutputMarkerEnv); marker != "" {
+						fmt.Fprintln(os.Stderr, marker)
+					}
 					t.Fatalf("helper exits without signaling the cleanup barrier")
 				}
 				if err := os.WriteFile(os.Getenv(managerCleanupClosedEnv), []byte("closed"), 0o600); err != nil {
@@ -387,12 +392,14 @@ func TestManagerCleanupClosedBarrierReportsHelperExitWithoutSignal(t *testing.T)
 		"-test.run=^TestManagerReadinessCleanupProcessHelper$",
 		"-manager-cleanup-process-config="+filepath.Join(root, "hub.toml"),
 	)
+	outputMarker := "fixture-helper-output-" + t.Name()
 	cmd.Env = append(os.Environ(),
 		managerCleanupHelperEnv+"=1",
 		managerCleanupListenEnv+"=127.0.0.1:0",
 		managerCleanupReadyEnv+"="+readyPath,
 		managerCleanupClosedEnv+"="+closedPath,
 		managerCleanupClosedExitEnv+"=1",
+		managerCleanupClosedOutputMarkerEnv+"="+outputMarker,
 	)
 	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
@@ -410,11 +417,14 @@ func TestManagerCleanupClosedBarrierReportsHelperExitWithoutSignal(t *testing.T)
 	if waitErr == nil {
 		t.Fatal("closed barrier succeeded although the helper exited without signaling it")
 	}
-	if !strings.Contains(waitErr.Error(), "helper exited before signaling") {
-		t.Fatalf("closed barrier failure = %v, want the helper's exit, not a timeout", waitErr)
+	if !errors.Is(waitErr, io.EOF) {
+		t.Fatalf("closed barrier failure = %v, want the milestone pipe's EOF", waitErr)
 	}
-	if !strings.Contains(waitErr.Error(), "helper exits without signaling the cleanup barrier") {
-		t.Fatalf("closed barrier failure does not carry the helper's failure: %v", waitErr)
+	if _, ok := errors.AsType[*exec.ExitError](waitErr); !ok {
+		t.Fatalf("closed barrier failure = %v, want the helper's exit error", waitErr)
+	}
+	if !strings.Contains(waitErr.Error(), outputMarker) {
+		t.Fatalf("closed barrier failure does not carry the helper's output marker %q: %v", outputMarker, waitErr)
 	}
 	if _, err := os.Stat(closedPath); !os.IsNotExist(err) {
 		t.Fatalf("helper wrote the closed barrier before exiting, stat err = %v", err)

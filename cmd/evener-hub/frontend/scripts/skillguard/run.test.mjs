@@ -8,9 +8,14 @@
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { rmSync } from "node:fs";
 
-import { CHROME_SOCKET_PATH_LIMIT, chromeSingletonSocketPath } from "../browserGuardProcess.mjs";
+import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
+  CHROME_SOCKET_PATH_LIMIT,
+  chromeSingletonSocketPath,
+} from "../browserGuardProcess.mjs";
 import { Driver, skillGuardChromeProfileDir } from "./run.mjs";
 
 const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
@@ -530,5 +535,67 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
     expect(restoredAwayWithReplyUnseen).toBe(true);
     expect(port.scrollTop).toBeGreaterThanOrEqual(896);
     expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+});
+
+// This driver starts Chrome itself. Its announcement wait used to be
+// CHILD_EXIT_GRACE_MS * 5 (10s) while every other guard used the shared
+// CHROME_ANNOUNCEMENT_DEADLINE_MS (120s), so a loaded runner that took longer
+// than 10s to print the DevTools line dropped a 5-PR merge-queue batch. The
+// fake browser below never announces; the faked clock makes the deadline the
+// only thing that decides when start() rejects.
+describe("Chrome DevTools announcement budget", () => {
+  class SilentChrome extends EventEmitter {
+    constructor() {
+      super();
+      this.stderr = new EventEmitter();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("keeps waiting past 10s and fails only at the shared 120s budget", async () => {
+    vi.useFakeTimers();
+    const spawned = [];
+    const d = new Driver({
+      url: "http://127.0.0.1/",
+      artifactDir: "",
+      controlPath: "",
+      milestonePath: "",
+      chromeBinary: "/fake/chrome",
+      spawnChrome: () => {
+        const child = new SilentChrome();
+        spawned.push(child);
+        return child;
+      },
+    });
+    let settled = false;
+    const started = d.start().then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(CHROME_ANNOUNCEMENT_DEADLINE_MS - 10_000 - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(started).resolves.toBeInstanceOf(Error);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      for (const child of spawned) child.exitCode = 0;
+      vi.useRealTimers();
+      await d.lifecycle?.cleanup();
+    }
   });
 });

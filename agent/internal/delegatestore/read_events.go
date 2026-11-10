@@ -64,7 +64,7 @@ var ErrLineTooLong = linecap.ErrTooLong
 // validating them as a coherent delegate history — see
 // ReadEventsWithDiagnostics' doc comment.
 func ReadEvents(path string) ([]Event, error) {
-	events, _, err := ReadEventsWithDiagnostics(path)
+	events, _, err := ReadEventsWithDiagnostics(context.Background(), path)
 	return events, err
 }
 
@@ -89,8 +89,8 @@ func ReadEvents(path string) ([]Event, error) {
 // specifically, rather than in ScanEvents/ScanEventsFrom: this wrapper
 // always reads the WHOLE journal from byte zero (never a delta), so there
 // is no partial-prefix/ErrScanLimitExceeded case for a Fold error to mask.
-func ReadEventsWithDiagnostics(path string) ([]Event, ReadDiagnostics, error) {
-	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{})
+func ReadEventsWithDiagnostics(ctx context.Context, path string) ([]Event, ReadDiagnostics, error) {
+	events, diagnostics, err := ScanEvents(ctx, path, ScanLimits{})
 	if err != nil {
 		return nil, diagnostics, err
 	}

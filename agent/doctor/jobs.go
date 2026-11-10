@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,7 +44,7 @@ type DelegateView struct {
 	RequestedModel     string                        `json:"requested_model,omitempty"`
 	ResolvedProfileID  string                        `json:"resolved_profile_id,omitempty"`
 	ResolvedModel      string                        `json:"resolved_model,omitempty"`
-	ReasoningEffort    string                        `json:"reasoning_effort,omitempty"`
+	ReasoningEffort    string                        `json:"reasoning_effort,omitempty"` // requested level; the model's ladder clamps each request
 	Phase              string                        `json:"phase"`
 	Resumable          bool                          `json:"resumable"`
 	NotResumableReason string                        `json:"not_resumable_reason,omitempty"`
@@ -172,18 +173,18 @@ type delegateCacheKey struct {
 // Callers holding the session's meta already (ListSessions does) can skip the
 // per-session meta read with getForRoot.
 func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, error) {
-	return c.getForRoot(paths.BucketDir, resolveDelegateRoot(paths))
+	return c.getForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // getForRoot is get with a pre-resolved root — the caller already read the
 // session's meta and knows its job-tree root, so the cache lookup needs no
 // further I/O.
-func (c delegateCache) getForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
+func (c delegateCache) getForRoot(ctx context.Context, bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
 	key := delegateCacheKey{bucketDir: bucketDir, rootSessionID: rootSessionID}
 	if entry, ok := c[key]; ok {
 		return schema.SessionDelegateJournalPath(bucketDir, rootSessionID), entry.state, entry.diagnostics, nil
 	}
-	path, state, diagnostics, err := stableDoctorDelegatesForRoot(bucketDir, rootSessionID)
+	path, state, diagnostics, err := stableDoctorDelegatesForRoot(ctx, bucketDir, rootSessionID)
 	if err != nil {
 		return path, nil, nil, err
 	}
@@ -217,17 +218,17 @@ func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
 // stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
 // override, else the session itself) and reads that root's delegates.jsonl.
 func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
-	return stableDoctorDelegatesForRoot(paths.BucketDir, resolveDelegateRoot(paths))
+	return stableDoctorDelegatesForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // stableDoctorDelegatesForRoot reads one resolved root's delegates.jsonl
 // through the read-only event reader and folds it — the stable delegate
 // lifecycle authority. Reads are pure: this never opens an append-capable
 // store.
-func stableDoctorDelegatesForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
+func stableDoctorDelegatesForRoot(ctx context.Context, bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
 	path := schema.SessionDelegateJournalPath(bucketDir, rootSessionID)
 	delegateJournalRead(path)
-	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
+	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(ctx, path)
 	if err != nil {
 		return path, nil, nil, err
 	}

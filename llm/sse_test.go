@@ -211,3 +211,9 @@ func TestParseSSE_NoOptions_PreservesExistingBehavior(t *testing.T) {
 		t.Errorf("expected '[DONE]', got %q", events[1].Data)
 	}
 }
+
+func TestAPITimeoutSourceForSSERecognizesItsReadTimeout(t *testing.T) {
+	if got := APITimeoutSourceForSSE(&sseReadTimeoutError{timeout: 5e9}); got != APITimeoutSSERead {
+		t.Fatalf("APITimeoutSourceForSSE(sseReadTimeoutError) = %q, want %q", got, APITimeoutSSERead)
+	}
+}

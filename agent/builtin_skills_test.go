@@ -102,10 +102,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	c.Register(f)
 
 	// Anthropic profile renders skills in system prompt, so we can verify shadowing.
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 	ctx := tripwireCtx(t)
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -152,12 +149,9 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 	ctx := tripwireCtx(t)
-	_, err = sess.ProcessInput(ctx, "use my skill", nil)
+	_, err := sess.ProcessInput(ctx, "use my skill", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -198,12 +192,9 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 	ctx := tripwireCtx(t)
-	_, err = sess.ProcessInput(ctx, "check my work", nil)
+	_, err := sess.ProcessInput(ctx, "check my work", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

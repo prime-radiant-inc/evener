@@ -1339,6 +1339,7 @@ func prepareCommittedDelegate(t *testing.T, root *Session, args delegateArgs) (d
 		t.Fatal(err)
 	}
 	t.Cleanup(prepared.disposeUnadopted)
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 	return runtime, started, isolation, prepared
 }
 

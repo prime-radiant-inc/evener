@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -101,6 +102,45 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	s.emit(events.WarningData{Message: warning})
 }
 
+// commitTrailerPrompt returns the exact Co-authored-by line, or "" when
+// provenance is off or cannot be built. It never invents a missing value.
+func (s *Session) commitTrailerPrompt() string {
+	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
+	if err != nil || mode == commitprovenance.ModeOff {
+		return ""
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return ""
+	}
+	line, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
+	if err != nil {
+		return ""
+	}
+	return line
+}
+
+// commitProvenanceWarning reports a provenance configuration value the session
+// cannot honor. It is a pending session diagnostic, not a prompt-render
+// failure: the prompt omits the section and the rest of the session proceeds.
+func (s *Session) commitProvenanceWarning() string {
+	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
+	if err != nil {
+		return err.Error()
+	}
+	if mode == commitprovenance.ModeOff {
+		return ""
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "commit provenance: host name unavailable"
+	}
+	if _, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID()); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // buildPromptData assembles a promptData from session state for template
 // rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
 // and each append file. env is the ALREADY-RESOLVED execution environment
@@ -145,6 +185,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitStatusUnknown:         s.envInfo.GitStatusUnknown,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
+		CommitTrailer:            s.commitTrailerPrompt(),
 		WorkspaceTree:            s.envInfo.Workspace.Tree,
 		BuildInfo:                s.envInfo.Workspace.BuildInfo,
 		ResultToolName:           s.resultToolName(),

@@ -83,12 +83,10 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := hubcore.WebConfig{
+			cfg := testWebConfig(t, hubcore.WebConfig{
 				RunDir:           t.TempDir(),
-				HubStateRoot:     t.TempDir(),
 				LaunchConfigRoot: t.TempDir(),
-				Past:             hubcore.NewPastIndex(""),
-			}
+			})
 			if tc.spawner {
 				cfg.Spawner = &fakeRPCModelContractSpawner{
 					spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -101,9 +99,7 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 
 			_, err := appwiretest.ThreadStart(context.Background(), client, tc.params(t))
 			wire, data := wireErrorData(t, err)
@@ -164,12 +160,11 @@ func TestThreadStartRefusalAfterTheSpawnLeavesItsOutcomeOpen(t *testing.T) {
 		writeRendezvous(t, runDir, entry)
 		return entry, nil
 	}}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Roster:  hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive}),
 		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialSkillInputHub(t, hub)
 	defer client.Close()
@@ -363,15 +358,14 @@ func TestThreadStartFailuresFromTheSpawnOnLeaveTheOutcomeOpen(t *testing.T) {
 			PID: 406, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemon.URL[len("http"):],
 			SourceID: "local", ThreadID: sessionID, SessionID: sessionID, WorkingDir: "/tmp", Model: "gpt-5",
 		}
-		hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 			RunDir: runDir,
 			Roster: hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive}),
 			Spawner: &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 				writeRendezvous(t, runDir, entry)
 				return entry, nil
 			}},
-			Past: hubcore.NewPastIndex(""),
-		})
+		}))
 		defer hub.Close()
 		client := dialSkillInputHub(t, hub)
 		defer client.Close()

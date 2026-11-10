@@ -130,6 +130,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	}
 	if activityChanged {
 		live.activityAt = at
+		live.activityReports++
 	}
 	if productiveChanged {
 		live.productiveActivityAt = at

@@ -1,4 +1,4 @@
-import type { AgentsDocResponse, HostRow } from "@evener/appwire-client";
+import type { AgentsDocResponse } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -9,6 +9,7 @@ import {
 } from "../../../stores/agentsDoc";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { Toast } from "../../../widgets";
@@ -18,18 +19,6 @@ import { AgentsDocHostScope } from "./agentsDoc";
 // The AGENTS.md settings surface's host scope (component 07b): a remote
 // selection shows AND changes that host's own file through evener/host/request,
 // never this hub's. Local stays the plain-call section.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 const BETA_DOC: AgentsDocResponse = { path: "/home/b/.config/evener/AGENTS.md", exists: true, content: "# beta\n" };
 const CONTROLLER_DOC: AgentsDocResponse = {

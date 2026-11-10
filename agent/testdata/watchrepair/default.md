@@ -1,0 +1,3 @@
+invalid_request: output_match watches concrete job output; parent observers that need communicate messages use source="parent" with events ["communicate"], and read delivered event.message in the frame. Observers send updates with `communicate(end_turn=false)`, and a readiness line or their findings with `communicate(end_turn=true)`.
+
+invalid_request: event_filter matches assistant.tool events; parent observers that need communicate messages use source="parent" with events ["communicate"], and read delivered event.message in the frame. Observers send updates with `communicate(end_turn=false)`, and a readiness line or their findings with `communicate(end_turn=true)`.

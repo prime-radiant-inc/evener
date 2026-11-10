@@ -65,9 +65,9 @@ func TestCIFailureArtifactsWorkflowPolicy(t *testing.T) {
 		job, guard, matrixKey string
 		matrixValues          []string
 	}{
-		{"tests-parts", "failure()", "scope", []string{"root", "nonroot"}},
-		{"race-root-parts", "failure() && matrix.part == 'hub'", "part", []string{"hub"}},
-		{"race-module-shards", "failure() && matrix.scope == 'agent'", "scope", []string{"agent"}},
+		{"tests-parts", "failure() || cancelled()", "scope", []string{"root", "nonroot"}},
+		{"race-root-parts", "(failure() || cancelled()) && matrix.part == 'hub'", "part", []string{"hub"}},
+		{"race-module-shards", "(failure() || cancelled()) && matrix.scope == 'agent'", "scope", []string{"agent"}},
 	} {
 		t.Run(tc.job, func(t *testing.T) {
 			step, ok := uploads[tc.job]

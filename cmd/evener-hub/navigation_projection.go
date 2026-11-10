@@ -1719,8 +1719,9 @@ func navigationQuestion(question *appwire.PendingQuestion) *hubapi.NavigationQue
 }
 
 // navigationFailure is a Failed row's why on the wire (S1c): the failure's
-// headline re-cut to the wire's bound, and its cause's kind, provider and HTTP
-// status, identities cut to the identity bound. It is dropped when the schema
+// headline re-cut to the wire's bound, its cause's kind, provider and HTTP
+// status, identities cut to the identity bound, and when a quota wait
+// resumes. It is dropped when the schema
 // would refuse it (nothing left to say), the way navigationTaskProgress drops
 // bad progress rather than fail the resource.
 func navigationFailure(failure *appwire.ThreadFailure) *hubapi.NavigationFailure {
@@ -1732,6 +1733,10 @@ func navigationFailure(failure *appwire.ThreadFailure) *hubapi.NavigationFailure
 		wire.CauseKind = truncateNavigationBytes(cause.Kind, maxNavigationIdentityBytes)
 		wire.Provider = truncateNavigationBytes(cause.Provider, maxNavigationIdentityBytes)
 		wire.Status = cause.Status
+	}
+	if failure.ResumesAt > 0 {
+		resumesAt := time.UnixMilli(failure.ResumesAt).UTC()
+		wire.ResumesAt = &resumesAt
 	}
 	if !navigationFailureValid(wire) {
 		return nil
@@ -1863,6 +1868,9 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	clone.Tasks = appwire.ClonePointer(summary.Tasks)
 	clone.Subagents = appwire.ClonePointer(summary.Subagents)
 	clone.Failure = appwire.ClonePointer(summary.Failure)
+	if clone.Failure != nil {
+		clone.Failure.ResumesAt = appwire.ClonePointer(summary.Failure.ResumesAt)
+	}
 	if summary.Question != nil {
 		question := *summary.Question
 		question.Options = append([]string(nil), summary.Question.Options...)

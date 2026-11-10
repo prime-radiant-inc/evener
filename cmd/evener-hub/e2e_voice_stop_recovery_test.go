@@ -520,6 +520,19 @@ func voiceStopWaitResync(t *testing.T, f *voiceCorrectionStack, observer *appwir
 // its mutation journal and transcript, and the production local source/relay.
 func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func(context.Context, appwire.ThreadReadParams) error) (*voiceStopTransportGap, *appwire.Client) {
 	t.Helper()
+	gap, observer, addr := voiceStopRecoveryServer(t, f, beforeRead, savedHistory, readFailure)
+	conn := voiceJourneyConnect(f.ctx, t, "ws://"+addr+f.armed.SocketPath, f.headers)
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	f.device = realtimePeer{conn: conn, ctx: f.ctx, t: t}
+	voiceJourneyAcknowledgeReady(t, f.device, voiceJourneyEvent(t, f.device, "ready"), 0)
+	voiceJourneyEvent(t, f.device, "stop")
+	return gap, observer
+}
+
+// voiceStopRecoveryServer starts the second hub over the original live manager
+// and returns its address without connecting a device.
+func voiceStopRecoveryServer(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func(context.Context, appwire.ThreadReadParams) error) (*voiceStopTransportGap, *appwire.Client, string) {
+	t.Helper()
 	_ = f.device.conn.CloseNow()
 	root := filepath.Join(f.stack.home, "state", "evener")
 	entries, err := rendezvous.List(filepath.Join(root, "run"))
@@ -549,12 +562,7 @@ func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func
 	if _, err := observer.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
-	conn := voiceJourneyConnect(f.ctx, t, "ws://"+second.addr+f.armed.SocketPath, f.headers)
-	t.Cleanup(func() { _ = conn.CloseNow() })
-	f.device = realtimePeer{conn: conn, ctx: f.ctx, t: t}
-	voiceJourneyAcknowledgeReady(t, f.device, voiceJourneyEvent(t, f.device, "ready"), 0)
-	voiceJourneyEvent(t, f.device, "stop")
-	return gap, observer
+	return gap, observer, second.addr
 }
 
 // voiceStopSavedHistory gives the second hub a daemonless snapshot of the

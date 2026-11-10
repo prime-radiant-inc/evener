@@ -47,6 +47,27 @@ outside it — worktree file access is confined to the worktree itself. The typi
 loop is: `create` → work → commit → `exit` → review/merge from the main checkout →
 `remove`.
 
+## Finishing a merged task
+
+The [default system prompt](../../agent/prompts/system.md.tmpl) asks the model to
+remove its local task worktree and branch after verifying that all work at the
+current tip landed upstream, unless its human partner asked to keep them. The
+model checks for uncommitted or untracked work, later commits, running work and
+required deliverables, moves to a surviving checkout, and verifies both removals.
+Anything still needed or not captured upstream stays, with the reason reported.
+Shared branches, remote branches and other sessions' work are outside this cleanup.
+
+Managed task lanes use `remove` with `delete_branch=true`; a parent retires its
+finished delegates' isolation lanes with `dispose`. An isolated delegate reports
+its own lane ready for the parent rather than removing it. Squash/rebase merge
+evidence may justify `force=true`, but cleanup keeps `force_dirty=false` and honors
+live-work protections. These are model instructions, not new automatic collectors.
+
+The same finishing guidance asks the model to list its scratch directory and remove
+unneeded temporary files, logs, copies and generated artifacts before reporting.
+It preserves needed files and reports why, leaving runtime-owned and other
+sessions' files alone. A link in the report is not itself a retention reason.
+
 ## Lock semantics
 
 While a session (or an isolated delegate) is sitting inside a managed worktree, it
@@ -66,7 +87,7 @@ What this means day to day:
   earlier crash left behind on a worktree the session never got back into is gone once
   the session closes cleanly.
 - `force` never overrides a lock. Locks and dirty-tree safety are different
-  protections: `force` skips the "are there uncommitted changes here" check on
+  protections: `force_dirty` skips the "are there uncommitted changes here" check on
   `remove`; unlocking someone else's worktree is a deliberate act (`git worktree
   unlock`), never a tool flag — with one operator-directed exception: `prune`'s
   `orphaned_delegate_days`, below.
@@ -102,7 +123,7 @@ What this means day to day:
 ## Disposal: `remove`, `prune`, and `dispose`
 
 `remove` deletes one named worktree. Before it does, it checks that removal is safe:
-uncommitted changes block it unless you pass `force`; commits that were never merged
+uncommitted changes block it unless you pass `force_dirty`; commits that were never merged
 anywhere block *branch* deletion even with `delete_branch: true`, unless you also pass
 `force` (deleting the worktree and abandoning the branch — orphaned but not gone — are
 different levels of destructive). If you ask it to delete the branch too, it only does

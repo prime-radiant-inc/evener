@@ -241,6 +241,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
+		jm.armLongRunningReminder()
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
@@ -327,6 +328,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
+		jm.armLongRunningReminder()
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:                run.rec.JobID,

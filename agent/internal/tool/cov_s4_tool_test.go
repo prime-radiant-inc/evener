@@ -12,18 +12,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations drives the
-// full diagnostic path: seekLineSequence fails, so updateFileOp.apply builds a
-// patchMismatchDiagnostic exercising formatPatchMismatchError, formatLineSnippet,
-// candidateLineIndexes (Nearby matches), candidateSequenceIndexes +
-// looseCandidateSequenceIndexes (Potential locations), nearestIndexes,
-// mismatchLineForMissingSequence, lineAt and formatExpectedLines.
+// TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix drives the
+// failure path: seekLineSequence fails, so updateFileOp.apply returns a
+// PatchMismatchError whose fields name the first old/context line that differs
+// from the closest partial match.
 //
-// The file has "model := ..." twice (so the wanted line has a nearby match) and
-// the second block's first two old/context lines partially match near line 7 (so
-// the loose sequence search reports a potential location), while the third
-// old/context line ("MISSING_LINE()") appears nowhere, forcing the failure.
-func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing.T) {
+// The file has "model := ..." twice and the second block's first two old/context
+// lines match at line 7, while the third ("MISSING_LINE()") appears nowhere, so
+// the mismatch is hunk line 2 against the file's "return config" at line 9.
+func TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Join([]string{
 		"func first() {",
@@ -47,23 +44,7 @@ func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
-	msg := err.Error()
-	for _, want := range []string{
-		"apply_patch: expected lines not found in f.go at line 2",
-		"wanted:",
-		"got:",
-		"File context around line 2:",
-		"Nearby matches for wanted line:",
-		"Expected old/context lines from patch:",
-		"  \tmodel := \"openai/gpt-5\"",
-		"  \tMISSING_LINE()",
-		"Potential locations for old/context block:",
-		"candidate at line 7:",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("error missing %q:\n%s", want, msg)
-		}
-	}
+	assertPatchMismatch(t, err, 2, "\tMISSING_LINE()", "\treturn config", 9)
 }
 
 func TestNearestIndexes(t *testing.T) {

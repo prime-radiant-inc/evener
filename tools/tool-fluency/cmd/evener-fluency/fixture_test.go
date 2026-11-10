@@ -93,14 +93,16 @@ func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {
 // commit, and writes into the fixture's .git — recreating it if t.TempDir()
 // cleanup already removed it, so cleanup then fails with "directory not empty".
 // The fixture must commit with maintenance.auto=false, as the worktree tools
-// already do, so no detached writer is left to race the cleanup.
+// already do, so no detached writer is left to race the cleanup. The setting is
+// read from the fixture repository's own config: TestMain's process-wide git
+// isolation sets it globally, and the runner's fixtures run without it.
 func TestMaterializeFixtureCommitDisablesAutoMaintenance(t *testing.T) {
 	t.Parallel()
 	work := filepath.Join(t.TempDir(), "work")
 	if err := materializeFixture(work, fixtureSpec{Git: true, Files: map[string]string{"main.go": "package main\n"}}); err != nil {
 		t.Fatalf("materializeFixture: %v", err)
 	}
-	cmd := exec.Command("git", "config", "--get", "maintenance.auto")
+	cmd := exec.Command("git", "config", "--local", "--get", "maintenance.auto")
 	cmd.Dir = work
 	out, err := cmd.Output()
 	if err != nil {

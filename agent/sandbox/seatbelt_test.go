@@ -689,10 +689,7 @@ func TestSeatbeltGrantsTheValidatedCarveOutPath(t *testing.T) {
 // inside the carve-out, whose config a direct read must not reach.
 func seatbeltContentFixture(t *testing.T) (host HostFacts, store, realGit string) {
 	t.Helper()
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := canonicalTempDir(t)
 	store = filepath.Join(home, ".config", "evener", "plugins")
 	realGit = filepath.Join(store, "store", "real.git")
 	if err := os.MkdirAll(realGit, 0o755); err != nil {
@@ -756,10 +753,7 @@ func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
 // repository's .git) must not deny the whole carve-out: its .git regex counts
 // that component, matching only a further .git below the root.
 func TestSeatbeltDeniesOnlyTheGitBelowACarveOutUnderAGitDirectory(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := canonicalTempDir(t)
 	fx := writeGitAncestryEvenerContentFixture(t, home)
 	host := seatbeltHost()
 	host.Home = home

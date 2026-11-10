@@ -52,11 +52,10 @@ func TestHubRPCRelaysSessionScopedInterrupt(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 

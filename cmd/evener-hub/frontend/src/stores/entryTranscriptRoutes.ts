@@ -31,6 +31,7 @@ import {
 } from "./threadOwners";
 import type { TranscriptReader, TranscriptRepository, TranscriptRetirementOutcome } from "./transcriptRepository";
 import { getReadyEpoch } from "./wiredClient";
+import { withDeadline } from "./withDeadline";
 
 /** The slice of the thread store this module reads and writes. */
 export interface EntryRouteStoreState {
@@ -925,7 +926,6 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
   const retirement = entryRouteRetirements.get(ref) ?? 0;
   let active = true;
   let installed: TranscriptRepository | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const current = () => {
     const state = store().getState();
     return (
@@ -940,7 +940,7 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
       !state.cacheLifetimes.get(ref)?.suppressed
     );
   };
-  const opening = Promise.race([
+  const opening = withDeadline(
     (async () => {
       const metadata = await route.cache.getSessionForRequestedRef(route.clientId, ref);
       if (!current() || !metadata?.resolvedIdentity || route.repository || store().getState().threads.has(ref)) return;
@@ -1019,18 +1019,15 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
     })().catch(() => {
       // A storage failure is a miss. The ordinary source opening still runs.
     }),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        active = false;
-        if (installed && route.repository === installed && route.cachedUnverified) {
-          retireEntryTranscriptRoute(route);
-          clearEntryTranscriptLocalOpening(ref);
-        }
-        resolve();
-      }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
-    }),
-  ]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
+    SESSION_CACHE_LOOKUP_DEADLINE_MS,
+    () => {
+      active = false;
+      if (installed && route.repository === installed && route.cachedUnverified) {
+        retireEntryTranscriptRoute(route);
+        clearEntryTranscriptLocalOpening(ref);
+      }
+    },
+  ).finally(() => {
     if (route.cachedOpening === opening) route.cachedOpening = undefined;
   });
   route.cachedOpening = opening;
@@ -1347,19 +1344,14 @@ export async function readEntryRouteAuthorities(
   fixture: EntryTranscriptRoute,
   historyKey: string,
 ): Promise<{ clearEpoch: number; historyGeneration: number } | undefined> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    return await withDeadline(
       Promise.all([fixture.cache.getClearEpoch(), fixture.cache.getHistoryGeneration(historyKey)]).then(
         ([clearEpoch, historyGeneration]) => ({ clearEpoch, historyGeneration }),
       ),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-      }),
-    ]);
+      SESSION_CACHE_LOOKUP_DEADLINE_MS,
+    );
   } catch {
     return undefined;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
   }
 }

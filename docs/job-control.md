@@ -26,8 +26,12 @@ provisioned, or a platform without detached-process attributes — omits
 that must keep running lives as a session-owned background job and stops when
 the session ends; it cannot outlive the session.
 
-For background work, keep the returned ID, continue independent work, then wait
-for the completion notification. Use `job_status` or `job_list` once to orient
+For background work, keep the returned ID, continue independent work, then end
+your turn; the completion notification wakes you. A `shell` command that does
+nothing but sleep (`sleep N`, `sleep N && echo ...`, a bare loop whose body is
+only sleep) is refused before it runs, with a park-prefixed error (the same `evener did not execute this call:` prefix the breaker uses). Anything Evener does
+not recognise as sleep-only, such as `sleep 2 && curl ...` or
+`until curl ...; do sleep 1; done`, runs. Use `job_status` or `job_list` once to orient
 yourself when necessary, not in a polling loop. A status read is not delivery of
 a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
 history with its session `transcript_ref`.
@@ -42,6 +46,36 @@ opening attributes identify its job and event; output excerpts cannot acknowledg
 another job or change the event type. Watch and watch-send frames do not
 acknowledge shell completion. If delivery marking must retry after the runtime
 completion entry was recorded, that retry does not inject it again.
+
+A completion that finishes while a notification turn is already running reaches
+the model at that turn's next round boundary: the next model request carries it,
+and the turn does not hold it until the turn ends. An ordinary turn instead
+yields at the boundary so the drain runs a notification turn. Each completion is
+delivered and recorded once.
+
+A completion counts as delivered once the model client hands the provider a
+request built from a transcript holding its runtime entry, not when the entry is
+written. A provider error after that point also settles it, because the turn
+fails visibly. A turn that ends before any request is sent (stopped, out of
+rounds, refused by local context admission, or failing any other check on the
+way) leaves the completion owed. That includes a Stop before the turn's
+first request, because job notifications are not the user's to stop. The session
+wakes again, and the next turn's request carries the entry already in the
+transcript, or the compaction summary that folded it, without writing it a
+second time. A completion gets one such retry: if the next turn also ends without
+a request, the completion settles with that turn's failure visible, and its entry
+stays in the transcript for whatever request comes next. Only turns that run
+count; a wake that stands down before its turn starts (for example, while the
+turn cannot be named) spends nothing, and the completion stays owed under the
+paced retry. A restart loses the
+in-memory owed state, so after one the recorded entry settles the completion as
+described above.
+
+Watch and watch-send frames settle when the notification turn writes them,
+before its model call. They have no replay detection, so a restart during the
+call would otherwise render the same frame twice. A turn that ends before its
+request leaves the written frame in the transcript, and the next request
+carries it.
 
 ```mermaid
 flowchart LR
@@ -246,8 +280,9 @@ This reference contract is not itself the runtime system prompt, but the followi
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
   conversation; it reaches only your own delegates. A delegate reaches its
-  parent only through `communicate`: `end_turn=false` for an update,
-  `end_turn=true` for observer completion and its final report.
+  parent only through `communicate`: `end_turn=false` for an update, and
+  `end_turn=true` for its report, a readiness line before a watch frame, or
+  the one line naming the work it is waiting on.
   `delegate_send` rejects `caller`, `job_id`, `transcript_ref`, and
   unsupported runtime aliases.
 - A delegate's `communicate(end_turn=false)` is an update its parent receives
@@ -405,7 +440,7 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 Validation, lookup, and routing errors are synchronous tool errors and create
 neither a shell JobRecord nor a delegate generation. Canonical codes include
 `invalid_request`, `permission_required`, `target_not_found`,
-`target_not_messageable`, `target_terminal`, `target_not_resumable`,
+`target_not_messageable`, `target_terminal`, `target_busy`,
 `target_not_watchable`, and `not_controllable`.
 
 `status` is the primary machine branch field. `reason` is optional diagnostic
@@ -490,7 +525,7 @@ Defaults and timeout semantics:
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
 - `mode="detached"`: where the environment can disown a process, Evener starts a disowned process and returns only its PID immediately. A sandboxed environment with a wrapper cannot detach — the mode is absent from the shell schema and `DetachCommand` refuses it — so a process that must keep running there belongs in `mode="background"` and stops with the session. A detached process is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that. `TMPDIR` names the world-usable session temp container when provisioned. Otherwise, an unconfined environment keeps its inherited or caller-supplied `TMPDIR` (or leaves it absent); a scratch-naming environment drops `TMPDIR` rather than pointing the detached child at session scratch. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
-- Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
+- Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. Instead of a deadline, Evener reminds the owning session about jobs that have run too long: every 30 minutes, while the session owns shell jobs that have been running for at least 30 minutes, it sends ONE reminder listing all of them (job id, truncated command, age, and time since last output). The reminder rides the job-notification rail, so an idle session is woken for it and an active turn receives it with its next model request. The cadence is fixed (no backoff, no cap, no acknowledgement); a job that finished is not listed, delegates are not listed, and nothing is persisted: after a restart the jobs end as `runtime_lost`, so there is nothing to remind about. The model decides whether a listed job is expected or should be stopped with `job_stop`. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
@@ -877,7 +912,8 @@ Observer/sidecar pattern:
 Observer sidecars are composition, not a separate model-facing observer tool.
 Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
 `communicate(end_turn=false)` for a non-terminal update to the parent.
-Use `communicate(end_turn=true)` for observer completion and final results.
+Use `communicate(end_turn=true)` for an observer's readiness line, its
+completion, final results, or the one line naming work it waits on.
 
 Practical observer guidance for agents:
 
@@ -1074,6 +1110,7 @@ Canonical behavior:
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
+- Evener refuses a repeat `job_status` call on a running target when nothing it reports has changed since this session's previous call on it. The comparison is the lifecycle status and phase; a delegate also compares its attention flag and the count of activity reports it has recorded (new progress allows the next read, the passage of time does not). Elapsed clocks such as `running_for_ms` never count. The refusal is an error beginning with the park prefix `evener did not execute this call:` and the status is not returned. The first call on a target, a call after the comparison changed, a call after a notification about the target or after a self-timer wake, a call after any delegate attention report, and any call on a finished target are allowed. Evener adds no wait primitive: an agent with nothing else to do ends its turn with the result tool (`end_turn=true`, plus `end_reason="waiting_on_work"` where the result tool takes it) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
 - Reading an owner's terminal shell status consumes that shell's pending terminal
   notification. Delegate status never consumes its terminal packet; exact
   transcript-backed attention is consumed only by a successful notification turn.
@@ -1817,6 +1854,12 @@ Rules:
   `job:<job_id>` use the same shell ID. Stable delegate status, watch, stop, and
   `delegate_send` use `delegate_id`; its conversation uses `transcript_ref`.
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
+- Restoring a child re-forwards every terminal record it owns, so a forward
+  interrupted before the parent appended it is repaired. Forwarding is
+  idempotent: the parent journal keeps one `job_started` per job and one
+  `job_finished` or `job_notification_pending` per `(job_id, terminal_generation)`,
+  however many times the child restores. The forwarded `job_started` carries
+  the original `background` and `working_dir`.
 - Dedupe rule: the shell owner's durable record is authoritative over a
   forwarded copy. Stable delegates have no forwarded job copy; the controller
   fold is their sole lifecycle authority.

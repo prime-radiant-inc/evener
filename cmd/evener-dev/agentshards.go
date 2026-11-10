@@ -9,8 +9,12 @@ package dev
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
-// survey cached by test-set identity, so a run pays the survey only when a
-// test is added, renamed, or removed.
+// survey cached by test-set identity. When a test is added, renamed, or
+// removed, a run whose shard logs are verbose (EVENER_SHARD_JSON_DIR, the
+// gate's timing capture) packs from the lane's last survey instead of
+// surveying again, charges an unmeasured test the packing minimum, and records
+// the costs its own shards measured as the new test set's survey. Any other
+// run surveys, as does a lane with no survey at all.
 //
 // Interface (unchanged from the script):
 //
@@ -28,7 +32,11 @@ package dev
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
-// plus pass-through `go test` flags. Every test lands in exactly one shard,
+// plus pass-through `go test` flags. The survey and every shard run under a
+// test timeout: the caller's -timeout, or `go test`'s own 10m default when the
+// caller gives none, since a binary run directly has no timeout at all. A test
+// that hangs past it panics with the names of the tests still running, and its
+// shard fails like any other. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
 // time; logs are deleted only on normal green completion and pointed at
 // otherwise; the exit is nonzero on any shard failure or partition
@@ -220,13 +228,13 @@ func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
 // the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
 // changing the shard split.
 //
-// The caller's -timeout comes here too, and for the same reason it was raised:
-// the survey is the longest single run of the lot, one binary over the whole
-// suite, so a timeout that the shards need is a timeout the survey needed
-// first. -failfast stays with the shards: a survey that stops at the first
-// failure has measured part of the suite, and a partial measurement is worse
-// than none, since the shards would be packed from it as though it were
-// complete.
+// The run's -timeout comes here too, the caller's or the default, and for the
+// same reason a caller raises it: the survey is the longest single run of the
+// lot, one binary over the whole suite, so a timeout that the shards need is a
+// timeout the survey needed first. -failfast stays with the shards: a survey
+// that stops at the first failure has measured part of the suite, and a
+// partial measurement is worse than none, since the shards would be packed
+// from it as though it were complete.
 func surveyArgs(parallel int, skip string, short bool, testFlags []string) []string {
 	// A config built without runAgentShards leaves the field zero; never hand
 	// the test binary "-test.parallel 0".
@@ -246,6 +254,26 @@ func surveyArgs(parallel int, skip string, short bool, testFlags []string) []str
 		args = append(args, "-test.short")
 	}
 	return args
+}
+
+// defaultTestTimeout is `go test`'s own default -timeout, which a package's
+// test binary gets when go test runs it and does not get when this runner
+// runs it directly: a compiled binary's -test.timeout defaults to none.
+const defaultTestTimeout = 10 * time.Minute
+
+// withTestTimeout returns the test-binary flags with a -test.timeout among
+// them: the caller's own when it passed one, otherwise defaultTestTimeout. The
+// timeout is a tripwire, not a speed limit (the timing budget is that): a test
+// that never returns panics at it with the names of the tests still running,
+// where without it the process holds its shard until something outside kills
+// it and the log names nothing.
+func withTestTimeout(testFlags []string) []string {
+	for _, f := range testFlags {
+		if strings.HasPrefix(f, "-test.timeout=") {
+			return testFlags
+		}
+	}
+	return append(slices.Clone(testFlags), "-test.timeout="+defaultTestTimeout.String())
 }
 
 func envPositiveInt(name string, def int) (int, error) {
@@ -409,7 +437,7 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	extraFlags := parsed.test
+	extraFlags := withTestTimeout(parsed.test)
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
 	buildDir, buildTarget, err := cfg.buildLocation()
 	if err != nil {
@@ -450,6 +478,10 @@ func runShards(cfg shardsConfig) int {
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
+	// borrowed is set when the run packs from a survey of a different test
+	// set: its shards then measure the current one, and a green run records
+	// that as this test set's survey.
+	borrowed := false
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
 		cacheHit := false
@@ -463,9 +495,23 @@ func runShards(cfg shardsConfig) int {
 			// written by concurrent gate runs, so a nonempty file can be a
 			// partial write caught mid-flight.
 		}
-		if !cacheHit {
+		// A changed test set has no survey of its own, but surveying runs the
+		// whole suite once more before the shards run it. The lane's last
+		// survey prices every test the two sets share. Only a run whose shard
+		// logs carry per-test costs borrows: it can record them, so the lane
+		// never settles on a survey that no longer describes it.
+		var older []byte
+		if !cacheHit && !cfg.resurvey && cfg.jsonDir != "" {
+			older = olderSurvey(cachedSurvey)
+		}
+		switch {
+		case cacheHit:
+		case older != nil:
+			costs = costsFromOlderSurvey(parseSurvey(string(older)), cfg.shardedTestNames(listOut))
+			borrowed = true
+		default:
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, extraFlags)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
@@ -481,8 +527,10 @@ func runShards(cfg shardsConfig) int {
 				}
 			}
 		}
-		if data, err := os.ReadFile(surveyLog); err == nil {
-			costs = parseSurvey(string(data))
+		if !borrowed {
+			if data, err := os.ReadFile(surveyLog); err == nil {
+				costs = parseSurvey(string(data))
+			}
 		}
 	}
 	if code := in.exitCode(); code != 0 {
@@ -692,6 +740,22 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", fullLogs)
 		return 1
 	}
+	// Like every cache write, a failure here costs a later run a survey and
+	// nothing else.
+	if borrowed {
+		var measured []byte
+		for i := range bins {
+			data, err := os.ReadFile(shardLogPath(i))
+			if err != nil {
+				measured = nil
+				break
+			}
+			measured = append(measured, data...)
+		}
+		if cfg.surveyCoversTestSet(measured, listOut) {
+			_ = writeFileAtomic(cachedSurvey, measured)
+		}
+	}
 	green = true
 	return 0
 }
@@ -746,7 +810,37 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+	return filepath.Join(cacheDir, "survey-"+surveyLaneKey(parsed, goflags, cfg.skip)+"-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+}
+
+// olderSurvey returns the lane's most recent survey of a different test set,
+// or nil when the cache holds none. A cache file is named for its lane and
+// then its test set, so only a survey measured under this build, mode and
+// skip is a candidate.
+func olderSurvey(cachedSurvey string) []byte {
+	if cachedSurvey == "" {
+		return nil
+	}
+	siblings, _ := filepath.Glob(cachedSurvey[:strings.LastIndex(cachedSurvey, "-")] + "-*.log")
+	var newest string
+	var newestAt time.Time
+	for _, path := range siblings {
+		info, err := os.Stat(path)
+		if err != nil || path == cachedSurvey || info.Size() == 0 {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestAt) {
+			newest, newestAt = path, info.ModTime()
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	data, err := os.ReadFile(newest)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test
@@ -761,19 +855,28 @@ func (cfg shardsConfig) surveyCoversTestSet(data []byte, listOut string) bool {
 	for _, tc := range parseSurvey(string(data)) {
 		have[tc.name] = true
 	}
-	var skip *regexp.Regexp
-	if cfg.skip != "" {
-		skip, _ = regexp.Compile(cfg.skip)
-	}
-	for _, tc := range equalWeights(listOut) {
-		if skip != nil && skip.MatchString(tc.name) {
-			continue
-		}
-		if !have[tc.name] {
+	for _, name := range cfg.shardedTestNames(listOut) {
+		if !have[name] {
 			return false
 		}
 	}
 	return true
+}
+
+// shardedTestNames is the listed tests this run must place in a shard: every
+// one the -test.skip regex does not match.
+func (cfg shardsConfig) shardedTestNames(listOut string) []string {
+	var skip *regexp.Regexp
+	if cfg.skip != "" {
+		skip, _ = regexp.Compile(cfg.skip)
+	}
+	var names []string
+	for _, tc := range equalWeights(listOut) {
+		if skip == nil || !skip.MatchString(tc.name) {
+			names = append(names, tc.name)
+		}
+	}
+	return names
 }
 
 // writeFileAtomic replaces path with data by writing a uniquely named temp
@@ -940,6 +1043,15 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			start--
 		}
 		end := i + 1
+		// A panic's message continues on tab-indented lines, and a test
+		// timeout's lists every test still running there, one line each: the
+		// only lines naming a hung test. They are carried whole, ahead of the
+		// ordinary after-context, which their count would otherwise exhaust.
+		if strings.HasPrefix(lines[i], "panic:") {
+			for end < len(lines) && strings.HasPrefix(lines[end], "\t") {
+				end++
+			}
+		}
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}

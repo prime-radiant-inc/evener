@@ -155,8 +155,9 @@ func TestTruncateHeadCount_CharacterCutDropsLineSummary(t *testing.T) {
 	// A large line count makes the summary wider than the character marker.
 	// Cutting just one rune off the assembled result used to keep its "[".
 	source := strings.Repeat("x\n", 9_999) + "x"
-	assembled, _ := truncateHeadCountWithStatus(source, 5_000, 0)
-	got, truncated := truncateHeadCountWithStatus(source, 5_000, utf8.RuneCountInString(assembled)-1)
+	assembled, _ := truncateHeadCountReason(source, 5_000, 0)
+	got, reason := truncateHeadCountReason(source, 5_000, utf8.RuneCountInString(assembled)-1)
+	truncated := reason != ""
 	shown, marker := searchresult.Split(got)
 	wantEntries := strings.Repeat("x\n", 4_999) + "x"
 	if !truncated || shown != wantEntries || strings.Contains(marker, "\n") {

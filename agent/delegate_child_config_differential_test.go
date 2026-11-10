@@ -110,7 +110,7 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restore root: %v", err)
 			}
-			defer restoredRoot.Close()
+			t.Cleanup(restoredRoot.Close)
 			restored := restoreFixtureDelegate(t, restoredRoot, created.DelegateID)
 			restored.sess.mu.Lock()
 			restoredCfg := restored.sess.cfg

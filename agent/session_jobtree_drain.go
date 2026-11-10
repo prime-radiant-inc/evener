@@ -1538,6 +1538,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// A wake that releases the wait below is consumed by it, so take the
 		// edge back before parking: the next pass must treat the wake as its
 		// own and kick at full rate instead of skipping on a stale streak.
+		s.publishDrainPark()
 		wokeByWait, err := waitDrainWake(ctx, wake, recheck)
 		if err != nil {
 			return lastResult, err
@@ -1652,6 +1653,28 @@ func takeDrainWake(wake <-chan struct{}) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// nextDrainPark returns a channel closed the next time this session's job-tree
+// drain parks: it has finished a pass over its subtree, and the work it waits
+// on is still outstanding.
+func (s *Session) nextDrainPark() <-chan struct{} {
+	s.drainParkMu.Lock()
+	defer s.drainParkMu.Unlock()
+	if s.drainParked == nil {
+		s.drainParked = make(chan struct{})
+	}
+	return s.drainParked
+}
+
+// publishDrainPark releases every nextDrainPark waiter as the drain parks.
+func (s *Session) publishDrainPark() {
+	s.drainParkMu.Lock()
+	defer s.drainParkMu.Unlock()
+	if s.drainParked != nil {
+		close(s.drainParked)
+		s.drainParked = nil
 	}
 }
 

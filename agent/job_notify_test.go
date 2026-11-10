@@ -492,10 +492,7 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	sess.enqueueJobNotification(watchNotification("job_watch_target", "output_match: PHASE4_TASK10_READY"))
@@ -647,10 +644,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.jobManager = nil
 

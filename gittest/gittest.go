@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,27 +27,33 @@ var configEnvironment = []string{
 // GIT_CONFIG_VALUE_n pairs that GIT_CONFIG_COUNT injects.
 var configEnvironmentPrefixes = []string{"GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"}
 
+// isConfigEnvironment reports whether key is one of the git-config or
+// init-template variables in configEnvironment or configEnvironmentPrefixes.
+func isConfigEnvironment(key string) bool {
+	if slices.Contains(configEnvironment, key) {
+		return true
+	}
+	for _, prefix := range configEnvironmentPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Env returns the environment a test's git subprocess runs with: the process
 // environment minus repository-selection and config-injection variables, global
-// and system config pointed at nothing, and a fixed author and committer.
+// and system config pointed at nothing, the quiescent settings injected, and a
+// fixed author and committer.
 func Env() []string {
 	base := identifier.FilteredGitEnvironment(os.Environ())
-	env := make([]string, 0, len(base)+8)
-outer:
+	var env []string
 	for _, entry := range base {
-		key, _, _ := strings.Cut(entry, "=")
-		for _, banned := range configEnvironment {
-			if key == banned {
-				continue outer
-			}
+		if key, _, _ := strings.Cut(entry, "="); !isConfigEnvironment(key) {
+			env = append(env, entry)
 		}
-		for _, prefix := range configEnvironmentPrefixes {
-			if strings.HasPrefix(key, prefix) {
-				continue outer
-			}
-		}
-		env = append(env, entry)
 	}
+	env = append(env, quiescentEnvironment()...)
 	return append(env,
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
 		"GIT_CONFIG_SYSTEM="+os.DevNull,

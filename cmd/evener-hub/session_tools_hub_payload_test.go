@@ -108,7 +108,7 @@ func TestManagerHumanControlOwnerPayloadParity(t *testing.T) {
 					Ref: ref, Capabilities: appwire.ThreadCapabilities{Clear: true, Compact: true, ChangeModel: true, ChangeVisionModel: true, Goal: true, SharedNotes: true},
 				}},
 			}}
-			web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()})
+			web := NewWebServer(testWebConfig(t, hubcore.WebConfig{}))
 			web.sources.Add(source)
 			owner := &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}
 

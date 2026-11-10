@@ -26,6 +26,15 @@ const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-i
 // mermaid` / `import DOMPurify`, which esbuild follows and inlines here.
 const ENTRY = 'import { bootstrapMermaidPage } from "./src/mermaidPageContent.ts";\nbootstrapMermaidPage();\n';
 
+/** The shared values the page bundle is built with. Exported so the test can
+ * prove the generator substitutes the package's lists, not a stale copy. */
+export function mermaidPageDefines(): Record<string, string> {
+	return {
+		MERMAID_FORBID_TAGS: JSON.stringify(MERMAID_FORBID_TAGS),
+		MERMAID_SANITIZE_CONFIG: JSON.stringify(MERMAID_SANITIZE_CONFIG),
+	};
+}
+
 function renderHtml(bundle: string): string {
 	return [
 		"<!doctype html>",
@@ -64,10 +73,7 @@ export async function buildMermaidPageHtml(): Promise<string> {
 		charset: "utf8",
 		// mermaidPageContent.ts declares both; esbuild substitutes the package's
 		// current values here, so the page carries no copy of them.
-		define: {
-			MERMAID_FORBID_TAGS: JSON.stringify(MERMAID_FORBID_TAGS),
-			MERMAID_SANITIZE_CONFIG: JSON.stringify(MERMAID_SANITIZE_CONFIG),
-		},
+		define: mermaidPageDefines(),
 	});
 	const [output] = result.outputFiles ?? [];
 	if (!output) throw new Error("esbuild produced no bundle for the mermaid page");

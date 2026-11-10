@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -593,14 +594,14 @@ type SessionMetaLoadError struct {
 // view: it needs the per-file failure so the session is named rather than
 // silently absent. This is that enumeration; callers that want the tolerant
 // listing keep using ListSessionMetas.
-func ListSessionMetasWithErrors(dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
-	return listSessionMetasFSWithErrors(sessionMetaFS, dir)
+func ListSessionMetasWithErrors(ctx context.Context, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
+	return listSessionMetasFSWithErrors(ctx, sessionMetaFS, dir)
 }
 
 // ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
 // Scans for .meta.json files. Corrupt files are silently skipped.
 func ListSessionMetas(dir string) ([]SessionMeta, error) {
-	metas, _, err := listSessionMetasFSWithErrors(sessionMetaFS, dir)
+	metas, _, err := listSessionMetasFSWithErrors(context.Background(), sessionMetaFS, dir)
 	return metas, err
 }
 
@@ -890,7 +891,7 @@ func wrapperSourceIsOS(w afero.Fs) bool {
 
 // listSessionMetasFSWithErrors is the filesystem seam beneath ListSessionMetas
 // and ListSessionMetasWithErrors.
-func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
+func listSessionMetasFSWithErrors(ctx context.Context, fs afero.Fs, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
 	sessDir := SessionsDir(dir)
 	entries, err := afero.ReadDir(fs, sessDir)
 	if err != nil {
@@ -903,6 +904,9 @@ func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []Ses
 	var metas []SessionMeta
 	var failures []SessionMetaLoadError
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if !strings.HasSuffix(e.Name(), SessionMetaSuffix) {
 			continue
 		}

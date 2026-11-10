@@ -429,6 +429,11 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	// already exists; rendering it here would let a resume re-decide a start-time
 	// property the session already owns.
 	resumeResolved.Manager = false
+	if resumeResolved.Provenance[launchconfig.CommitProvenanceField] != launchconfig.LayerLaunch {
+		// A resume keeps the mode saved with the session. Only an explicit
+		// launch-layer override replaces it.
+		resumeResolved.Effective.CommitProvenance = ""
+	}
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }

@@ -26,5 +26,11 @@ export type {
   MarketplacesStore,
 } from "./marketplaces";
 export { createMarketplacesStore, marketplaceRemovalOutcome } from "./marketplaces";
-export type { PluginsClient, PluginsState, PluginsStore } from "./plugins";
-export { createPluginsStore, PLUGIN_UPDATE_CHECK_TIMEOUT_MS } from "./plugins";
+export type {
+  PluginComponentsEntry,
+  PluginComponentsReadTarget,
+  PluginsClient,
+  PluginsState,
+  PluginsStore,
+} from "./plugins";
+export { createPluginsStore, PLUGIN_UPDATE_CHECK_TIMEOUT_MS, pluginComponentsKey } from "./plugins";

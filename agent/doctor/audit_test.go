@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -376,7 +378,7 @@ func auditFixture(t *testing.T) (base, tripSID, healthySID string) {
 // failing the test on any audit error.
 func runFixtureAudit(t *testing.T, base string, opts AuditOpts) AuditResult {
 	t.Helper()
-	res, err := RunAudit(base, mustParseFixtureRunbook(t), opts)
+	res, err := RunAudit(context.Background(), base, mustParseFixtureRunbook(t), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +601,7 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sidA}})
+	res, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: []string{sidA}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +656,7 @@ func TestRunAudit_SinceSurfacesSweepUnreadable(t *testing.T) {
 
 func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
-	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{}); err == nil {
+	if _, err := RunAudit(context.Background(), t.TempDir(), rb, AuditOpts{}); err == nil {
 		t.Fatal("want error when neither --sessions nor --since is given")
 	}
 }
@@ -733,7 +735,7 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 		// The reproduction line must actually re-run: feeding the evidence
 		// refs back as --sessions audits both sessions again, with no
 		// blank-identity unreadable rows.
-		res2, err := RunAudit(base, rb, AuditOpts{Sessions: f.Evidence.SessionRefs})
+		res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: f.Evidence.SessionRefs})
 		if err != nil {
 			t.Fatalf("re-running %q DoctorCommand refs: %v", f.Title, err)
 		}
@@ -772,7 +774,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 
 	// ListSessions enumerates one row per (bucket, session): two rows for the
 	// duplicate sid across two buckets — the coverage the audit must match.
-	sweep, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	sweep, err := ListSessions(context.Background(), base, SessionsOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +816,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 	// The reproduction line must re-run: feeding the evidence refs back as
 	// --sessions audits both again, with no unreadable rows.
-	res2, err := RunAudit(base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
+	res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
 	if err != nil {
 		t.Fatalf("re-running evidence refs: %v", err)
 	}
@@ -876,7 +878,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
 
 			rb := mustParseFixtureRunbook(t)
-			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1021,7 +1023,7 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 		t.Fatalf("DoctorCommand %q missing prefix %q", dc, prefix)
 	}
 	reproRefs := strings.Split(sessionsValue, ",")
-	res2, err := RunAudit(base, rb, AuditOpts{Sessions: reproRefs})
+	res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: reproRefs})
 	if err != nil {
 		t.Fatalf("re-running evidence refs: %v", err)
 	}
@@ -1097,7 +1099,7 @@ func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
 
 			rb := mustParseFixtureRunbook(t)
 			sel := "proj:" + bucketName + ":" + sidA
-			res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: []string{sel}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1389,7 +1391,7 @@ func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
 
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
-	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
+	if _, err := RunAudit(context.Background(), t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
 		t.Fatal("want error when both --sessions and --since are given")
 	}
 }
@@ -1605,7 +1607,7 @@ func TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand(t *testing
 			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
 			rb := mustParseFixtureRunbook(t)
-			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2005,7 +2007,7 @@ func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
 	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
 
 	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2158,5 +2160,119 @@ func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
 	}
 	if len(runTimeout.Evidence.SessionLocations) != descNonRepro {
 		t.Errorf("SessionLocations has %d entries but Description names %d non-reproducible sessions — the structured and prose channels must disclose the same capped set", len(runTimeout.Evidence.SessionLocations), descNonRepro)
+	}
+}
+
+// An explicit-session audit honors cancellation too: cancelled before the
+// first session, between sessions, and after the last one all return the
+// cancellation error with no partial result.
+func TestRunAudit_ExplicitSessionsHonorCancellation(t *testing.T) {
+	base := t.TempDir()
+	sids := seedRunTimeoutSessions(t, stateHomeBucket(base, hash1), 2)
+	rb := mustParseFixtureRunbook(t)
+
+	for name, tc := range map[string]struct {
+		allow    int32
+		sessions []string
+	}{
+		"before first session":   {allow: 0, sessions: sids},
+		"between sessions":       {allow: 1, sessions: sids},
+		"after the last session": {allow: 1, sessions: sids[:1]},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: tc.allow}
+			res, err := RunAudit(ctx, base, rb, AuditOpts{Sessions: tc.sessions})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("err = %v, want context.Canceled", err)
+			}
+			if res.SessionsChecked != 0 || len(res.Findings) != 0 {
+				t.Errorf("cancelled audit returned partial result: %+v", res)
+			}
+		})
+	}
+}
+
+// An audit check the doctor could not evaluate as written fails the whole
+// runbook parse rather than silently checking nothing.
+func TestParseRunbookRejectsAnInvalidCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, check string
+	}{
+		{"missing title", "  - severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"invalid suggested_fix", "  - title: x\n    severity: high\n    category: timeout\n    suggested_fix: unknown\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"missing metric", "  - title: x\n    severity: high\n    category: timeout\n    op: \">=\"\n    value: 5\n"},
+		{"both metric and all", "  - title: x\n    severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n    all:\n      - metric: longest_identical_run.length\n        op: \">=\"\n        value: 3\n"},
+		{"all condition missing metric", "  - title: x\n    severity: high\n    category: timeout\n    all:\n      - op: \">=\"\n        value: 3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseRunbook("bad", []byte("## CLASSIFY\n```yaml\naudit:\n"+tc.check+"```\n")); err == nil {
+				t.Fatal("ParseRunbook accepted the invalid check")
+			}
+		})
+	}
+}
+
+// An audit fence with no entries, or with no audit key at all, is not an audit
+// block.
+func TestParseAuditFenceEmptyList(t *testing.T) {
+	t.Parallel()
+	if _, found := parseAuditFence("audit: []"); found {
+		t.Fatal("empty audit list should not be found")
+	}
+	if _, found := parseAuditFence("other: value"); found {
+		t.Fatal("non-audit YAML should not be found")
+	}
+}
+
+// A non-indented prose line closes the open manual step, so an indented line
+// after the prose is not folded into that step.
+func TestParseRunbookDefaultStepReset(t *testing.T) {
+	t.Parallel()
+	content := []byte("## CLASSIFY\n" +
+		"- A manual step.\n" +
+		"Some prose line that is not a bullet.\n" +
+		"  indented after the prose.\n")
+	rb, err := ParseRunbook("step-reset-test", content)
+	if err != nil {
+		t.Fatalf("ParseRunbook: %v", err)
+	}
+	if len(rb.ManualSteps) != 1 || rb.ManualSteps[0] != "A manual step." {
+		t.Fatalf("manual steps = %q, want only the bullet's own text", rb.ManualSteps)
+	}
+}
+
+// RenderAudit surfaces every part of the result: the summary rows, each
+// manual step, each unreadable session, and each finding.
+func TestRenderAuditShowsEveryPartOfTheResult(t *testing.T) {
+	t.Parallel()
+	out := RenderAudit(AuditResult{
+		Runbook:         "runbook-sentinel",
+		SessionsChecked: 1,
+		Findings: []Finding{{
+			Signature: "signature-sentinel", Severity: "high", Category: "cat", Title: "finding-title-sentinel",
+			Description:  "desc",
+			SuggestedFix: SuggestedFix{Type: "diagnosis"},
+		}},
+		Summary:    []AuditSummaryRow{{Title: "summary-title-sentinel", Severity: "high", Sessions: 1}},
+		Manual:     []string{"manual-step-sentinel"},
+		Unreadable: []UnreadableSession{{SessionID: "session-sentinel", TranscriptRef: "local:session-sentinel", Error: "error-sentinel"}},
+	})
+	for _, want := range []string{"runbook-sentinel", "summary-title-sentinel", "manual-step-sentinel", "session-sentinel", "error-sentinel", "signature-sentinel"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered audit missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAudit_SweepListError(t *testing.T) {
+	t.Parallel()
+	// A file (not a directory) as state base makes the --since sweep's
+	// session listing fail, and the audit reports that failure.
+	rb := mustParseFixtureRunbook(t)
+	tmpFile := t.TempDir() + "/notadir"
+	writeFile(t, tmpFile, "x")
+	if _, err := RunAudit(context.Background(), tmpFile, rb, AuditOpts{Since: time.Hour}); err == nil {
+		t.Fatal("want error from ListSessions sweep on invalid state base")
 	}
 }

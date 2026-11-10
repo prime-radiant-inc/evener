@@ -308,10 +308,7 @@ func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -351,10 +348,7 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Register a custom tool after session init.
@@ -401,10 +395,7 @@ description: A test skill
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -483,10 +474,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()
@@ -572,10 +560,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	exitCode := 7
@@ -646,10 +631,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	base := time.Now().UTC()
@@ -733,10 +715,7 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ds := sess.DetailedStatus()

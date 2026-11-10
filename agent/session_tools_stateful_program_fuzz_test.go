@@ -264,6 +264,7 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 	}
 	stpRecord(results, noActive)
 
+	forcePressureAbove(t, s, compactPressureFloor)
 	compact := stpCall(t, s, env, ctx, "compact-first", "compact_context", map[string]any{
 		"note_to_self":            "retain this evidence",
 		"compaction_instructions": "keep protocol details",

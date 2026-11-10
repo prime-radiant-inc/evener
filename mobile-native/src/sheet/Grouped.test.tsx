@@ -21,16 +21,25 @@ import {
 	useErrorInView,
 	useFormError,
 } from "./Grouped";
+import { ModalFrame } from "./ModalSheet";
 
 const viewport = vi.hoisted(() => ({ fontScale: 1, scheme: "light" as "light" | "dark" }));
+const safeArea = vi.hoisted(() => ({ top: 0, bottom: 0, left: 0, right: 0 }));
 beforeEach(() => {
 	viewport.fontScale = 1;
 	viewport.scheme = "light";
+	Object.assign(safeArea, { top: 0, bottom: 0, left: 0, right: 0 });
 });
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 	useColorScheme: () => viewport.scheme,
+}));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	SafeAreaProvider: "SafeAreaProvider",
+	useSafeAreaInsets: () => ({ ...safeArea }),
+	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 0, height: 0 }),
 }));
 
 const light = palettes.light;
@@ -456,6 +465,38 @@ describe("a form's error", () => {
 			{ y: 0, animated: true },
 		]);
 		expect(announce).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("a grouped page's safe areas", () => {
+	it("applies the horizontal insets once outside a modal frame", () => {
+		safeArea.left = 50;
+		safeArea.right = 50;
+		const tree = render(
+			<GroupedPage>
+				<Row label="Fixture" />
+			</GroupedPage>,
+		);
+		expect(tree.root.findByType("ScrollView" as never).props.contentContainerStyle).toMatchObject({
+			paddingLeft: 50,
+			paddingRight: 50,
+		});
+	});
+
+	it("leaves the horizontal insets to ModalFrame inside a modal sheet", () => {
+		safeArea.left = 50;
+		safeArea.right = 50;
+		const tree = render(
+			<ModalFrame onRequestClose={() => {}}>
+				<GroupedPage>
+					<Row label="Fixture" />
+				</GroupedPage>
+			</ModalFrame>,
+		);
+		expect(tree.root.findByType("ScrollView" as never).props.contentContainerStyle).toMatchObject({
+			paddingLeft: 0,
+			paddingRight: 0,
+		});
 	});
 });
 

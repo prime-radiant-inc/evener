@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 func TestNormalizePinSectionName(t *testing.T) {
@@ -17,6 +20,7 @@ func TestNormalizePinSectionName(t *testing.T) {
 	}{
 		{raw: "  Research  ", display: "Research", key: "research"},
 		{raw: "Straße", display: "Straße", key: "strasse"},
+		{raw: strings.Repeat("a", PinSectionNameMaxRunes), display: strings.Repeat("a", PinSectionNameMaxRunes), key: strings.Repeat("a", PinSectionNameMaxRunes)},
 		{raw: "\t\n", wantErr: true},
 		{raw: strings.Repeat("界", 81), wantErr: true},
 	}
@@ -333,3 +337,191 @@ func TestPinSectionStoreEntropyFailureReturnsError(t *testing.T) {
 func errorsIsPinSectionNotFound(err error) bool { return errors.Is(err, ErrPinSectionNotFound) }
 
 func errorsIsPinSectionConflict(err error) bool { return errors.Is(err, ErrPinSectionConflict) }
+
+// A store with no database (nil, or no path) is the unconfigured hub: every
+// read is empty and every write is a successful no-op.
+func TestPinSectionStoreUnconfiguredIsANoOp(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store *PinSectionStore
+	}{
+		{"nil store", nil},
+		{"no database path", &PinSectionStore{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.store
+			if db, err := s.open(); err != nil || db != nil {
+				t.Fatalf("open = %v, %v", db, err)
+			}
+			if sections, err := s.Sections(); err != nil || len(sections) != 0 {
+				t.Fatalf("Sections = %+v, %v", sections, err)
+			}
+			if sec, changed, err := s.Assign("x", "", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
+				t.Fatalf("Assign = %+v, %v, %v", sec, changed, err)
+			}
+			if sec, changed, err := s.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
+				t.Fatalf("CreateOrReuseAndAssign = %+v, %v, %v", sec, changed, err)
+			}
+			if sec, changed, err := s.Rename("x", "n", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
+				t.Fatalf("Rename = %+v, %v, %v", sec, changed, err)
+			}
+			if count, changed, err := s.DeleteSection("x"); err != nil || changed || count != 0 {
+				t.Fatalf("DeleteSection = %d, %v, %v", count, changed, err)
+			}
+			if ok, err := s.DeleteSession("", "y"); err != nil || ok {
+				t.Fatalf("DeleteSession = %v, %v", ok, err)
+			}
+			if ok, err := s.Unpin("", "y"); err != nil || ok {
+				t.Fatalf("Unpin = %v, %v", ok, err)
+			}
+			if pins, err := s.Assignments(); err != nil || len(pins) != 0 {
+				t.Fatalf("Assignments = %+v, %v", pins, err)
+			}
+		})
+	}
+}
+
+// TestPinSectionStoreOpenFailureFailsEveryOperation pins that when the
+// database cannot be opened and prepared, every read and write returns that
+// failure instead of an empty or partial answer.
+func TestPinSectionStoreOpenFailureFailsEveryOperation(t *testing.T) {
+	errOpen := errors.New("driver not registered")
+	errMkdir := errors.New("filesystem broken")
+	for _, tc := range []struct {
+		name    string
+		prepare func(store *PinSectionStore)
+		wantErr error
+	}{
+		{name: "driver open fails", wantErr: errOpen, prepare: func(store *PinSectionStore) {
+			store.openDB = func(_, _ string) (*sql.DB, error) { return nil, errOpen }
+		}},
+		{name: "database is closed", prepare: func(store *PinSectionStore) {
+			store.openDB = func(driverName, dataSourceName string) (*sql.DB, error) {
+				db, err := sql.Open(driverName, dataSourceName)
+				if err != nil {
+					return nil, err
+				}
+				_ = db.Close()
+				return db, nil
+			}
+		}},
+		{name: "database directory cannot be created", wantErr: errMkdir, prepare: func(store *PinSectionStore) {
+			store.SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errMkdir})
+		}},
+	} {
+		for _, op := range []struct {
+			name string
+			run  func(store *PinSectionStore) error
+		}{
+			{"sections", func(s *PinSectionStore) error { _, err := s.Sections(); return err }},
+			{"assignments", func(s *PinSectionStore) error { _, err := s.Assignments(); return err }},
+			{"assign", func(s *PinSectionStore) error { _, _, err := s.Assign("x", "", "y", time.Unix(1, 0)); return err }},
+			{"create or reuse and assign", func(s *PinSectionStore) error {
+				_, _, err := s.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0))
+				return err
+			}},
+			{"rename", func(s *PinSectionStore) error { _, _, err := s.Rename("x", "NewName", time.Unix(1, 0)); return err }},
+			{"delete section", func(s *PinSectionStore) error { _, _, err := s.DeleteSection("x"); return err }},
+			{"delete session", func(s *PinSectionStore) error { _, err := s.DeleteSession("", "y"); return err }},
+		} {
+			t.Run(tc.name+"/"+op.name, func(t *testing.T) {
+				store := NewPinSectionStore(filepath.Join(t.TempDir(), "sub", "index.db"))
+				tc.prepare(store)
+				err := op.run(store)
+				if err == nil || tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+					t.Fatalf("%s = %v, want the open failure %v", op.name, err, tc.wantErr)
+				}
+			})
+		}
+	}
+}
+
+func TestPinSectionStoreMissingSectionIsNotFound(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	if _, _, err := store.Assign("nonexistent-id", "", "session-a", time.Unix(1, 0)); !errorsIsPinSectionNotFound(err) {
+		t.Fatalf("Assign missing section err = %v", err)
+	}
+	if _, _, err := store.Rename("nonexistent-id", "NewName", time.Unix(1, 0)); !errorsIsPinSectionNotFound(err) {
+		t.Fatalf("Rename missing section err = %v", err)
+	}
+}
+
+func TestPinSectionStoreRejectsAnInvalidName(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	if _, _, err := store.CreateOrReuseAndAssign("", "", "s", time.Unix(1, 0)); !errors.Is(err, ErrPinSectionName) {
+		t.Fatalf("CreateOrReuseAndAssign blank name err = %v", err)
+	}
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s", time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Rename(section.ID, strings.Repeat("界", 81), time.Unix(2, 0)); !errors.Is(err, ErrPinSectionName) {
+		t.Fatalf("Rename too-long name err = %v", err)
+	}
+	if _, _, err := store.Rename(section.ID, "  ", time.Unix(2, 0)); !errors.Is(err, ErrPinSectionName) {
+		t.Fatalf("Rename blank name err = %v", err)
+	}
+}
+
+// A database whose pin tables do not have the store's columns fails reads
+// rather than returning rows it could not decode.
+func TestPinSectionStoreReadsFailOnAMalformedSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		table string
+		read  func(store *PinSectionStore) error
+	}{
+		{"sections", `CREATE TABLE pin_section (id TEXT)`, func(s *PinSectionStore) error { _, err := s.Sections(); return err }},
+		{"assignments", `CREATE TABLE session_pin (session_id TEXT)`, func(s *PinSectionStore) error { _, err := s.Assignments(); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+			db, err := store.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stmt := range []string{`DROP TABLE session_pin`, `DROP TABLE pin_section`, `DROP TABLE favorite`, tc.table} {
+				if _, err := db.ExecContext(context.Background(), stmt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = db.Close()
+			if err := tc.read(store); err == nil {
+				t.Fatalf("%s read succeeded on a malformed schema", tc.name)
+			}
+		})
+	}
+}
+
+func TestIsSQLiteUniqueNameConflict(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("UNIQUE constraint failed: pin_section.name_key"), true},
+		{errors.New("UNIQUE constraint failed: other_table.col"), false},
+		{errors.New("syntax error"), false},
+	}
+	for _, c := range cases {
+		if got := isSQLiteUniqueNameConflict(c.err); got != c.want {
+			t.Errorf("isSQLiteUniqueNameConflict(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+// CreateOrReuseAndAssign exposes the same pre-commit seam as Assign, so a race
+// test can park either write at its commit boundary.
+func TestPinSectionStoreCreateOrReuseHookFires(t *testing.T) {
+	oldHook := pinSectionBeforeAssignmentCommitHook
+	defer func() { pinSectionBeforeAssignmentCommitHook = oldHook }()
+	fired := false
+	pinSectionBeforeAssignmentCommitHook = func() { fired = true }
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatalf("pinSectionBeforeAssignmentCommitHook should have fired during CreateOrReuseAndAssign")
+	}
+}

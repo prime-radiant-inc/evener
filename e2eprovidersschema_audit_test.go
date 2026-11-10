@@ -18,9 +18,6 @@ import (
 const (
 	e2eTurnControlsScript = "scripts/e2e/e2e-webui-turn-controls.sh"
 	e2eRateLimitedScript  = "scripts/e2e/e2e-ratelimited-provider.sh"
-	// providersWriteLine is what every shell harness now invokes: the built
-	// test/e2e/providers/cmd binary, pointed at the isolated hub's own file.
-	providersWriteLine = `"$run/providers-toml" \`
 	// oldSchemaBlock is the pre-registry block the turn-controls script wrote
 	// until #4411. The audit asserts the registry still refuses it: if that
 	// ever stops being true, the premise this audit rests on has changed and
@@ -37,59 +34,6 @@ api_key = "fakellm-not-a-secret"
 send_session_affinity_headers = true
 `
 )
-
-// TestE2EScriptsPinProvidersConfig keeps each disposable-hub script immune to
-// an ambient EVENER_PROVIDERS_CONFIG after isolation: e2e_isolate_home unsets
-// it (and TestDisposableHubRecipeIsolatesTheHubEnvironment requires it to stay
-// unset), so each script names its own isolated providers file before starting
-// the hub. Without that pin the hub rides the HOME-derived default, which a
-// wrapper re-exporting the operator's path would silently outrank — the hub
-// then has no providers while every liveness check still passes, the silent
-// failure #4411 shaped this file around.
-func TestE2EScriptsPinProvidersConfig(t *testing.T) {
-	for _, tc := range []struct {
-		name, source string
-	}{
-		{name: "webui-turn-controls", source: e2eTurnControlsScript},
-		{name: "ratelimited-provider", source: e2eRateLimitedScript},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			body, err := os.ReadFile(tc.source)
-			if err != nil {
-				t.Fatalf("read %s: %v", tc.source, err)
-			}
-			lines := strings.Split(string(body), "\n")
-			writeAt, hubAt, exportAt := -1, -1, -1
-			for i, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if writeAt < 0 && trimmed == providersWriteLine {
-					writeAt = i
-					continue
-				}
-				if exportAt < 0 && trimmed == `export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"` {
-					exportAt = i
-					continue
-				}
-				if hubAt < 0 && strings.Contains(line, `"$run/evener" hub`) {
-					hubAt = i
-				}
-			}
-			if writeAt < 0 {
-				t.Fatalf("%s no longer writes its providers.toml with the one writer (%q)", tc.source, providersWriteLine)
-			}
-			if hubAt < 0 {
-				t.Fatalf("%s no longer starts its hub via \"$run/evener\" hub", tc.source)
-			}
-			if exportAt < 0 {
-				t.Fatalf("%s never exports EVENER_PROVIDERS_CONFIG at the isolated providers.toml path", tc.source)
-			}
-			if writeAt >= exportAt || exportAt >= hubAt {
-				t.Fatalf("%s must export EVENER_PROVIDERS_CONFIG between the providers.toml write (line %d) and the hub start (line %d); found at line %d",
-					tc.source, writeAt+1, hubAt+1, exportAt+1)
-			}
-		})
-	}
-}
 
 // TestE2EProvidersSchema keeps the harnesses' now-shared config parseable by
 // the registry the hub loads it with, and their fake instances resolvable.

@@ -26,11 +26,10 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 103, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)
@@ -74,12 +73,7 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 		subscribed:    make(chan struct{}, 1),
 		canceled:      make(chan struct{}, 1),
 	}
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
 	client := dialHubRPCInitialized(t, srv)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img"}); err != nil {
@@ -124,7 +118,7 @@ func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
 		}}, nil
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 21*1000, sessionID, sessionID)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)
@@ -242,17 +236,13 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 
 	clientA := dialHubRPC(t, srv)
 	defer clientA.Close()
-	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize clientA: %v", err)
-	}
+	mustInitializeHubClient(t, clientA)
 	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + threadID}); err != nil {
 		t.Fatalf("ThreadRead clientA: %v", err)
 	}
 	clientB := dialHubRPC(t, srv)
 	defer clientB.Close()
-	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize clientB: %v", err)
-	}
+	mustInitializeHubClient(t, clientB)
 	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:" + threadID}); err != nil {
 		t.Fatalf("ThreadRead clientB: %v", err)
 	}
@@ -402,11 +392,7 @@ func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
 // managed-launch path), so no launcher is even consulted — an unsubscribe is
 // a "stop caring" operation and must not spawn.
 func TestHubRPCThreadUnsubscribeUnresolvedSourceIsQuiet(t *testing.T) {
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t)
 
 	client := dialHubRPCInitialized(t, srv)
 	// A ref whose source never existed: quiet success, no error.
@@ -1373,9 +1359,7 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 
 	replacementClient := dialHubRPC(t, srv)
 	defer replacementClient.Close()
-	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize replacement client: %v", err)
-	}
+	mustInitializeHubClient(t, replacementClient)
 	replacementReadErr := make(chan error, 1)
 	go func() {
 		_, err := replacementClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
@@ -1466,9 +1450,7 @@ func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.
 
 	replacementClient := dialHubRPC(t, srv)
 	defer replacementClient.Close()
-	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize replacement: %v", err)
-	}
+	mustInitializeHubClient(t, replacementClient)
 	replacementRead := make(chan error, 1)
 	go func() {
 		_, err := replacementClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
@@ -1872,9 +1854,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client1: %v", err)
-	}
+	mustInitializeHubClient(t, client1)
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
 		t.Fatalf("ThreadRead client1: %v", err)
 	}
@@ -1890,9 +1870,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client2: %v", err)
-	}
+	mustInitializeHubClient(t, client2)
 	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
 		t.Fatalf("ThreadRead client2: %v", err)
 	}
@@ -1954,9 +1932,7 @@ func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *te
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client1: %v", err)
-	}
+	mustInitializeHubClient(t, client1)
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client1: %v", err)
 	}
@@ -1964,9 +1940,7 @@ func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *te
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client2: %v", err)
-	}
+	mustInitializeHubClient(t, client2)
 	rereadResult := make(chan error, 1)
 	go func() {
 		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
@@ -2035,9 +2009,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client1: %v", err)
-	}
+	mustInitializeHubClient(t, client1)
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
 		t.Fatalf("ThreadRead client1: %v", err)
 	}
@@ -2054,9 +2026,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client2: %v", err)
-	}
+	mustInitializeHubClient(t, client2)
 	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
 		t.Fatalf("ThreadRead client2: %v", err)
 	}
@@ -2104,14 +2074,10 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 
 	client1 := dialHubRPC(t, srv)
 	defer client1.Close()
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client1: %v", err)
-	}
+	mustInitializeHubClient(t, client1)
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize client2: %v", err)
-	}
+	mustInitializeHubClient(t, client2)
 
 	readErrs := make(chan error, 2)
 	go func() {
@@ -2161,18 +2127,14 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 
 	failedClient := dialHubRPC(t, srv)
 	defer failedClient.Close()
-	if _, err := failedClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize failedClient: %v", err)
-	}
+	mustInitializeHubClient(t, failedClient)
 	if _, err := failedClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err == nil || !strings.Contains(err.Error(), "subscribe failed once") {
 		t.Fatalf("ThreadRead failedClient error=%v, want subscribe failed once", err)
 	}
 
 	okClient := dialHubRPC(t, srv)
 	defer okClient.Close()
-	if _, err := okClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize okClient: %v", err)
-	}
+	mustInitializeHubClient(t, okClient)
 	if _, err := okClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
 		t.Fatalf("ThreadRead okClient: %v", err)
 	}

@@ -177,6 +177,15 @@ type RouteHistoryObserver = (
   transition: "push" | "replace",
 ) => void;
 const routeHistoryObservers = new Set<RouteHistoryObserver>();
+// True while navigate() is dispatching its own popstate. The placement effect
+// uses this to tell an app-driven navigation (whose caller owns any focus
+// request) from a real browser Back/Forward, which is an interactive placement
+// in its own right (#3687).
+let appDrivenDispatch = false;
+
+export function isAppDrivenNavigation(): boolean {
+  return appDrivenDispatch;
+}
 
 /** Observe accepted app history changes without becoming a second navigation authority. */
 export function observeRouteHistory(observer: RouteHistoryObserver): () => void {
@@ -298,7 +307,12 @@ export function navigate(
     const { path, search } = splitURL(target);
     settingsHostRouteSync(path, search);
   }
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  appDrivenDispatch = true;
+  try {
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  } finally {
+    appDrivenDispatch = false;
+  }
 }
 
 /** Ordinary live navigation stays on the normal route/history path. */

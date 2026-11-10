@@ -116,6 +116,7 @@ func (s *Session) drainSteeringForCommunicate() []steeringMessage {
 // crash-window note).
 func (s *Session) peekSteeringForTurn() []steeringMessage {
 	s.mu.Lock()
+	s.noteSteeringDrainLocked()
 	msgs := append([]steeringMessage{}, s.steeringQueue...)
 	s.mu.Unlock()
 	for _, msg := range msgs {

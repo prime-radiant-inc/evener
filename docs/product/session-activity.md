@@ -119,6 +119,13 @@ Background attention paused by a permanent provider failure is not live work
 while no fresh wake or paced retry is armed: the session keeps its own failure
 presentation until a new delegate event, a sent message, a model switch, or
 another re-engagement re-arms delivery.
+A usage-limit failure that names its reset time never pauses attention: the
+model call that met it waits inside the turn, so the session stays working and
+notifications and fresh delegate events queue behind the turn as behind any
+running turn. Its working row carries the limit's summary with the resume time
+(the hub keeps it on the working row), so clients say it waits for quota and
+when it resumes, until the reset, a model switch, or a sent message the provider
+accepts.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and
@@ -891,7 +898,11 @@ About is the last sidebar category and has no count or chip. Its
 holds the shared thread model for the sidebar's explicit public session ref and
 renders the existing details body. That model owner supplies hydration,
 accounting, subscriptions and reconnect recovery. About adds no collection
-demand, lifecycle mutation, provider call, cache or retry owner. Its category
+demand, lifecycle mutation or cache of its own: a local session's branch row
+resolves at view time through the [shared git-head
+lookup](../../cmd/evener-hub/frontend/src/shell/gitLocation.ts) the session
+location line rides — for local refs only, suppressed while the wire's own
+gitBranch answers, and failing soft to no row. Its category
 choice uses the same per-session persistence without changing another category's
 disclosure or scroll intent.
 

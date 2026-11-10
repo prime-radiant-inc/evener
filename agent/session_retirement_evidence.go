@@ -158,7 +158,7 @@ func (s *Session) retirementLocalBlockersWithNaming(includeNaming bool) []Retire
 	}
 	s.mu.Unlock()
 	s.pendingJobNotifsMu.Lock()
-	if len(s.pendingJobNotifs) != 0 || s.jobNotifyRetry.active || s.jobNotifyCallbacks != 0 {
+	if s.owedJobNotificationsLocked() != 0 || s.jobNotifyRetry.active || s.jobNotifyCallbacks != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})
 	}
 	s.pendingJobNotifsMu.Unlock()

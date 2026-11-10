@@ -22,7 +22,7 @@
 #     Fail limits (this and the class ceilings below) scale by the run's median
 #     ratio when that is above 1: a uniformly slow runner is not a regression.
 #   - Per-test ceiling, SEGMENTED BY TEST CLASS (testing-budget.json's
-#     perTestCeilingClasses; ruling, 2026-10-13, issue #4601):
+#     perTestCeiling; ruling, 2026-10-13, issue #4601):
 #       * A test named in a class — or a subtest of one (Name/sub) — is compared
 #         strictly against that class's ceiling; a breach FAILs regardless of its
 #         package's budget. The classes and their ceilings were drawn from the
@@ -62,10 +62,10 @@
 # deliberate warn state. An unparseable file is a broken config, not an absent
 # one, so it fails in every mode naming the file and the parse error — otherwise
 # a stray comma would read as no baseline and silently disarm every ratio and
-# every perTestCeilingClasses ceiling (issue #4609). A budget whose TOP level is
+# every perTestCeiling ceiling (issue #4609). A budget whose TOP level is
 # not an object, a `packages` value that is present but not an object, the values
 # INSIDE that map, a `perTestCeilingSeconds` that is present but not a finite
-# number, and a `perTestCeilingClasses` that is present but not an object are the
+# number, and a `perTestCeiling` that is present but not an object are the
 # same broken config reached different ways (issues #4614, #4618, #4622): a
 # hand-edit `"packages": []` would read as no baseline and disarm the whole
 # ratchet with a green gate; `"packages": "x"` and a string or null
@@ -381,7 +381,7 @@ def fail_malformed(what):
 	# warn state below is deliberate (kata b6rv): the tree stays green until a
 	# measured baseline is blessed. A syntax error must not ride that path —
 	# collapsing it into `budget = {}` reads as no baseline and silently disarms
-	# every package ratio and every perTestCeilingClasses ceiling, with nothing
+	# every package ratio and every perTestCeiling ceiling, with nothing
 	# naming the syntax error (issue #4609). Fail in every mode, before any bless,
 	# naming the file and the problem.
 	with open(out_path, "w") as fh:
@@ -405,13 +405,53 @@ def seconds_error(value):
 		return "too large for a float"
 	return "got " + json.dumps(value)
 
+def _pairs_to_object(pairs):
+	# json.load silently keeps the LAST of two identical keys. Parse with the
+	# pairs preserved so a repeat can be seen at all.
+	return dict(pairs)
+
+def _reject_duplicate_keys(pairs, where):
+	seen = set()
+	for key, _ in pairs:
+		if key in seen:
+			fail_malformed(where + "[" + json.dumps(key) + "] more than once")
+		seen.add(key)
+	return dict(pairs)
+
 try:
 	with open(budget_path) as fh:
+		# Only the perTestCeiling value is re-parsed with duplicate detection, so
+		# the object_pairs_hook stays out of every other key's parsing path.
 		budget = json.load(fh)
 except FileNotFoundError:
 	budget = {}
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
+if isinstance(budget, dict) and isinstance(budget.get("perTestCeiling"), dict):
+	# The per-test ceiling map is hand-edited, so a test named twice must fail
+	# naming the collision: json.load keeps whichever the editor wrote second,
+	# and the flat map no longer has a "one class only" rule to catch it.
+	#
+	# Locate the value STRUCTURALLY, by re-parsing the whole file with pairs
+	# preserved and taking the top-level "perTestCeiling" pair. Scanning the raw
+	# text for the key name would also match it inside another value: a
+	# metadata string that merely mentions "perTestCeiling" sits above
+	# "packages", and a substring scan would hand back the packages map as the
+	# ceilings.
+	with open(budget_path) as fh:
+		try:
+			top_pairs = json.load(fh, object_pairs_hook=lambda pairs: pairs)
+		except ValueError:
+			top_pairs = None
+	if isinstance(top_pairs, list):
+		# The top-level key can repeat too, and json.load keeps the last one, so
+		# take the last pair rather than stopping at the first.
+		ceiling_pairs = None
+		for key, value in top_pairs:
+			if key == "perTestCeiling" and isinstance(value, list):
+				ceiling_pairs = value
+		if ceiling_pairs is not None:
+			budget["perTestCeiling"] = _reject_duplicate_keys(ceiling_pairs, "perTestCeiling")
 
 # A budget whose TOP level is not an object is a broken config, not an empty one:
 # budget.get below would crash a list, number, string, null or bool with an
@@ -461,36 +501,42 @@ if "perTestCeilingSeconds" in budget:
 		fail_malformed("perTestCeilingSeconds must be a number of seconds (" + problem + ")")
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
-# The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
-# in a class, or is a subtest of one (Name/sub), is compared STRICTLY against
-# that class's ceiling; a test in no class keeps the flat `ceiling` above and
-# stays warn-only in every mode, so the unclassified backlog cannot red the
-# gate. Membership is by test name, not by package, because one package holds
-# several classes (issue #4601). A name matched by more than one class is a
-# config error, reported as a FAIL: the map is hand-edited, and silently
-# picking the first class would enforce the wrong number.
-# A perTestCeilingClasses present but not an object is a broken config, not "no
-# classes": `budget.get` cannot tell an absent key from an explicit `null`, so
-# `{"perTestCeilingClasses": null}` read as an empty map and silently disarmed
-# every class ceiling, while the other non-object values (`[]`, `false`, `0`,
-# `""`) failed only under the strict posture (issue #4618). Test the KEY and
-# route all of them through the malformed-config path above, as the `packages`
-# value does (#4614): they fail in every mode, not only strict. An absent key
-# still means no classes, which is fine. The `packages` read above has already
-# made `budget` an object, so no isinstance guard is needed here.
-if "perTestCeilingClasses" in budget and not isinstance(budget["perTestCeilingClasses"], dict):
-	fail_malformed("perTestCeilingClasses must be an object mapping each class to "
-		"{ceilingSeconds, tests} (got " + type(budget["perTestCeilingClasses"]).__name__ + ")")
-ceiling_classes = budget.get("perTestCeilingClasses", {})
+# The per-test ceilings (#4601, ruling 2026-10-13; flattened 2026-11-09). A test
+# named here, or a subtest of one (Name/sub), is compared STRICTLY against its
+# own ceiling; a test named nowhere keeps the flat `ceiling` above and stays
+# warn-only in every mode, so the unclassified backlog cannot red the gate.
+# Membership is by test name, not by package, because one package holds several
+# of these. The named-class grouping that used to wrap this map carried no
+# enforcement the per-test names did not: every ceiling is per test anyway, and
+# a class name only decided which tests shared a number.
+# A perTestCeiling map present but not an object is a broken config, not "no
+# ceilings": `budget.get` cannot tell an absent key from an explicit `null`, so
+# `{"perTestCeiling": null}` read as an empty map and silently disarmed every
+# ceiling, while the other non-object values (`[]`, `false`, `0`, `""`) failed
+# only under the strict posture (issue #4618). Test the KEY and route all of them
+# through the malformed-config path above, as the `packages` value does (#4614):
+# they fail in every mode, not only strict. An absent key still means no
+# per-test ceilings, which is fine. The `packages` read above has already made
+# `budget` an object, so no isinstance guard is needed here.
+if "perTestCeiling" in budget and not isinstance(budget["perTestCeiling"], dict):
+	fail_malformed("perTestCeiling must be an object mapping each test name to its "
+		"ceiling seconds (got " + type(budget["perTestCeiling"]).__name__ + ")")
+per_test_ceilings = budget.get("perTestCeiling", {})
 
-def class_memberships(name):
-	found = []
-	for class_name, spec in ceiling_classes.items():
-		for member in spec.get("tests", []):
-			if name == member or name.startswith(member + "/"):
-				found.append((class_name, spec.get("ceilingSeconds")))
-				break
-	return found
+def test_ceiling(name):
+	# The ceiling for `name` or for its nearest named parent, or None. An exact
+	# name wins over a parent prefix, so a test named both ways keeps its own.
+	if name in per_test_ceilings:
+		return name, per_test_ceilings[name]
+	parent = name
+	while "/" in parent:
+		parent = parent.rsplit("/", 1)[0]
+		if parent in per_test_ceilings:
+			return parent, per_test_ceilings[parent]
+	return None, None
+
+no_baseline = len(packages) == 0
+had_metric = budget.get("metric") == WALL_METRIC
 
 no_baseline = len(packages) == 0
 had_metric = budget.get("metric") == WALL_METRIC
@@ -504,42 +550,28 @@ def raise_worst(level):
 	if order[level] > order[worst]:
 		worst = level
 
-# A class must be an object naming a usable (non-bool) ceiling and a non-empty
-# list of string test names. The ceiling goes through the shared seconds_error
-# definition and the malformed-config path above — every mode, naming the class
-# and the field — like the package values and the flat perTestCeilingSeconds
-# (#4629). The remaining faults (a non-object spec, or a `tests` string that
-# iterates as characters and matches nothing) FAIL naming the class and drop the
-# class, leaving its members on the flat warn-only default below rather than
-# crashing the check. (The map itself being a non-object is the harder error
-# above, handled before any class is read.)
-valid_classes = {}
-for class_name, spec in ceiling_classes.items():
-	bad_spec = (f"FAIL  ceiling class '{class_name}' must be an object with a "
-		f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
-	if not isinstance(spec, dict):
-		lines.append(bad_spec)
-		raise_worst("fail")
-		continue
+# Every per-test ceiling must be a usable (non-bool) number of seconds. It goes
+# through the shared seconds_error definition and the malformed-config path above
+# — every mode, naming the test and the field — like the package values and the
+# flat perTestCeilingSeconds (#4629). A faulty entry drops that test back to the
+# warn-only flat default below rather than crashing the check. (The map itself
+# being a non-object is the harder error above, handled before any entry is
+# read.)
+valid_ceilings = {}
+for test_name, value in per_test_ceilings.items():
 	# seconds_error is the one definition of "cannot serve as seconds", and it is
 	# overflow-safe: a JSON integer too large to convert to a float used to reach
 	# math.isfinite first and raise OverflowError — a traceback in every mode, from
 	# a shape the strict-only FAIL line below would only have downgraded (#4629).
-	# Routing its problem through fail_malformed names the class and the field in
+	# Routing its problem through fail_malformed names the test and the field in
 	# every mode. A huge but FINITE ceiling stays accepted: a ceiling is an upper
-	# bound, so a very large finite value simply disables that class.
-	problem = seconds_error(spec.get("ceilingSeconds"))
+	# bound, so a very large finite value simply disables that test's ceiling.
+	problem = seconds_error(value)
 	if problem:
-		fail_malformed("perTestCeilingClasses[" + json.dumps(class_name)
-			+ "].ceilingSeconds must be a number of seconds (" + problem + ")")
-	if (not isinstance(spec.get("tests"), list)
-			or not spec.get("tests")
-			or not all(isinstance(t, str) for t in spec.get("tests"))):
-		lines.append(bad_spec)
-		raise_worst("fail")
-		continue
-	valid_classes[class_name] = spec
-ceiling_classes = valid_classes
+		fail_malformed("perTestCeiling[" + json.dumps(test_name)
+			+ "] must be a number of seconds (" + problem + ")")
+	valid_ceilings[test_name] = value
+per_test_ceilings = valid_ceilings
 
 if no_baseline:
 	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
@@ -592,33 +624,27 @@ for pkg in sorted(sums):
 		lines.append(f"OK    {pkg}: {m:.2f}s (budget {b:.2f}s)")
 
 for pkg, name, secs in tests:
-	# A test in a class is compared STRICTLY against that class's ceiling
-	# (#4601, ruling 2026-10-13): the classes are drawn, so a breach is a real
-	# regression and FAILs — nonzero under --check in a CI-shaped environment or
-	# --strict. Membership is by name; a subtest inherits its parent's class.
-	memberships = class_memberships(name)
-	if len(memberships) > 1:
-		listed = ", ".join(f"'{c}'" for c, _ in memberships)
-		lines.append(f"FAIL  {pkg}: test {name} is listed in more than one ceiling class ({listed}); "
-			f"a test must belong to exactly one class in testing-budget.json perTestCeilingClasses")
-		raise_worst("fail")
-		continue
-	if memberships:
-		class_name, class_ceiling = memberships[0]
-		if secs > class_ceiling * slowdown:
-			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its {class_ceiling:g}s "
-				f"'{class_name}' class ceiling")
+	# A named test is compared STRICTLY against its own ceiling (#4601, ruling
+	# 2026-10-13, flattened 2026-11-09): the ceilings are drawn from CI, so a
+	# breach is a real regression and FAILs — nonzero under --check in a
+	# CI-shaped environment or --strict. Membership is by name; a subtest
+	# inherits its nearest named parent's ceiling.
+	named, named_ceiling = test_ceiling(name)
+	if named is not None:
+		if secs > named_ceiling * slowdown:
+			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its "
+				f"{named_ceiling:g}s ceiling (named '{named}' in testing-budget.json perTestCeiling)")
 			raise_worst("fail")
 		else:
-			lines.append(f"OK    {pkg}: test {name} {secs:.2f}s (class '{class_name}', ceiling {class_ceiling:g}s)")
+			lines.append(f"OK    {pkg}: test {name} {secs:.2f}s (named ceiling {named_ceiling:g}s)")
 		continue
 	if secs > ceiling:
-		# A test in no class keeps the flat ceiling and stays warn-only in EVERY
-		# mode, --strict included (#4601): the unclassified backlog has never run
+		# A test named nowhere keeps the flat ceiling and stays warn-only in EVERY
+		# mode, --strict included (#4601): the unnamed backlog has never run
 		# under a ceiling, so enforcing the flat 3s would red the gate on tests
-		# that were always over it. Give the test a class to enforce it.
+		# that were always over it. Name the test in perTestCeiling to enforce it.
 		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling "
-			f"(unclassified; warn-only, #4601)")
+			f"(unnamed; warn-only, #4601)")
 		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced

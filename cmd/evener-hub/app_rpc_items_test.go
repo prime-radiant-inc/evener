@@ -218,7 +218,7 @@ func TestHubRPCInitialItemReadRejectsCompleteLegacyV3Metadata(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 

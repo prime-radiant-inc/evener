@@ -91,7 +91,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 			var questionTurn, instance string
 			awaitThread(ctx, t, human, worker, "pending question", func(thread appwire.Thread) bool {
 				instance = thread.Evener.InstanceID
-				return thread.Evener.AskPending
+				return questionSettled(thread)
 			})
 			if scenario.pending {
 				register()
@@ -137,7 +137,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 			}
 			if scenario.twice {
 				workerCall.RespondToolCall("ask_user", map[string]any{"questions": []any{map[string]any{"question": "SECOND-QUESTION", "options": []any{map[string]any{"label": "Yes", "detail": "continue"}, map[string]any{"label": "No", "detail": "stop"}}}}})
-				awaitThread(ctx, t, human, worker, "second pending question", func(thread appwire.Thread) bool { return thread.Evener.AskPending })
+				awaitThread(ctx, t, human, worker, "second pending question", questionSettled)
 				managerCall, err = provider.Next(ctx.Done())
 				if err != nil {
 					t.Fatal(err)
@@ -189,4 +189,11 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 		}})
 	}
 	runCasesConcurrently(t, cases)
+}
+
+// questionSettled reports a pending question whose turn has ended. AskPending
+// is published when ask_user runs, a round before the turn ends; a turn/start
+// while ActiveTurnID is set is refused, so the answer must wait for the end.
+func questionSettled(thread appwire.Thread) bool {
+	return thread.Evener.AskPending && thread.Evener.ActiveTurnID == ""
 }

@@ -264,10 +264,7 @@ func TestEvenerwideCommand_HermeticHidesOperatorGlobal(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withDir(workDir), withConfig(SessionConfig{}), withoutGitSnapshot())
 	t.Cleanup(sess.Close)
 	if _, err := plugin.ResolveCommand(sess.pluginCommands, "operator-cmd"); err == nil {
 		t.Errorf("operator user-global command reached a hermetic session: %v", sess.pluginCommands)
@@ -312,10 +309,7 @@ func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withDir(workDir), withConfig(SessionConfig{}), withoutGitSnapshot())
 	t.Cleanup(sess.Close)
 	if len(sess.pluginCommands) != 0 {
 		t.Errorf("pluginCommands = %v, want the guarded file skipped", sess.pluginCommands)
@@ -457,10 +451,7 @@ func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
 	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withEnv(env), withConfig(SessionConfig{}), withoutGitSnapshot())
 	t.Cleanup(sess.Close)
 	// NewSession may inspect the workspace through ExecCommand; only calls
 	// made while expanding the slash command are relevant to this assertion.

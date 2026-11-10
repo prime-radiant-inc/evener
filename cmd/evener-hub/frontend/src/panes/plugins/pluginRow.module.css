@@ -1,0 +1,39 @@
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--edge);
+}
+
+.metadata {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: calc(var(--space-1) / 2);
+}
+
+.source,
+.counts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source {
+  color: var(--ink-mid);
+}
+
+.description {
+  min-width: 0;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.details {
+  align-self: flex-start;
+}

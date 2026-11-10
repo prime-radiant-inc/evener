@@ -3,6 +3,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -412,12 +413,12 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		{SummaryOnly: true},
 	}
 	for _, opts := range apiOpts {
-		result, err := APILog(fixture.base, fixture.rootSID, opts)
+		result, err := APILog(context.Background(), fixture.base, fixture.rootSID, opts)
 		if err != nil || result.SessionID != fixture.rootSID ||
 			!hasIntValue(result.Totals.InputTokens, 71000) ||
 			!hasIntValue(result.Totals.OutputTokens, 700) ||
 			!hasIntValue(result.Totals.TotalTokens, 71700) {
-			t.Fatalf("APILog(%#v) = %#v, %v", opts, result, err)
+			t.Fatalf("APILog(context.Background(), %#v) = %#v, %v", opts, result, err)
 		}
 		trace.APILogs = append(trace.APILogs, result)
 		rendered := RenderAPILog(result, opts)
@@ -429,7 +430,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if trace.APILogs[0].Totals.Calls != 4 || trace.APILogs[1].Totals.Empties != 1 || len(trace.APILogs[2].Calls) != 1 || len(trace.APILogs[3].Calls) != 1 {
 		t.Fatalf("APILog reports = %#v", trace.APILogs)
 	}
-	if _, err := APILog(fixture.base, "local:"+doctorFilesystemAbsentSID, APILogOpts{}); err == nil {
+	if _, err := APILog(context.Background(), fixture.base, "local:"+doctorFilesystemAbsentSID, APILogOpts{}); err == nil {
 		t.Fatal("APILog missing selector unexpectedly succeeded")
 	}
 

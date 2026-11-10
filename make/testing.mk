@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test  test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -24,7 +24,8 @@ test-web: web-preflight build-dev
 # The gate (`evener-dev dev web-browser-guards`, run from the prebuilt evener-dev
 # binary so an interrupt reaches it) runs every guard so one missing browser or
 # failing case does not hide the remaining guard's verdict; exit status is the
-# first nonzero one.
+# first nonzero one. BROWSER_GUARD_SHARD=<shard> runs one shard of the guards
+# instead, as each CI web-browser runner does.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard,
 ## retirementguard, mermaidguard) plus the
@@ -227,10 +228,6 @@ test:
 	@case "$(TEST_SCOPE)" in all|root|nonroot) ;; *) echo "make test: TEST_SCOPE must be all, root, or nonroot (got $(TEST_SCOPE))" >&2; exit 2;; esac; \
 		MODULES="$(strip $(SCOPE_MODULES_$(TEST_SCOPE)))" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
-## Alias for `make test`.
-test-short:
-	@$(MAKE) test
-
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
 # hosts are handled inside the tests themselves: the live/e2e families probe
@@ -246,8 +243,8 @@ test-short:
 ##   browser guards; those have separate owners. The timing check reads the
 ##   gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is
 ##   strict where the ratchet's own policy is (CI) and warn-only on a local run;
-##   a blessed-class per-test ceiling breach is nonzero there, while an
-##   unclassified test over the flat ceiling only warns (#4601).
+##   a named per-test ceiling breach is nonzero there, while an
+##   unnamed test over the flat ceiling only warns (#4601).
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
@@ -305,21 +302,21 @@ vet:
 
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
-# a per-test ceiling segmented by test class (#4601), so an unexamined timing
+# a per-test ceiling (#4601), so an unexamined timing
 # regression cannot silently erode the wins
 # docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md recorded. CHECK=1
 # enforces the ratios (strict in CI, warn-only on a local run); a test named in
-# a class is enforced against its class ceiling, while a test in no class keeps
-# the flat perTestCeilingSeconds and stays warn-only in every mode. Bare
+# the map is enforced against its ceiling, while a test named nowhere keeps the
+# flat perTestCeilingSeconds and stays warn-only in every mode. Bare
 # invocation measures by running the suite itself. Companion to coverage-floor.
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test
-##   ceiling segmented by test class: a test named in a class is compared
-##   strictly against that class's ceiling (a breach is nonzero under CHECK=1 in
-##   a CI-shaped environment), while a test in no class keeps the flat
+##   ceiling: a test named in the map is compared strictly against
+##   its ceiling (a breach is nonzero under CHECK=1 in
+##   a CI-shaped environment), while a test named nowhere keeps the flat
 ##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
-##   the unclassified backlog cannot red the gate (#4601). The checked-in
+##   the unnamed backlog cannot red the gate (#4601). The checked-in
 ##   budget carries the package-wall-seconds metric marker, so per-package ratios
 ##   (frontend "web" included) are enforced; a budget file without the marker
 ##   downgrades every ratio failure to a warning.
@@ -339,14 +336,14 @@ vet:
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
 ##   its budget is nonzero once the budget file carries the wall-time metric
 ##   marker; while the marker is absent those ratios warn, the "web" row among
-##   them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an
-##   unclassified test over the flat ceiling is reported and named but nonzero in
+##   them. A named per-test ceiling breach is nonzero under CHECK=1; a
+##   test named nowhere that is over the flat ceiling is reported but nonzero in
 ##   no mode. A missing budget file, or one whose packages map is empty, always
 ##   exits zero; a malformed budget file (a top-level value that is not an object,
 ##   invalid JSON, a packages value that is present but not an object, a package
 ##   budget value that is not a finite number, a perTestCeilingSeconds that is
-##   present but not a finite number, a perTestCeilingClasses that is present
-##   but not an object, or a class ceilingSeconds that is not a finite,
+##   present but not a finite number, a perTestCeiling that is present
+##   but not an object, or a per-test ceiling that is not a finite,
 ##   float-convertible number including an integer too large to convert) is a
 ##   broken config and is nonzero in every mode, naming the file and the entry
 ##   (#4609, #4614, #4618, #4622, #4629).

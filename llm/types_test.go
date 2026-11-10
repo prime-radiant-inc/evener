@@ -298,3 +298,34 @@ func TestRequest_Validate_WithWebSearch(t *testing.T) {
 		t.Fatalf("Validate with WebSearch=true: %v", err)
 	}
 }
+
+// TestMessageConstructors covers the Developer and ToolResult constructors.
+func TestMessageConstructors(t *testing.T) {
+	dev := Developer("guidance")
+	if dev.Role != RoleDeveloper || dev.Text() != "guidance" {
+		t.Fatalf("Developer() = %+v", dev)
+	}
+
+	tr := ToolResult("call-1", "output", true)
+	if tr.Role != RoleTool || tr.ToolCallID != "call-1" {
+		t.Fatalf("ToolResult() role/id = %+v", tr)
+	}
+	if len(tr.Content) != 1 || tr.Content[0].ToolResult == nil {
+		t.Fatalf("ToolResult() content = %+v", tr.Content)
+	}
+	if !tr.Content[0].ToolResult.IsError || tr.Content[0].ToolResult.Content != "output" {
+		t.Fatalf("ToolResult() data = %+v", tr.Content[0].ToolResult)
+	}
+}
+
+// TestReasoningTextJoinsBlocksWithBlankLine covers the blank-line separator arm
+// between multiple thinking blocks.
+func TestReasoningTextJoinsBlocksWithBlankLine(t *testing.T) {
+	r := Response{Message: Message{Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: "first"}},
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: "second"}},
+	}}}
+	if got := r.ReasoningText(); got != "first\n\nsecond" {
+		t.Fatalf("ReasoningText() = %q, want joined blocks", got)
+	}
+}

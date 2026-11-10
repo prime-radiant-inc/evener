@@ -55,3 +55,15 @@ func TestRunAndServeShareOneDefinitionPerLaunchFlag(t *testing.T) {
 		t.Fatal("run and serve share no flags")
 	}
 }
+
+func TestCommitProvenanceFlag(t *testing.T) {
+	fs := flag.NewFlagSet("launch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	flags := registerLaunchFlags(fs)
+	if err := fs.Parse([]string{"--commit-provenance=off"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := *flags.commitProvenance; got != "off" {
+		t.Fatalf("--commit-provenance = %q, want off", got)
+	}
+}

@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // The delegate brief parameter is `prompt`; `task_list` seeds the delegate's
@@ -39,6 +41,48 @@ func TestDecodeDelegateArgs_PromptAndTaskList(t *testing.T) {
 	}
 }
 
+// A delegate's seeded task_list accepts every effort form the task_list tool
+// accepts, through real dispatch: aliases and "inherit" survive schema
+// validation and land in the descriptor canonically.
+func TestCreateDelegate_TaskListEffortVocabulary(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ requested, want string }{
+		{"max", "max"},
+		{"MAX", "max"},
+		{"xhigh", "xhigh"},
+		{"minimal", "minimal"},
+		{"off", llm.ReasoningEffortNone},
+		{"inherit", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.requested, func(t *testing.T) {
+			t.Parallel()
+			root, _, _ := newDelegateResourceBootstrapSession(t)
+			call := executeDelegateTool(context.Background(), root, "task-effort-"+tc.requested, "delegate", map[string]any{
+				"prompt": "brief",
+				"task_list": []any{
+					map[string]any{"title": "step", "prompt": "do it", "reasoning_effort": tc.requested},
+				},
+			})
+			if call.IsError {
+				t.Fatalf("registered delegate rejected task_list effort %q: %s", tc.requested, call.Output)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
+				t.Fatalf("decode registered delegate output %q: %v", call.Output, err)
+			}
+			delegateID, _ := result["delegate_id"].(string)
+			aggregate := delegateAggregateSnapshot(t, root.delegateController, delegateID)
+			if len(aggregate.Descriptor.TaskTemplates) != 1 {
+				t.Fatalf("task templates = %+v, want one", aggregate.Descriptor.TaskTemplates)
+			}
+			if got := aggregate.Descriptor.TaskTemplates[0].ReasoningEffort; got != tc.want {
+				t.Fatalf("seeded task effort = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -50,7 +94,7 @@ func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 		{"item not an object", map[string]any{"prompt": "p", "task_list": []any{"step one"}}, "task_list[0] must be an object"},
 		{"missing prompt", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "inspect"}}}, "task_list[0].prompt is required"},
 		{"missing title", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"prompt": "read"}}}, "task_list[0].title is required"},
-		{"bad reasoning_effort", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "xhigh"}}}, "task_list[0].reasoning_effort must be one of low, medium, high"},
+		{"bad reasoning_effort", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "ultra"}}}, "task_list[0].reasoning_effort"},
 		{"bad type", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "type": "bogus"}}}, "task_list[0].type must be one of research, implement, verify, fix"},
 	}
 	for _, tc := range cases {
@@ -144,5 +188,33 @@ func TestCreateDelegate_TaskListRejectedWhenSharingTaskStore(t *testing.T) {
 	}
 	if plain := root.createDelegate(context.Background(), delegateArgs{Task: "brief"}); plain.Err != nil {
 		t.Fatalf("createDelegate without task_list on a shared store: %v", plain.Err)
+	}
+}
+
+// A seeded task that names inherit runs at the delegate's own effort, which is
+// how the "inherit" enum value the schema advertises reaches the handler.
+func TestCreateDelegate_TaskListInheritUsesDelegateEffort(t *testing.T) {
+	t.Parallel()
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	call := executeDelegateTool(context.Background(), root, "task-inherit", "delegate", map[string]any{
+		"prompt":           "brief",
+		"reasoning_effort": "max",
+		"task_list": []any{
+			map[string]any{"title": "step", "prompt": "do it", "reasoning_effort": "inherit"},
+		},
+	})
+	if call.IsError {
+		t.Fatalf("registered delegate rejected inherit: %s", call.Output)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
+		t.Fatalf("decode registered delegate output %q: %v", call.Output, err)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, result["delegate_id"].(string))
+	if got := aggregate.Descriptor.TaskTemplates[0].ReasoningEffort; got != "" {
+		t.Fatalf("seeded inherit task effort = %q, want no override", got)
+	}
+	if got := aggregate.Descriptor.Config.ReasoningEffort; got != "max" {
+		t.Fatalf("delegate effort = %q, want the spawn's max", got)
 	}
 }
