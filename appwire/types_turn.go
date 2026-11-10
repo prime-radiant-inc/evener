@@ -357,6 +357,23 @@ type ThreadReadParams struct {
 	ExpectedAskBootGeneration string  `json:"expectedAskBootGeneration,omitempty"`
 	Offset                    *int    `json:"offset,omitempty"`
 	Limit                     *int    `json:"limit,omitempty"`
+	// WindowTransfer is the resume point inside the turn a windowed transfer
+	// page cut. Only a hub walking a bounded window transfer sets it; a client
+	// never sends it. It is deliberately absent from the generated client
+	// schema (json:"-") and travels as "windowTransfer" through
+	// MarshalJSON/UnmarshalJSON below.
+	WindowTransfer *ThreadWindowTransfer `json:"-"`
+}
+
+// ThreadWindowTransfer names the resume position of a bounded window transfer
+// page inside one turn. A hub sends it only to the daemon it reads from, so it
+// stays out of the client-facing protocol surface.
+type ThreadWindowTransfer struct {
+	TurnID   string             `json:"turnId"`
+	Position ThreadItemPosition `json:"position"`
+	// Before selects the items strictly older than Position; otherwise the
+	// transfer selects the items strictly newer.
+	Before bool `json:"before,omitempty"`
 }
 
 // PendingAskPage enumerates call composites, not questions. A nil NextOffset
@@ -551,9 +568,23 @@ func decodeStrictJSON(data []byte, dst any) error {
 	return decoder.Decode(dst)
 }
 
+// MarshalJSON carries WindowTransfer, which ThreadReadParams keeps out of the
+// generated client schema. Every other field encodes exactly as it would
+// without this method.
+func (p ThreadReadParams) MarshalJSON() ([]byte, error) {
+	type wire ThreadReadParams
+	return json.Marshal(struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer,omitempty"`
+	}{wire: wire(p), WindowTransfer: p.WindowTransfer})
+}
+
 func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 	type wire ThreadReadParams
-	var decoded wire
+	var decoded struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer"`
+	}
 	if err := decodeStrictJSON(data, &decoded); err != nil {
 		return err
 	}
@@ -572,14 +603,15 @@ func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if page {
-		if decoded.ExpectedAskRevision == nil {
+		if decoded.wire.ExpectedAskRevision == nil {
 			return InvalidParams("pending ask pages require an observed ask pair")
 		}
-		if err := ValidateThreadReadParams(ThreadReadParams(decoded)); err != nil {
+		if err := ValidateThreadReadParams(ThreadReadParams(decoded.wire)); err != nil {
 			return err
 		}
 	}
-	*p = ThreadReadParams(decoded)
+	*p = ThreadReadParams(decoded.wire)
+	p.WindowTransfer = decoded.WindowTransfer
 	return nil
 }
 

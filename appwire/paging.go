@@ -35,13 +35,20 @@ func (p ThreadReadParams) IsPendingAskPage() bool {
 // grammar. A page never establishes a history window or subscription.
 func ValidateThreadReadParams(params ThreadReadParams) error {
 	if params.FetchCursor != "" {
-		if (params.ThreadID == "") == (params.Ref == "") || params.ThreadContentParams != (ThreadContentParams{}) || params.IncludeTurns || params.ItemsView != "" || params.Subscribe || params.ReplaceSubscription || params.ItemLimit != 0 || params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 || params.RequestGeneration != 0 || params.HeldSnapshot != nil || params.LiveOnly || params.AnswerContinuation != nil {
+		if (params.ThreadID == "") == (params.Ref == "") || params.ThreadContentParams != (ThreadContentParams{}) || params.IncludeTurns || params.ItemsView != "" || params.Subscribe || params.ReplaceSubscription || params.ItemLimit != 0 || params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 || params.RequestGeneration != 0 || params.HeldSnapshot != nil || params.LiveOnly || params.AnswerContinuation != nil || params.WindowTransfer != nil {
 			return InvalidParams("fetchCursor requires one target and no read options")
 		}
 		return nil
 	}
 	if err := ValidateThreadWindowParams(params.ThreadWindowParams, params.ItemLimit); err != nil {
 		return err
+	}
+	if params.WindowTransfer != nil {
+		// A transfer resumes a bounded window transfer page inside the one turn
+		// it names; it has no meaning without that exact selector.
+		if params.TurnWindow == nil || params.TurnWindow.Turn == "" || params.TurnWindow.Turn != params.WindowTransfer.TurnID {
+			return InvalidParams("windowTransfer requires the turn its turnWindow names")
+		}
 	}
 	if params.IsPendingAskPage() {
 		if err := ValidateAskFence(params.ExpectedAskRevision, params.ExpectedAskBootGeneration); err != nil {

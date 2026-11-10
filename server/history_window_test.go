@@ -94,6 +94,69 @@ func TestLiveThreadReadSmallWindowCarriesNoTransferPage(t *testing.T) {
 	}
 }
 
+// One execution turn bigger than the transfer cap must not travel whole: the
+// page cuts between its items, says the turn continues, and every follow-up
+// page stays under the cap while recovering the rest of the same turn.
+func TestLiveThreadReadPagesTransferInsideOversizedTurn(t *testing.T) {
+	previous := historyWindowTransferPageBytes
+	historyWindowTransferPageBytes = 96 << 10
+	t.Cleanup(func() { historyWindowTransferPageBytes = previous })
+
+	const textBytes = 24 << 10
+	const itemCount = 6
+	turns := make([]schema.Turn, 0, itemCount)
+	turns = append(turns, inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("u", textBytes)))))
+	for range itemCount - 1 {
+		turns = append(turns, inExecution("turn_m1", false, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("a", textBytes)))))
+	}
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_oversized_transfer", turns...)
+
+	seen := make(map[string]bool, itemCount)
+	window := appwire.ThreadTurnWindow{Latest: 1}
+	var resume *appwire.ThreadWindowTransfer
+	for page := 0; page < itemCount; page++ {
+		response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+			ThreadID: st.threadID, IncludeTurns: true,
+			TurnWindow: &window, WindowTransfer: resume,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > historyWindowTransferPageBytes {
+			t.Fatalf("transfer page %d is %d bytes, cap %d", page, len(encoded), historyWindowTransferPageBytes)
+		}
+		if len(response.Thread.Turns) != 1 || response.Thread.Turns[0].ID != "turn_m1" {
+			t.Fatalf("transfer page %d turns = %+v, want the one selected turn", page, response.Thread.Turns)
+		}
+		turn := response.Thread.Turns[0]
+		for _, item := range turn.Items {
+			if item.TranscriptKey == "" || item.Position == nil {
+				t.Fatalf("transfer page %d item = %+v, want a positioned transcript key", page, item)
+			}
+			if seen[item.TranscriptKey] {
+				t.Fatalf("transfer page %d repeats item %q", page, item.TranscriptKey)
+			}
+			seen[item.TranscriptKey] = true
+		}
+		if !turn.HasEarlierItems {
+			break
+		}
+		first := turn.Items[0]
+		if first.Position == nil {
+			t.Fatalf("transfer page %d starts with an unpositioned item", page)
+		}
+		window = appwire.ThreadTurnWindow{Turn: "turn_m1"}
+		resume = &appwire.ThreadWindowTransfer{TurnID: "turn_m1", Position: *first.Position, Before: true}
+	}
+	if len(seen) != itemCount {
+		t.Fatalf("transfer pages recovered %d of %d items", len(seen), itemCount)
+	}
+}
+
 func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_window",
 		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("one"))),
