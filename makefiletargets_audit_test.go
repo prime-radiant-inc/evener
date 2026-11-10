@@ -553,21 +553,6 @@ func TestExactlyOneLintTargetsDefinition(t *testing.T) {
 	}
 }
 
-// annotationFieldKey matches a "## " line's content when it opens with the
-// key-shaped prefix of a structured field (`proves:`, `trigger:`, and the
-// rest). Such a line is not a summary. It mirrors internal/maketargetsdoc's
-// fieldAttempt (parse.go), which is package main and so cannot be imported
-// here; the two must agree on what a summary line looks like.
-var annotationFieldKey = regexp.MustCompile(`^[a-z][a-z0-9-]*:`)
-
-// annotationTargetSpecificVariable matches the remainder of a rule-shaped
-// line when that remainder is a variable assignment rather than a
-// prerequisite list — `install-home: PREFIX := $(HOME)/.local`. Such a line
-// never carries the annotation; the block sits above the sibling line that
-// carries the prerequisites and recipe. Mirrors the generator's
-// targetSpecificVariable for the same reason as above.
-var annotationTargetSpecificVariable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\s*(:=|\+=|\?=|!=|=)`)
-
 // lintGeneratedRecipe returns make/linting.mk's lint-generated recipe as one
 // string: every tab-indented line beneath the rule, joined. Reading the
 // recipe text rather than expanding it through make keeps this a static
