@@ -291,6 +291,15 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
   expect(screen.getByTestId("spawn-prompt-card").className.split(" ")).toContain(promptCardStyles.card);
 });
 
+// The model and the effort it belongs to are one pair at the row's far end:
+// the slot must not grow to fill the space after Attach, or the model label
+// sits left while its effort drifts right.
+test("the model trigger hugs effort at the row's far end", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "spawn.module.css"), "utf8");
+  expect(css).toMatch(/\.modelTrigger\s*\{[^}]*flex:\s*0 1 auto;[^}]*margin-left:\s*auto/);
+});
+
 // The card draws the one border and owns the focus ring, so the field inside
 // must draw neither - otherwise it is a box inside a box. Caught in Chrome: the
 // field rendered its own border inside the card's and its resize grabber floated

@@ -396,7 +396,9 @@ test.each(["notLoaded", "ended", "closed"] as const)(
     expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
     expect(submitButton().disabled).toBe(true);
     await user.click(screen.getByRole("button", { name: "Session actions" }));
-    expect(editor.style.minHeight).toBe("3lh");
+    // The session menu is a folded-row control: opening it does not engage
+    // the editor, so the card keeps its one-line resting shape.
+    expect(editor.style.minHeight).toBe("1lh");
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" }));
@@ -756,7 +758,8 @@ test("the composer editing attribute follows the editor, not composer controls",
 
   // Pressing a composer control from an unfocused composer is not editing:
   // the phone footer must stay visible and the dock must not move under it.
-  await user.click(screen.getByTestId("composer-attach"));
+  // Send is on the folded row; Attach only returns with the expanded one.
+  await user.click(screen.getByTestId("composer-submit"));
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
 
   // The editor's own focus is the editing signal.
@@ -858,12 +861,12 @@ test("a non-primary press holds no composer editing state", async () => {
 
   const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
   const editor = screen.getByRole("textbox", { name: "Message" });
-  const attach = screen.getByTestId("composer-attach");
+  const send = screen.getByTestId("composer-submit");
 
   // A right press fires pointerdown but never a click, so it must not arm a
   // hold that outlives it. An editor blur afterwards ends editing.
   await act(async () => {
-    fireEvent.pointerDown(attach, { button: 2 });
+    fireEvent.pointerDown(send, { button: 2 });
   });
   await act(async () => {
     editor.focus();
@@ -895,17 +898,18 @@ test("a primary press still holds editing after a non-primary press", async () =
 
   const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
   const editor = screen.getByRole("textbox", { name: "Message" });
-  const attach = screen.getByTestId("composer-attach");
+  const send = screen.getByTestId("composer-submit");
 
   // A right press fires pointerdown but never a click. Its unclicked listeners
   // must not leave a release behind that clears the next press's hold.
   await act(async () => {
-    fireEvent.pointerDown(attach, { button: 2 });
+    fireEvent.pointerDown(send, { button: 2 });
   });
   await act(async () => {
     editor.focus();
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+  const attach = screen.getByTestId("composer-attach");
 
   // The primary press holds editing through a blur that lands before its click,
   // even after the deferred clear a stale release would schedule.
@@ -949,12 +953,12 @@ test("an outside press ends editing while focus sits on a composer control", asy
 
   const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
   const editor = screen.getByRole("textbox", { name: "Message" });
-  const attach = screen.getByTestId("composer-attach");
 
   await act(async () => {
     editor.focus();
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+  const attach = screen.getByTestId("composer-attach");
 
   // FocusScope restoring a menu trigger, or Attach after the file picker,
   // leaves focus on a composer button with the keyboard down.
@@ -1101,8 +1105,8 @@ test("focusing the message field lights the shared prompt card's own focus affor
 // The composer and the spawn form are the SAME object: both render
 // widgets/promptcard, not two components that merely resemble each other. The
 // class on the rendered card is the proof that reaches across both files. The
-// session chrome shares PromptCard's leading run with the attachment control,
-// after the paperclip, so there is exactly one status row in this surface.
+// expanded card leads with the attachment control, then the session chrome, so
+// there is exactly one status row in this surface.
 test("the composer's shared PromptCard leads with the attachment and inline session controls", async () => {
   await mountComposer("ref_a", {
     evener: {
@@ -1115,6 +1119,7 @@ test("the composer's shared PromptCard leads with the attachment and inline sess
       contextAssumed: false,
     },
   });
+  act(() => textarea().focus());
   const card = screen.getByTestId("composer-input-card");
   const attach = within(card).getByTestId("composer-attach");
   const inline = within(card).getByTestId("session-chrome-inline");
@@ -1166,6 +1171,7 @@ test("every control in the composer's button row is the xs (24px) size", async (
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
+  act(() => textarea().focus());
 
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
   // iconbutton.module.css), so the one icon control carries that module's squareXs.
@@ -1195,6 +1201,7 @@ test("Stop renders as the word in the dangerQuiet variant, not as an icon", asyn
 // from font to font.
 test("the attach control draws an SVG glyph, not a literal text character", async () => {
   await mountComposer("ref_a");
+  act(() => textarea().focus());
   const attach = screen.getByTestId("composer-attach");
   expect(attach.querySelector("svg")).toBeTruthy();
   expect(attach.textContent).toBe("");

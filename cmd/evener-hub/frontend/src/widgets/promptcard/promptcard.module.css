@@ -1,3 +1,10 @@
+/* The card itself is the bordered surface; this root only supplies the width
+ * container the folded layout queries. It carries no box of its own, so
+ * callers keep addressing the card they always did. */
+.root {
+  container-type: inline-size;
+}
+
 /* One tight field over one control row. The seamless textarea inside carries
  * no inset of its own, so this padding is the whole thing, and the gap to the
  * control row is the smallest step that still separates them. */
@@ -9,6 +16,12 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-1);
+}
+
+/* The field's own box is the caller's; this slot only gives it a shrinkable
+ * column in the stacked shape and the room left over in the folded one. */
+.field {
+  min-width: 0;
 }
 
 /* The card is the prompt surface's one visible box, so it carries the focus
@@ -62,6 +75,29 @@
   align-items: center;
   gap: var(--space-1);
   margin-left: auto;
+}
+
+/* Below this width the controls leave too little for a readable placeholder,
+ * so the card falls back to the stacked shape it has always had. */
+@container (min-width: 620px) {
+  .card[data-folded="true"] {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  /* Folded: the field and the control row become one line. The control row
+   * keeps its natural width and the field yields, so a resting composer
+   * shows its placeholder beside the model, effort, menu and verbs instead
+   * of above them. */
+  .card[data-folded="true"] .field {
+    flex: 1 1 10ch;
+    min-width: 0;
+  }
+}
+
+.card[data-folded="true"] .controls {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

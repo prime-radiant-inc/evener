@@ -667,6 +667,7 @@ test("picking a file via the hidden input attaches it, same as paste/drop", asyn
 test("clicking the attach button triggers the hidden file input", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a");
+  act(() => textarea().focus());
 
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const clickSpy = vi.spyOn(input, "click");

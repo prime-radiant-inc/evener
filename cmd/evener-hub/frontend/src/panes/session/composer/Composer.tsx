@@ -120,6 +120,7 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
+  chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -729,12 +730,19 @@ export function Composer({
   // wire shape is notLoaded + send:false, which the capability alone would not
   // render a card for.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
-  // Only the editor shrinks at rest; on the desktop the full row stays
-  // available without typing. Drafts, attachments and recovery keep enough
-  // writing space after blur.
+  // A resting composer folds to one line below; a draft, attachment or
+  // recovery keeps the writing space it needs after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+  // The resting shape: an empty composer whose editor is not engaged folds
+  // its field and control row onto one line, giving the transcript back the
+  // height without hiding the model that the next turn will use. Focus in
+  // the editor, a draft, a staged attachment or a pending question restores
+  // the full card. Focus on the row's own controls does not: the folded row
+  // is usable as it stands.
+  const folded = !askPending && !mutationWriteStalled && !editorEngaged && !hasContent;
   let minLines = 2;
-  if (ended) minLines = followUpEngaged ? 3 : 1;
+  if (folded) minLines = 1;
+  else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
   // The phone layout's one bottom surface is this card's own control row,
@@ -985,24 +993,28 @@ export function Composer({
   // shrinks to the menu-only chrome: the session menu stays reachable, and
   // that placement's hidden panel keeps initial activity discovery
   // following the pane on screen (issue #1335) with no status chips.
+  // The attach control is a resting-card affordance, so the folded row drops
+  // it: focusing the editor brings it back with the rest of the full row.
   const leadingControls = (
-    <div className={CLASS.leading}>
+    <div className={CLASS.leading} data-folded={folded ? "true" : undefined}>
       {controlsCollapsed ? (
         <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
         <>
-          <Tooltip label="Attach an image">
-            <IconButton
-              label="Attach image"
-              icon={<AttachIcon />}
-              variant="quiet"
-              size="xs"
-              type="button"
-              data-testid="composer-attach"
-              onClick={() => fileInputRef.current?.click()}
-            />
-          </Tooltip>
-          {!askPending && leadingChrome}
+          {!folded && (
+            <Tooltip label="Attach an image">
+              <IconButton
+                label="Attach image"
+                icon={<AttachIcon />}
+                variant="quiet"
+                size="xs"
+                type="button"
+                data-testid="composer-attach"
+                onClick={() => fileInputRef.current?.click()}
+              />
+            </Tooltip>
+          )}
+          {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
           {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
               this row is where the activity counts live on a phone. */}
           {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
@@ -1135,6 +1147,7 @@ export function Composer({
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
+                folded={folded}
                 field={
                   <SkillEditor
                     ref={editorRef}

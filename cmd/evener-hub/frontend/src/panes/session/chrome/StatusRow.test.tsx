@@ -16,6 +16,7 @@ import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { StatusRow } from "./StatusRow";
+import statusRowStyles from "./statusrow.module.css";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -101,6 +102,18 @@ beforeEach(() => {
 test("no state dot: the pane header already carries this session's cadence", () => {
   render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} />);
   expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+});
+
+// The composer's inline mount places the whole fact run beside the verbs;
+// the footer keeps it at the leading edge.
+test("align end packs the facts to the far end", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} align="end" />);
+  expect(screen.getByTestId("status-row").className.split(" ")).toContain(statusRowStyles.rowEnd);
+});
+
+test("the default row keeps its leading edge", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} />);
+  expect(screen.getByTestId("status-row").className.split(" ")).not.toContain(statusRowStyles.rowEnd);
 });
 
 // cwd / branch / project can't change mid-session, so they are reference

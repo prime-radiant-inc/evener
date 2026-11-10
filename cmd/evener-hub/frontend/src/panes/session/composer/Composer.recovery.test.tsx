@@ -1095,11 +1095,12 @@ test("a remounted Composer does not activate a stale recovery projection", async
 // Capability still gates them independently for a session whose harness
 // can't steer or can't interrupt.
 
-test("an idle session renders neither steer nor stop - only attach and submit", async () => {
+test("an idle session renders neither steer nor stop - only Send at rest", async () => {
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  // The resting card is folded: the paperclip returns with the full row.
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(submitButton()).toBeTruthy();
 });
 
@@ -1192,10 +1193,11 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   }));
   const editor = textarea();
 
-  // Controls are available before the editor is engaged.
+  // The folded row keeps the model, effort, menu and Send before the editor
+  // is engaged; the paperclip only returns with the expanded card.
   expect(composerMode()).toBe("follow-up");
   expect(editor.style.minHeight).toBe("1lh");
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   expect(submitButton().disabled).toBe(true);
 
@@ -1244,7 +1246,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
 
   expect(composerMode()).toBe("follow-up");
   expect(textarea().style.minHeight).toBe("1lh");
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
   const chrome = screen.getByTestId("session-chrome-inline");
   expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
@@ -1297,9 +1299,12 @@ test("an ended session's field rests at one line and opens to three on focus", a
 
 // A live session's field must NOT pick up the collapsed floor - it keeps the
 // editor's two-line default, so a running composer is a comfortable target.
-test("a live session's field keeps the widget's own default line floor", async () => {
+test("a live session's field folds to one line and returns to the widget's default floor on focus", async () => {
   await mountComposer("ref_a", { status: { type: "idle" } });
-  expect(textarea().style.minHeight).toBe("2lh");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
 });
 
 test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {

@@ -53,6 +53,17 @@
   container: statusbar / inline-size;
 }
 
+/* The session's own status (model · effort, context, menu) sits at the row's
+ * far end, beside the verbs: the field leads, and the facts that describe
+ * where the prompt will go follow it. The slot takes its content's width and
+ * yields before the field does when the pane narrows. */
+.chromeSlot {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+
 .attachments {
   display: flex;
   flex-wrap: wrap;
@@ -224,4 +235,11 @@
   .composer {
     gap: var(--space-1);
   }
+}
+
+/* The folded row sizes this slot to the chrome's content, so the slot must
+ * report that content's intrinsic width. Its named container exists for the
+ * phone chips, which only ride the expanded row; the folded row has none. */
+.leading[data-folded="true"] {
+  container-type: normal;
 }

@@ -27,10 +27,15 @@ export interface StatusRowProps {
   sessionRef: string;
   model: ThreadModel;
   now: number;
+  /** Pack the facts against the row's far end instead of its leading edge.
+   * The composer's inline mount uses it so the model pair sits beside the
+   * verbs rather than immediately after the paperclip. */
+  align?: "start" | "end";
 }
 
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
+  rowEnd: requireClass(styles.rowEnd, "statusrow.module.css", "rowEnd"),
   identity: requireClass(styles.identity, "statusrow.module.css", "identity"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
   figure: requireClass(styles.figure, "statusrow.module.css", "figure"),
@@ -126,7 +131,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
-export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
+export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRowProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const hasContext = model.contextWindow > 0;
   // The clock reports an in-flight turn's elapsed time, so it has nothing to
@@ -139,7 +144,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const contextLabel = `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${model.contextWindow} tokens used, ${contextPercent} percent`;
 
   return (
-    <div className={CLASS.row} data-testid="status-row">
+    <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />

@@ -112,15 +112,29 @@ test("the Duo cover composer expands on focus and retains its two-line draft hei
   await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
 });
 
-test("a narrow desktop pane keeps its two-line resting height", async () => {
+test("a narrow desktop pane folds its resting field to one line", async () => {
   installNarrowComposer(382);
   await mountComposerWithHandle("ref_a");
-  expect(textarea().style.minHeight).toBe("2lh");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
 });
 
-test("the wide empty composer keeps its two-line resting height", async () => {
+test("the wide empty composer folds to one line and unfolds on focus", async () => {
   await mountComposerWithHandle("ref_a");
-  expect(textarea().style.minHeight).toBe("2lh");
+  const editor = textarea();
+  const card = screen.getByTestId("composer-input-card");
+  expect(editor.style.minHeight).toBe("1lh");
+  expect(card.getAttribute("data-folded")).toBe("true");
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  act(() => editor.focus());
+  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+  expect(editor.style.minHeight).toBe("2lh");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  act(() => editor.blur());
+  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+  expect(editor.style.minHeight).toBe("1lh");
 });
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
@@ -528,6 +542,16 @@ test("the Send button's word collapses to the glyph below the compact pane thres
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
   expect(css).toMatch(/\.composer\s*\{[^}]*container-type:\s*inline-size/);
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+});
+
+// The model and effort are the session's facts about the next turn, so they
+// sit beside the verbs rather than immediately after the paperclip. The slot
+// spends the free space before it; calling it a "leading" item must not place
+// it at the leading edge.
+test("the session chrome joins the verbs at the row's far end", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*margin-left:\s*auto/);
+  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*flex:\s*0 1 auto/);
 });
 
 beforeEach(() => {

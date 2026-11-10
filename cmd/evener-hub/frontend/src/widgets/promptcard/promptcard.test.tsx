@@ -17,6 +17,7 @@ function LiveCard(props: {
   leading?: React.ReactNode;
   actions?: React.ReactNode;
   hidden?: boolean;
+  folded?: boolean;
   controlsTestId?: string;
 }) {
   const [value, setValue] = useState("");
@@ -24,6 +25,7 @@ function LiveCard(props: {
     <PromptCard
       data-testid="card"
       hidden={props.hidden}
+      folded={props.folded}
       controlsTestId={props.controlsTestId}
       leading={props.leading}
       actions={props.actions}
@@ -158,4 +160,29 @@ test("the card owns compact spacing for an empty, unfocused Duo composer", () =>
   expect(compact).toMatch(
     /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
   );
+});
+
+// The folded shape is the caller's signal: an empty, resting composer asks
+// for it, and every other state renders the stacked card.
+test("folded marks the card for the one-line layout", () => {
+  render(<LiveCard folded />);
+  expect(screen.getByTestId("card").getAttribute("data-folded")).toBe("true");
+});
+
+test("an expanded card carries no folded marker", () => {
+  render(<LiveCard />);
+  expect(screen.getByTestId("card").hasAttribute("data-folded")).toBe(false);
+});
+
+// The width container exists so a spread-out composer gets the one-line
+// shape while a narrow pane keeps the stacked one, regardless of the
+// viewport. jsdom applies no layout, so the rule itself is the assertion.
+test("the folded card goes one line only when the card has room", () => {
+  const css = moduleCss();
+  expect(css).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size;/);
+  const queryStart = css.indexOf("@container (min-width: 620px)");
+  expect(queryStart).toBeGreaterThanOrEqual(0);
+  const oneLine = blockBody(css, css.indexOf("{", queryStart));
+  expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
+  expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
 });
