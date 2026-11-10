@@ -864,8 +864,7 @@ func localDaemonWindowTransferResume(page appwire.ThreadReadResponse, backward b
 		}
 		return nil
 	}
-	for index := len(page.Thread.Turns) - 1; index >= 0; index-- {
-		turn := page.Thread.Turns[index]
+	for _, turn := range slices.Backward(page.Thread.Turns) {
 		if !turn.HasLaterItems || len(turn.Items) == 0 {
 			continue
 		}

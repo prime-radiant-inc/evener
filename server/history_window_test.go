@@ -249,6 +249,11 @@ func TestLiveThreadReadPagesInterleavedTurnAcrossTransferCap(t *testing.T) {
 			}
 		}
 	}
+	for _, text := range texts {
+		if text == "" {
+			t.Fatal("a transferred item carried no text")
+		}
+	}
 	slices.SortFunc(positions, appitempaging.ComparePosition)
 	for i := 1; i < len(positions); i++ {
 		if appitempaging.ComparePosition(positions[i-1], positions[i]) >= 0 {

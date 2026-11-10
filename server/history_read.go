@@ -271,7 +271,7 @@ func boundTurnOrderTransfer(
 		turnSizes[candidate.TurnID] += sizes[index]
 	}
 	servedCount, used := 0, 0
-	for offset := 0; offset < len(turnIDs); offset++ {
+	for offset := range len(turnIDs) {
 		turnID := turnIDs[offset]
 		if keepNewest {
 			turnID = turnIDs[len(turnIDs)-1-offset]
