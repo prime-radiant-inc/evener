@@ -1807,6 +1807,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
+		s.beginToolRound()
 		results, execErr := s.execToolBatch(ctx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
@@ -2279,8 +2280,6 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		StableTurnID:     queuedIdentity.StableTurnID,
 		Turn:             s.recordedUserInputTurn(userInputTurn),
 	})
-	s.launchInitialPromptNamer(s.sessionCtx, input)
-
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookUserPromptSubmit)
@@ -2306,7 +2305,13 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			s.mu.Lock()
 			s.promptHookStop = reason
 			s.mu.Unlock()
+		} else {
+			// Naming is a model call, so it waits for the hook's verdict: a
+			// stopped prompt must not reach the naming provider either.
+			s.launchInitialPromptNamer(s.sessionCtx, input)
 		}
+	} else {
+		s.launchInitialPromptNamer(s.sessionCtx, input)
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).

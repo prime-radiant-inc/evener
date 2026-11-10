@@ -135,6 +135,15 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // any decode, so oversized or invalid-UTF-8 bytes never reach a lossy
 // json.Unmarshal. A call with no positional result (an aborted round) carries an
 // empty tool_response.
+// beginToolRound starts the per-round record of dispatched arguments. The map
+// is replaced, not cleared, so a round's entries cannot outlive it: without
+// this a long-lived session would retain every tool payload it ever ran.
+func (s *Session) beginToolRound() {
+	s.mu.Lock()
+	s.dispatchedToolArgs = map[string][]byte{}
+	s.mu.Unlock()
+}
+
 // recordDispatchedToolArguments remembers the arguments a call actually ran
 // with, after the repair step and any PreToolUse updatedInput.
 func (s *Session) recordDispatchedToolArguments(call llm.ToolCallData) {
@@ -161,17 +170,32 @@ func (s *Session) dispatchedToolArguments(call llm.ToolCallData) []byte {
 	return call.Arguments
 }
 
+// batchToolInput decodes one dispatched call's arguments for PostToolBatch,
+// through the registered tool's own decoder so an exact integer survives as it
+// does for the tool and for the per-tool hooks.
+func (s *Session) batchToolInput(call llm.ToolCallData) map[string]any {
+	raw := s.dispatchedToolArguments(call)
+	if len(raw) == 0 || tool.ValidateRawArguments(raw) != nil {
+		return nil
+	}
+	var input map[string]any
+	registered := s.reg.Get(call.Name)
+	if registered == nil {
+		registered = &tool.RegisteredTool{}
+	}
+	if err := registered.UnmarshalArguments(raw, &input); err != nil {
+		return nil
+	}
+	return input
+}
+
 func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
 	out := make([]hooks.BatchToolCall, len(calls))
 	for i, call := range calls {
-		var input map[string]any
-		// A call whose raw bytes the repair step rejected must not be decoded
-		// here: decoding is exactly what those bytes are bounded against, and a
-		// lossy decode would show a hook an argument map the tool never saw.
-		// PostToolUse makes the same call, so the two agree on that case.
-		if raw := s.dispatchedToolArguments(call); len(raw) > 0 && tool.ValidateRawArguments(raw) == nil {
-			_ = json.Unmarshal(raw, &input)
-		}
+		// batchToolInput applies the same raw-argument bound and the same
+		// per-tool decoder as dispatch, so a rejected byte sequence yields no
+		// input and an exact integer keeps its value.
+		input := s.batchToolInput(call)
 		response := ""
 		if i < len(results) {
 			response = results[i].Output
@@ -669,6 +693,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Stopped {
 			text = s.hookStopText(stopResult.StopReason, "Stop hook stopped this turn")
 			s.deliverHookUserMessage(text)
+			// The communicate call accepted and recorded its reply before this
+			// dispatch, so replacing only the returned text would leave clients
+			// serving the reply the hook vetoed, including after a reconnect.
+			// The hook's text becomes the turn's reply on every surface.
+			s.replaceAcceptedReply(text)
 			// The hook replaced the reply this turn would have delivered. A
 			// delegate's terminal packet must report this text, not the
 			// communicated reply it vetoed.
@@ -709,4 +738,16 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		hook(s)
 	}
 	return true, text, nil
+}
+
+// replaceAcceptedReply makes the hook's text this turn's reply on every
+// surface, after a Stop continue:false vetoed the one the communicate call had
+// already accepted and recorded.
+func (s *Session) replaceAcceptedReply(text string) {
+	s.mu.Lock()
+	if s.comm.called {
+		s.comm.text = text
+		s.comm.reply = text
+	}
+	s.mu.Unlock()
 }

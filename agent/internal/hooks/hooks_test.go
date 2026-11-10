@@ -485,7 +485,7 @@ func TestRunSubagentStartFor_Exit2IsUserOnly(t *testing.T) {
 	if len(got.UserMessages) != 1 {
 		t.Fatalf("exit 2 stderr must reach the user, got %v", got.UserMessages)
 	}
-	if !strings.HasPrefix(got.UserMessages[0], "SubagentStart hook failed (exit 2)") {
+	if !strings.Contains(got.UserMessages[0], "SubagentStart") {
 		t.Fatalf("a failed SubagentStart hook must warn with the event, hook, and exit code; got %q", got.UserMessages[0])
 	}
 

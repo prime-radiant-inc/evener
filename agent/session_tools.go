@@ -376,7 +376,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		// tool that never ran cannot clear it, so the clear sits here — past both
 		// closing checks and past a validation-only result, at the call that
 		// actually dispatches.
-		s.stopHookActive.Store(false)
+		// The result tool's own call is the completion the next Stop dispatch
+		// judges, not work a block asked for. Clearing the flag here would make a
+		// hook that blocks once and then permits on stop_hook_active=true block
+		// again forever, until the round budget ran out.
+		if call.Name != s.resultToolName() {
+			s.stopHookActive.Store(false)
+		}
 		if prevalidated {
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {
