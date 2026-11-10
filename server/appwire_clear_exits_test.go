@@ -253,8 +253,17 @@ func TestThreadClearReplayOfAppliedRecordWithoutReceiptIsOutcomeUnknown(t *testi
 
 // A daemon that died after installing the replacement but before recording the
 // receipt restarts with a reserved record and the new instance under the stable
-// ref. The retry has to report that replacement as applied, not run a second one.
+// ref. The retry has to report that replacement as applied, not run a second one,
+// including while the replacement is already running a turn.
 func TestThreadClearRecoversReservedRecordWhenReplacementAlreadyInstalled(t *testing.T) {
+	for _, replacementBusy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "replacement idle", true: "replacement running a turn"}[replacementBusy], func(t *testing.T) {
+			testThreadClearRecoversReservedRecord(t, replacementBusy)
+		})
+	}
+}
+
+func testThreadClearRecoversReservedRecord(t *testing.T, replacementBusy bool) {
 	stateDir := t.TempDir()
 	params := clearParams("c")
 	srv := serverOverClearJournal(t, stateDir, reservedClear(t, params))
@@ -263,6 +272,7 @@ func TestThreadClearRecoversReservedRecordWhenReplacementAlreadyInstalled(t *tes
 		t.Fatal(err)
 	}
 	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+	srv.SetProcessing(replacementBusy)
 	calls := 0
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
 		calls++

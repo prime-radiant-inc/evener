@@ -1192,7 +1192,7 @@ func processNextServeInput(
 }
 
 // processWithMutationRead admits one process-local input turn only while no
-// thread/clear owns the mutation gate. The gate is held for clear's whole
+// thread/clear owns the automatic input gate. The gate is held for clear's whole
 // preparation and publication; after it releases, the live session sampled
 // inside the callback is the replacement, not the closed predecessor.
 func processWithMutationRead(srv serveServer, fn func() bool) bool {

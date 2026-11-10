@@ -178,6 +178,42 @@ never polls it against a deadline.
 Every flake family root-caused here (a vite-cache digest, an auth stopwatch, a
 composer projection refresh) was an awaitable completion nobody was awaiting.
 
+### Waiting in Go tests
+
+Pick the first of these that fits:
+
+1. **Await the completion.** Block on the channel, callback, process exit or
+   milestone pipe that says the work is done.
+2. **Run the test under `testing/synctest`** when everything it waits on lives
+   in the test process: goroutines, timers, tickers, in-memory pipes. Inside
+   the bubble the clock is fake, so a `time.Sleep` or a timeout costs nothing
+   and fires exactly, and `synctest.Wait` returns once every goroutine in the
+   bubble is blocked.
+3. **Poll with `internal/testwait`** when the test drives something a bubble
+   cannot hold: a real subprocess, a socket, a file another process writes.
+   `testwait.Until(t, "what you are waiting for", cond)` polls `cond` until it
+   holds. `testwait.UntilSeen` takes a check that also returns what it saw, so
+   a hang fails as "still waiting for X (last seen: Y)". Neither takes a
+   timeout argument: one shared 30s ceiling bounds every wait, about ten
+   times the 3s per-test ceiling the timing ratchet holds tests to, so only a
+   stall far beyond observed load reaches it and a broken wait fails within
+   30s. When the test binary's own deadline (`go test -timeout`) is nearer,
+   the helper gives up a few seconds before it, so the failure names the
+   condition instead of arriving as a goroutine dump. Do not write a package-local poll
+   loop or a helper with its own timeout; use this one. It lives in the root
+   module, so the root and `agent` modules can import it; `llm`, `auth` and
+   the other leaf modules cannot without a new module edge.
+
+Never use a fixed `time.Sleep` to wait for work to happen. `make lint`'s
+`test-sleeps-within-baseline` check (in `make lint-repo-audit`) counts the
+`time.Sleep` calls in tracked Go tests and fails when the count rises above
+`testSleepBaseline` in `internal/devtool/repoaudit/testsleeps.go`. When a
+change brings the count down, the check passes and prints a `NOTE` with the new
+count; set the constant to that number in the same change. The count leaves out every
+file that imports `testing/synctest`, since a sleep in a bubble is free, and
+files under `testdata`. It reads imports rather than following calls, so a
+sleep outside the bubble in a synctest file goes uncounted.
+
 ## Agent Tests Run in Parallel by Default
 
 A top-level Go test without `t.Parallel()` runs alone, one at a time, and a
