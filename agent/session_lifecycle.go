@@ -1104,6 +1104,10 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
+	// A speculative document strip that this input never resolves must not
+	// outlive it: cancellation, a round cap, or a recovery branch can exit
+	// before the retry that would commit or roll it back (#4465).
+	defer s.rollbackSpeculativeToolResultDocuments()
 	defer func() {
 		for callID := range communicatePreviewCalls {
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})

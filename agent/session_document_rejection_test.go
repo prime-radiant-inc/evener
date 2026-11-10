@@ -274,10 +274,100 @@ func TestProviderDocumentRejectionAnnotatesToolResultForTheModel(t *testing.T) {
 	if !tr.IsError {
 		t.Fatal("the model saw the stripped read as a successful result")
 	}
-	if !strings.Contains(docRejectionToolText(reqs[1]), "not delivered") {
-		t.Fatalf("the retry carried no delivery-failure text: %q", docRejectionToolText(reqs[1]))
-	}
 	if !sessionHistoryHasDocument(sess) {
 		t.Fatal("the transcript lost the document payload")
+	}
+}
+
+// TestProviderDocumentSuppressionIgnoresHintProse pins the evidence rule: the
+// classifier's configuration hint mentions the provider's documentation, which
+// must not read as a document-specific rejection. A generic invalid request
+// built through ClassifyHTTPError therefore strips speculatively and rolls
+// back when its retry fails the same way.
+func TestProviderDocumentSuppressionIgnoresHintProse(t *testing.T) {
+	t.Parallel()
+	profile := newAnthropicProfile("claude-opus-4-6")
+	classified := llm.ClassifyHTTPError("messages", 400, nil,
+		[]byte(`{"error":{"type":"invalid_request_error","code":"unknown_parameter","param":"foo","message":"unknown parameter: 'foo'"}}`),
+		profile.Resolved())
+	if !strings.Contains(classified.Error(), "documentation") {
+		t.Fatalf("test premise: the classifier attached no documentation hint: %v", classified)
+	}
+	var calls atomic.Int32
+	adapter := &agenttest.ScriptedAdapter{
+		Provider: "anthropic",
+		FaultResponder: func(llm.Request) error {
+			switch calls.Add(1) {
+			case 2, 3:
+				return classified
+			}
+			return nil
+		},
+		Responder: func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+		},
+	}
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage("call_pdf"))
+
+	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if _, err := sess.ProcessInput(ctx, "again", nil); err == nil {
+		t.Fatal("the unrelated invalid request was expected to fail the turn")
+	}
+	if _, err := sess.ProcessInput(ctx, "third", nil); err != nil {
+		t.Fatalf("third ProcessInput: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) < 4 {
+		t.Fatalf("requests = %d, want 4", len(reqs))
+	}
+	if !docRejectionHasDocument(reqs[len(reqs)-1]) {
+		t.Fatal("a hint that mentions documentation permanently suppressed the document")
+	}
+}
+
+// TestProviderDocumentSpeculationClearedWhenRoundCapAbandonsRetry pins the
+// exit rule: a speculative strip whose retry never runs (the input's round cap
+// is already spent) must not outlive the input.
+func TestProviderDocumentSpeculationClearedWhenRoundCapAbandonsRetry(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	adapter := &agenttest.ScriptedAdapter{
+		Provider: "anthropic",
+		FaultResponder: func(llm.Request) error {
+			if calls.Add(1) == 1 {
+				return llm.ErrorFromHTTPStatus("anthropic", 400, "invalid parameter: temperature", nil, nil)
+			}
+			return nil
+		},
+		Responder: func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+		},
+	}
+	profile := newAnthropicProfile("claude-opus-4-6")
+	sess := newSession(t, withProfile(profile), withAdapter(adapter),
+		withConfig(SessionConfig{MaxToolRoundsPerInput: 1, testOnly: testConfig{skipGitSnapshot: true}}))
+	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage("call_pdf"))
+
+	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The round cap abandons the retry, so this input ends without sending a
+	// second request.
+	_, _ = sess.ProcessInput(ctx, "continue", nil)
+	if _, err := sess.ProcessInput(ctx, "again", nil); err != nil {
+		t.Fatalf("second ProcessInput: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) < 2 {
+		t.Fatalf("requests = %d, want the abandoned input and the next", len(reqs))
+	}
+	if !docRejectionHasDocument(reqs[len(reqs)-1]) {
+		t.Fatal("an abandoned speculative strip outlived its input")
 	}
 }

@@ -1137,9 +1137,21 @@ func (s *Session) commitSpeculativeToolResultDocuments() {
 
 // documentRejectionEvidence reports whether a provider rejection names the
 // document payload — the only evidence that justifies suppressing it for the
-// rest of the session (#4465).
+// rest of the session (#4465). It reads the provider's own rejection, not
+// Evener's configuration hint (which mentions the provider's documentation) or
+// the provider identity label.
 func documentRejectionEvidence(err error) bool {
-	text := strings.ToLower(err.Error())
+	text := err.Error()
+	if hint := llm.ErrorHint(err); hint != "" {
+		text = strings.Replace(text, " (hint: "+hint+")", "", 1)
+	}
+	var providerErr llm.Error
+	if errors.As(err, &providerErr) {
+		if name := providerErr.Provider(); name != "" {
+			text = strings.ReplaceAll(text, name, "")
+		}
+	}
+	text = strings.ToLower(text)
 	return strings.Contains(text, "document") || strings.Contains(text, "pdf")
 }
 
