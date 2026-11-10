@@ -77,6 +77,9 @@ type builder struct {
 	entryItemIndex uint32
 	entryItemCount uint32
 	entryItems     bool
+	// committedItemCounts is set only while a crash replay extends turns whose
+	// summaries the interrupted extension already advanced; see itemBase.
+	committedItemCounts map[uint32]uint32
 	// assistant is the latest ASSISTANT entry with tool calls this builder
 	// applied, at assistantOffset, so the results after it need not read it
 	// back.
@@ -236,7 +239,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	if err != nil {
 		return err
 	}
-	b.entryItemSlot, b.entryItemIndex, b.entryItems = b.turnSlot, summary.ItemCount, true
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = b.turnSlot, b.itemBase(b.turnSlot, summary, version), true
 	for i, item := range items {
 		c := base
 		merges := apptranscript.MergesByCallID(item)
@@ -681,7 +684,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 	if err != nil {
 		return err
 	}
-	b.entryItemSlot, b.entryItemIndex, b.entryItems = slot, summary.ItemCount, true
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = slot, b.itemBase(slot, summary, c.Ordinal+1), true
 	for i, item := range items {
 		if absorb != nil {
 			absorbed, err := absorb(item)
@@ -721,6 +724,19 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 		}
 	}
 	return b.x.items.append(encodeItemInto(b.itemBuf[:], record))
+}
+
+// itemBase is the ordinal the entry being applied gives its first item. A turn
+// summary advanced past this entry is left over from an extension interrupted
+// before its meta commit; its count already includes items this replay has not
+// re-appended, so the committed records' count is the correct base.
+func (b *builder) itemBase(slot uint64, summary turnRecord, version uint64) uint32 {
+	if summary.Version > version {
+		if count, ok := b.committedItemCounts[uint32(slot)]; ok {
+			return count
+		}
+	}
+	return summary.ItemCount
 }
 
 // completeCommunications links a typed result to the earlier COMMUNICATE item

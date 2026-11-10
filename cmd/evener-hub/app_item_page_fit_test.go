@@ -1341,3 +1341,45 @@ func findTextLengthForResultSize(t *testing.T, candidate appitempaging.Transcrip
 	t.Fatalf("could not construct a result of exactly %d bytes", want)
 	return 0
 }
+
+func TestReadOverlayMergesRunningToolIntoItsRecordedItem(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 7, Item: 1}
+	recorded := appwire.ThreadItem{
+		ID: "tool-call", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "call-1",
+		ToolName: "shell", Status: appwire.TurnStatusCompleted, Output: "settled output",
+		Position: &position, Version: 4,
+	}
+	turn := appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress, ItemsView: appwire.TurnItemsViewFull}
+	result := transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: []appitempaging.TranscriptItemCandidate{{
+			TurnID: "turn_1", Turn: turn, Item: recorded, Position: position,
+		}}},
+	}
+	live := appwire.ThreadItem{
+		ID: "tool-call", Type: "commandExecution", TurnID: "turn_1", ToolName: "shell", Output: "live output",
+	}
+	response := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{ID: "thread", Turns: []appwire.Turn{turn}},
+		Overlay: []appwire.OverlayItem{{
+			Key: "tool:call-1", Kind: appwire.OverlayTool, TurnID: "turn_1", HistoryKey: "call-1", Item: live,
+		}},
+	}
+
+	merged, err := appendReadOverlayCandidates(result, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.Candidates.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want the running tool merged into its recorded item", len(merged.Candidates.Candidates))
+	}
+	item := merged.Candidates.Candidates[0].Item
+	if item.Output != "live output" {
+		t.Fatalf("merged item output = %q, want the live output", item.Output)
+	}
+	if item.Version != 0 || item.FetchCursor != "" {
+		t.Fatalf("merged item version = %d, cursor = %q, want a non-fetchable live item", item.Version, item.FetchCursor)
+	}
+	if item.Position == nil || *item.Position != position {
+		t.Fatalf("merged item position = %+v, want the recorded position %+v", item.Position, position)
+	}
+}

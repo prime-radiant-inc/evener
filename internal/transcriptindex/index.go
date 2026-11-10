@@ -703,7 +703,7 @@ func (x *Index) extend(length int64) error {
 	// already be on disk from an entry this scan does not reach. Collect
 	// such rows' offsets before truncating them away, so they can be
 	// checked against where the scan below actually lands.
-	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
+	unsafeOffsets, turnAdvanced, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
 		return x.fail(err)
 	}
@@ -721,6 +721,22 @@ func (x *Index) extend(length int64) error {
 		// everything until refresh adopts the repair's committed build.
 		x.stale = true
 		return x.refuseRebuild()
+	}
+	if turnAdvanced {
+		// A committed turn summary rewritten in place carries the item count
+		// the interrupted extension reached. Replaying those entries would
+		// start their ordinals from that advanced count, and stampTurn skips
+		// the already-accounted versions, so the replayed items would keep
+		// wrong ordinals. Recover the per-turn count from the committed item
+		// records instead, which the replay extends from the same place the
+		// interrupted extension did.
+		counts, err := x.committedItemCountsByTurn()
+		if err != nil {
+			return x.fail(err)
+		}
+		x.builder.committedItemCounts = counts
+	} else {
+		x.builder.committedItemCounts = nil
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -760,6 +776,7 @@ func (x *Index) extend(length int64) error {
 	// call for the handle's whole life. A later extension then resolves only
 	// what it sees itself and marks a turn inexact when a name it needs is gone.
 	x.builder.failures.Reset()
+	x.builder.committedItemCounts = nil
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
@@ -804,16 +821,22 @@ func (x *Index) repairBuilder(length int64) error {
 // updatedTurn) count: garbage bytes written straight to the file (as a test
 // fault-injects to simulate leftovers, bypassing logUpdate) decode to
 // neither and name no slot at all.
-func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
+//
+// The boolean reports whether any of those rows rewrote a turn summary. Such a
+// summary already counts the items the interrupted entries appended, and replay
+// cannot recompute their ordinals from the entry alone, so the caller rebuilds
+// instead of replaying.
+func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 	available, err := x.updates.available()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var offsets []int64
+	turnAdvanced := false
 	for slot := x.updates.n; slot < available; slot++ {
 		buf := make([]byte, x.updates.size)
 		if _, err := x.updates.file.ReadAt(buf, int64(slot)*x.updates.size); err != nil {
-			return nil, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
+			return nil, false, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
 		}
 		row := decodeUpdate(buf)
 		var committed uint64
@@ -827,9 +850,28 @@ func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
 		}
 		if row.Slot < committed {
 			offsets = append(offsets, row.Offset)
+			turnAdvanced = turnAdvanced || row.Kind == updatedTurn
 		}
 	}
-	return offsets, nil
+	return offsets, turnAdvanced, nil
+}
+
+// committedItemCountsByTurn counts the committed item records per turn slot.
+// A replayed entry's ordinal therefore starts where the committed items end,
+// not where an interrupted extension's rewritten summary says they end.
+func (x *Index) committedItemCountsByTurn() (map[uint32]uint32, error) {
+	counts := make(map[uint32]uint32)
+	if x.items.n == 0 {
+		return counts, nil
+	}
+	buf, err := x.items.read(0, int(x.items.n))
+	if err != nil {
+		return nil, err
+	}
+	for slot := uint64(0); slot < x.items.n; slot++ {
+		counts[decodeItem(buf[slot*itemRecordSize:]).Turn]++
+	}
+	return counts, nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the

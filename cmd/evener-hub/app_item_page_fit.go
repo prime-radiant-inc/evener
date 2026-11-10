@@ -507,10 +507,14 @@ func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Sour
 }
 
 // appendReadOverlayCandidates gives the existing window packer the selected
-// live overlay beside the settled source snapshot. Overlay items have no
-// history position or version, so their positions are ephemeral and sort after
-// the selected settled window; they can be displayed and bounded but never
-// acquire a fetch cursor.
+// live overlay beside the settled source snapshot. A running tool's overlay
+// names the recorded call item it supersedes, so it replaces that candidate
+// rather than joining it: the packer would otherwise count one call twice
+// against the item limit and could serve the settled item while withholding
+// its live output. Overlay items have no history position or version, so a
+// merged item keeps the recorded position and an appended one gets an
+// ephemeral position after the selected settled window; either can be
+// displayed and bounded but never acquires a fetch cursor.
 func appendReadOverlayCandidates(result transcriptItemCandidateResult, response appwire.ThreadReadResponse) (transcriptItemCandidateResult, error) {
 	if len(response.Overlay) == 0 {
 		return result, nil
@@ -533,6 +537,11 @@ func appendReadOverlayCandidates(result transcriptItemCandidateResult, response 
 		turnID := overlay.TurnID
 		if turnID == "" {
 			turnID = overlay.Item.TurnID
+		}
+		if overlay.Kind == appwire.OverlayTool && overlay.HistoryKey != "" {
+			if merged := mergeOverlayToolCandidate(candidates, overlay); merged {
+				continue
+			}
 		}
 		turn, selected := turns[turnID]
 		if !selected {
@@ -557,6 +566,28 @@ func appendReadOverlayCandidates(result transcriptItemCandidateResult, response 
 	}
 	result.Candidates.Candidates = candidates
 	return result, nil
+}
+
+// mergeOverlayToolCandidate replaces the recorded candidate a running tool's
+// overlay supersedes. The live item cannot be fetched: its bytes are not
+// retained, so the merged candidate carries no version and no cursor while
+// keeping the recorded position and turn.
+func mergeOverlayToolCandidate(candidates []appitempaging.TranscriptItemCandidate, overlay appwire.OverlayItem) bool {
+	for index := range candidates {
+		if candidates[index].Item.TranscriptKey != overlay.HistoryKey {
+			continue
+		}
+		merged := appwire.CloneThreadItem(overlay.Item)
+		merged.TurnID = candidates[index].TurnID
+		merged.TranscriptKey = candidates[index].Item.TranscriptKey
+		position := candidates[index].Position
+		merged.Position = &position
+		merged.Version = 0
+		merged.FetchCursor = ""
+		candidates[index].Item = merged
+		return true
+	}
+	return false
 }
 
 func sourceItemCandidateResultForList(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams, response appwire.ThreadTurnsListResponse) (transcriptItemCandidateResult, error) {
