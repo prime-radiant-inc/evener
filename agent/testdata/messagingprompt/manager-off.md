@@ -174,7 +174,7 @@ Default task list:
 </agent>
 <agent>
 Name: `explorer`
-Description: Fast workspace scout with a real shell. Reports workspace facts and checks local or network sources when the current environment and sandbox allow it; read-only in effect, it never writes or modifies anything.
+Description: Fast workspace scout with a real shell. Reports workspace facts and checks local or network sources when the current environment and sandbox allow it; read-only in effect, it never writes or modifies anything and has no edit tools; a seat that must write files (including a reviewer that writes its report) uses subagent.
 Capabilities: Default tools: `communicate`, `compact_context`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `memory_read`, `memory_search`, `read_file`, `task_list`, `use_skill`
 Default task list:
 - `Scan workspace`: List files, identify tests, data files, and deliverables. Include relevant parent task details in the `delegate` task prompt for this step.
