@@ -1,9 +1,9 @@
-// The status chips a plugin carries, shared by the installed list's rows and
+// The status chips a plugin carries, shared by the installed row family and
 // the plugin detail sheet so a new flag is added in one place.
 
 import type { PluginEntry } from "@evener/appwire-client";
 import type { ReactElement } from "react";
-import { Chip, type ChipTone } from "../../../../widgets";
+import { Chip, type ChipTone } from "../../widgets";
 
 const STATUS_CHIPS: { kind: string; label: string; tone: ChipTone; shows: (plugin: PluginEntry) => boolean }[] = [
   { kind: "broken", label: "broken", tone: "danger", shows: (p) => p.broken },

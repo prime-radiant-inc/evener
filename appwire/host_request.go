@@ -43,6 +43,7 @@ var hostRequestMethods = map[string]struct{}{
 	MethodEvenerMarketplaceEdit:      {},
 	MethodEvenerMarketplaceBrowse:    {},
 	MethodEvenerPluginList:           {},
+	MethodEvenerPluginComponents:     {},
 	MethodEvenerPluginInstall:        {},
 	MethodEvenerPluginUpgrade:        {},
 	MethodEvenerPluginRemove:         {},

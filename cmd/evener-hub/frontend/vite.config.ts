@@ -116,6 +116,11 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
+    // Jesse reaches dev servers from remote machines as magic-kingdom (the
+    // tailscale hostname). Vite blocks non-localhost Host headers by default,
+    // so remote dev serving opts in with a comma-separated host allowlist;
+    // unset keeps Vite's default protection unchanged.
+    allowedHosts: process.env.EVENER_DEV_ALLOWED_HOSTS?.split(",").map((h) => h.trim()),
     fs: {
       // Agent worktrees keep cmd/evener-hub/frontend/node_modules as a symlink
       // to one shared install (see docs/developing-evener/conventions/agent-fleets.md), whose
