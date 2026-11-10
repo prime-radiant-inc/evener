@@ -552,6 +552,9 @@ func TestDelegateReviveRefusesForeignLockedLane(t *testing.T) {
 	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
 		t.Fatal("revive proceeded into a lane held by another session")
 	}
+	// The refused revive leaves its committed start unlaunched: fail it as
+	// the send that owns it does, so the root's Close has no run to wait on.
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 
 	_, locked, reason := r.laneLocked(t, lanePath)
 	if !locked {
@@ -592,6 +595,7 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	settleSendDelivery(t, root, first)
 	if first.result.TimedOut {
 		t.Fatalf("the lane-owning delegate's first send timed out; the presentation window cannot start with the spawn still in flight")
 	}
@@ -606,6 +610,7 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	if second.result.Err != nil {
 		t.Fatalf("second send: %v", second.result.Err)
 	}
+	settleSendDelivery(t, root, second)
 
 	_, locked, reason := r.laneLocked(t, lanePath)
 	if !locked {
@@ -653,6 +658,9 @@ func TestDelegateReviveRefusesGoneLane(t *testing.T) {
 	if err == nil {
 		t.Fatal("revive proceeded into a removed lane")
 	}
+	// The refused revive leaves its committed start unlaunched: fail it as
+	// the send that owns it does, so the root's Close has no run to wait on.
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 }
 
 // The arm's residue can wake a retained child through the automatic paths
@@ -683,6 +691,7 @@ func TestDelegateWakeReLocksUnlockedLane(t *testing.T) {
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	settleSendDelivery(t, root, first)
 	sub := root.subagents.get(fixture.childID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
@@ -732,6 +741,7 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	settleSendDelivery(t, root, first)
 	sub := root.subagents.get(fixture.childID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
@@ -1030,6 +1040,9 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// admission and whether that admission was deferred.
 	classifications := &delegateDeliveryClassificationLog{}
 	root.cfg.testOnly.delegateDeliveryClassified = classifications.observe
+	// tailParked closes when the first finalize tail, the retained child's,
+	// parks on the announce hold.
+	tailParked := make(chan struct{})
 	if takenAnnounceHold != nil {
 		// Register after root.Close, before the first send below can fatal:
 		// cleanups run last-in-first-out, so the hold releases before the
@@ -1037,7 +1050,11 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		// once makes the test's own release race the cleanup safely. Nothing
 		// parks on the hold before the hook below is installed.
 		t.Cleanup(releaseAnnounceHold)
-		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { <-takenAnnounceHold }
+		var parkedOnce sync.Once
+		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) {
+			parkedOnce.Do(func() { close(tailParked) })
+			<-takenAnnounceHold
+		}
 	}
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
@@ -1061,13 +1078,26 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// presenting the retained child's report answers the scripted step (or the
 	// adapter's bare-text fallback when none is given).
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{spawn, finish, finish, notify})
-	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	// A held tree's generation cannot finish until the test releases the
+	// hold, so the send's inline wait can only time out: take the shortest
+	// one, and wait instead for the retained child's tail to park on the hold
+	// and then for the delegate's finalization drain to park behind it.
+	firstWaitMS := 10_000
+	if takenAnnounceHold != nil {
+		firstWaitMS = 1
+	}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", firstWaitMS)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	settleSendDelivery(t, root, first)
 	delegateSub := root.subagents.get(fixture.childID)
 	if delegateSub == nil || delegateSub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	if takenAnnounceHold != nil {
+		waitForTestSignal(t, tailParked, "the retained child's finalize tail to park on the announce hold")
+		waitForTestSignal(t, delegateSub.sess.nextDrainPark(), "the delegate's finalization drain to park behind the held child")
 	}
 	// The shared child is found through the tree's durable records by its
 	// parent edge, the way the tree's own tests do.
@@ -4861,6 +4891,7 @@ func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	settleSendDelivery(t, root, first)
 	sub := root.subagents.get(fixture.childID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
