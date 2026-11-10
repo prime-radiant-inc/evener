@@ -603,7 +603,7 @@ func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if page {
-		if decoded.wire.ExpectedAskRevision == nil {
+		if decoded.ExpectedAskRevision == nil {
 			return InvalidParams("pending ask pages require an observed ask pair")
 		}
 		if err := ValidateThreadReadParams(ThreadReadParams(decoded.wire)); err != nil {

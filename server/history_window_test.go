@@ -114,7 +114,7 @@ func TestLiveThreadReadPagesTransferInsideOversizedTurn(t *testing.T) {
 	seen := make(map[string]bool, itemCount)
 	window := appwire.ThreadTurnWindow{Latest: 1}
 	var resume *appwire.ThreadWindowTransfer
-	for page := 0; page < itemCount; page++ {
+	for page := range itemCount {
 		response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
 			ThreadID: st.threadID, IncludeTurns: true,
 			TurnWindow: &window, WindowTransfer: resume,

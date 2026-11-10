@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -408,7 +409,7 @@ func TestManagerWindowReadResumesInsideAnOversizedTurn(t *testing.T) {
 		position := appwire.ThreadItemPosition{Entry: uint64(i + 1)}
 		daemon.turn.Items = append(daemon.turn.Items, appwire.ThreadItem{
 			ID: id, Type: "userMessage", TurnID: "turn-1", TranscriptKey: id,
-			Text: strings.Repeat(fmt.Sprintf("%d", i), 4<<10), Position: &position, Version: 1,
+			Text: strings.Repeat(strconv.Itoa(i), 4<<10), Position: &position, Version: 1,
 		})
 	}
 	httpServer := httptest.NewServer(daemon.handler(sessionID, ref))
