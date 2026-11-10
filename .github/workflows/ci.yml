@@ -518,7 +518,7 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
         with:
-          go-cache-kind: tests-${{ matrix.scope }}
+          go-cache-kind: tests-cold-measure-${{ matrix.scope }}
 
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
@@ -555,6 +555,7 @@ jobs:
       # Same ordering rule as web-unit above: the cache save precedes the
       # timing gate so a budget failure cannot skip the save.
       - uses: ./.github/actions/go-cache-save
+        if: false
 
       # The timing ratchet's rows come from the test run above (issue #144), so
       # the budget is enforced without a second full pass. Each lane checks its
