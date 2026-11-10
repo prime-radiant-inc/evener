@@ -79,6 +79,13 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	}}); err != nil {
 		return err
 	}
+	jm.completeWatchSendSettle(cfg, delivered)
+	return nil
+}
+
+// completeWatchSendSettle is the in-memory half of a settle: the frame leaves
+// the pending set, its receipt is released, and it counts as delivered.
+func (jm *jobManager) completeWatchSendSettle(cfg *watchConfig, delivered jobstore.WatchSendState) {
 	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
 	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	jm.mu.Lock()
@@ -88,7 +95,32 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	}
 	jm.countWatchDeliveryLocked(cfg)
 	jm.mu.Unlock()
-	return nil
+}
+
+// transcribedWatchSendSettleRetries bounds the settle retries for a caller frame
+// the model already has.
+const transcribedWatchSendSettleRetries = 3
+
+// settleTranscribedWatchSend retries the delivered record of a caller frame
+// that is already in the receiver's transcript. Every notification pass
+// re-enqueues a pending caller frame, so a journal that keeps refusing the
+// record would otherwise drive an endless run of empty notification turns.
+// After transcribedWatchSendSettleRetries failed retries the frame is settled
+// in memory only and the error is still returned for the caller's warning; the
+// journal keeps it pending, so a restart can show it to the model once more.
+func (jm *jobManager) settleTranscribedWatchSend(cfg *watchConfig, state jobstore.WatchSendState) error {
+	err := jm.settleWatchSendDelivered(cfg, state)
+	if err == nil {
+		return nil
+	}
+	jm.mu.Lock()
+	jm.transcribedWatchSends[state.DeliveryID]++
+	exhausted := jm.transcribedWatchSends[state.DeliveryID] >= transcribedWatchSendSettleRetries
+	jm.mu.Unlock()
+	if exhausted {
+		jm.completeWatchSendSettle(cfg, state)
+	}
+	return err
 }
 
 // noteWatchSendTranscribed records that the caller frame deliveryID reached the
@@ -101,9 +133,11 @@ func (jm *jobManager) noteWatchSendTranscribed(deliveryID string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if jm.transcribedWatchSends == nil {
-		jm.transcribedWatchSends = make(map[string]struct{})
+		jm.transcribedWatchSends = make(map[string]int)
 	}
-	jm.transcribedWatchSends[deliveryID] = struct{}{}
+	if _, ok := jm.transcribedWatchSends[deliveryID]; !ok {
+		jm.transcribedWatchSends[deliveryID] = 0
+	}
 }
 
 // watchSendTranscribed reports whether the caller frame deliveryID is already

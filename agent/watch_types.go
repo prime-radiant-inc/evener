@@ -86,7 +86,8 @@ const (
 	// so no live watch goes missing without the agent hearing about it.
 	maxLiveWatches = 32
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
-	// watch send may descend from before the breaker drops it as a runaway.
+	// watch send, or a no-send watch's fire, may descend from before the breaker
+	// drops it as a runaway.
 	runawaySelfInfluenceDepth = 8
 	stableWatchReceiverTarget = "stable_watch_receiver"
 )

@@ -932,7 +932,7 @@ Rules:
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output — the same windowed scan and the same window bound as a live watch's attach scan — instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
 - `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the source reached terminal state. The caller never has to reconstruct the original source/condition identity.
 - `job_watch` fails synchronously with `source_not_watchable` or `target_not_watchable` for sources the caller is not allowed to observe. A concrete descendant job can be watched by forwarding the watch install to the live owning descendant while keeping the ancestor as receiver. Parent, sibling, unrelated, closed, or non-live sources are not watchable unless explicitly granted.
-- A watcher may observe the events it generates itself. A `self` source on a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`), delivering back to the same session, installs and returns `watching:true`; nothing is rejected at creation for being a potential feedback loop. The loop is bounded at runtime instead, by three mechanisms: a self-influenced frame is prefixed with a gradient notice telling the receiving turn how deep it stands in its own influence (`↳ this turn responded to your last message.`, sharpening to `↳ you're ~N exchanges deep responding to your own influence — consider disengaging.`); a send descending from too many delivered self-influenced priors is dropped as `runaway` instead of delivered; and while the receiver has not taken a send watch's frame, a newer frame for the same watched identity replaces it, so a watch that keeps firing at a busy receiver leaves one frame per identity rather than a backlog. Parent-source sidecars are cross-session and are not self-influenced by this rule at all.
+- A watcher may observe the events it generates itself. A `self` source on a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`), delivering back to the same session, installs and returns `watching:true`; nothing is rejected at creation for being a potential feedback loop. The loop is bounded at runtime instead, by three mechanisms: a self-influenced frame is prefixed with a gradient notice telling the receiving turn how deep it stands in its own influence (`↳ this turn responded to your last message.`, sharpening to `↳ you're ~N exchanges deep responding to your own influence — consider disengaging.`); a send descending from too many delivered self-influenced priors is dropped as `runaway` instead of delivered, and a no-send fire descending from as many of the watch's own fires is dropped the same way, with one runaway notice for the chain (the watch stays armed, and a fire from outside the chain delivers again); and while the receiver has not taken a send watch's frame, a newer frame for the same watched identity replaces it, so a watch that keeps firing at a busy receiver leaves one frame per identity rather than a backlog. Parent-source sidecars are cross-session and are not self-influenced by this rule at all.
 - Within a live runtime, watches expire when a concrete watched shell reaches
   terminal. A stable delegate watch ends with the exact generation it bound; its
   terminal frame is ordered before the end notice. Session-level watches remain
@@ -1030,9 +1030,10 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   remains to retry.
 - A watch has no lifetime delivery cap: it lives until its target ends or it is
   cleared, however many times it fires. What bounds a busy watch is its `every`
-  setting (only each Nth matching event fires), the runaway guard on the send
-  rail (a send descending from too many delivered self-influenced priors is
-  dropped as `runaway`), and folding while the receiver is busy: an undelivered
+  setting (only each Nth matching event fires), the runaway guard (a fire
+  descending from too many of the watch's own delivered fires is dropped as
+  `runaway`, on both the send and the no-send rail), and folding while the
+  receiver is busy: an undelivered
   send frame is replaced by a newer frame for the same watched identity (latest
   frame wins), and an undelivered repeat-timer tick absorbs later ticks of the
   same timer. A no-send watch's condition notifications and job progress ticks
@@ -1042,10 +1043,11 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   reached the transcript but recording it delivered fails, the rail retries only
   the recording on its next pass; it does not render the frame again. A frame
   that never reached the transcript stays pending and is retried
-  (at-least-once). The record of frames already transcribed is in memory, so a
-  crash between the transcript write and the delivered record can still show
-  that frame once more after restart; that window is one transcript append
-  wide.
+  (at-least-once). A transcribed frame whose delivered record still fails after
+  three retries is settled in memory only, so a journal that keeps refusing the
+  record cannot keep the notification rail busy. The record of frames already
+  transcribed is in memory, so a restart after the transcript write and before
+  a persisted delivered record can show that frame once more.
 - Terminal notification ordering: flush any queued watch notification/frame for a
   concrete job, then deliver the terminal notification. Both are facts about the same
   completion, so they arrive in one notification turn, watch settlement first.
@@ -1948,7 +1950,7 @@ Safety and behavior rules:
 - Watch frames to busy sidecars are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
 - Access control is source-resolution based: `parent` requires `delegate(watch_parent:true)`, concrete jobs must be owned by this session or a live descendant, and unrelated sessions are rejected.
 - Broad unbounded transcript watches are not part of v1; watch a concrete `job_id`, `self`, or a granted `parent` session source.
-- Same-watch feedback is causal, and it is classified rather than suppressed: watch-originated events carry provenance, so an event whose provenance already holds this watch's `(watch_id, generation)` is recognised as the watch's own echo. It still fires and still delivers — marked self-influenced, with the gradient notice on the frame — and the runaway fuse is what stops a runaway. The classification is scoped to the current generation, so a re-arm reads as fresh, and a later top-level user input starts with fresh provenance.
+- Same-watch feedback is causal, and it is classified rather than suppressed: watch-originated events carry provenance, so an event whose provenance already holds this watch's `(watch_id, generation)` is recognised as the watch's own echo. It still fires and still delivers — marked self-influenced, with the gradient notice on the frame — and the runaway fuse is what stops a runaway, on the send and the no-send rail alike. The classification is scoped to the current generation, so a re-arm reads as fresh, and a later top-level user input starts with fresh provenance.
 - An observer that needs the output of a job a frame named uses `read_transcript(transcript_ref="job:<job_id>")`, the call in the frame's trailing `read with:` line. Exact local job refs are resolved independently of observer metadata; the frame still carries the event payload (status, reason, exit code, output bytes), and readability does not widen transcript discovery, listing, or control access.
 
 ## Relationship to transcript tools

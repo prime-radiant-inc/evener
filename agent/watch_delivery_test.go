@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -93,5 +94,76 @@ func TestWatchSettleIsIdempotentAcrossRetry(t *testing.T) {
 	}
 	if jm.hasPendingWatchSends() {
 		t.Fatal("the retry must settle the frame it already delivered")
+	}
+}
+
+// A no-send self watch on communicate can feed itself: each notification turn
+// that replies through communicate stamps the notification's lineage on that
+// event (acceptNotificationInput adopts it), which fires the watch again. The
+// runaway guard stops that chain at runawaySelfInfluenceDepth fires and keeps
+// the watch armed: a communicate from outside the chain still fires it.
+func TestNoSendSelfWatchLoopStopsAtTheRunawayDepth(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var queued []jobNotification
+	jm.enqueue = func(n jobNotification) { queued = append(queued, n) }
+	installWatchBelowValidation(t, jm, watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}})
+	communicate := func(p *provenance.Causal) {
+		jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate, SessionID: jm.sessionID, Data: events.CommunicateData{Message: "reply"}, Provenance: p})
+	}
+	deliveries := func() int {
+		jm.mu.Lock()
+		defer jm.mu.Unlock()
+		for _, cfg := range jm.watches {
+			return cfg.deliveries
+		}
+		t.Fatal("the watch is no longer armed")
+		return 0
+	}
+
+	communicate(nil) // the user's own message starts the chain
+	turns := 0
+	for len(queued) > 0 && turns < 4*runawaySelfInfluenceDepth {
+		n := queued[0]
+		queued = queued[1:]
+		communicate(n.Provenance) // the notification turn replies
+		turns++
+	}
+	if len(queued) != 0 {
+		t.Fatalf("the self-feeding chain was still running after %d notification turns", turns)
+	}
+	if got := deliveries(); got != runawaySelfInfluenceDepth {
+		t.Fatalf("the chain delivered %d fires, want it stopped at the runaway depth %d", got, runawaySelfInfluenceDepth)
+	}
+
+	communicate(nil) // a fresh message outside the chain
+	if got := deliveries(); got != runawaySelfInfluenceDepth+1 {
+		t.Fatalf("a communicate outside the chain delivered %d more fires, want 1", got-runawaySelfInfluenceDepth)
+	}
+}
+
+// A caller frame the model already has, whose delivered record keeps failing to
+// persist, must not keep the notification rail busy: after a bounded number of
+// attempts it leaves the pending set (so no boundary re-enqueues it), and the
+// model still saw it exactly once.
+func TestTranscribedFrameWithFailingSettleStopsRetrying(t *testing.T) {
+	t.Parallel()
+	s, jm, _ := installCallerCommunicateWatch(t)
+	const sentinel = "settle-always-fails"
+	attempts := failAppendN(jm, jobstore.EventWatchSendDelivered, 1000)
+
+	fireCommunicate(jm, sentinel)
+	const passes = 20
+	for range passes {
+		drainAndAccept(t, s)
+	}
+	if got := attempts.Load(); got >= passes {
+		t.Fatalf("delivered-record attempts = %d over %d passes, want a bounded number", got, passes)
+	}
+	if jm.hasPendingWatchSends() {
+		t.Fatal("the transcribed frame is still pending, so every boundary re-enqueues it")
+	}
+	if got := len(watchFrameTurns(s, sentinel)); got != 1 {
+		t.Fatalf("frame reached the model %d times, want exactly once", got)
 	}
 }
