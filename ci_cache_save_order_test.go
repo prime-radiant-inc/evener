@@ -202,8 +202,9 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 // whether on a finding, a timing budget or a timeout from running cold,
 // has still filled its caches; a save behind the implicit success() would
 // leave the lane restoring nothing, so it runs cold, fails again and never
-// saves. go-cache-save's own steps carry !cancelled() as well, since a
-// composite step's implicit success() is evaluated on its own.
+// saves. go-cache-save's own steps carry (success() || failure()) as well,
+// since a composite step's implicit success() is evaluated on its own; the
+// runner refuses to load a composite action whose step calls cancelled().
 func TestCacheSavesRunAfterAFailedStep(t *testing.T) {
 	for _, path := range goCacheWorkflows {
 		for name, job := range readCacheWorkflow(t, path) {
@@ -226,8 +227,11 @@ func TestCacheSavesRunAfterAFailedStep(t *testing.T) {
 	}
 
 	for _, step := range readActionSteps(t, ".github/actions/go-cache-save/action.yml") {
-		if !strings.Contains(step.If, "!cancelled()") {
-			t.Errorf("go-cache-save step %q: if %q lacks !cancelled()", step.Name, step.If)
+		if !strings.Contains(step.If, "(success() || failure())") {
+			t.Errorf("go-cache-save step %q: if %q lacks (success() || failure())", step.Name, step.If)
+		}
+		if strings.Contains(step.If, "cancelled()") {
+			t.Errorf("go-cache-save step %q: if %q calls cancelled(), which the runner rejects in a composite action", step.Name, step.If)
 		}
 	}
 }
