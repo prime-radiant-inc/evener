@@ -49,8 +49,8 @@ export function pluginComponentsKey(target: PluginComponentsReadTarget): string 
   return "path" in target ? `path:${target.path}` : `${target.plugin}@${target.marketplace}`;
 }
 
-// One cached component inventory per plugin target - permanent until a
-// plugin-list mutation (or the evener/plugin/updated that follows one) retires
+// One cached component inventory per plugin target - retained until a
+// plugin-list mutation, notification or changed installed revision retires
 // it. "loading" is written synchronously BEFORE the batch request is sent, so
 // a concurrent call for the same key sends no second request; the keyed
 // revision's in-flight registry is what lets such a call wait for the request
@@ -76,7 +76,8 @@ export interface PluginsState {
    * pluginComponentsKey - the counts the installed list's rows show. Entries
    * land through fetchPluginComponents; a plugin-list mutation (or the
    * notification that follows one) retires them all, and the next fetchPlugins
-   * re-issues the batch. */
+   * re-issues the batch. A fresh list also retires pairs whose version or
+   * installPath changed without a notification. */
   pluginComponents: Map<string, PluginComponentsEntry>;
   /** Reads many targets' component inventories in one batch call, landing one
    * entry per target under its key. A target already in the map is never
@@ -159,8 +160,9 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
 
   /** Drops these keys' cached inventories and retires their generations,
    * returning the next pluginComponents map. Called only once a mutation has
-   * landed (or a notification says one landed elsewhere): a bump ahead of a
-   * request that then fails would fence out the in-flight batch and strand
+   * landed, a notification says one landed elsewhere or a fresh list reveals
+   * a changed installed revision: a bump ahead of a request that then fails
+   * would fence out the in-flight batch and strand
    * the "loading" entries it had already written. Also called by
    * reloadPluginComponents, whose re-read immediately re-registers for the
    * same keys, so a read it fences cannot strand its marker behind it. */
@@ -371,11 +373,29 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         // write's list.
         return readRevisioned(listRevision, () => client.request("evener/plugin/list", {}), {
           onAnswer: (resp) => () => {
-            set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+            set((s) => {
+              const previous = new Map((s.plugins ?? []).map((entry) => [pluginComponentsKey(entry), entry]));
+              const changed = resp.plugins.flatMap((entry) => {
+                const key = pluginComponentsKey(entry);
+                const before = previous.get(key);
+                return s.pluginComponents.has(key) &&
+                  (before?.version !== entry.version || before?.installPath !== entry.installPath)
+                  ? [key]
+                  : [];
+              });
+              return {
+                plugins: resp.plugins,
+                pluginsLoading: false,
+                pluginsError: null,
+                pluginComponents: changed.length
+                  ? retirePluginComponents(s.pluginComponents, changed)
+                  : s.pluginComponents,
+              };
+            });
             // The list's rows show component counts without per-row reads, so
             // its landing issues one batch for every installed pair key. Keys
             // already settled send nothing; only the keys a mutation or a
-            // notification retired come back.
+            // notification retired, or whose installed revision changed, come back.
             void get().fetchPluginComponents(resp.plugins.map(({ plugin, marketplace }) => ({ plugin, marketplace })));
           },
           onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: friendlyErrorMessage(err) }),

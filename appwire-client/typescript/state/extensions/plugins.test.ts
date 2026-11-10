@@ -508,6 +508,72 @@ describe("pluginComponents cache", () => {
     await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
     expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(1);
   });
+
+  test.each([
+    ["version", { ...LINTER, version: "2.0.0" }, true],
+    ["installPath", { ...LINTER, installPath: "/state/plugins/linter-new" }, true],
+    ["version and installPath", { ...LINTER, version: "2.0.0", installPath: "/state/plugins/linter-new" }, true],
+    ["unrelated metadata", { ...LINTER, enabled: false, autoUpgrade: true, updateAvailable: true }, false],
+  ] as const)(
+    "a fresh list changing %s refetches only changed backing inventories",
+    async (_label, updated, changed) => {
+      const { fake, store } = storeWithFake();
+      const targets = [
+        { plugin: "linter", marketplace: "acme" },
+        { plugin: "formatter", marketplace: "acme" },
+      ];
+      fake.on(LIST, () => ({ plugins: [LINTER, FORMATTER] }));
+      fake.on(COMPONENTS, () => ({ results: [componentRow("linter"), componentRow("formatter")] }));
+      await store.getState().fetchPlugins();
+      await store.getState().fetchPluginComponents(targets);
+      const cached = store.getState().pluginComponents;
+      expect(cached.get("linter@acme")?.status).toBe("loaded");
+
+      const fresh = { commands: ["linter:check", "linter:fix"] };
+      fake.on(LIST, () => ({ plugins: [updated, { ...FORMATTER }] }));
+      const release = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
+      // Only a list read reveals the CLI-side change, without a notification or mutation.
+      await store.getState().fetchPlugins();
+      expect(store.getState().plugins).toEqual([updated, FORMATTER]);
+      const reads = fake.calls.filter((call) => call.method === COMPONENTS);
+      expect(reads).toHaveLength(changed ? 2 : 1);
+      expect(store.getState().pluginComponents.get("formatter@acme")).toBe(cached.get("formatter@acme"));
+      if (changed) {
+        expect(reads.at(-1)?.params).toEqual({ targets: [targets[0]] });
+        expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "loading" });
+        release({ results: [{ plugin: "linter", marketplace: "acme", components: fresh }] });
+        await store.getState().fetchPluginComponents(targets);
+        expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "loaded", components: fresh });
+      } else {
+        expect(store.getState().pluginComponents.get("linter@acme")).toBe(cached.get("linter@acme"));
+      }
+      expect(store.getState().pluginRevision).toBe(0);
+      expect(fake.calls.every((call) => call.method === LIST || call.method === COMPONENTS)).toBe(true);
+      store.dispose();
+    },
+  );
+
+  test("a fresh list fences an old inventory still in flight before refilling its changed revision", async () => {
+    const { fake, store } = storeWithFake();
+    const target = { plugin: "linter", marketplace: "acme" };
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    const releaseOld = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
+    await store.getState().fetchPlugins();
+    const oldReading = store.getState().fetchPluginComponents([target]);
+
+    fake.on(LIST, () => ({ plugins: [{ ...LINTER, installPath: "/state/plugins/linter-new" }] }));
+    const releaseFresh = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
+    await store.getState().fetchPlugins();
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(2);
+    const freshReading = store.getState().fetchPluginComponents([target]);
+    const fresh = { commands: ["linter:fix"] };
+    releaseFresh({ results: [{ ...target, components: fresh }] });
+    await freshReading;
+    releaseOld({ results: [componentRow("linter")] });
+    await oldReading;
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "loaded", components: fresh });
+    store.dispose();
+  });
 });
 
 describe("reconnect", () => {
