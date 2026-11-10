@@ -40,6 +40,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	pe, ok := s.cfg.Past.Find(threadID)
 
 	target := hubcore.DeletionTarget{Ref: localAppRef(threadID), ThreadID: threadID}
+	projectID := projectKeyForStateDir(pe.StateDir)
 	record := hubcore.DeletionRecord{Targets: []hubcore.DeletionTarget{target}}
 	stateDirs := map[string]string{threadID: pe.StateDir}
 	release, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, stateDirs)
@@ -50,7 +51,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		if err := ctx.Err(); err != nil {
 			return appwire.SessionDeleteResponse{}, err
 		}
-		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{ownershipSkip(threadID, ownerErr)}, projectKeyForStateDir(pe.StateDir))
+		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{ownershipSkip(threadID, ownerErr)}, projectID)
 	}
 	defer func() {
 		if release != nil {
@@ -76,7 +77,6 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		return s.sessionDeleteResponse(ctx, nil, nil, "")
 	}
 
-	projectID := projectKeyForStateDir(pe.StateDir)
 	if s.cfg.DeletionStore == nil {
 		return appwire.SessionDeleteResponse{}, appwire.InternalError("deletion store is not configured")
 	}

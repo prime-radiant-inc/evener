@@ -95,6 +95,32 @@ func (s *DeletionStore) Begin(projectID string, targets []DeletionTarget) (Delet
 // BeginProject durably fences targets and records whether they still
 // constitute the complete project deletion set.
 func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget, wholeProject bool) (DeletionRecord, error) {
+	return s.begin(projectID, targets, false, wholeProject, func(record DeletionRecord, _ []DeletionTarget) bool {
+		return !record.SessionOnly && record.State == DeletionStateDeleting
+	})
+}
+
+// BeginSession durably fences one individual session deletion under the
+// project that owns its state. A session record reuses only its own
+// incomplete generation for the same target. It never merges with a project
+// generation, whose target set governs a different deletion, and it never
+// becomes the generation DeletingProject resumes.
+func (s *DeletionStore) BeginSession(projectID string, target DeletionTarget) (DeletionRecord, error) {
+	return s.begin(projectID, []DeletionTarget{target}, true, false, func(record DeletionRecord, normalized []DeletionTarget) bool {
+		return record.SessionOnly && record.State == DeletionStateDeleting &&
+			len(record.Targets) == 1 && record.Targets[0] == normalized[0]
+	})
+}
+
+// begin is the one generation-creation path both scopes share: validate,
+// normalize, reuse an incomplete generation the scope's predicate accepts, or
+// append the next generation for the project.
+func (s *DeletionStore) begin(
+	projectID string,
+	targets []DeletionTarget,
+	sessionOnly, wholeProject bool,
+	reuse func(record DeletionRecord, normalized []DeletionTarget) bool,
+) (DeletionRecord, error) {
 	if s == nil {
 		return DeletionRecord{}, errors.New("deletion store is not configured")
 	}
@@ -119,10 +145,7 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		if record.Generation > generation {
 			generation = record.Generation
 		}
-		if record.SessionOnly {
-			continue
-		}
-		if record.State == DeletionStateDeleting {
+		if reuse(record, normalized) {
 			return cloneDeletionRecord(record), nil
 		}
 	}
@@ -131,54 +154,8 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		Generation:   generation + 1,
 		State:        DeletionStateDeleting,
 		WholeProject: wholeProject,
+		SessionOnly:  sessionOnly,
 		Targets:      normalized,
-	}
-	next := cloneDeletionSnapshot(s.state)
-	next.Records = append(next.Records, record)
-	if err := s.commitLocked(next); err != nil {
-		return DeletionRecord{}, err
-	}
-	return cloneDeletionRecord(record), nil
-}
-
-// BeginSession durably fences one individual session deletion under the
-// project that owns its state. A session record reuses only its own
-// incomplete generation for the same target. It never merges with a project
-// generation, whose target set governs a different deletion, and it never
-// becomes the generation DeletingProject resumes.
-func (s *DeletionStore) BeginSession(projectID string, target DeletionTarget) (DeletionRecord, error) {
-	if s == nil {
-		return DeletionRecord{}, errors.New("deletion store is not configured")
-	}
-	if err := identifier.ValidateProjectID(projectID); err != nil {
-		return DeletionRecord{}, fmt.Errorf("invalid deletion project ID: %w", err)
-	}
-	normalized, err := normalizeDeletionTargets([]DeletionTarget{target})
-	if err != nil {
-		return DeletionRecord{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var generation uint64
-	for _, record := range s.state.Records {
-		if record.ProjectID != projectID {
-			continue
-		}
-		if record.Generation > generation {
-			generation = record.Generation
-		}
-		if record.SessionOnly && record.State == DeletionStateDeleting &&
-			len(record.Targets) == 1 && record.Targets[0] == normalized[0] {
-			return cloneDeletionRecord(record), nil
-		}
-	}
-	record := DeletionRecord{
-		ProjectID:   projectID,
-		Generation:  generation + 1,
-		State:       DeletionStateDeleting,
-		SessionOnly: true,
-		Targets:     normalized,
 	}
 	next := cloneDeletionSnapshot(s.state)
 	next.Records = append(next.Records, record)
