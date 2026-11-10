@@ -625,17 +625,17 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 		}
 	}
 	aggregate := c.durable[delegateID]
-	if aggregate.PendingStopSeq != 0 {
+	switch {
+	case aggregate.PendingStopSeq != 0 || aggregate.Phase == delegatestore.PhaseStopping:
 		return nil, busyBecause(delegateBusyStopping)
-	}
-	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable {
+	case !aggregate.Resumable || aggregate.Phase == delegatestore.PhaseClosed:
+		return nil, busyBecause(delegateBusyNotResumable)
+	case aggregate.Phase != delegatestore.PhaseIdle:
 		return nil, busyBecause(delegateBusyConcurrentSend)
-	}
-	if c.reclamationCoversLocked(delegateID) {
+	case c.reclamationCoversLocked(delegateID):
 		return nil, busyBecause(delegateBusyReclaiming)
-	}
-	if c.laneHandoffCoversLocked(delegateID) {
-		return nil, busyBecause(delegateBusyClosing)
+	case c.laneHandoffCoversLocked(delegateID):
+		return nil, busyBecause(delegateBusyLaneHandoff)
 	}
 	// Idle but still finalizing: the finished generation's runtime has not
 	// reported quiescence, so it can't take another generation yet. Refusing

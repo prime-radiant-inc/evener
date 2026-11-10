@@ -256,10 +256,11 @@ delegate_send accepts to=dlg_..., message, and max_wait_ms:
 - If the delegate is starting, settling, or stopping, the call returns a typed
   target_busy error. It does not guess which generation should receive the
   message. The error carries a reason (finalizing, stopping, concurrent_send,
-  reclaiming or closing). Only finalizing is guaranteed to end with a delegate
-  report, so its guidance is to end the turn and retry after the next
-  notification; every other reason clears silently and carries a retry-after
-  delay instead.
+  reclaiming, lane_handoff, closing or not_resumable). No guidance depends on a
+  notification. Transient reasons carry a retry-after delay; closing (the
+  session is shutting down) and not_resumable (the delegate is closed or out
+  of turns) are permanent, carry no retry-after, and tell the caller to stop
+  retrying and start a new delegate or report.
 - If the delegate is permanently non-resumable, the call returns
   target_not_resumable with the durable reason.
 

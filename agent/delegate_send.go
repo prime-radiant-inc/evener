@@ -127,7 +127,7 @@ func withBusyReason(err error) error {
 }
 
 func finalizationOutwaited() error {
-	return delegateBusyError{reason: delegateBusyFinalizing, retryAfter: delegateFinalizationRetryAfter}
+	return busyBecause(delegateBusyFinalizing)
 }
 
 // channelClosed reports whether ch is closed, without blocking. A nil channel

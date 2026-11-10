@@ -35,8 +35,8 @@ func TestDelegateSendTargetBusyCarriesReason(t *testing.T) {
 		if busy.reason != delegateBusyFinalizing {
 			t.Fatalf("reason = %q, want %q", busy.reason, delegateBusyFinalizing)
 		}
-		if busy.retryAfter <= 0 {
-			t.Fatalf("retryAfter = %v, want a positive wait", busy.retryAfter)
+		if busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
+			t.Fatalf("guidance = %v retryAfter = %v, want a delayed retry", busy.guidance(), busy.retryAfter)
 		}
 	})
 
@@ -104,6 +104,51 @@ func TestDelegateSendTargetBusyCarriesReason(t *testing.T) {
 		}
 	})
 
+	t.Run("not resumable is permanent", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 2, 2)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		c.mu.Lock()
+		c.durable["dlg_target"].Resumable = false
+		c.mu.Unlock()
+		_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+		busy := busyErrorOf(t, err)
+		if busy.reason != delegateBusyNotResumable {
+			t.Fatalf("reason = %q, want %q", busy.reason, delegateBusyNotResumable)
+		}
+		if busy.guidance() != delegateBusyDoNotRetry || busy.retryAfter != 0 {
+			t.Fatalf("guidance = %v retryAfter = %v, want no retry", busy.guidance(), busy.retryAfter)
+		}
+	})
+
+	t.Run("running delegate is a delayed retry", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 2, 2)
+		seedDelegateControllerRunning(t, c, "dlg_target", "")
+		_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+		busy := busyErrorOf(t, err)
+		if busy.reason != delegateBusyConcurrentSend || busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
+			t.Fatalf("reason = %q guidance = %v retryAfter = %v, want concurrent_send delayed retry", busy.reason, busy.guidance(), busy.retryAfter)
+		}
+	})
+
+	t.Run("lane handoff is a delayed retry", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 2, 2)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		c.mu.Lock()
+		if c.laneHandoffs == nil {
+			c.laneHandoffs = map[string]struct{}{}
+		}
+		c.laneHandoffs["dlg_target"] = struct{}{}
+		c.mu.Unlock()
+		_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+		busy := busyErrorOf(t, err)
+		if busy.reason != delegateBusyLaneHandoff || busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
+			t.Fatalf("reason = %q guidance = %v retryAfter = %v, want lane_handoff delayed retry", busy.reason, busy.guidance(), busy.retryAfter)
+		}
+	})
+
 	t.Run("closing", func(t *testing.T) {
 		t.Parallel()
 		c, _ := newDelegateControllerTestHarness(t, 2, 2)
@@ -112,8 +157,9 @@ func TestDelegateSendTargetBusyCarriesReason(t *testing.T) {
 		c.closing = true
 		c.mu.Unlock()
 		_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
-		if busy := busyErrorOf(t, err); busy.reason != delegateBusyClosing {
-			t.Fatalf("reason = %q, want %q", busy.reason, delegateBusyClosing)
+		busy := busyErrorOf(t, err)
+		if busy.reason != delegateBusyClosing || busy.guidance() != delegateBusyDoNotRetry {
+			t.Fatalf("reason = %q guidance = %v, want closing with no retry", busy.reason, busy.guidance())
 		}
 	})
 }
@@ -137,14 +183,20 @@ func TestWithBusyReasonTypesOnlyUntypedBusy(t *testing.T) {
 // refusal clears; every other reason is a delayed retry.
 func TestDelegateBusyGuidanceMatchesWhatHappensNext(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []delegateBusyReason{delegateBusyStopping, delegateBusyConcurrentSend, delegateBusyReclaiming, delegateBusyClosing} {
+	for _, reason := range []delegateBusyReason{delegateBusyStopping, delegateBusyConcurrentSend, delegateBusyReclaiming, delegateBusyLaneHandoff} {
 		busy := busyErrorOf(t, busyBecause(reason))
 		if busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
 			t.Fatalf("%s: guidance = %v retryAfter = %v, want a delayed retry", reason, busy.guidance(), busy.retryAfter)
 		}
 	}
 	finalizing := busyErrorOf(t, finalizationOutwaited())
-	if finalizing.guidance() != delegateBusyWaitForNotification {
-		t.Fatalf("finalizing guidance = %v, want wait for notification", finalizing.guidance())
+	if finalizing.guidance() != delegateBusyRetryShortly || finalizing.retryAfter <= 0 {
+		t.Fatalf("finalizing guidance = %v retryAfter = %v, want a delayed retry", finalizing.guidance(), finalizing.retryAfter)
+	}
+	for _, reason := range []delegateBusyReason{delegateBusyClosing, delegateBusyNotResumable} {
+		busy := busyErrorOf(t, busyBecause(reason))
+		if busy.guidance() != delegateBusyDoNotRetry || busy.retryAfter != 0 {
+			t.Fatalf("%s: guidance = %v retryAfter = %v, want no retry", reason, busy.guidance(), busy.retryAfter)
+		}
 	}
 }
