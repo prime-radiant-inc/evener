@@ -21,7 +21,7 @@ import {
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
-import { focusCatalogRow } from "./catalogRowFocus";
+import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -74,8 +74,10 @@ export function BrowseSection({
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
   const openPlugin = onOpen ?? (() => {});
   const sectionRef = useRef<HTMLElement>(null);
-  // The row an inline install reshaped, for the effect below to rehome focus.
-  const installedRow = useRef<{ plugin: string; marketplace: string } | null>(null);
+  // An inline install's fresh list reshapes the confirmed row, and the
+  // confirm's own focus restore then loses its opener: the hook returns
+  // focus to the row when that happened.
+  useCatalogRowFocusRehome(pendingInstall, sectionRef);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -170,34 +172,17 @@ export function BrowseSection({
     const target = pendingInstall;
     if (target === null || pluginsUnavailable) return;
     if (isInstalled(target.plugin, target.marketplace)) {
-      installedRow.current = target;
       setPendingInstall(null);
       return;
     }
     try {
       await store.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
-      installedRow.current = target;
       setPendingInstall(null);
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
     }
   }
-
-  // The install's fresh list reshapes the confirmed row - its split row
-  // becomes the whole-row button - and that remount unmounts the confirm's
-  // remembered opener, so the dialog's own focus restore no-ops and focus
-  // falls to <body>. The row's <li> keeps its identity across the reshape,
-  // so focus can return to the row's main target; only a restore that lost
-  // its target needs the help.
-  useEffect(() => {
-    if (pendingInstall !== null) return;
-    const target = installedRow.current;
-    if (target === null) return;
-    installedRow.current = null;
-    if (document.activeElement !== document.body) return;
-    focusCatalogRow(sectionRef.current ?? document, target);
-  }, [pendingInstall]);
 
   function marketplaceHasMatch(name: string): boolean {
     const cache = browseCatalogs.get(name);
