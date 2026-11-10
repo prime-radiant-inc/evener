@@ -253,5 +253,3 @@ fuzz-gap-check:
 fuzz-registry-check:
 	@scripts/fuzz/fuzz-registry-check.sh
 
-#  runs gitleaks over only the fuzz seed corpora — the
-# corpus-scoped subset of secret-scan, for fast harvester feedback.
