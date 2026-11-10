@@ -541,9 +541,10 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 		abortUnpersistedStableDelegateOutcome(t, outcome)
 	}
 
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the pending attention to be re-armed", func() bool {
+	// TRIPWIRE: the send above allows its own 60s inline wait, so on a loaded
+	// host the resolution can legitimately take most of a minute. The tripwire
+	// outlasts that wait, so only a genuine hang reaches it.
+	waitForCondition(t, 90*time.Second, "the pending attention to be re-armed", func() bool {
 		fixture.root.delegateController.mu.Lock()
 		defer fixture.root.delegateController.mu.Unlock()
 		state := fixture.root.delegateController.attention[owner]
