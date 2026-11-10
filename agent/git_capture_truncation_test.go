@@ -17,13 +17,18 @@ import (
 type truncationGitEnv struct {
 	execenv.ExecutionEnvironment
 	results map[string]execenv.ExecResult
+	errs    map[string]error
 }
 
 func (e truncationGitEnv) ExecArgv(_ context.Context, _ string, args []string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
-	if res, ok := e.results[strings.Join(args, " ")]; ok {
+	key := strings.Join(args, " ")
+	if res, ok := e.results[key]; ok {
 		return res, nil
 	}
-	return execenv.ExecResult{}, errors.New("unscripted git: " + strings.Join(args, " "))
+	if err, ok := e.errs[key]; ok {
+		return execenv.ExecResult{}, err
+	}
+	return execenv.ExecResult{}, errors.New("unscripted git: " + key)
 }
 
 // TestGitRunnerRefusesATruncatedPorcelainCapture pins the worktree GitRunner

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -177,6 +179,49 @@ func TestSnapshotGitReportsAnExecFailureDistinctFromAnEmptyRepository(t *testing
 		}
 		if probeFailed {
 			t.Fatal("an answered non-repository was reported as a probe failure")
+		}
+	})
+}
+
+// TestSnapshotGitReportsASignalKilledProbeAsAFailure pins the other half of
+// #4517: a git killed by a signal (the OOM killer at launch, for example) also
+// returns *exec.ExitError, but it never answered. Only a process that exited is
+// a completed answer, so the snapshot must report a probe failure.
+func TestSnapshotGitReportsASignalKilledProbeAsAFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	killed := exec.Command("sh", "-c", "kill -KILL $$")
+	err := killed.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil || exitErr.ProcessState.Exited() {
+		t.Fatalf("fixture: a self-killed process = %v, want a signal-terminated *exec.ExitError", err)
+	}
+
+	t.Run("inside probe", func(t *testing.T) {
+		t.Parallel()
+		env := truncationGitEnv{errs: map[string]error{
+			"rev-parse --is-inside-work-tree": err,
+		}}
+		inRepo, _, _, _, _, _, probeFailed := snapshotGit(context.Background(), env, root)
+		if inRepo {
+			t.Fatal("a signal-killed inside probe reported inRepo=true")
+		}
+		if !probeFailed {
+			t.Fatal("a signal-killed inside probe was reported as a completed non-repository answer")
+		}
+	})
+
+	t.Run("answered nonzero exit stays an answer", func(t *testing.T) {
+		t.Parallel()
+		env := truncationGitEnv{results: map[string]execenv.ExecResult{
+			"rev-parse --is-inside-work-tree": {ExitCode: 1},
+		}}
+		inRepo, _, _, _, _, _, probeFailed := snapshotGit(context.Background(), env, root)
+		if inRepo || probeFailed {
+			t.Fatalf("an answered non-repository = inRepo %v probeFailed %v, want false/false", inRepo, probeFailed)
 		}
 	})
 }

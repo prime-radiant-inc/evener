@@ -210,9 +210,19 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 // alongside the ExecResult, so RunGit's "an error means git did not run"
 // contract does not hold for the real environment; a fresh repository's
 // `rev-parse` and `log` exit nonzero as normal answers (#4517 review).
+//
+// A process killed by a signal also arrives as *exec.ExitError, but it never
+// answered. Requiring ProcessState.Exited() separates that interruption (the
+// OOM killer during launch, for example) from a completed nonzero exit, the
+// same way execenv/gitpath.go's gitAnswered does.
 func gitExited(err error) bool {
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr)
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	// Exited() is promoted from the embedded *os.ProcessState, which a
+	// hand-built ExitError could leave nil.
+	return exitErr.ProcessState != nil && exitErr.ProcessState.Exited()
 }
 
 func hasGitMetadataAncestor(cwd string) bool {
