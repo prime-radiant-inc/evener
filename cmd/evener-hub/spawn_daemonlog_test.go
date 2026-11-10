@@ -663,7 +663,7 @@ func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 
 // readEventually reads path until it contains want. The daemon writes on its
 // own schedule; the rendezvous entry the hub waited for is written after these
-// lines, so this is a short backstop against buffering, not a race.
+// lines, so the wait covers buffering, not a race.
 func readEventually(t *testing.T, path, want string) string {
 	t.Helper()
 	var last string

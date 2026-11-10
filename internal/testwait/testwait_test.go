@@ -91,6 +91,10 @@ func TestGiveUpReportsBeforeTheTestDeadline(t *testing.T) {
 		if !got.Before(deadline) {
 			t.Errorf("with %s left, the wait gives up at %s, not before the deadline", remaining, got.Sub(now))
 		}
+		if remaining >= 2*deadlineMargin && got.After(deadline.Add(-deadlineMargin)) {
+			t.Errorf("with %s left, the wait gives up %s before the deadline, inside the %s margin",
+				remaining, deadline.Sub(got), deadlineMargin)
+		}
 		if !got.After(now) {
 			t.Errorf("with %s left, the wait gives up at %s, leaving no time to wait", remaining, got.Sub(now))
 		}
