@@ -200,6 +200,27 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 			}
 		}(worker)
 	}
+	// A descriptor opening and closing between the glob and its fdinfo read is
+	// the vanish the production probe must tolerate; the lock churn alone only
+	// toggles existing descriptors.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			f, err := os.CreateTemp(dir, "descriptor-churn")
+			if err != nil {
+				return
+			}
+			name := f.Name()
+			_ = f.Close()
+			_ = os.Remove(name)
+		}
+	}()
 	t.Cleanup(func() {
 		close(done)
 		wg.Wait()
