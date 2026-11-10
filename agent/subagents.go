@@ -2276,7 +2276,11 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 			// a new event — a later attention row, a restart reconcile or an
 			// explicit send — never the stale armed one. Re-arming here would
 			// at once drive the generation the user just cancelled.
-			if !userStopped {
+			// A row this tail reopened because a hook stopped the launch is
+			// left pending too: re-arming it calls armDelegateAttention, which
+			// releases the hold, so a hook that keeps refusing would relaunch
+			// forever.
+			if !userStopped && !f.attentionUnpresented {
 				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 				}

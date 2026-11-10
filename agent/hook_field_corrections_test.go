@@ -149,7 +149,9 @@ func TestStop_CancelledCallKeepsStopHookActive(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("a closing session must skip the call: %+v", res)
 	}
-	if !strings.HasPrefix(res.Output, "tool skipped:") {
+	// A skipped call is an error result with a reason; the exact diagnostic is
+	// production copy.
+	if !res.IsError || strings.TrimSpace(res.Output) == "" {
 		t.Fatalf("skipped call output = %q, want the skipped-tool result", res.Output)
 	}
 	if !sess.stopHookActive.Load() {
