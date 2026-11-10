@@ -355,6 +355,11 @@ type ExecResult struct {
 	// result cut out, so offset/limit can fetch exactly it. Nil otherwise.
 	OmittedLines *LineRange
 
+	// UnchangedSinceTurn is set on a repeat read_file of the same path and range
+	// whose file is unchanged since the read made at that turn. The content is
+	// still returned; this is a hint, not a refusal.
+	UnchangedSinceTurn *int
+
 	IsError bool
 
 	// PrevalOnly is true when this result came from execTool's pre-dispatch

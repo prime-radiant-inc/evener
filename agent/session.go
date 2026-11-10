@@ -1000,6 +1000,9 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
+	// priorReads remembers each read_file path and range with the file's state
+	// at that read. Guarded by readFilesMu.
+	priorReads map[readRangeKey]priorRead
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	// Guarded by mu; read and written only in session_end.go.
