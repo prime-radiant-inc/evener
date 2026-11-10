@@ -86,6 +86,9 @@ func planLanes(ws *workspace, changed []string) plan {
 				setIfAbsent(buildSeeds, pkgDir, file)
 			}
 			p.markWhere(func(l lane) bool { return l.goSource }, file)
+			if ws.goReadByTypeScript[file] {
+				p.markWhere(func(l lane) bool { return l.typeScript }, file)
+			}
 		}
 		if tree != "" {
 			p.markWhere(func(l lane) bool { return l.typeScript }, file)

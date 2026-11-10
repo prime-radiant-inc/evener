@@ -961,7 +961,10 @@ Each changed path is one of four kinds:
   path, or a `//go:embed` pattern. A test that builds `./cmd/evener` depends
   on that command as surely as an import would. A change to a package's
   build reaches everything that depends on that build; a change to its
-  `_test.go` files reaches only its own tests.
+  `_test.go` files reaches only its own tests. A Go file that TypeScript-tree
+  code names in a string (a `?raw` import, or a path the test reads, resolved
+  from the naming file, its tree or the repository root) runs the TypeScript
+  lanes too: those tests pin Go constants by reading the Go source.
 - **A path inside a TypeScript tree** (`cmd/evener-hub/frontend`,
   `appwire-client/typescript`, `mobile-native`) runs `web-unit`,
   `web-browser`, `native`, `api-package` and `static-build`, and every lane
@@ -974,9 +977,11 @@ A package whose tests read the whole repository is reached by every change,
 because no name says which files they read. The classifier recognizes such a
 test by a `ls-files` literal or a `..` chain that climbs from its package to
 the repository root. The hub's and the agent module's tests both do, so
-the Go test lanes run for every change. The skips that remain are the
-TypeScript lanes on a Go-only change (`web-unit` too when the change misses
-the dev binary the web gate runs on) and the Go lint lanes on a
+the Go test lanes, `static-build` and `web-browser` (which runs the hub's
+tests) run for every change. The skips that remain are `native` and
+`api-package` on a Go-only change that no TypeScript names, `web-unit` too
+when that change also misses the dev binary the web gate runs on, and the
+Go lint lanes (`lint-golangci`, `lint-tagged`, `fuzz-checks`) on a
 TypeScript-only change.
 
 Preview what a branch will skip, with the path that runs each lane:
@@ -999,12 +1004,18 @@ outputs. The classifier writes no outputs unless it finishes.
 
 **Keeping the catalog true.** `cmd/evener-cilanes/lanes.go` lists each
 skippable job and matrix cell with what it runs. A job missing from the
-catalog always runs, and a renamed job or cell matches nothing and runs;
-`TestCatalogMatchesTheWorkflow` names either drift. The unsafe drift is a lane that starts running packages its entry does not
+catalog always runs. A matrix cell missing from the catalog would be
+skipped with the rest of its job, so `TestCatalogMatchesTheWorkflow` fails
+on it, and on a catalog job, cell or output name ci.yml lacks. The drift no
+test catches is a lane that starts running packages its entry does not
 claim: when a lane's make target changes what it tests, change its entry in
-the same pull request. A test that reads a file through a computed path no
-literal names, or walks a directory above the one it names, is the one
-reach the classifier cannot see; the merge queue still runs it.
+the same pull request.
+
+What the classifier cannot see: a file read through a computed path no
+literal names; a walk of a directory above the one a name points at; a Go
+program written inside a string literal and built by a test, whose imports
+are text. Today the whole-tree tests cover the last case. A miss bounces a
+pull request in the merge queue, which still runs every lane.
 
 ## CI Caches
 

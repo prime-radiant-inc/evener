@@ -764,8 +764,10 @@ jobs:
           echo "$RESULTS"
           test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
-  # fuzz is a required check with no aggregate of its own. A skip reports as
-  # passing, and it is skipped only when the changes job names it.
+  # fuzz is a required check with no aggregate of its own, and a skip
+  # reports as passing. It skips when the changes job names it, or when the
+  # run is cancelled first; a cancelled run fails the aggregates, so it
+  # cannot pass the required checks either way.
   fuzz:
     needs: [changes]
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz') }}

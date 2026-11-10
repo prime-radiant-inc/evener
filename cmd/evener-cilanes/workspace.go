@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,39 @@ type workspace struct {
 	// they list its tracked files, or walk from its root. No name says which
 	// files they read, so every change reaches them.
 	wholeTreeTesters map[string]bool
+	// goReadByTypeScript are the Go files TypeScript-tree code names, such
+	// as tests that read Go source to pin its constants.
+	goReadByTypeScript map[string]bool
+}
+
+// goFileLiteral matches a quoted string naming a Go file, optionally as a
+// Vite ?raw import.
+var goFileLiteral = regexp.MustCompile("[\"'`]([^\"'`\\s]+\\.go)(?:\\?raw)?[\"'`]")
+
+var typeScriptSourceExts = []string{".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"}
+
+// readGoNamedByTypeScript records the Go files a TypeScript tree's source
+// names, resolved from the naming file's directory, from its tree (where
+// the tree's tests run), and from the repository root.
+func (ws *workspace) readGoNamedByTypeScript(root string, tracked []string) error {
+	for _, file := range tracked {
+		tree := typeScriptTreeOf(file)
+		if tree == "" || !slices.Contains(typeScriptSourceExts, path.Ext(file)) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+		if err != nil {
+			return err
+		}
+		for _, m := range goFileLiteral.FindAllSubmatch(data, -1) {
+			for _, base := range []string{path.Dir(file), tree, "."} {
+				if named := path.Join(base, string(m[1])); !strings.HasPrefix(named, "../") {
+					ws.goReadByTypeScript[named] = true
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // goPackage is one package directory's dependencies, split as go test
@@ -84,7 +118,15 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws := &workspace{foreignModuleDirs: map[string]bool{}, packages: map[string]*goPackage{}, wholeTreeTesters: map[string]bool{}}
+	ws := &workspace{
+		foreignModuleDirs:  map[string]bool{},
+		packages:           map[string]*goPackage{},
+		wholeTreeTesters:   map[string]bool{},
+		goReadByTypeScript: map[string]bool{},
+	}
+	if err := ws.readGoNamedByTypeScript(root, tracked); err != nil {
+		return nil, err
+	}
 	modulePaths := map[string]string{}
 	for _, use := range work.Use {
 		dir := path.Clean(filepath.ToSlash(use.Path))

@@ -435,6 +435,23 @@ var list = exec.Command("git", "ls-files", "-z")
 	requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), typeScriptLanes...)
 }
 
+// TypeScript tests that pin Go constants read the Go source itself: a ?raw
+// import resolved from the importing file, or a path resolved from the
+// tree, where vitest runs. A change to that Go file runs the TypeScript
+// lanes; Go nothing in a tree names still skips them.
+func TestGoFileATypeScriptTestReadsRunsTheTypeScriptLanes(t *testing.T) {
+	leafLanes := append([]string{"fuzz", "tests-parts/nonroot", "race-module-shards/agent"}, goSourceLanes...)
+	for name, reader := range map[string]map[string]string{
+		"raw import from the file": {"appwire-client/typescript/src/leaf.test.ts": "import leafGo from \"../../../agent/leaf/leaf.go?raw\";\n"},
+		"path from the tree":       {"mobile-native/src/leaf.test.ts": "const s = readFileSync(path.resolve(process.cwd(), '../agent/leaf/leaf.go'), 'utf8');\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireRuns(t, planFixtureWith(t, reader, "agent/leaf/leaf.go"), append(leafLanes, typeScriptLanes...)...)
+			requireRuns(t, planFixtureWith(t, reader, "agent/leaf/leaf_test.go"), leafLanes...)
+		})
+	}
+}
+
 func TestMixedChangeRunsTheUnionOfItsFilesLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "agent/leaf/leaf.go", "mobile-native/src/app.tsx"), append([]string{
 		"fuzz",
