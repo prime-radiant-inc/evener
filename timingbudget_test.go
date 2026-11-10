@@ -176,16 +176,17 @@ func TestTimingBudgetBlessKeepsTheMetricMarker(t *testing.T) {
 	}
 }
 
-// A bless from a real measurement records each package's CPU as its budget and
-// its wall time as its backstop budget: the fixture module's tests run under
-// test-cpu-exec, through the same go test the ratchet's own pass runs.
-func TestTimingBudgetBlessRecordsCPUAndWallBudgets(t *testing.T) {
-	dir := t.TempDir()
-	budget := filepath.Join(dir, "budget.json")
+// blessFixtureModule blesses an empty budget from a real measurement of the
+// fixture module, whose tests run under test-cpu-exec through the same go test
+// the ratchet's own pass runs, burning burn of CPU, and returns the fixture
+// package's CPU and wall budgets.
+func blessFixtureModule(t *testing.T, burn string) (cpu, wall float64) {
+	t.Helper()
+	budget := filepath.Join(t.TempDir(), "budget.json")
 	writeAuditScriptFixture(t, budget, `{"perTestCeilingSeconds":3,"packages":{}}`)
 	cmd := exec.Command("bash", timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 		"--modules", "cmd/evener-dev/testdata/shardfixture")
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN=200ms")
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN="+burn)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bless over the fixture module: %v\n%s", err, out)
 	}
@@ -200,11 +201,28 @@ func TestTimingBudgetBlessRecordsCPUAndWallBudgets(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("parse blessed budget: %v\n%s", err, raw)
 	}
-	if got.Packages["shardfixture"] < 0.2 {
-		t.Fatalf("CPU budget = %v, want at least the 0.2s the fixture burned:\n%s", got.Packages["shardfixture"], raw)
+	cpu, okCPU := got.Packages["shardfixture"]
+	wall, okWall := got.WallPackages["shardfixture"]
+	if !okCPU || !okWall {
+		t.Fatalf("the bless did not record both budgets:\n%s", raw)
 	}
-	if _, ok := got.WallPackages["shardfixture"]; !ok {
-		t.Fatalf("no wall budget recorded:\n%s", raw)
+	return cpu, wall
+}
+
+// A bless records each package's CPU as its budget and its wall time as its
+// backstop budget.
+func TestTimingBudgetBlessRecordsCPUAndWallBudgets(t *testing.T) {
+	if cpu, _ := blessFixtureModule(t, "2500ms"); cpu < 2.5 {
+		t.Fatalf("CPU budget = %v, want at least the 2.5s the fixture burned", cpu)
+	}
+}
+
+// A bless floors every Go package's budgets at 2s: a sub-second package's next
+// run would otherwise trip the ratio on noise, and a budget rounded to zero
+// would read any later measurement as an infinite ratio.
+func TestTimingBudgetBlessFloorsGoBudgetsAtTwoSeconds(t *testing.T) {
+	if cpu, wall := blessFixtureModule(t, "0s"); cpu != 2 || wall != 2 {
+		t.Fatalf("budgets of a sub-second package = %v cpu, %v wall, want both floored at 2", cpu, wall)
 	}
 }
 

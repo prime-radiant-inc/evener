@@ -352,6 +352,8 @@ WARN_RATIO = 1.1
 # oversubscribed runner, so it is checked only for a gross wait: a package with
 # a CPU row fails when its scaled wall ratio passes this backstop.
 WALL_BACKSTOP_RATIO = 2.5
+# The smallest budget a bless records for a Go package, in either unit.
+GO_BUDGET_FLOOR = 2.0
 
 # A slow runner slows every package at once, which no package's code earned. The
 # run's own slowdown is the median measured/budget ratio over the packages whose
@@ -711,7 +713,10 @@ if bless:
 	# is dropped below.
 	def blessed(recorded, measured_secs):
 		order = list(recorded) + sorted(pkg for pkg in measured_secs if pkg not in recorded)
-		measured = {pkg: round(measured_secs[pkg], 2) for pkg in measured_secs}
+		# A Go package's budget is floored, so a sub-second package does not trip
+		# its ratio on noise and no budget rounds to zero.
+		measured = {pkg: round(measured_secs[pkg], 2) if pkg == WEB_KEY
+			else max(GO_BUDGET_FLOOR, round(measured_secs[pkg], 2)) for pkg in measured_secs}
 		if bless_full:
 			# Full surface: every recorded package was measured, so an entry with
 			# no measurement is a package gone from the tree (or one holding the

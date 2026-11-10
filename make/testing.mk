@@ -345,10 +345,11 @@ vet:
 ##   carries the CPU metric marker; while the marker is absent those ratios
 ##   warn, the "web" row among them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an
 ##   unclassified test over the flat ceiling is reported and named but nonzero in
-##   no mode. A missing budget file, or one whose packages map is empty, always
-##   exits zero; a malformed budget file (a top-level value that is not an object,
-##   invalid JSON, a packages value that is present but not an object, a package
-##   budget value that is not a finite number, a perTestCeilingSeconds that is
+##   no mode. A missing budget file, or one whose packages and wallPackages maps
+##   are both empty, always exits zero; a malformed budget file (a top-level
+##   value that is not an object, invalid JSON, a packages or wallPackages value
+##   that is present but not an object, a package budget value that is not a
+##   finite number, a perTestCeilingSeconds that is
 ##   present but not a finite number, a perTestCeilingClasses that is present
 ##   but not an object, or a class ceilingSeconds that is not a finite,
 ##   float-convertible number including an integer too large to convert) is a
