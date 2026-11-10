@@ -452,6 +452,26 @@ test("forward gap paging holds the loaded side through a controls-only page", as
   expect(screen.getAllByText(/^FORWARD_ADJACENT_/).length).toBeGreaterThan(0);
 });
 
+// #4825: the forward counterpart of the stranded backward wheel. The last
+// loaded row before the gap ends 20px below the viewport bottom, so the
+// unloaded marker below it is off-screen and the reader has not crossed the
+// gap; only the forward geometric boundary can request the next page.
+test("a forward wheel stranded before the loaded boundary pages from the hidden marker", async () => {
+  vi.useFakeTimers();
+  const scroller = await separatedWindows(false);
+  expect(peer.requests("evener/jobs/output")).toHaveLength(3);
+  // 2048 rows of 20px put the unloaded marker at 40960; this scrollTop leaves
+  // the last loaded row's bottom (the marker's top) 20px below the 100px port.
+  await act(async () => scroll(scroller, 40840));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(4);
+  const request = await peer.request("evener/jobs/output", 3);
+  expect(request.params).toMatchObject({ ref: "ref_root", jobId: "job_x", maxBytes: 65536 });
+  expect(request.params.beforeBytes).toBeGreaterThan(589824);
+  // A geometric boundary is already at the edge; demanding it must not move
+  // the reader.
+  expect(scroller.scrollTop).toBe(40840);
+});
+
 test("scrolling during a measured remount keeps the unread gap reachable", async () => {
   vi.useFakeTimers();
   await separatedWindows(false);
