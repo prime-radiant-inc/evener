@@ -1,0 +1,407 @@
+package cilanes
+
+import (
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// fixtureFiles is a small workspace shaped like the real one: a root module
+// holding the hub, the dev binary and the evener command, a separate agent
+// module, a llm module that nothing in the root module imports, and the
+// TypeScript trees beside them.
+func fixtureFiles() map[string]string {
+	return map[string]string{
+		"go.work": "go 1.27.0\n\nuse (\n\t.\n\t./agent\n\t./llm\n)\n",
+		"go.mod":  "module fixture.test/repo\n\ngo 1.27.0\n",
+		"evener_test.go": `package repo_test
+
+import "os"
+
+var _, _ = os.ReadFile("README.md")
+`,
+		"cmd/evener-hub/hub.go": `package hub
+
+import "fixture.test/repo/agent/session"
+
+var _ = session.Name
+`,
+		"cmd/evener-hub/webnext.go": `package hub
+
+import "embed"
+
+//go:embed frontend/dist
+var dist embed.FS
+`,
+		"cmd/evener-hub/hub_test.go": `package hub
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+)
+
+var _ = exec.Command("go", "build", "-o", "bin", "./cmd/evener/")
+var _, _ = os.ReadFile(filepath.Join("frontend", "src", "turn.ts"))
+`,
+		"cmd/evener/main.go": `package main
+
+import "fixture.test/repo/cmd/evener/internal/cli"
+
+func main() { cli.Run() }
+`,
+		"cmd/evener/internal/cli/cli.go": "package cli\n\nfunc Run() {}\n",
+		"cmd/evener-dev/bin/main.go": `package main
+
+import "fixture.test/repo/agent/tool"
+
+func main() { tool.Use() }
+`,
+		"cmd/evener-doctor/doctor.go":         "package doctor\n",
+		"cmd/evener-hub/testdata/fixture.go":  "package fixture\n",
+		"cmd/evener-hub/testdata/fixture.txt": "data\n",
+		"agent/go.mod":                        "module fixture.test/repo/agent\n\ngo 1.27.0\n",
+		"agent/session/session.go":            "package session\n\nconst Name = \"s\"\n",
+		"agent/tool/tool.go":                  "package tool\n\nfunc Use() {}\n",
+		"agent/leaf/leaf.go":                  "package leaf\n\nimport \"strings\"\n\nvar _ = strings.Split(\"a.b\", \".\")\nvar _ = \"..\"\n",
+		"agent/testdata/task/go.mod":          "module task\n",
+		"agent/testdata/task/task.go":         "package task\n",
+		"llm/go.mod":                          "module fixture.test/repo/llm\n\ngo 1.27.0\n",
+		"llm/llm.go":                          "package llm\n",
+		"llm/llm_test.go": `package llm
+
+import (
+	"os"
+	"path/filepath"
+)
+
+var _, _ = os.ReadFile(filepath.Join("..", "mobile-native", "app.json"))
+`,
+		"tools/standalone/go.mod":                         "module standalone\n",
+		"tools/standalone/main.go":                        "package main\n",
+		"cmd/evener-hub/frontend/src/turn.ts":             "export {};\n",
+		"cmd/evener-hub/frontend/src/other.ts":            "export {};\n",
+		"cmd/evener-hub/frontend/dist/PLACEHOLDER":        "\n",
+		"appwire-client/typescript/src/index.ts":          "export {};\n",
+		"mobile-native/app.json":                          "{}\n",
+		"mobile-native/src/app.tsx":                       "export {};\n",
+		"docs/developing-evener/testing.md":               "# Testing\n",
+		"scripts/gate/run.go":                             "package main\n",
+		"scripts/gate/run.sh":                             "#!/bin/sh\n",
+		"make/testing.mk":                                 "test:\n",
+		"Makefile":                                        "include make/*.mk\n",
+		".github/workflows/ci.yml":                        "name: CI\n",
+		".tool-versions":                                  "golang 1.27.0\n",
+		"go.sum":                                          "",
+		"cmd/evener-hub/frontend/scripts/guard/run.mjs":   "export {};\n",
+		"cmd/evener-hub/frontend/src/dev/copyonly/tsv.go": "package copyonly\n",
+	}
+}
+
+// writeFixture writes the files under a temporary root and returns the root
+// and the sorted file list, standing in for git ls-files.
+func writeFixture(t *testing.T, files map[string]string) (string, []string) {
+	t.Helper()
+	root := t.TempDir()
+	for name, content := range files {
+		full := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, slices.Sorted(maps.Keys(files))
+}
+
+func planFixture(t *testing.T, changed ...string) plan {
+	t.Helper()
+	root, tracked := writeFixture(t, fixtureFiles())
+	ws, err := loadWorkspace(root, tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return planLanes(ws, changed)
+}
+
+func allLaneIDs() []string {
+	var ids []string
+	for _, l := range catalog {
+		ids = append(ids, l.id())
+	}
+	return ids
+}
+
+// requireRuns checks the plan runs exactly the lanes named and skips the rest.
+func requireRuns(t *testing.T, p plan, want ...string) {
+	t.Helper()
+	var got []string
+	for _, id := range allLaneIDs() {
+		if p.runs(id) {
+			got = append(got, id)
+		}
+	}
+	slices.Sort(got)
+	want = slices.Compact(slices.Sorted(slices.Values(want)))
+	if !slices.Equal(got, want) {
+		t.Fatalf("lanes run = %q\nwant %q", got, want)
+	}
+}
+
+func TestUnknownPathRunsEveryLane(t *testing.T) {
+	for _, changed := range []string{
+		"docs/developing-evener/testing.md",
+		"README.md",
+		"cmd/evener-hub/testdata/fixture.txt",
+		"testing-budget.json",
+	} {
+		t.Run(changed, func(t *testing.T) {
+			requireRuns(t, planFixture(t, changed), allLaneIDs()...)
+		})
+	}
+}
+
+func TestToolchainAndBuildFilesRunEveryLane(t *testing.T) {
+	for _, changed := range []string{
+		"go.mod",
+		"go.sum",
+		"go.work",
+		"go.work.sum",
+		"agent/go.mod",
+		"agent/go.sum",
+		".tool-versions",
+		"Makefile",
+		"make/testing.mk",
+		".github/workflows/ci.yml",
+		".github/actions/setup-toolchain/action.yml",
+		"scripts/gate/run.sh",
+		"scripts/gate/run.go",
+	} {
+		t.Run(changed, func(t *testing.T) {
+			requireRuns(t, planFixture(t, changed), allLaneIDs()...)
+		})
+	}
+}
+
+// Go source that is not a workspace package's own source is read as data or
+// built as a fixture, so nothing proves which lane it reaches.
+func TestGoSourceOutsideWorkspacePackagesRunsEveryLane(t *testing.T) {
+	for _, changed := range []string{
+		"cmd/evener-hub/testdata/fixture.go",
+		"agent/testdata/task/task.go",
+		"tools/standalone/main.go",
+		"cmd/evener-hub/_scratch/x.go",
+		"cmd/evener-hub/.hidden/x.go",
+	} {
+		t.Run(changed, func(t *testing.T) {
+			requireRuns(t, planFixture(t, changed), allLaneIDs()...)
+		})
+	}
+}
+
+func TestNoChangedFilesRunsEveryLane(t *testing.T) {
+	requireRuns(t, planFixture(t), allLaneIDs()...)
+}
+
+// The Go source lanes analyze or compile every package, so any Go change
+// runs them.
+var goSourceLanes = []string{"static-build", "lint-golangci", "lint-tagged", "fuzz-checks"}
+
+func TestLeafAgentPackageRunsOnlyTheAgentModuleLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "agent/leaf/leaf.go"), append([]string{
+		"fuzz",
+		"tests-parts/nonroot",
+		"race-module-shards/agent",
+	}, goSourceLanes...)...)
+}
+
+// The hub imports agent/session, so a change there reaches every lane that
+// runs the hub, and the root module lanes, through the import graph.
+func TestImportedAgentPackageRunsTheLanesOfItsImporters(t *testing.T) {
+	requireRuns(t, planFixture(t, "agent/session/session.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"tests-parts/nonroot",
+		"race-root-parts/hub",
+		"race-module-shards/agent",
+		"hub-integration",
+		"web-browser",
+	}, goSourceLanes...)...)
+}
+
+// The web gate runs on the dev binary, so the packages it imports reach the
+// web-unit lane.
+func TestDevBinaryDependencyRunsWebUnit(t *testing.T) {
+	requireRuns(t, planFixture(t, "agent/tool/tool.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"tests-parts/nonroot",
+		"race-root-parts/rest",
+		"race-module-shards/agent",
+		"web-unit",
+		"web-browser",
+	}, goSourceLanes...)...)
+}
+
+// The hub's tests build ./cmd/evener, so a package the command imports
+// reaches the hub's lanes although the hub never imports it.
+func TestPackageBuiltByATestRunsThatTestsLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener/internal/cli/cli.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/hub",
+		"race-root-parts/rest",
+		"hub-integration",
+		"web-browser",
+	}, goSourceLanes...)...)
+}
+
+func TestRootModuleLeafRunsOnlyTheRootRestLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener-doctor/doctor.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/rest",
+	}, goSourceLanes...)...)
+}
+
+// A deleted package's files no longer exist, and the change still reaches
+// every lane its module's tests belong to.
+func TestDeletedPackageStillRunsItsModuleLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener-gone/gone.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/rest",
+	}, goSourceLanes...)...)
+}
+
+// The TypeScript lanes, plus the build that embeds the frontend.
+var typeScriptLanes = []string{"web-unit", "web-browser", "native", "api-package", "static-build"}
+
+// The hub's tests read frontend/src by path, so a frontend change runs the
+// hub's lanes; packages that name no frontend path stay skipped.
+func TestFrontendChangeRunsTheGoPackagesThatReadIt(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/src/turn.ts"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/hub",
+		"hub-integration",
+	}, typeScriptLanes...)...)
+}
+
+// The hub names frontend/src/turn.ts and the frontend/dist directory, and
+// nothing else in the frontend: a sibling source reaches no Go lane.
+func TestFrontendFileNoGoPackageNamesRunsOnlyTheTypeScriptLanes(t *testing.T) {
+	for _, changed := range []string{
+		"cmd/evener-hub/frontend/src/other.ts",
+		"cmd/evener-hub/frontend/scripts/guard/run.mjs",
+		"appwire-client/typescript/src/index.ts",
+		"mobile-native/src/app.tsx",
+	} {
+		t.Run(changed, func(t *testing.T) {
+			requireRuns(t, planFixture(t, changed), typeScriptLanes...)
+		})
+	}
+}
+
+// //go:embed names a path the package compiles in.
+func TestEmbeddedFileRunsTheEmbeddingPackagesLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/dist/PLACEHOLDER"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/hub",
+		"hub-integration",
+	}, typeScriptLanes...)...)
+}
+
+// llm's test reads ../mobile-native/app.json, resolved from its own directory.
+func TestPackageRelativeReadRunsTheReadersLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "mobile-native/app.json"), append([]string{
+		"fuzz",
+		"tests-parts/nonroot",
+		"race-module-shards/nonagent",
+	}, typeScriptLanes...)...)
+}
+
+// Go source inside a TypeScript tree is both: a root module package's source
+// and a change to the tree.
+func TestGoSourceInsideATypeScriptTreeIsAPackageAndATreeChange(t *testing.T) {
+	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/src/dev/copyonly/tsv.go"), append(append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/rest",
+	}, goSourceLanes...), typeScriptLanes...)...)
+}
+
+// "." and ".." are everywhere in Go source (string splits, relative walks
+// from a package directory) and name no package: the root package's own
+// change reaches only the root module.
+func TestRootPackageChangeRunsOnlyTheRootModuleLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "evener_test.go"), append([]string{
+		"fuzz",
+		"tests-parts/root",
+		"race-root-parts/rest",
+	}, goSourceLanes...)...)
+}
+
+func TestMixedChangeRunsTheUnionOfItsFilesLanes(t *testing.T) {
+	requireRuns(t, planFixture(t, "agent/leaf/leaf.go", "mobile-native/src/app.tsx"), append([]string{
+		"fuzz",
+		"tests-parts/nonroot",
+		"race-module-shards/agent",
+		"web-unit",
+		"web-browser",
+		"native",
+		"api-package",
+	}, goSourceLanes...)...)
+}
+
+func TestOutputsNameSkippedJobsAndExcludedCells(t *testing.T) {
+	var out strings.Builder
+	if err := planFixture(t, "agent/leaf/leaf.go").writeOutputs(&out); err != nil {
+		t.Fatal(err)
+	}
+	got := parseOutputs(t, out.String())
+	want := map[string]string{
+		"skip":                       `["web-unit","web-browser","native","api-package","race-root-parts","hub-integration"]`,
+		"exclude_tests_parts":        `[{"scope":"root"}]`,
+		"exclude_race_root_parts":    `[]`,
+		"exclude_race_module_shards": `[{"scope":"nonagent"}]`,
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("outputs = %q\nwant %q", got, want)
+	}
+}
+
+func TestOutputsForAFullRunSkipNothing(t *testing.T) {
+	var out strings.Builder
+	if err := planFixture(t, "Makefile").writeOutputs(&out); err != nil {
+		t.Fatal(err)
+	}
+	got := parseOutputs(t, out.String())
+	want := map[string]string{
+		"skip":                       `[]`,
+		"exclude_tests_parts":        `[]`,
+		"exclude_race_root_parts":    `[]`,
+		"exclude_race_module_shards": `[]`,
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("outputs = %q\nwant %q", got, want)
+	}
+}
+
+func parseOutputs(t *testing.T, text string) map[string]string {
+	t.Helper()
+	got := map[string]string{}
+	for line := range strings.Lines(text) {
+		name, value, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
+		if !ok {
+			t.Fatalf("output line %q is not name=value", line)
+		}
+		got[name] = value
+	}
+	return got
+}
