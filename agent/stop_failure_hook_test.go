@@ -158,7 +158,7 @@ func captureLines(t *testing.T, path string) []string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.TrimSpace(line) != "" {
 			lines = append(lines, line)
 		}

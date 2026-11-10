@@ -27,6 +27,10 @@ type compactionHookSession struct {
 	post string
 }
 
+// doneResponder is the one text reply this fixture's scripted model gives every
+// round, named once so the fixture's repeated steps read as deliberate.
+func doneResponder(llm.Request) llm.Response { return finalResponse("done") }
+
 // newCompactionHookSession builds the fixture around strategy, which decides
 // whether a request-time fold reports a real compaction. A capture file that the
 // hook never ran leaves no file, which readCompactionHookInputs reports as no
@@ -58,13 +62,16 @@ func newCompactionHookSession(t *testing.T, strategy contextmgr.Strategy) compac
 	}
 	pluginDir := writePluginHooks(t, "compaction-hook-plugin", string(hooksJSON))
 
+	// Three identical rounds: the fold's request, then the summary request, then
+	// whichever the strategy lets through. Same reply every time, so the steps
+	// are built rather than written out.
+	steps := make([]func(llm.Request) llm.Response, 3)
+	for i := range steps {
+		steps[i] = doneResponder
+	}
 	sess := newSession(t,
 		withDir(t.TempDir()),
-		withSteps(
-			func(llm.Request) llm.Response { return finalResponse("done") },
-			func(llm.Request) llm.Response { return finalResponse("done") },
-			func(llm.Request) llm.Response { return finalResponse("done") },
-		),
+		withSteps(steps...),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			PluginDirs:       []string{pluginDir},
@@ -90,7 +97,7 @@ func readCompactionHookInputs(t *testing.T, path string) []hooks.Input {
 		t.Fatalf("read hook capture %s: %v", path, err)
 	}
 	var inputs []hooks.Input
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

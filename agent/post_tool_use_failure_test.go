@@ -31,7 +31,7 @@ func failurePartitionSession(t *testing.T) (sess *Session, sentinel, capture str
 	capture = filepath.Join(control, "failure-input.json")
 
 	quote := func(p string) string { return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'" }
-	successCmd := fmt.Sprintf("printf 'success\\n' >> %s", quote(sentinel))
+	successCmd := "printf 'success\\n' >> " + quote(sentinel)
 	failureCmd := fmt.Sprintf("printf 'failure\\n' >> %s; cat >> %s; echo >> %s",
 		quote(sentinel), quote(capture), quote(capture))
 	preDenyCmd := `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied by partition test"}}'`
@@ -149,7 +149,7 @@ func TestPostToolUseFailure_FiresForExecutedFailureOnly(t *testing.T) {
 	// The session's repair step refuses an unknown tool before dispatch, so it
 	// arrives as PrevalOnly; the registry's own unknown-tool gate (Rejected) is
 	// what covers a direct ExecuteCall. Both must keep the tool events quiet.
-	if !unknownRes.IsError || !(unknownRes.PrevalOnly || unknownRes.Rejected) {
+	if !unknownRes.IsError || (!unknownRes.PrevalOnly && !unknownRes.Rejected) {
 		t.Fatalf("unknown tool = %+v, want IsError and a pre-execution refusal (PrevalOnly or Rejected)", unknownRes)
 	}
 

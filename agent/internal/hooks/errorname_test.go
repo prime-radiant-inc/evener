@@ -52,7 +52,7 @@ func TestClaudeErrorName(t *testing.T) {
 		{"timeout", llm.ErrorFromHTTPStatus("p", 408, "timed out", nil, nil), llm.KindTimeout, "unknown"},
 		{"content filter", llm.ErrorFromHTTPStatus("p", 400, "content filter policy violated", nil, nil), llm.KindContentFilter, "unknown"},
 		{"unknown", errors.New("weird"), llm.KindUnknown, "unknown"},
-		{"wrapped overloaded", &wrappedOverloaded{llm.ErrorFromHTTPStatus("p", 529, "slow", nil, nil)}, llm.KindUnknown, "overloaded"},
+		{"wrapped overloaded", &wrappedOverloadedError{llm.ErrorFromHTTPStatus("p", 529, "slow", nil, nil)}, llm.KindUnknown, "overloaded"},
 	}
 	for _, c := range cases {
 		if got := llm.Kind(c.err); got != c.kind {
@@ -64,10 +64,10 @@ func TestClaudeErrorName(t *testing.T) {
 	}
 }
 
-// wrappedOverloaded buries the provider error behind another error, the shape a
+// wrappedOverloadedError buries the provider error behind another error, the shape a
 // retry-group verdict takes in production. The mapping must read the provider
 // error through the chain rather than report "server_error" for status 529.
-type wrappedOverloaded struct{ err error }
+type wrappedOverloadedError struct{ err error }
 
-func (w *wrappedOverloaded) Error() string { return "wrapped: " + w.err.Error() }
-func (w *wrappedOverloaded) Unwrap() error { return w.err }
+func (w *wrappedOverloadedError) Error() string { return "wrapped: " + w.err.Error() }
+func (w *wrappedOverloadedError) Unwrap() error { return w.err }

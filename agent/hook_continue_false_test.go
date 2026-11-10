@@ -140,6 +140,7 @@ func TestPostToolUseFailure_ContinueFalseEndsTheTurn(t *testing.T) {
 	})
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run a failing tool", nil); err != nil {
@@ -167,6 +168,7 @@ func TestStop_ContinueFalseEndsTheTurnWithItsReason(t *testing.T) {
 	})
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	text, err := sess.ProcessInput(ctx, "answer me", nil)
@@ -233,6 +235,7 @@ func TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn(t *testing.T) {
 	})
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run a tool", nil); err != nil {
@@ -265,6 +268,7 @@ func TestSessionStart_ContinueFalseDoesNotLeakPastAFailedAdmission(t *testing.T)
 	}
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := sess.ProcessInput(ctx, "first prompt", nil)
@@ -330,6 +334,7 @@ func TestUserPromptSubmit_ContinueFalseSkipsTheModelCall(t *testing.T) {
 	})
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "a prompt the hook refuses", nil); err != nil {
@@ -355,6 +360,7 @@ func TestSessionStart_ContinueFalseSkipsTheFirstTurn(t *testing.T) {
 	})
 	warnings := collectWarnings(sess)
 
+	// TRIPWIRE: a scripted in-process adapter and local shell hooks, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "first prompt", nil); err != nil {

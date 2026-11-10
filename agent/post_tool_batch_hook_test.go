@@ -302,7 +302,7 @@ func warningContains(warnings []events.WarningData, want string) bool {
 func TestPostToolBatch_NoCallsMeansNoHook(t *testing.T) {
 	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "runs")
-	contextCmd := fmt.Sprintf("printf 'run\\n' >> %s", shellquote.Literal(marker))
+	contextCmd := "printf 'run\\n' >> " + shellquote.Literal(marker)
 	mats := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": contextCmd}}}}
 
 	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {

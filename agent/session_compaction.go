@@ -915,9 +915,9 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 // and a fold that reports both still reports the summary as its result.
 func lastCompactionTurnText(turns []schema.Turn) string {
 	for _, want := range []schema.TurnKind{schema.TurnSummary, schema.TurnCheckpoint} {
-		for i := len(turns) - 1; i >= 0; i-- {
-			if turns[i].Kind == want {
-				return turns[i].Message.Text()
+		for _, turn := range slices.Backward(turns) {
+			if turn.Kind == want {
+				return turn.Message.Text()
 			}
 		}
 	}

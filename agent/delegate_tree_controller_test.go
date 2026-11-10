@@ -471,7 +471,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "subagents.go", function: "(*subagent).run", kind: "lifecycle method", symbol: "BeginRunFinalization"}:                                                                               1,
 	{filename: "subagents.go", function: "(*subagent).run", kind: "lifecycle method", symbol: "CompleteSettlement"}:                                                                                 1,
 	{filename: "subagents.go", function: "(*subagent).run", kind: "lifecycle method", symbol: "AttentionResolutionsForFinalization"}:                                                                1,
-	{filename: "subagents.go", function: "(*subagent).finalizeRun", kind: "lifecycle method", symbol: "FinishGeneration"}:                                                                          1,
+	{filename: "subagents.go", function: "(*subagent).finalizeRun", kind: "lifecycle method", symbol: "FinishGeneration"}:                                                                           1,
 	{filename: "delegate_runtime.go", function: "(*Session).releaseFinishedGeneration", kind: "lifecycle method", symbol: "ReportFinalizationQuiesced"}:                                             1,
 	{filename: "delegate_delivery.go", function: "prepareColdDelegateDeliveryReplay", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                                    1,
 	{filename: "delegate_delivery.go", function: "deliverColdDelegatePacket", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                                            2,

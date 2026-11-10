@@ -2718,9 +2718,9 @@ func (a *subagent) lastAssistantText() string {
 	}
 	a.sess.mu.Lock()
 	defer a.sess.mu.Unlock()
-	for i := len(a.sess.history) - 1; i >= 0; i-- {
-		if a.sess.history[i].Kind == schema.TurnAssistant {
-			return a.sess.history[i].Message.Text()
+	for _, turn := range slices.Backward(a.sess.history) {
+		if turn.Kind == schema.TurnAssistant {
+			return turn.Message.Text()
 		}
 	}
 	return ""

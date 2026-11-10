@@ -1719,7 +1719,7 @@ func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 		call := llm.ToolCallData{Name: "flaky", ID: "id", Arguments: json.RawMessage(`{"path":"same"}`)}
 		// breakerThreshold failures park the next identical call; each of the
 		// first two runs is the tool's own failure, not a rejection.
-		for i := 0; i < breakerThreshold; i++ {
+		for i := range breakerThreshold {
 			res := reg.ExecuteCall(context.Background(), nil, call)
 			if !res.IsError || res.Rejected {
 				t.Fatalf("pre-park run %d = %+v, want IsError and Rejected=false", i, res)

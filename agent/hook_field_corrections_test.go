@@ -29,7 +29,7 @@ func decodeHookCapture(t *testing.T, path string) []map[string]any {
 		t.Fatalf("read hook capture %s: %v", path, err)
 	}
 	var out []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -280,7 +280,7 @@ func TestSessionEnd_ReasonVocabulary(t *testing.T) {
 
 	// closeWith builds a session carrying one SessionEnd hook per reason, each
 	// writing its own marker and stdin capture, and returns what fired.
-	closeWith := func(reason string, close func(*Session)) (clearFired, otherFired bool, captured []map[string]any) {
+	closeWith := func(reason string, closeFn func(*Session)) (clearFired, otherFired bool, captured []map[string]any) {
 		dir := t.TempDir()
 		capture := filepath.Join(dir, "session-end-input.jsonl")
 		clearMarker := filepath.Join(dir, "clear-matched")
@@ -304,7 +304,7 @@ func TestSessionEnd_ReasonVocabulary(t *testing.T) {
 		sess.hookRunner = runner
 		drainSessionEvents(sess)
 		if reason == "" {
-			close(sess)
+			closeFn(sess)
 		} else {
 			sess.CloseWithReason(reason)
 		}
