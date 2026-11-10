@@ -41,6 +41,7 @@ var checks = []check{
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
 	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
+	{"fake-timers-no-wall-clock-drift", fakeTimersDoNotFollowWallTime},
 	{"test-sleeps-within-baseline", testSleepsStayWithinBaseline},
 }
 

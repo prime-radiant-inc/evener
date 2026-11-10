@@ -245,7 +245,7 @@ func TestSchemaBuiltinsMatchAgentDefaults(t *testing.T) {
 		t.Errorf("max_rounds builtin = %v, want -1 (applyDefaults: 0→-1 unlimited)", got.BuiltinDefaultInt)
 	}
 	if got := opt("max_subagent_depth"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 2 {
-		t.Errorf("max_subagent_depth builtin = %v, want 2 (applyDefaults: ≤0→2)", got.BuiltinDefaultInt)
+		t.Errorf("max_subagent_depth builtin = %v, want 2 (the launch default; explicit 0 disables)", got.BuiltinDefaultInt)
 	}
 	if got := opt("max_concurrent_delegate_turns"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 50 {
 		t.Errorf("max_concurrent_delegate_turns builtin = %v, want 50 (defaultMaxConcurrentDelegateTurns)", got.BuiltinDefaultInt)

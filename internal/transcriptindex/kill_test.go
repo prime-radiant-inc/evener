@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -134,6 +135,97 @@ func TestIndexKilledBetweenFlushesRecoversReadably(t *testing.T) {
 	want := changedIgnoringIncarnation(t, reference)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recovered index = %s, want the reference %s", dump(got), dump(want))
+	}
+}
+
+// TestIndexExtensionKilledAfterExistingTurnItemsRecoversOrdinals: an
+// extension appends two items to a turn whose summary is already committed,
+// then dies after its record flush and before its meta commit. The turn
+// summary on disk already counts both items, so replaying those entries must
+// not start their ordinals from that advanced count. The recovered index must
+// read back what a full rebuild of the same file holds.
+func TestIndexExtensionKilledAfterExistingTurnItemsRecoversOrdinals(t *testing.T) {
+	header := transcript.Header{SessionID: "kill_ordinals", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"}
+	opening := schema.Turn{
+		Kind: schema.TurnUserInput, Message: llm.User("question"),
+		Format: schema.TurnFormatIdentity, TurnID: "turn_ord", TurnKind: schema.TurnSpanExecution,
+	}
+	answer := func(body string) schema.Turn {
+		return schema.Turn{
+			Kind:    schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{text(body)}},
+			Format:  schema.TurnFormatIdentity, TurnID: "turn_ord",
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, encodeHeader(t, header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, path, encodeEntry(t, 1, opening))
+	appendBytes(t, path, encodeEntry(t, 2, answer("one")))
+	dir := t.TempDir()
+	x := openIndex(t, path, dir)
+
+	appendBytes(t, path, encodeEntry(t, 3, answer("two")))
+	appendBytes(t, path, encodeEntry(t, 4, answer("three")))
+	appendBytes(t, path, encodeEntry(t, 5, completion("turn_ord", schema.TurnCompleted, 4, 10)))
+	appendBytes(t, path, encodeEntry(t, 6, answer("four")))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	simulateKill(t)
+	if err := x.CatchUpTo(info.Size()); err == nil {
+		t.Fatal("the killed extension returned success")
+	}
+	testKillAfterRecordWrites = nil
+
+	recovered := openIndex(t, path, dir)
+	assertDenseItemOrdinals(t, recovered)
+	got, err := recovered.Latest(appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := openIndex(t, path, t.TempDir())
+	want, err := reference.Latest(appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Candidates, want.Candidates) {
+		t.Fatalf("recovered candidates = %s, want the reference %s", dump(got.Candidates), dump(want.Candidates))
+	}
+}
+
+// assertDenseItemOrdinals requires every turn's item records to carry the
+// ordinals 0..count-1 in record order, and its summary to count exactly those
+// items: an ordinal that skips or repeats is what a replay starting from an
+// advanced summary leaves behind.
+func assertDenseItemOrdinals(t *testing.T, x *Index) {
+	t.Helper()
+	next := map[uint32]uint32{}
+	counts := map[uint32]uint32{}
+	for slot := uint64(0); slot < x.items.n; slot++ {
+		buf, err := x.items.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeItem(buf)
+		if record.ItemIndex != next[record.Turn] {
+			t.Fatalf("item %d of turn %d has ordinal %d, want %d", slot, record.Turn, record.ItemIndex, next[record.Turn])
+		}
+		next[record.Turn]++
+		counts[record.Turn]++
+	}
+	for turnSlot, count := range counts {
+		buf, err := x.turns.read(uint64(turnSlot), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeTurn(buf)
+		if record.ItemCount != count {
+			t.Fatalf("turn %d records %d items, want %d", turnSlot, record.ItemCount, count)
+		}
 	}
 }
 

@@ -734,11 +734,16 @@ export function render(element: ReactElement, options?: TestRendererOptions): Re
 
 /** Lets the mounted trees' pending work land inside act: one timer turn,
  * which also runs every microtask queued ahead of it (a fake hub's answer,
- * the store updates it starts). Under fake timers it resolves only if they
- * advance on their own (shouldAdvanceTime); otherwise advance them instead. */
+ * the store updates it starts). Under fake timers the turn is a zero-length
+ * advance of the fake clock: it yields one real macrotask and fires the fake
+ * timers already due, so the clock never moves on its own. */
 export async function settle(): Promise<void> {
 	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (vi.isFakeTimers()) {
+			await vi.advanceTimersByTimeAsync(0);
+		} else {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
 	});
 }
 

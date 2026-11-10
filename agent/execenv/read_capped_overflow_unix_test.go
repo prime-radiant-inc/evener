@@ -13,18 +13,16 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-// TestSandboxReadFileRefusesAStreamPastTheCap is item 1's regression: the
-// sandboxed whole-file read routed through readBounded discarded readBounded's
-// overflow signal, so an input whose stat size lies but whose read runs past
-// the cap returned the first cap+1 bytes with err=nil — the merged #4556
-// contract was to REFUSE with *ReadLimitError, and the off arm still refuses.
-// The stand-in is a pipe, whose Stat reports size 0 while its read yields more
-// than the (shrunken) cap, so the pre-stat size check passes and only the
-// overflow path can answer.
+// TestSandboxReadFileRefusesAStreamPastTheCap pins that the sandboxed
+// whole-file read refuses with *ReadLimitError, the same refusal the off arm
+// returns, when an input's stat size understates what its read yields. The
+// stand-in is a pipe. The cap sits far above any pipe buffer, so the stat size
+// (0 on Linux; the buffered byte count on darwin, at most 64KiB) never trips
+// the pre-read size check, and only the read's overflow signal can refuse.
 func TestSandboxReadFileRefusesAStreamPastTheCap(t *testing.T) {
-	// Not parallel: shrinks MaxWholeFileReadBytes and swaps admitReadFD.
+	// Not parallel: changes MaxWholeFileReadBytes and swaps admitReadFD.
 	origLimit := MaxWholeFileReadBytes
-	MaxWholeFileReadBytes = 8
+	MaxWholeFileReadBytes = 1 << 20
 	t.Cleanup(func() { MaxWholeFileReadBytes = origLimit })
 
 	s, _, worktree := newSB(t, sandbox.ModeRestricted)
@@ -36,8 +34,12 @@ func TestSandboxReadFileRefusesAStreamPastTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Sized on the test goroutine: the pipe gives the race detector no
+	// ordering between a read of MaxWholeFileReadBytes in the writer and the
+	// cleanup that restores it.
+	pastTheCap := make([]byte, int(MaxWholeFileReadBytes)+1)
 	go func() {
-		_, _ = pw.Write(make([]byte, int(MaxWholeFileReadBytes)+1))
+		_, _ = pw.Write(pastTheCap)
 		_ = pw.Close()
 	}()
 	origAdmit := admitReadFD

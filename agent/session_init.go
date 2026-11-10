@@ -297,8 +297,8 @@ func requireSessionDeps(client *llm.Client, profile *provider.Profile, env exece
 // bindSpawnCounters returns the delegation allowance and tree-wide counters a
 // session starts with and mirrors the counters onto cfg.spawn, so
 // s.cfg.spawn.treeCounter always reflects the live counter. Root sessions
-// derive their allowance from MaxSubagentDepth (already defaulted to 1 by
-// applyDefaults) and mint the counters; children inherit the spawn carrier's.
+// derive their allowance from the resolved MaxSubagentDepth and mint the
+// counters; children inherit the spawn carrier's.
 // prepareSubagentRun threads the pointers to children via subCfg := s.cfg, so
 // the mirror is what carries the root's minted counters down the tree.
 func (cfg *SessionConfig) bindSpawnCounters() (delegationAllowance int, tc, dc *treeCounter) {
@@ -1800,7 +1800,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	if s.delegationAllowance <= 0 {
+		rootSession := s.cfg.spawn.parentSessionID == ""
 		for _, name := range rootOnlySubagentTools() {
+			// manage_worktree is the root session's own worktree lifecycle,
+			// independent of delegation: a root that turned subagents off
+			// still creates, switches and exits its lane. Children keep the
+			// denial.
+			if rootSession && name == "manage_worktree" {
+				continue
+			}
 			s.reg.Remove(name)
 		}
 	}

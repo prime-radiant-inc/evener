@@ -141,6 +141,12 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
+	// roundFallbackMessages is the round's untrimmed request messages (system
+	// plus expanded history) kept for the fallback chain, whose targets apply
+	// their own thinking-replay policy. prepareModelRequestWithError writes it
+	// and callModelWithFallback takes and clears it on the same turn goroutine;
+	// mu guards the exchange (#4563).
+	roundFallbackMessages []llm.Message
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.
@@ -443,11 +449,6 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren map[string]drainGraceChild
-	// drainParkMu guards drainParked, the channel nextDrainPark hands out and
-	// the job-tree drain closes when it parks.
-	// LOCK ORDER: leaf.
-	drainParkMu sync.Mutex
-	drainParked chan struct{}
 	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
 	// its own — nothing is acquired under it — and is deliberately separate from
 	// drainAbandonedMu so the send-start claim never couples to drain state.

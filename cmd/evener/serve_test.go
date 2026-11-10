@@ -1601,6 +1601,43 @@ func TestServeAgentsDocFlagReachesTheSessionConfig(t *testing.T) {
 	}
 }
 
+// TestServeMaxSubagentDepthFlagReachesTheSessionConfig pins the serve flag
+// boundary: the parser's -1 leaves the default in place, an explicit 0 becomes
+// the config's disable choice, and a positive value becomes the depth.
+func TestServeMaxSubagentDepthFlagReachesTheSessionConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args         []string
+		wantDepth    int
+		wantDisabled bool
+	}{
+		{"unset leaves the default", nil, 0, false},
+		{"zero disables", []string{"--max-subagent-depth", "0"}, 0, true},
+		{"positive sets the depth", []string{"--max-subagent-depth", "3"}, 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+			deps := defaultServeDeps()
+			deps.ensureConfigDirs = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
+			var got agent.SessionConfig
+			deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+				got = cfg
+				return nil, errNoSessionToday
+			}
+
+			args := []string{"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir()}
+			args = append(args, tc.args...)
+			if err := runServeWithDeps(args, deps); !errors.Is(err, errNoSessionToday) {
+				t.Fatalf("serve error = %v, want the session-creation failure", err)
+			}
+			if got.MaxSubagentDepth != tc.wantDepth || got.DisableSubagents != tc.wantDisabled {
+				t.Fatalf("SessionConfig = depth %d disabled %v, want depth %d disabled %v", got.MaxSubagentDepth, got.DisableSubagents, tc.wantDepth, tc.wantDisabled)
+			}
+		})
+	}
+}
+
 // A resume takes the flag too: the hub passes --agents-doc on every resume it
 // spawns (buildResumeArgs), and the restore has to prefer it over the path
 // frozen in the snapshot, which a pre-feature session never had and a moved

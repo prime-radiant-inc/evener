@@ -806,11 +806,21 @@ one file with `--maxWorkers=1` is fine. Workers are recycled at `vmMemoryLimit`
 A test that has to get past a real debounce or timer uses Vitest's fake timers
 rather than waiting it out, with two pieces of wiring so Testing Library keeps
 working: `vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime })`,
-because `waitFor` and `findBy*` only advance a faked clock when they find a
-`jest` global, and `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`,
-so typing delays advance it too. Fake only the timer functions (`toFake:
-["setTimeout", "clearTimeout", "setInterval", "clearInterval"]`);
-src/panes/spawn/Spawn.test.tsx is the worked example. To read a Tooltip from a
+because user-event's drain after each action, `waitFor` and `findBy*` wait on a
+`setTimeout` and only advance a faked one when they find a `jest` global, and
+`userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`, so typing delays
+advance it too. `useTestDrivenFakeTimers` (src/testing/fakeTimers.ts) installs
+the fake timers and that stub, and removes the stub when the test finishes.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`) unless the test pins `Date` with
+`vi.setSystemTime`, which needs the default set; src/panes/spawn/Spawn.test.tsx
+is the worked example. The fake clock moves only when the test moves it:
+advance it with `vi.advanceTimersByTimeAsync`, or `vi.runOnlyPendingTimersAsync`,
+and assert the state right after. Never pass `shouldAdvanceTime`, which lets the
+fake clock follow wall time and so makes a debounce or countdown fire earlier
+on a loaded host; `make lint-repo-audit`'s `fake-timers-no-wall-clock-drift`
+check fails on it anywhere tracked in the frontend, `appwire-client/typescript`
+and `mobile-native`, Vitest configs included. To read a Tooltip from a
 test that otherwise runs on real timers, use `hoverForTooltip`
 (src/widgets/tooltip/tooltipTestUtils.ts): it crosses the show delay on a fake
 clock scoped to the hover, so it needs none of that wiring, and it must be called
@@ -974,6 +984,84 @@ files. A run that exits zero without writing an iOS bundle fails too.
 A hung bundler is bounded by `timeout 900` where coreutils provides it (the ubuntu
 runner, or a Mac with `gtimeout`) and by the CI step's own `timeout-minutes`
 everywhere else.
+
+## Pull Requests Skip Lanes a Change Cannot Reach
+
+On a pull request, CI's `changes` job runs `cmd/evener-cilanes` against the
+merge commit, and the lanes it names are skipped. A merge group and a push to
+main run every lane, so a wrong skip can bounce a pull request in the merge
+queue but cannot reach main. The classifier skips a lane only when it can show
+the change does not reach it; anything it cannot place runs every lane.
+
+Each changed path is one of four kinds:
+
+- **Paths that steer every lane** run everything: `go.mod`, `go.sum`,
+  `go.work` and `go.work.sum` anywhere, `.tool-versions`, the `Makefile` and
+  `make/`, `.github/`, and `scripts/`.
+- **A workspace package's Go source** runs the lanes that compile or analyze
+  every package (`static-build`, `lint-golangci`, `lint-tagged`,
+  `fuzz-checks`) and every lane that runs a package the change reaches. A
+  change reaches a package through imports, as `go list -deps -test` would
+  follow them with every build tag on, and through paths its source names: a
+  string literal, the literal arguments of a `Join` call joined into one
+  path, or a `//go:embed` pattern. A test that builds `./cmd/evener` depends
+  on that command as surely as an import would. A change to a package's
+  build reaches everything that depends on that build; a change to its
+  `_test.go` files reaches only its own tests. A Go file that TypeScript-tree
+  code names in a string (a `?raw` import, or a path the test reads, resolved
+  from the naming file, its tree or the repository root) runs the TypeScript
+  lanes too: those tests pin Go constants by reading the Go source.
+- **A path inside a TypeScript tree** (`cmd/evener-hub/frontend`,
+  `appwire-client/typescript`, `mobile-native`) runs `web-unit`,
+  `web-browser`, `native`, `api-package` and `static-build`, and every lane
+  that runs a package whose source names that path or a directory inside the
+  tree holding it.
+- **Anything else** runs everything: docs, `testdata`, root configuration,
+  Go files that are not a package's own source.
+
+A package whose tests read the whole repository is reached by every change,
+because no name says which files they read. The classifier recognizes such a
+test by a `ls-files` literal or a `..` chain that climbs from its package to
+the repository root. The hub's and the agent module's tests both do, so
+the Go test lanes, `static-build` and `web-browser` (which runs the hub's
+tests) run for every change. The skips that remain are `native` and
+`api-package` on a Go-only change that no TypeScript names, `web-unit` too
+when that change also misses the dev binary the web gate runs on, and the
+Go lint lanes (`lint-golangci`, `lint-tagged`, `fuzz-checks`) on a
+TypeScript-only change.
+
+Preview what a branch will skip, with the path that runs each lane:
+
+~~~sh
+go run ./cmd/evener-cilanes/bin --base origin/main
+~~~
+
+**Required checks still report.** A job skipped by its `if:` reports as
+passing, which is why `fuzz`, a required check with no aggregate, may be
+skipped. The aggregates `web`, `static`, `race-root`, `race-modules` and
+`tests` accept a skipped lane only when the `changes` job named it, so a
+cancelled run or a skip in a merge group still fails them. Matrix cells are
+dropped through `matrix.exclude`, and a job is named in `skip` only when all
+its cells are.
+
+**Failure runs everything.** The `changes` outputs are empty in a merge
+group, on main, and when the classifier fails, and every lane runs on empty
+outputs. The classifier writes no outputs unless it finishes.
+
+**Keeping the catalog true.** `cmd/evener-cilanes/lanes.go` lists each
+skippable job and matrix cell with what it runs. A job missing from the
+catalog always runs. A matrix cell missing from the catalog would be
+skipped with the rest of its job, so `TestCatalogMatchesTheWorkflow` fails
+on it, and on a catalog job, cell or output name ci.yml lacks. The drift no
+test catches is a lane that starts running packages its entry does not
+claim: when a lane's make target changes what it tests, change its entry in
+the same pull request.
+
+What the classifier cannot see: a file read through a computed path no
+literal names; a walk of a directory above the one a name points at; a Go
+program written inside a string literal and built by a test, whose imports
+are text. Today the whole-tree tests cover the last case. A miss bounces a
+pull request in the merge queue, which still runs every lane.
 
 ## CI Caches
 

@@ -110,6 +110,50 @@ func TestLocalItemPagingPreservesCursorAcrossUnchangedBoundedToCompleteRead(t *t
 	}
 }
 
+func TestLocalItemWindowReadPreservesOrdinaryPagingCursor(t *testing.T) {
+	source := newLocalItemReadConversionSource(t, "window-isolation")
+	params := appwire.ThreadReadParams{Ref: "local:window-isolation", ItemLimit: 2}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: params.Ref, Incarnation: "native-window-isolation", ProjectionVersion: 1}
+	allItems := positionedItemReadResponse(1, 3, "").Thread.Turns[0].Items
+	fixture := inverseNativeFixture{items: allItems, identity: nativeIdentity}
+	source.dial = fixture.dial
+	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 2})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
+
+	ordinary, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(2, 3, nativeCursor))
+	if err != nil {
+		t.Fatalf("ordinary bounded read: %v", err)
+	}
+	ordinaryCursor, err := appitempaging.EncodeCursor(ordinary.Identity, appwire.ThreadItemPosition{Entry: 2})
+	if err != nil {
+		t.Fatalf("encode ordinary paging cursor: %v", err)
+	}
+
+	windowParams := params
+	windowParams.TurnWindow = &appwire.ThreadTurnWindow{Latest: 1}
+	windowResponse := positionedItemReadResponse(3, 3, "")
+	windowResponse.Snapshot = &appwire.SnapshotIdentity{Incarnation: "daemon-window-snapshot", Length: 3}
+	window, err := source.ItemCandidatesFromRead(t.Context(), windowParams, windowResponse)
+	if err != nil {
+		t.Fatalf("native window read: %v", err)
+	}
+	if window.Identity.Incarnation != windowResponse.Snapshot.Incarnation {
+		t.Fatalf("window identity = %q, want daemon snapshot %q", window.Identity.Incarnation, windowResponse.Snapshot.Incarnation)
+	}
+
+	page, err := source.ListItemCandidates(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: params.Ref, Cursor: ordinaryCursor, ItemLimit: 2,
+	})
+	if err != nil {
+		t.Fatalf("ordinary cursor after window read: %v", err)
+	}
+	if len(page.Candidates.Candidates) != 1 || page.Candidates.Candidates[0].Item.ID != allItems[0].ID {
+		t.Fatalf("ordinary continuation = %+v, want oldest item %q", page.Candidates.Candidates, allItems[0].ID)
+	}
+}
+
 func TestLocalItemPagingIdentityBindsEveryItemPosition(t *testing.T) {
 	source := newLocalItemReadConversionSource(t, "position-rewrite")
 	params := appwire.ThreadReadParams{Ref: "local:position-rewrite", ItemLimit: 4}

@@ -523,6 +523,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// advertised true means every endpoint really consumes selections.
 		SkillInput:   s.skillInputSupportedLocked(),
 		CommandInput: s.skillInputSupportedLocked(),
+		WindowRead:   true,
 	}
 }
 

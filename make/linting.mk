@@ -289,9 +289,10 @@ lint-tracked-file-size:
 ##   through the shared helpers; and no script or recipe mints scratch outside
 ##   TMPDIR, before its trap, or deletes recursively from a variable beyond
 ##   the reviewed allowlists; mobile-native/.gitignore keeps the
-##   mobile-native/build derived-data tree untracked; and Go tests call
-##   time.Sleep no more often than the checked-in baseline allows, with a
-##   NOTE to lower the baseline when they call it less.
+##   mobile-native/build derived-data tree untracked; no TypeScript test or
+##   Vitest config lets a fake clock follow wall time (shouldAdvanceTime); and
+##   Go tests call time.Sleep no more often than the checked-in baseline
+##   allows, with a NOTE to lower the baseline when they call it less.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.

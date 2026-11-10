@@ -58,6 +58,13 @@ type ItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
+	// WithheldTurns is how many turns the source's bounded transfer did not
+	// deliver, beyond the candidates above. FirstWithheldTurnID and
+	// LastWithheldTurnID name its chronological edges when the source named
+	// them.
+	WithheldTurns       int
+	FirstWithheldTurnID string
+	LastWithheldTurnID  string
 	// History is the identity of the history read the candidates came from.
 	History HistoryIdentity
 }
@@ -134,6 +141,61 @@ type ItemReadCandidateSource interface {
 	ItemCandidatesFromRead(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
 }
 
+// CachedThreadCapabilitySource exposes the last capability probe attached to
+// the exact lane that will serve a read. known is false until a probe has
+// answered; callers must not substitute the source's fallback list policy.
+type CachedThreadCapabilitySource interface {
+	CachedThreadCapabilities(ref, threadID string) (capabilities appwire.ThreadCapabilities, known bool)
+}
+
+// LegacyPageCandidateSource converts one already-materialized legacy page
+// without following its native cursor or consulting a retained full snapshot.
+// Hub compatibility uses this seam because its contract is exactly one page.
+type LegacyPageCandidateSource interface {
+	ItemCandidatesFromLegacyPage(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
+}
+
+func (s *LocalDaemonSource) CachedThreadCapabilities(ref, threadID string) (appwire.ThreadCapabilities, bool) {
+	entry, err := s.localEntryForRefMode(ref, threadID, true)
+	if err != nil || !entry.CapabilitiesKnown {
+		return appwire.ThreadCapabilities{}, false
+	}
+	return entry.Capabilities, true
+}
+
+func (s *LocalDaemonSource) ItemCandidatesFromLegacyPage(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	response appwire.ThreadReadResponse,
+) (ItemCandidateResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	candidates, err := localDaemonInitialItemCandidates(response)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	incarnation := localDaemonItemDaemonIdentity(resolved.entry)
+	if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+		incarnation = response.Snapshot.Incarnation
+	}
+	return ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity: appitempaging.CursorIdentity{
+			ThreadRef: resolved.pagingRef, Incarnation: incarnation, ProjectionVersion: localDaemonItemCursorProjectionVersion,
+		},
+		Exhausted: response.OlderCursor == "",
+		History:   ReadHistoryIdentity(response),
+	}, nil
+}
+
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
@@ -152,6 +214,40 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	}
 	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return ItemCandidateResult{}, err
+	}
+	if params.TurnWindow != nil {
+		cursorIncarnation := localDaemonItemDaemonIdentity(resolved.entry)
+		if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+			cursorIncarnation = response.Snapshot.Incarnation
+		}
+		if sourceIncarnation, ok := params.SourceIncarnation(cursorIncarnation, params.ItemLimit); ok {
+			cursorIncarnation = sourceIncarnation
+		}
+		// A bounded transfer page that names withheld turns is not the end of
+		// the window: the packer must report the rest and resume at them.
+		exhausted := response.OlderCursor == ""
+		if response.Window != nil && response.Window.WithheldTurns > 0 {
+			exhausted = false
+		}
+		withheldTurns, firstWithheldTurnID, lastWithheldTurnID := 0, "", ""
+		if response.Window != nil {
+			withheldTurns = response.Window.WithheldTurns
+			firstWithheldTurnID = response.Window.FirstWithheldTurnID
+			lastWithheldTurnID = response.Window.LastWithheldTurnID
+		}
+		return ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+			Identity: appitempaging.CursorIdentity{
+				ThreadRef:         resolved.pagingRef,
+				Incarnation:       cursorIncarnation,
+				ProjectionVersion: localDaemonItemCursorProjectionVersion,
+			},
+			Exhausted:           exhausted,
+			WithheldTurns:       withheldTurns,
+			FirstWithheldTurnID: firstWithheldTurnID,
+			LastWithheldTurnID:  lastWithheldTurnID,
+			History:             ReadHistoryIdentity(response),
+		}, nil
 	}
 	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
@@ -625,11 +721,19 @@ func (s *LocalDaemonSource) resolveLocalDaemonItemThread(rawRef, threadID string
 		return localDaemonItemThread{}, err
 	}
 	threadID = firstLocalNonEmpty(entry.SessionID, entry.ThreadID, threadID)
+	routeRef := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
+	pagingRef := rawRef
+	if parsed, parseErr := appwire.ParseRef(rawRef); parseErr == nil {
+		pagingRef = parsed.String()
+	}
+	if pagingRef == "" {
+		pagingRef = routeRef
+	}
 	return localDaemonItemThread{
 		entry:     entry,
 		threadID:  threadID,
-		routeRef:  localDaemonWorkspaceRef(s.sourceID, entry, threadID),
-		pagingRef: appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String(),
+		routeRef:  routeRef,
+		pagingRef: pagingRef,
 	}, nil
 }
 

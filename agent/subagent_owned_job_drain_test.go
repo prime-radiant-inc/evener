@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -19,7 +20,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type ownedJobDrainEnvironment struct {
+// heldJobEnvironment stands in for the process launcher: its one streamed
+// command runs until releaseJob or a Signal, then reports a fixed output. No
+// host process exists, so nothing outside a synctest bubble keeps it busy.
+type heldJobEnvironment struct {
 	execenv.ExecutionEnvironment
 	started     chan struct{}
 	release     chan struct{}
@@ -28,8 +32,8 @@ type ownedJobDrainEnvironment struct {
 	signalOnce  sync.Once
 }
 
-func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
-	return &ownedJobDrainEnvironment{
+func newHeldJobEnvironment(dir string) *heldJobEnvironment {
+	return &heldJobEnvironment{
 		ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir),
 		started:              make(chan struct{}),
 		release:              make(chan struct{}),
@@ -37,11 +41,11 @@ func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
 	}
 }
 
-func (e *ownedJobDrainEnvironment) releaseJob() {
+func (e *heldJobEnvironment) releaseJob() {
 	e.releaseOnce.Do(func() { close(e.release) })
 }
 
-func (e *ownedJobDrainEnvironment) StreamCommand(_ context.Context, _, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+func (e *heldJobEnvironment) StreamCommand(_ context.Context, _, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
 	close(e.started)
 	return &execenv.StreamHandle{
 		Wait: func() (int, error) {
@@ -103,7 +107,7 @@ func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
 type ownedJobDrainFixture struct {
 	parent       *Session
 	child        *subagent
-	env          *ownedJobDrainEnvironment
+	env          *heldJobEnvironment
 	adapter      *fakeAdapter
 	shellHandled chan struct{}
 	freshHandled chan struct{}
@@ -147,7 +151,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	env := newOwnedJobDrainEnvironment(t.TempDir())
+	env := newHeldJobEnvironment(t.TempDir())
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
@@ -284,22 +288,24 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 // TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification.
 func TestSubagentAttentionArmedAtDrainReturnIsConsumedByTheContinuation(t *testing.T) {
 	t.Parallel()
-	fixture := newOwnedJobDrainFixture(t)
-	var armOnce sync.Once
-	fixture.drainClock.onDrainStop = func() {
-		armOnce.Do(func() {
-			if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:restore-order-job", "restore-order-job"); err != nil {
-				t.Errorf("arm drain-return attention: %v", err)
-			}
-		})
-	}
-	fixture.env.releaseJob()
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
-	requests := fixture.adapter.Requests()
-	if len(requests) < 3 || !requestsContain(requests[2:3], "restore-order-job") {
-		t.Fatalf("drain-return continuation requests = %d, want request 3 to present the attention armed at drain return", len(requests))
-	}
-	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newOwnedJobDrainFixture(t)
+		var armOnce sync.Once
+		fixture.drainClock.onDrainStop = func() {
+			armOnce.Do(func() {
+				if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:restore-order-job", "restore-order-job"); err != nil {
+					t.Errorf("arm drain-return attention: %v", err)
+				}
+			})
+		}
+		fixture.env.releaseJob()
+		waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
+		requests := fixture.adapter.Requests()
+		if len(requests) < 3 || !requestsContain(requests[2:3], "restore-order-job") {
+			t.Fatalf("drain-return continuation requests = %d, want request 3 to present the attention armed at drain return", len(requests))
+		}
+		requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+	})
 }
 
 func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(t *testing.T) {
@@ -356,7 +362,9 @@ func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(
 
 func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublication(t *testing.T) {
 	t.Parallel()
-	requireDrainReturnHandoffMergesSteering(t, newOwnedJobDrainFixture(t))
+	synctest.Test(t, func(t *testing.T) {
+		requireDrainReturnHandoffMergesSteering(t, newOwnedJobDrainFixture(t))
+	})
 }
 
 // TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow is #243's
@@ -372,42 +380,44 @@ func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublicat
 // merge every accepted send exactly as in the unperturbed test.
 func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.T) {
 	t.Parallel()
-	fixture := newOwnedJobDrainFixture(t)
-	// Hold the window open until the drain loop's own recheck has provably run
-	// rematerializeDurablePendings inside it: windowHeld blocks the
-	// finalization goroutine between the NotifyPending append and the
-	// NotifyDelivered transition, and the rematerialize-load hook — wired to
-	// the drain's 250ms recheck kick — proves the pass happened rather than
-	// assuming it from wall time.
-	windowHeld := make(chan struct{})
-	recheckSawWindow := make(chan struct{})
-	releaseWindow := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseWindow) }) })
-	var pendingOnce, recheckOnce sync.Once
-	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
-		pendingOnce.Do(func() {
-			close(windowHeld)
-			<-releaseWindow
-		})
-	}
-	fixture.child.sess.jobManager.mu.Lock()
-	fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
-		select {
-		case <-windowHeld:
-			recheckOnce.Do(func() { close(recheckSawWindow) })
-		default:
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newOwnedJobDrainFixture(t)
+		// Hold the window open until the drain loop's own recheck has provably run
+		// rematerializeDurablePendings inside it: windowHeld blocks the
+		// finalization goroutine between the NotifyPending append and the
+		// NotifyDelivered transition, and the rematerialize-load hook — wired to
+		// the drain's 250ms recheck kick — proves the pass happened rather than
+		// assuming it from wall time.
+		windowHeld := make(chan struct{})
+		recheckSawWindow := make(chan struct{})
+		releaseWindow := make(chan struct{})
+		var releaseOnce sync.Once
+		t.Cleanup(func() { releaseOnce.Do(func() { close(releaseWindow) }) })
+		var pendingOnce, recheckOnce sync.Once
+		fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
+			pendingOnce.Do(func() {
+				close(windowHeld)
+				<-releaseWindow
+			})
 		}
-	}
-	fixture.child.sess.jobManager.mu.Unlock()
-	go func() {
-		select {
-		case <-recheckSawWindow:
-			releaseOnce.Do(func() { close(releaseWindow) })
-		case <-time.After(30 * time.Second): // TRIPWIRE: the drain's 250ms recheck fires rematerialize inside the window within one interval; 30s only fires on a genuine hang.
+		fixture.child.sess.jobManager.mu.Lock()
+		fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
+			select {
+			case <-windowHeld:
+				recheckOnce.Do(func() { close(recheckSawWindow) })
+			default:
+			}
 		}
-	}()
-	requireDrainReturnHandoffMergesSteering(t, fixture)
+		fixture.child.sess.jobManager.mu.Unlock()
+		go func() {
+			select {
+			case <-recheckSawWindow:
+				releaseOnce.Do(func() { close(releaseWindow) })
+			case <-time.After(30 * time.Second): // TRIPWIRE: the drain's 250ms recheck fires rematerialize inside the window within one interval; 30s only fires on a genuine hang.
+			}
+		}()
+		requireDrainReturnHandoffMergesSteering(t, fixture)
+	})
 }
 
 func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrainFixture) {
@@ -596,263 +606,256 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 
 func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
 	t.Parallel()
-	// All three resume/deliver entry points converge on a single code path:
-	// delegateRuntime.send (explicit resume, delegate_send, and watch-origin
-	// stable send all route through Steer/ReserveStart/CommitStart). There is no
-	// distinct entry point to exercise, so the test runs a single case against
-	// that shared path rather than three identical copy-pasted iterations.
-	fixture := newOwnedJobDrainFixture(t)
-	finalizationEntered := make(chan struct{})
-	finalizationRelease := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
-	var finalizationOnce sync.Once
-	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
-		cfg.subagentAfterFinalStatePublish = func(got *subagent) {
-			finalizationOnce.Do(func() {
-				if got != fixture.child {
-					t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
-				}
-				close(finalizationEntered)
-				<-finalizationRelease
-			})
-		}
-	})
-	var armOnce sync.Once
-	fixture.drainClock.onDrainStop = func() {
-		armOnce.Do(func() {
-			if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:finalization-window-job", "finalization-window-job"); err != nil {
-				t.Errorf("arm finalization-window attention: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		// All three resume/deliver entry points converge on a single code path:
+		// delegateRuntime.send (explicit resume, delegate_send, and watch-origin
+		// stable send all route through Steer/ReserveStart/CommitStart). There is no
+		// distinct entry point to exercise, so the test runs a single case against
+		// that shared path rather than three identical copy-pasted iterations.
+		fixture := newOwnedJobDrainFixture(t)
+		finalizationEntered := make(chan struct{})
+		finalizationRelease := make(chan struct{})
+		var releaseOnce sync.Once
+		t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
+		var finalizationOnce sync.Once
+		updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+			cfg.subagentAfterFinalStatePublish = func(got *subagent) {
+				finalizationOnce.Do(func() {
+					if got != fixture.child {
+						t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
+					}
+					close(finalizationEntered)
+					<-finalizationRelease
+				})
 			}
 		})
-	}
-	fixture.env.releaseJob()
-	select {
-	case <-finalizationEntered:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("subagent did not reach the post-publication finalization window")
-	}
+		var armOnce sync.Once
+		fixture.drainClock.onDrainStop = func() {
+			armOnce.Do(func() {
+				if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:finalization-window-job", "finalization-window-job"); err != nil {
+					t.Errorf("arm finalization-window attention: %v", err)
+				}
+			})
+		}
+		fixture.env.releaseJob()
+		select {
+		case <-finalizationEntered:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("subagent did not reach the post-publication finalization window")
+		}
 
-	fixture.child.mu.Lock()
-	running := fixture.child.running
-	fixture.child.mu.Unlock()
-	if running {
-		t.Fatal("finalization hook ran before running=false was published")
-	}
-	if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
-		t.Fatal("automatic notification drive launched during callback restoration")
-	}
-
-	// The shared send path (used by explicit resume, delegate_send, and
-	// watch-origin stable send) must refuse the message while the finalization
-	// callback holds the delegate, returning a retryable target_busy error.
-	res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
-	if !errors.Is(res.Err, errDelegateTargetBusy) {
-		t.Fatalf("early send during finalization = %+v, want target_busy", res)
-	}
-	if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
-		t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
-	}
-	if requests := fixture.adapter.Requests(); len(requests) != 2 {
-		t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
-	}
-
-	releaseOnce.Do(func() { close(finalizationRelease) })
-	// One attention generation presents both the owned shell's completion and
-	// the finalization-window attention, and consumes both: no further
-	// generation shows the model either again (#3725).
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "post-finalization attention generation")
-	select {
-	case <-fixture.runDone:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("delegate did not finish after callback restoration")
-	}
-	// The finalize tail re-arms any attention still owed before it closes
-	// done, so the re-armed drive's turn (the attention generation above) can
-	// still be settling when done fires. A resume sent into that window is
-	// refused as target_busy — the send's finalization wait covers only the
-	// finalizing refusal, not a drive in flight — so wait for the child to
-	// let everything go before asserting the resume starts.
-	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "quiescent child after post-finalization attention", func() bool {
 		fixture.child.mu.Lock()
-		defer fixture.child.mu.Unlock()
-		return !fixture.child.startBlockedLocked()
+		running := fixture.child.running
+		fixture.child.mu.Unlock()
+		if running {
+			t.Fatal("finalization hook ran before running=false was published")
+		}
+		if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
+			t.Fatal("automatic notification drive launched during callback restoration")
+		}
+
+		// The shared send path (used by explicit resume, delegate_send, and
+		// watch-origin stable send) must refuse the message while the finalization
+		// callback holds the delegate, returning a retryable target_busy error.
+		res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
+		if !errors.Is(res.Err, errDelegateTargetBusy) {
+			t.Fatalf("early send during finalization = %+v, want target_busy", res)
+		}
+		if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+			t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
+		}
+		if requests := fixture.adapter.Requests(); len(requests) != 2 {
+			t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
+		}
+
+		releaseOnce.Do(func() { close(finalizationRelease) })
+		// One attention generation presents both the owned shell's completion and
+		// the finalization-window attention, and consumes both: no further
+		// generation shows the model either again (#3725).
+		waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "post-finalization attention generation")
+		select {
+		case <-fixture.runDone:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("delegate did not finish after callback restoration")
+		}
+		// The finalize tail re-arms any attention still owed before it closes
+		// done, so the re-armed drive's turn (the attention generation above) can
+		// still be settling when done fires. A resume sent into that window is
+		// refused as target_busy — the send's finalization wait covers only the
+		// finalizing refusal, not a drive in flight — so the child must let
+		// everything go before the resume is asserted to start.
+		requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+		updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+			cfg.subagentAfterFinalStatePublish = nil
+		})
+		resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
+		if resumed.Err != nil || resumed.Action != "started" {
+			t.Fatalf("explicit resume after finalization = %+v, want started", resumed)
+		}
+		fixture.child.mu.Lock()
+		resumedDone := fixture.child.done
+		fixture.child.mu.Unlock()
+		select {
+		case <-resumedDone:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("explicit resume after finalization did not finish")
+		}
 	})
-	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
-	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
-		cfg.subagentAfterFinalStatePublish = nil
-	})
-	resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
-	if resumed.Err != nil || resumed.Action != "started" {
-		t.Fatalf("explicit resume after finalization = %+v, want started", resumed)
-	}
-	fixture.child.mu.Lock()
-	resumedDone := fixture.child.done
-	fixture.child.mu.Unlock()
-	select {
-	case <-resumedDone:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("explicit resume after finalization did not finish")
-	}
 }
 
 func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
 	t.Parallel()
-	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
-	enteredFatal := make(chan struct{})
-	releaseFatal := make(chan struct{})
-	var releaseFatalOnce sync.Once
-	t.Cleanup(func() { releaseFatalOnce.Do(func() { close(releaseFatal) }) })
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "fatal-owned-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
-					Type:      "function",
-				}), nil
+	synctest.Test(t, func(t *testing.T) {
+		fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
+		enteredFatal := make(chan struct{})
+		releaseFatal := make(chan struct{})
+		var releaseFatalOnce sync.Once
+		t.Cleanup(func() { releaseFatalOnce.Do(func() { close(releaseFatal) }) })
+		adapter := &fakeErrAdapter{
+			name: "openai",
+			steps: []func(llm.Request) (llm.Response, error){
+				func(llm.Request) (llm.Response, error) {
+					return agenttest.ToolCallResponse(llm.ToolCallData{
+						ID:        "fatal-owned-shell",
+						Name:      "shell",
+						Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
+						Type:      "function",
+					}), nil
+				},
+				func(llm.Request) (llm.Response, error) {
+					close(enteredFatal)
+					<-releaseFatal
+					return llm.Response{}, fatalErr
+				},
+				func(llm.Request) (llm.Response, error) {
+					return agenttest.FinalResponse("explicit resume succeeded"), nil
+				},
 			},
-			func(llm.Request) (llm.Response, error) {
-				close(enteredFatal)
-				<-releaseFatal
-				return llm.Response{}, fatalErr
+		}
+		client := llm.NewClient()
+		client.Register(adapter)
+		env := newHeldJobEnvironment(t.TempDir())
+		parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 1,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
 			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("explicit resume succeeded"), nil
-			},
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-	env := newOwnedJobDrainEnvironment(t.TempDir())
-	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
-		StateDir:         t.TempDir(),
-		MaxSubagentDepth: 1,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { parent.Close() })
-	t.Cleanup(env.releaseJob)
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { parent.Close() })
+		t.Cleanup(env.releaseJob)
 
-	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task: "fail after launching an owned shell",
-	})
-	if result.Err != nil {
-		t.Fatalf("createDelegate: %v", result.Err)
-	}
-	_, childID, err := decodeRef(result.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
-	}
-	child := parent.subagents.get(childID)
-	if child == nil {
-		t.Fatalf("subagent %s not found", childID)
-	}
-	select {
-	case <-env.started:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("child shell did not start")
-	}
-	<-enteredFatal
-	shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
-	child.mu.Lock()
-	childDone := child.done
-	child.mu.Unlock()
-	releaseFatalOnce.Do(func() { close(releaseFatal) })
-	select {
-	case <-childDone:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("stable delegate did not finalize after fatal child run")
-	}
-	select {
-	case <-env.signaled:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("fatal child run did not signal its owned shell")
-	}
-
-	requests := adapter.Requests()
-	if len(requests) != 2 {
-		t.Fatalf("provider requests after fatal run = %d, want exactly shell launch and fatal model turn", len(requests))
-	}
-	child.mu.Lock()
-	status := child.status
-	childErr := child.err
-	fatalRunGated := child.fatalRunGated
-	child.mu.Unlock()
-	if status != SubagentFailed || !errors.Is(childErr, fatalErr) {
-		t.Fatalf("child terminal state = %s, err %v; want failed with original provider error", status, childErr)
-	}
-	if !fatalRunGated {
-		t.Fatal("fatal child run did not retain its automatic-drive gate")
-	}
-	select {
-	case <-childDone:
-	default:
-		t.Fatal("child done channel remained open after parent delegate finalized")
-	}
-	rec := loadShellRecord(t, child.sess.jobManager, shellJobID)
-	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
-		t.Fatalf("child-owned shell record = status %s reason %q, want cancelled/stopped_by_parent", rec.Status, rec.Reason)
-	}
-	aggregate := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
-	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "run_error" {
-		t.Fatalf("stable delegate outcome = %#v, want failed with reason run_error", aggregate.LatestOutcome)
-	}
-	packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
-	var message string
-	if err := json.Unmarshal(packet.Message, &message); err != nil || !strings.Contains(message, fatalErr.Error()) {
-		t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
-	}
-
-	if parent.driveSubagentNotificationTurn(child) {
-		t.Fatal("fatal-gated child admitted an automatic notification drive")
-	}
-	if requests := adapter.Requests(); len(requests) != 2 {
-		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
-	}
-	// The tail's post-done machinery can still hold the child when done has
-	// fired; the resume this asserts is the one that machinery has let go.
-	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "quiescent child after fatal-run finalize", func() bool {
+		result := parent.createDelegate(context.Background(), delegateArgs{
+			Task: "fail after launching an owned shell",
+		})
+		if result.Err != nil {
+			t.Fatalf("createDelegate: %v", result.Err)
+		}
+		_, childID, err := decodeRef(result.TranscriptRef)
+		if err != nil {
+			t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
+		}
+		child := parent.subagents.get(childID)
+		if child == nil {
+			t.Fatalf("subagent %s not found", childID)
+		}
+		select {
+		case <-env.started:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("child shell did not start")
+		}
+		<-enteredFatal
+		shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
 		child.mu.Lock()
-		defer child.mu.Unlock()
-		return !child.startBlockedLocked()
+		childDone := child.done
+		child.mu.Unlock()
+		releaseFatalOnce.Do(func() { close(releaseFatal) })
+		select {
+		case <-childDone:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("stable delegate did not finalize after fatal child run")
+		}
+		select {
+		case <-env.signaled:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("fatal child run did not signal its owned shell")
+		}
+
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("provider requests after fatal run = %d, want exactly shell launch and fatal model turn", len(requests))
+		}
+		child.mu.Lock()
+		status := child.status
+		childErr := child.err
+		fatalRunGated := child.fatalRunGated
+		child.mu.Unlock()
+		if status != SubagentFailed || !errors.Is(childErr, fatalErr) {
+			t.Fatalf("child terminal state = %s, err %v; want failed with original provider error", status, childErr)
+		}
+		if !fatalRunGated {
+			t.Fatal("fatal child run did not retain its automatic-drive gate")
+		}
+		select {
+		case <-childDone:
+		default:
+			t.Fatal("child done channel remained open after parent delegate finalized")
+		}
+		rec := loadShellRecord(t, child.sess.jobManager, shellJobID)
+		if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+			t.Fatalf("child-owned shell record = status %s reason %q, want cancelled/stopped_by_parent", rec.Status, rec.Reason)
+		}
+		aggregate := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
+		if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "run_error" {
+			t.Fatalf("stable delegate outcome = %#v, want failed with reason run_error", aggregate.LatestOutcome)
+		}
+		packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
+		var message string
+		if err := json.Unmarshal(packet.Message, &message); err != nil || !strings.Contains(message, fatalErr.Error()) {
+			t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
+		}
+
+		if parent.driveSubagentNotificationTurn(child) {
+			t.Fatal("fatal-gated child admitted an automatic notification drive")
+		}
+		if requests := adapter.Requests(); len(requests) != 2 {
+			t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
+		}
+		// The tail's post-done machinery can still hold the child when done has
+		// fired; the resume this asserts is the one that machinery has let go.
+		requireChildQuiescent(t, child)
+		explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
+		if explicitResume.Err != nil || explicitResume.Action != "started" {
+			t.Fatalf("explicit child resume = %+v, want started", explicitResume)
+		}
+		child.mu.Lock()
+		resumedDone := child.done
+		child.mu.Unlock()
+		select {
+		case <-resumedDone:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("explicit child resume did not finish")
+		}
+		// The resume's request presents the stopped shell's notification and its
+		// turn consumes it, so no attention generation follows to show the model
+		// that notification again (#3725).
+		if requests := adapter.Requests(); len(requests) < 3 || !requestsContain(requests[2:3], shellJobID) {
+			t.Fatalf("explicit resume requests = %d, want request 3 to present the stopped shell's notification", len(requests))
+		}
+		requireChildAttentionSettled(t, child, adapter.Requests, 3)
+		child.mu.Lock()
+		resumedStatus := child.status
+		resumedGate := child.fatalRunGated
+		child.mu.Unlock()
+		if resumedStatus != SubagentCompleted || resumedGate {
+			t.Fatalf("child after explicit resume = status %s fatal gate %v; want completed/false", resumedStatus, resumedGate)
+		}
 	})
-	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
-	if explicitResume.Err != nil || explicitResume.Action != "started" {
-		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
-	}
-	child.mu.Lock()
-	resumedDone := child.done
-	child.mu.Unlock()
-	select {
-	case <-resumedDone:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("explicit child resume did not finish")
-	}
-	// The resume's request presents the stopped shell's notification and its
-	// turn consumes it, so no attention generation follows to show the model
-	// that notification again (#3725).
-	if requests := adapter.Requests(); len(requests) < 3 || !requestsContain(requests[2:3], shellJobID) {
-		t.Fatalf("explicit resume requests = %d, want request 3 to present the stopped shell's notification", len(requests))
-	}
-	requireChildAttentionSettled(t, child, adapter.Requests, 3)
-	child.mu.Lock()
-	resumedStatus := child.status
-	resumedGate := child.fatalRunGated
-	child.mu.Unlock()
-	if resumedStatus != SubagentCompleted || resumedGate {
-		t.Fatalf("child after explicit resume = status %s fatal gate %v; want completed/false", resumedStatus, resumedGate)
-	}
 }
 
 func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
@@ -1037,7 +1040,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	env := newOwnedJobDrainEnvironment(t.TempDir())
+	env := newHeldJobEnvironment(t.TempDir())
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
@@ -1191,18 +1194,29 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	}
 }
 
-// requireChildAttentionSettled waits for child to let every generation go,
-// then asserts its transcript holds attention, none of it still pending, and
-// that the provider saw exactly wantRequests requests. With nothing pending,
-// nothing can start another generation, so the count is final.
+// requireChildQuiescent waits until every other goroutine in the test's
+// synctest bubble is blocked, then asserts child can take a new generation:
+// no run, drive or finalizer still holds it. A child that is still settling
+// keeps a goroutine runnable, so the wait cannot return before it lets go.
+func requireChildQuiescent(t *testing.T, child *subagent) {
+	t.Helper()
+	synctest.Wait()
+	child.mu.Lock()
+	blocked := child.startBlockedLocked()
+	child.mu.Unlock()
+	if blocked {
+		t.Fatal("a quiet child still blocks a new generation")
+	}
+}
+
+// requireChildAttentionSettled waits for the test's synctest bubble to go
+// quiet, then asserts child has let every generation go, its transcript holds
+// attention, none of it still pending, and the provider saw exactly
+// wantRequests requests. With nothing pending, nothing can start another
+// generation, so the count is final.
 func requireChildAttentionSettled(t *testing.T, child *subagent, requests func() []llm.Request, wantRequests int) {
 	t.Helper()
-	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "quiescent child", func() bool {
-		child.mu.Lock()
-		defer child.mu.Unlock()
-		return !child.startBlockedLocked()
-	})
+	requireChildQuiescent(t, child)
 	// A fresh read: the session's fold cursor belongs to attentionMu.
 	fold, err := readDelegateAttentionFold(child.sess.TranscriptPath(), child.sess.id)
 	if err != nil {
