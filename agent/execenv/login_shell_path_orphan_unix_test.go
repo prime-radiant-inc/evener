@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -169,7 +170,7 @@ func TestWaitForProbeFixturePreservesAProbeThatFinishesAsTheFixtureStarts(t *tes
 	// repeating the round makes the completion branch overwhelmingly likely to
 	// occur, and that branch must leave the result for the caller.
 	const rounds = 200
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		started := make(chan struct{})
 		close(started)
 		done := make(chan probeRun, 1)
@@ -180,7 +181,7 @@ func TestWaitForProbeFixturePreservesAProbeThatFinishesAsTheFixtureStarts(t *tes
 		}
 		select {
 		case got := <-done:
-			if string(got.out) != string(want.out) {
+			if !bytes.Equal(got.out, want.out) {
 				t.Fatalf("round %d: preserved result = %q, want %q", i, got.out, want.out)
 			}
 		default:

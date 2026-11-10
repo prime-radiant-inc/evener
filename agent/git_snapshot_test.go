@@ -196,7 +196,7 @@ func TestSnapshotGitReportsASignalKilledProbeAsAFailure(t *testing.T) {
 	killed := exec.Command("sh", "-c", "kill -KILL $$")
 	err := killed.Run()
 	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil || exitErr.ProcessState.Exited() {
+	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil || exitErr.Exited() {
 		t.Fatalf("fixture: a self-killed process = %v, want a signal-terminated *exec.ExitError", err)
 	}
 

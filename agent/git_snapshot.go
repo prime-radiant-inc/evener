@@ -222,7 +222,7 @@ func gitExited(err error) bool {
 	}
 	// Exited() is promoted from the embedded *os.ProcessState, which a
 	// hand-built ExitError could leave nil.
-	return exitErr.ProcessState != nil && exitErr.ProcessState.Exited()
+	return exitErr.ProcessState != nil && exitErr.Exited()
 }
 
 func hasGitMetadataAncestor(cwd string) bool {
