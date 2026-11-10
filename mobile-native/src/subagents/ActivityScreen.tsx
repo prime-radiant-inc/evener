@@ -89,6 +89,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	// A list opened in the Duo split's detail pane is narrower than the window;
 	// its summary strip spans the pane.
 	const detailPaneWidth = useDetailPaneWidth();
+	const split = detailPaneWidth !== null;
 	const paneWidth = detailPaneWidth ?? width;
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
@@ -194,6 +195,8 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	const toast = useToast();
 	const showToast = toast.show;
 	const { left, right } = useSafeAreaInsets();
+	// The root SafeAreaView consumes left+right full-screen and right only in the Duo pane.
+	const horizontalInset = split ? right : left + right;
 	useEffect(() => {
 		if (!focused || subagents.length === 0) return;
 		for (const stopped of requests.reconcile(ref, subagents)) showToast({ text: `“${stopped.title}” stopped` });
@@ -300,7 +303,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		<View style={{ paddingTop: 12, gap: 12 }}>
 			<View style={{ paddingHorizontal: 16 }}>
 				{tally ? (
-					<SubagentStrip tally={tally} width={paneWidth - 32} />
+					<SubagentStrip tally={tally} width={paneWidth - 32 - horizontalInset} />
 				) : (
 					<Text accessibilityLabel={`${spec.noun} counts unknown`} style={{ color: palette.inkMid }}>
 						{`${spec.noun} …`}
@@ -355,10 +358,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	);
 
 	return (
-		<SafeAreaView
-			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
-			style={{ flex: 1, backgroundColor: palette.page }}
-		>
+		<SafeAreaView edges={split ? ["right"] : ["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				data={items}
 				keyboardDismissMode="on-drag"
