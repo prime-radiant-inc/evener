@@ -1280,6 +1280,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// The stopped-input marker belongs to the input whose prompt the hook
 	// stopped. The drain reads it for that input; the next input starts clean.
 	s.hookStoppedInput = false
+	s.hookStopReason = ""
 	// A Stop hook's replacement reply belongs to the turn that raised it.
 	s.stopHookReplacedReply = false
 	// A claimed answering steering carrier has already crossed its durable
@@ -1459,14 +1460,24 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// and letting one of those consume the flag would swallow the user's first
 	// prompt's stop: the reason names start-up, and the input it guards is the
 	// user's.
-	promptStopped := s.takePromptHookStop()
-	startStopped := kind == EntryUserInput && s.takeSessionStartHookStop()
-	if promptStopped || startStopped {
+	promptStopReason := s.takePromptHookStop()
+	startStopReason := ""
+	if kind == EntryUserInput {
+		startStopReason = s.takeSessionStartHookStop()
+	}
+	stopReason := promptStopReason + startStopReason
+	if stopReason != "" {
 		// The stop owns the whole input, not only this turn: the drain would
 		// otherwise fold the goal gate and schedule a continuation, which runs
 		// without these hooks and sends the stopped prompt to the model.
 		s.mu.Lock()
 		s.hookStoppedInput = true
+		s.mu.Unlock()
+		// The reason is kept for a delegate's terminal packet, which would
+		// otherwise report a completed run with an empty message. The input's
+		// own return stays empty: a stopped turn delivers nothing to the model.
+		s.mu.Lock()
+		s.hookStopReason = stopReason
 		s.mu.Unlock()
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return "", false, nil
@@ -2059,23 +2070,23 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 // takePromptHookStop consumes a UserPromptSubmit hook's recorded continue:false.
 // It reports whether the turn must end before its first model request. The
 // reason was already delivered to the user when the input was accepted.
-func (s *Session) takePromptHookStop() bool {
+func (s *Session) takePromptHookStop() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stopped := s.promptHookStop != ""
+	reason := s.promptHookStop
 	s.promptHookStop = ""
-	return stopped
+	return reason
 }
 
 // takeSessionStartHookStop consumes a SessionStart hook's recorded
 // continue:false. It reports whether the first turn must end before its model
 // request. The reason was already delivered to the user when the hook ran.
-func (s *Session) takeSessionStartHookStop() bool {
+func (s *Session) takeSessionStartHookStop() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stopped := s.sessionStartHookStop != ""
+	reason := s.sessionStartHookStop
 	s.sessionStartHookStop = ""
-	return stopped
+	return reason
 }
 
 // clearSessionStartHookStop drops a SessionStart hook's recorded continue:false

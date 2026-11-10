@@ -2243,6 +2243,13 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		if userStopped && reopenID != "" {
 			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
 		}
+		// The same hold applies to a row a hook stop reopened: re-arming it at
+		// once relaunches SubagentStart, and a hook that keeps refusing would
+		// repeat launches, warnings and durable records without ever presenting
+		// the report.
+		if f.attentionUnpresented && reopenID != "" {
+			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+		}
 	}
 	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
@@ -2457,6 +2464,13 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 		// A Stop hook vetoed the reply this turn would have delivered, so the
 		// run's result (the hook's text) is the packet's message. Capturing the
 		// communicate report here would hand the parent the vetoed reply.
+		if strings.TrimSpace(result) == "" {
+			a.sess.mu.Lock()
+			if reason := a.sess.hookStopReason; reason != "" {
+				result = reason
+			}
+			a.sess.mu.Unlock()
+		}
 		return a.hookStoppedFinish(result, runErr)
 	}
 	if hookStopped {

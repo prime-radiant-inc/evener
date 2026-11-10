@@ -380,13 +380,16 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		// judges, not work a block asked for. Clearing the flag here would make a
 		// hook that blocks once and then permits on stop_hook_active=true block
 		// again forever, until the round budget ran out.
-		if call.Name != s.resultToolName() {
-			s.stopHookActive.Store(false)
-		}
 		if prevalidated {
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		}
+		// The result tool's own call is the completion the next Stop dispatch
+		// judges, not work a block asked for. A call the breaker parked never
+		// ran either, so it is not work a block asked for.
+		if call.Name != s.resultToolName() && !res.Rejected {
+			s.stopHookActive.Store(false)
 		}
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()

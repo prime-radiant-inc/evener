@@ -733,6 +733,9 @@ type Session struct {
 	// stopped prompt to the model. Set where the stop is consumed and cleared at
 	// the start of every input. Guarded by mu.
 	hookStoppedInput bool
+	// hookStopReason is the reason a prompt stop recorded, kept for a delegate's
+	// terminal packet so it explains why no work ran. Guarded by mu.
+	hookStopReason string
 	// stopHookReplacedReply records that a Stop hook's continue:false replaced
 	// the reply this turn would have delivered. A delegate's terminal packet must
 	// carry the hook's text, not the communicated reply it vetoed. Cleared at the
