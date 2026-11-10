@@ -297,6 +297,12 @@ type testConfig struct {
 	// deterministic newer publication in that window. Nil in production.
 	afterFoldSupersessionCheck func()
 
+	// afterFoldSideEffectsFlush observes a winning fold's flush at the point
+	// its PostCompact hook would fire, after every other deferred side effect
+	// and outside both locks. Tests use it only to prove where that hook sits
+	// relative to the publish transaction. Nil in production.
+	afterFoldSideEffectsFlush func()
+
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
 	// Session lifecycle against a scripted Git model without launching a host

@@ -478,7 +478,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	commandInput := input
 	commandInput.HookEventName = "PreToolUse"
 	commandInput.ToolName = "write_file"
-	commandInput.Effort = "high"
+	commandInput.Effort = &Effort{Level: "high"}
 	commandPre := runner.RunPreToolUse(ctx, commandInput)
 	if !commandPre.Denied || commandPre.DenyMessage != "command pre denied" || len(commandPre.ModelContext) != 0 {
 		t.Fatalf("command PreToolUse = %#v", commandPre)
@@ -505,9 +505,9 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	if !stop.Blocked || stop.BlockReason != "stop reason" || !containsHookRunnerProgramString(stop.TerminalSequences, "stop-terminal") || !containsHookRunnerProgramString(stop.UserMessages, "stop json") {
 		t.Fatalf("RunStop = %#v", stop)
 	}
-	subagentStop := runner.RunSubagentStop(ctx, input)
+	subagentStop := runner.RunSubagentStopFor(ctx, input, "subagent")
 	if subagentStop.Blocked || !containsHookRunnerProgramString(subagentStop.TerminalSequences, "sub-terminal") {
-		t.Fatalf("RunSubagentStop = %#v", subagentStop)
+		t.Fatalf("RunSubagentStopFor = %#v", subagentStop)
 	}
 
 	userPrompt := runner.RunUserPromptSubmit(ctx, input)
@@ -523,10 +523,10 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		t.Fatalf("SessionStart results = startup:%#v blank:%#v resume:%#v clear:%#v", startup, blankStartup, resume, clear)
 	}
 
-	runner.RunSessionEnd(ctx, input)
-	preCompact := runner.RunPreCompact(ctx, input)
+	runner.RunSessionEndFor(ctx, input, "other")
+	preCompact := runner.RunPreCompactFor(ctx, input, "auto")
 	if !reflect.DeepEqual(preCompact.UserMessages, []string{"compact user"}) {
-		t.Fatalf("RunPreCompact = %#v", preCompact)
+		t.Fatalf("RunPreCompactFor = %#v", preCompact)
 	}
 	notification := runner.RunNotification(ctx, input)
 	if !reflect.DeepEqual(notification.UserMessages, []string{"notify json"}) ||
