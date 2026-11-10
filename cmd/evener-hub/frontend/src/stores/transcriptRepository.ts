@@ -653,6 +653,11 @@ export class TranscriptRepository {
     return { bindingHasSeedModel: binding.seedModel !== undefined };
   }
 
+  /** @internal Reports the floor start and whether the scan still pins a displayed range. */
+  getForegroundFloorForTesting(): { start: ThreadItemPosition | undefined; retainsScan: boolean } {
+    return { start: this.#foregroundFloor.start, retainsScan: this.#foregroundFloor.scannedTurns !== undefined };
+  }
+
   /**
    * @internal The recovery flags that decide whether a local open may report
    * "current". `openLocal`'s status is `current` only while the opening cut is
@@ -2093,6 +2098,11 @@ export class TranscriptRepository {
         if (!active) return;
         active = false;
         this.#readerCount--;
+        // No foreground publication will rescan this range until a reader
+        // returns. Drop the scan's strong reference so a background lease can
+        // reclaim the pruned payloads; the scalar floor still survives reader
+        // replacement.
+        if (this.#readerCount === 0) this.#foregroundFloor.scannedTurns = undefined;
         unlisten();
         latest = undefined;
         if (openingState) releaseOpeningState(openingState, true);
@@ -2166,6 +2176,9 @@ export class TranscriptRepository {
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
+    // The model is gone; do not keep its displayed range alive from the scan
+    // memo. The floor start remains a scalar with no payload behind it.
+    this.#foregroundFloor.scannedTurns = undefined;
   }
 
   /** Reacquisition cancels the final read without retiring the live page authority. */
