@@ -745,6 +745,12 @@ type Session struct {
 	// Guarded by mu.
 	terminalCommunicateAccepted bool
 
+	// inputsInFlight counts the inputs processInputKindWithProvenance is
+	// running. Lock-free, so the delegate controller can read it under its
+	// own mutex: a runtime with an input in flight (a drive turn waiting out a
+	// usage limit, say) is not quiescent and is never reclaimed.
+	inputsInFlight atomic.Int32
+
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
@@ -1885,8 +1891,8 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	if s.modelPickAccepted <= pickSeq {
 		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
 		s.modelPickAccepted = pickSeq
-		// A call waiting out the old model's usage limit retries on this
-		// one now rather than at the turn boundary it is waiting to reach.
+		// A call waiting out the old model's usage limit ends its turn now,
+		// so the switch lands at that boundary rather than at the reset.
 		s.wakeQuotaWaitLocked()
 	}
 	s.mu.Unlock()
@@ -1905,19 +1911,9 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 // pick may have been accepted while the superseded one was still fetching,
 // and it must still land before the turn the caller is about to admit.
 func (s *Session) applyPendingModelSwitch() {
-	s.applyQueuedModelSwitches(false)
-}
-
-// applyQueuedModelSwitches is the shared pending applier. inWaitingCall is
-// its one caller that applies while the state is still processing: a model
-// call that waited out a usage limit (waitOutUsageLimit). The switch is what
-// lets that call retry on a model the spent allowance may not limit; the
-// call owns the input, and its round has started nothing the new profile
-// could be swapped under.
-func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	for {
 		s.mu.Lock()
-		if s.state == SessionProcessing && !inWaitingCall {
+		if s.state == SessionProcessing {
 			s.mu.Unlock()
 			return
 		}

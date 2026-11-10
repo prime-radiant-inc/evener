@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,8 +242,8 @@ func TestWaitingForQuotaIsVisibleInSessionState(t *testing.T) {
 }
 
 // A model switch while waiting is the user choosing a model the spent quota
-// may not limit: the waiting call retries at once on it, without waiting for
-// the reset, and the turn finishes there.
+// may not limit: the work moves to it at once, without waiting for the
+// reset, recording the switch before the new model's answer.
 func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
 	serveSession(t, s)
@@ -490,17 +491,26 @@ func TestUsageLimitWithoutResetTimeDoesNotWait(t *testing.T) {
 // one of them on adapter and the fake clock.
 func newQuotaDelegateRoot(t *testing.T, adapter llm.ProviderAdapter) (*Session, *agenttest.FakeClock) {
 	t.Helper()
+	return newQuotaDelegateRootWith(t, adapter, func(*SessionConfig) {})
+}
+
+// newQuotaDelegateRootWith is newQuotaDelegateRoot with configure applied to
+// the root's config.
+func newQuotaDelegateRootWith(t *testing.T, adapter llm.ProviderAdapter, configure func(*SessionConfig)) (*Session, *agenttest.FakeClock) {
+	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(adapter)
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	clk := agenttest.NewFakeClock()
-	s := newSession(t, withClient(c), withDir(dir), withoutGitSnapshot(), withConfig(SessionConfig{
+	cfg := SessionConfig{
 		StateDir:         dir,
 		LLMRetryPolicy:   &policy,
 		MaxSubagentDepth: 2,
 		clock:            clk,
-	}))
+	}
+	configure(&cfg)
+	s := newSession(t, withClient(c), withDir(dir), withoutGitSnapshot(), withConfig(cfg))
 	return s, clk
 }
 
@@ -1103,5 +1113,117 @@ func TestQuotaWaitRetriesAtOnceForASteerNoDrainCovered(t *testing.T) {
 	s.mu.Unlock()
 	if !drained {
 		t.Fatal("the retry's steering drain did not cover the steer")
+	}
+}
+
+// Retained-runtime capacity is reclaimed from finished delegates when a new
+// one starts. A finished delegate whose parent-driven notification turn
+// waits for quota is not quiescent: reclaiming it would tear the runtime out
+// from under the waiting turn. With room for one retained runtime, starting
+// another delegate leaves the waiting one alone.
+func TestCapacityReclamationSparesADelegateWaitingForQuota(t *testing.T) {
+	adapter := &streamingAdapter{name: "openai"}
+	limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
+	root, _ := newQuotaDelegateRootWith(t, adapter, func(cfg *SessionConfig) { cfg.MaxRetainedTerminal = 1 })
+	trip := tripwireCtx(t).Done()
+	waiting, _ := startQuotaDelegate(t, root)
+	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(waiting) })
+	enqueueCompletedJobNotification(t, waiting.sess, "job_for_waiting_drive")
+	if !root.driveSubagentNotificationTurn(waiting) {
+		t.Fatal("the notification drive did not launch")
+	}
+	waitUntil(t, trip, "the drive turn waits for quota", waiting.sess.waitingForQuota)
+
+	_ = root.createDelegate(context.Background(), delegateArgs{Task: "another piece of work"})
+	if waiting.sess.isClosingOrClosed() || !waiting.sess.waitingForQuota() || !driving(waiting) {
+		t.Fatalf("after another delegate started: closed=%t waiting=%t driving=%t, want the waiting drive's runtime left alone",
+			waiting.sess.isClosingOrClosed(), waiting.sess.waitingForQuota(), driving(waiting))
+	}
+}
+
+// A model switch while a call waits ends that call's turn instead of
+// swapping models under it: the turn may already hold earlier rounds the old
+// model produced, and only a new turn treats them as prior history for the
+// new target. The work continues at once in a new turn on the new model,
+// with an active goal still driven and a notification queued meanwhile
+// delivered once.
+func TestModelSwitchWhileWaitingContinuesInANewTurn(t *testing.T) {
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	s, _, _, adapter := newAttentionLivelockSession(t, nil)
+	serveSession(t, s)
+	if _, err := s.SetGoal(context.Background(), "ship the release"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	s.SetKickFunc(func(string) {})
+	// The first round makes progress (a non-terminal update); every request
+	// after it meets the limit.
+	adapter.mu.Lock()
+	adapter.streamScript = func(st *llm.ChanStream) {
+		call := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
+		sendCommunicatePreview(st, call)
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+		adapter.mu.Lock()
+		adapter.streamErr = limit
+		adapter.mu.Unlock()
+	}
+	adapter.mu.Unlock()
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s, trip)
+	enqueueCompletedJobNotification(t, s, "job_during_switch")
+	s.notify()
+
+	// The new model answers; each request records where the turn it belongs
+	// to began, and where the old model's progress round sits.
+	type seen struct {
+		model              string
+		turnFrom, oldRound int
+	}
+	var mu sync.Mutex
+	var after []seen
+	recoverProvider(adapter)
+	adapter.mu.Lock()
+	answer := adapter.streamScript
+	adapter.streamScript = func(st *llm.ChanStream) {
+		s.mu.Lock()
+		from := s.turnHistoryBaseline
+		oldRound := -1
+		for i, turn := range s.history {
+			if turn.Kind == schema.TurnAssistant && oldRound < 0 {
+				oldRound = i
+			}
+		}
+		s.mu.Unlock()
+		reqs := adapterRequests(adapter)
+		mu.Lock()
+		after = append(after, seen{model: reqs[len(reqs)-1].Model, turnFrom: from, oldRound: oldRound})
+		mu.Unlock()
+		answer(st)
+	}
+	adapter.mu.Unlock()
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	run.awaitEnd(t, trip, "the switch ends the waiting turn and the work continues")
+	if run.err != nil {
+		t.Fatalf("the input after the switch: %v", run.err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(after) == 0 {
+		t.Fatal("no request reached the new model")
+	}
+	first := after[0]
+	if first.model != "gpt-5.4" || first.turnFrom <= first.oldRound {
+		t.Fatalf("first request after the switch: model %q, its turn begins at history %d with the old model's round at %d; want gpt-5.4 in a turn that begins after that round", first.model, first.turnFrom, first.oldRound)
+	}
+	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if got := s.jobNotificationsDelivered(); got != 1 {
+		t.Fatalf("job notifications delivered = %d, want the one queued during the wait delivered once", got)
+	}
+	if status, iterations, _ := s.GoalStatus(); status == string(goal.StatusBlocked) && iterations == 0 {
+		t.Fatal("the goal blocked instead of continuing on the new model")
 	}
 }

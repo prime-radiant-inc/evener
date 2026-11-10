@@ -439,6 +439,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	s.inputsInFlight.Add(1)
+	defer s.inputsInFlight.Add(-1)
 	// A delegate child's turn keeps the marker parent's activity evidence
 	// fresh for its whole life, silent stretches included; see
 	// startLaneEvidenceTicker. Stopped before the retirement release, so no
@@ -584,6 +586,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// no-progress streak and iteration count) or a user/follow-up turn (which
 		// does not — /par #4).
 		ranKind := nextKind
+		ranProvenance := nextProvenance
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
 		// A model switch queued during the previous turn - or picked in the
 		// window after that turn settled but before this one starts - applies
@@ -594,6 +597,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// marker between the two turns.
 		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		// A model switch ended the turn while its call waited out a usage
+		// limit: not a failure. The turn settles below and the work continues
+		// in a new one on the switched model.
+		continueOnSwitchedModel := errors.Is(err, errModelSwitchedDuringQuotaWait)
+		if continueOnSwitchedModel {
+			err = nil
+		}
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's
 		// last record, written after this function returns, so it must name
@@ -627,6 +637,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			stopSettledThisTurn = stopFinalized
 		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
+		processCtx = withResumeAfterModelSwitch(processCtx, false)
 		// The durable selection belonged to the turn that just ran; a
 		// follow-up turn must not re-admit it.
 		processCtx = withDurableSkillSelection(processCtx, nil)
@@ -784,6 +795,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.completeExecution(schema.TurnFailed) // no-op after an interrupt already completed it
 			s.endInputAtTurnFailure()
 			return strings.Join(outputs, "\n"), err
+		}
+		if continueOnSwitchedModel {
+			// Settle the ended turn so the switch applies at the top of the
+			// loop, then continue the same work in a new turn on the new model,
+			// where the ended turn's rounds are prior history.
+			s.finishProcessingAtBoundary(processCtx, SessionIdle)
+			s.completeExecution(schema.TurnInterrupted)
+			next, nextImages, nextKind, nextProvenance = "", nil, ranKind, ranProvenance
+			processCtx = withResumeAfterModelSwitch(processCtx, true)
+			continue
 		}
 		s.completeExecution(schema.TurnCompleted)
 		// Drain the next action after a completed (non-error) turn. The pops and the
@@ -1251,7 +1272,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	var runningTurnID string
 	defer func() { s.releaseRunningTurnID(runningTurnID) }()
 
-	if kind == EntryNotification {
+	// A turn that continues one a model switch ended during a quota wait
+	// keeps that turn's kind but accepts nothing new: the ended turn already
+	// took its input and its notifications.
+	resumed := resumingAfterModelSwitch(ctx)
+	if kind == EntryNotification && !resumed {
 		// A Stop parked this rail: stand down BEFORE minting or consuming
 		// any wake state — the same ordering the name refusal below keeps.
 		// Job notifications are not the user's to stop mid-delivery, so a
@@ -1360,7 +1385,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 	s.beginExecution(executionName)
 
-	if kind == EntryContinuation {
+	if resumed {
+		// Like a runtime turn: nothing of its own to record, and the
+		// steering waiting for it drained.
+		s.acceptRuntimeInput(inputProvenance)
+	} else if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
 		if !s.acceptNotificationInput(ctx, runningTurnID) {
@@ -1524,6 +1553,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				break
 			}
 			s.resetCommunicatePreviews(communicatePreviewCalls)
+		}
+		if errors.Is(err, errModelSwitchedDuringQuotaWait) {
+			// Not a model failure: the input loop ends this turn and continues
+			// in a new one on the switched model.
+			return "", progressed, err
 		}
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {

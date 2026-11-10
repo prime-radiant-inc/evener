@@ -297,6 +297,13 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
 				return nil, false
 			}
+			// A turn still running on the runtime -- a parent's notification
+			// drive, whose model call can wait out a usage limit for hours --
+			// would be torn out from under it, by the idle release and by
+			// capacity reclamation alike.
+			if live.runtime != nil && live.runtime.inputsInFlight.Load() > 0 {
+				return nil, false
+			}
 			if live.runtime != nil {
 				entries = append(entries, c.runtimeReclamationEntryLocked(id))
 			}
@@ -1002,20 +1009,10 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // none of the session-local residue retirement refuses on: a
 // delegate-delivery parcel the pump has not consumed, a manager already
 // closing, or restore side effects still settling on this manager's
-// children -- nor a turn in flight on the runtime. A parent's notification
-// drive runs a turn on an idle, terminal delegate, and the retirement
-// mutation that turn holds is shared, so it does not refuse the claim on its
-// own.
+// children. A turn in flight on the runtime (a parent's notification drive)
+// is refused earlier, by claimableRuntimeSubtreeLocked, for both releases.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
-		return false
-	}
-	// A drive turn's model call can wait out a usage limit for hours; the
-	// release must not tear the runtime out from under it.
-	s.mu.Lock()
-	inTurn := s.turnInFlightLocked()
-	s.mu.Unlock()
-	if inTurn {
 		return false
 	}
 	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
