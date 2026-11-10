@@ -117,6 +117,17 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 		}
 		return store.putItem(token, fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
 	}
+	options.RetainCanonicalItem = func(candidate appitempaging.TranscriptItemCandidate) (appitempaging.TranscriptItemCandidate, error) {
+		if options.fetchTokens == nil || candidate.Item.Version == 0 {
+			return candidate, nil
+		}
+		item, err := store.retainOrReuseItem(fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
+		if err != nil {
+			return candidate, err
+		}
+		candidate.Item = item
+		return candidate, nil
+	}
 	if options.fetchTokens != nil {
 		options.fetchTokens.assign = func(identity appitempaging.CursorIdentity, candidate appitempaging.TranscriptItemCandidate) (string, error) {
 			return store.tokenFor(fetchEntryTriple(identity, candidate)), nil

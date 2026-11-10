@@ -65,6 +65,12 @@ type transcriptWindowPackOptions struct {
 	// entry token each fetch cursor carries.
 	fetchTokens            *transcriptWindowFetchTokens
 	CanonicalizeCandidates func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
+	// RetainCanonicalItem atomically chooses the retained encoding of a
+	// candidate the page may serve, before its preview is bounded. Two
+	// concurrent first reads that canonicalized the same item version
+	// differently then converge on one encoding, so the preview and the fetch
+	// cursor minted beside it describe the same canonical item.
+	RetainCanonicalItem    func(appitempaging.TranscriptItemCandidate) (appitempaging.TranscriptItemCandidate, error)
 	MintFetchCursor        func(appitempaging.TranscriptItemCandidate, string) (string, error)
 	RetainFetchItem        func(string, appitempaging.TranscriptItemCandidate) error
 	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
@@ -870,6 +876,12 @@ func packItemCandidates[T any](
 				selectedCandidates = selectedCandidates[:itemLimit]
 			}
 			for _, candidate := range selectedCandidates {
+				if windowOptions.RetainCanonicalItem != nil {
+					candidate, err = windowOptions.RetainCanonicalItem(candidate)
+					if err != nil {
+						return zero, fmt.Errorf("retain transcript item canonical bytes: %w", err)
+					}
+				}
 				item, bodyBytes, truncated := transcriptWindowBoundItem(candidate.Item, previewBytes, messageBytes)
 				preparedTurn.selected = append(preparedTurn.selected, transcriptWindowSelectedItem{
 					candidate: candidate, item: item, bodyBytes: bodyBytes, boundTruncated: truncated,

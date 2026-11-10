@@ -1,6 +1,9 @@
 package hub
 
 import (
+	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -161,5 +164,114 @@ func TestRetainedCursorMemoFollowsATokenChange(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("a retried pack after eviction received the cursor for the retired token")
+	}
+}
+
+// Two concurrent first reads of the same saved window both canonicalize an
+// item whose file-backed image descriptor differs between them while the item
+// version stays the same. They must converge on one retained encoding, so each
+// response's visible preview and the fetch cursor minted beside it describe the
+// same canonical item.
+func TestConcurrentFirstWindowReadsRetainOneCanonicalEncoding(t *testing.T) {
+	operations := &sessionOperations{}
+	// Each read owns its candidate window: the position pointers inside it are
+	// not shared between concurrent reads, and canonicalizing writes through
+	// them.
+	readResult := func() transcriptItemCandidateResult {
+		return testWindowCandidateResult(testWindowTurnCandidates("turn-image", []appwire.ThreadItem{{
+			Type: "agentMessage", ID: "item-image", Version: 7,
+			Text:   strings.Repeat("t", 512),
+			Images: []appwire.InputItem{{Type: "image", URL: "descriptor-before"}},
+		}}))
+	}
+	params := appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: "turn-image"},
+		MessageBytes:      32,
+		WindowBudgetBytes: 1 << 20,
+	}
+	descriptors := []string{"descriptor-one", "descriptor-two"}
+	ready := make(chan struct{}, len(descriptors))
+	release := make(chan struct{})
+	var arrivals sync.Mutex
+	arrived := 0
+	canonicalize := func(input []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+		arrivals.Lock()
+		caller := arrived
+		arrived++
+		arrivals.Unlock()
+		ready <- struct{}{}
+		<-release
+		out := append([]appitempaging.TranscriptItemCandidate(nil), input...)
+		out[0].Item.Images = []appwire.InputItem{{Type: "image", URL: descriptors[caller]}}
+		return out, nil
+	}
+	// Each read owns its pack options (the fetch-cursor memo is not shared);
+	// only the canonical store below is the hub-wide one under test.
+	readOptions := func() transcriptWindowPackOptions {
+		options := transcriptWindowOptionsFor(readResult(), params, 10,
+			transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon)
+		options.CanonicalizeCandidates = canonicalize
+		operations.retainCanonicalWindowOptions(&options)
+		return options
+	}
+
+	type outcome struct {
+		item appwire.ThreadItem
+		err  error
+	}
+	outcomes := make([]outcome, len(descriptors))
+	var wait sync.WaitGroup
+	for index := range descriptors {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			packed, err := packThreadTurnsWindowItemCandidates(readResult(), nil, readOptions())
+			outcomes[index].err = err
+			for _, turn := range packed.Data {
+				for _, item := range turn.Items {
+					if item.FetchCursor != "" {
+						outcomes[index].item = item
+					}
+				}
+			}
+		}(index)
+	}
+	<-ready
+	<-ready
+	close(release)
+	wait.Wait()
+
+	store := operations.canonicalItemStore()
+	retained := make([]string, len(outcomes))
+	for index, got := range outcomes {
+		if got.err != nil {
+			t.Fatalf("pack %d: %v", index, got.err)
+		}
+		if len(got.item.Images) != 1 || got.item.FetchCursor == "" {
+			t.Fatalf("pack %d served item = %+v, want a preview with a fetch cursor", index, got.item)
+		}
+		cursor, _, err := appitempaging.DecodeFetchCursorForRef(got.item.FetchCursor, "local:thread")
+		if err != nil {
+			t.Fatalf("pack %d fetch cursor: %v", index, err)
+		}
+		encoded, ok := store.borrow(cursor.Token)
+		if !ok {
+			t.Fatalf("pack %d fetch cursor names no retained encoding", index)
+		}
+		var canonical appwire.ThreadItem
+		if err := json.Unmarshal(encoded, &canonical); err != nil {
+			t.Fatalf("pack %d retained encoding: %v", index, err)
+		}
+		if len(canonical.Images) != 1 {
+			t.Fatalf("pack %d retained item = %+v, want one image descriptor", index, canonical)
+		}
+		retained[index] = canonical.Images[0].URL
+		if canonical.Images[0].URL != got.item.Images[0].URL {
+			t.Fatalf("pack %d preview descriptor %q resolves to retained %q",
+				index, got.item.Images[0].URL, canonical.Images[0].URL)
+		}
+	}
+	if retained[0] != retained[1] {
+		t.Fatalf("concurrent first reads retained different encodings: %q and %q", retained[0], retained[1])
 	}
 }

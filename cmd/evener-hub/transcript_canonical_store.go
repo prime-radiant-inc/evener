@@ -117,6 +117,46 @@ func (s *transcriptCanonicalStore) putItem(token, triple string, item appwire.Th
 	return nil
 }
 
+// retainOrReuseItem atomically chooses the canonical encoding retained for an
+// item identity and returns that encoding. Two concurrent first reads can
+// canonicalize the same item version with different file-backed descriptors;
+// the first to arrive retains its bytes and every other caller reuses them, so
+// the preview a response packs and the fetch cursor minted beside it always
+// describe one canonical item. A token assigned but not yet retained (a mint
+// without bytes) receives the first caller's bytes under that same token.
+func (s *transcriptCanonicalStore) retainOrReuseItem(triple string, item appwire.ThreadItem) (appwire.ThreadItem, error) {
+	data, err := json.Marshal(item)
+	if err != nil {
+		return appwire.ThreadItem{}, err
+	}
+	if len(data) > s.maxBytes {
+		return appwire.ThreadItem{}, fmt.Errorf("canonical transcript item is %d bytes, store limit is %d", len(data), s.maxBytes)
+	}
+	s.mu.Lock()
+	token := s.live[triple]
+	if token != "" {
+		if element := s.entries[token]; element != nil {
+			s.order.MoveToFront(element)
+			live := element.Value.(*transcriptCanonicalStoreEntry).data
+			s.mu.Unlock()
+			var retained appwire.ThreadItem
+			if err := json.Unmarshal(live, &retained); err != nil {
+				return appwire.ThreadItem{}, err
+			}
+			return retained, nil
+		}
+	}
+	if token == "" {
+		s.next++
+		token = fmt.Sprintf("%s-%x", s.prefix, s.next)
+		s.live[triple] = token
+		s.triples[token] = triple
+	}
+	s.putLocked(token, triple, data)
+	s.mu.Unlock()
+	return item, nil
+}
+
 func (s *transcriptCanonicalStore) put(key string, data []byte) {
 	s.putOwned(key, append([]byte(nil), data...))
 }

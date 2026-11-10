@@ -175,15 +175,19 @@ func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector 
 }
 
 // boundTurnWindowTransfer cuts a resolved selection down to one transfer page.
-// A latest or before selection keeps its newest items, because those are the
+// A latest or before selection keeps its newest turns, because those are the
 // ones the packer serves first and the withheld older ones resume behind them.
-// A since selection keeps its oldest items, because it is read oldest-first.
+// A since selection keeps its oldest turns, because it is read oldest-first.
 //
-// A page cuts between items, so one turn larger than the page transfers in
-// pieces rather than whole. The piece's shell carries HasEarlierItems (or
-// HasLaterItems) when its own turn continues past the page, which is how the
-// hub knows to resume inside that turn. resume continues such a piece: it names
-// the turn and the exclusive position the previous piece ended at.
+// Turns, not items, are the unit of a page: a turn can be reopened, so its
+// items need not be adjacent in the transcript, and page counts by turn order.
+// A page therefore carries every item of the turns it serves and none of the
+// turns it withholds, which keeps the served/withheld accounting honest for an
+// interleaved selection. Only a turn larger than the page itself transfers in
+// pieces: the piece's shell carries HasEarlierItems (or HasLaterItems) when its
+// own turn continues past the page, which is how the hub knows to resume inside
+// that turn. resume continues such a piece: it names the turn and the exclusive
+// position the previous piece ended at.
 func boundTurnWindowTransfer(
 	resolved transcriptindex.ResolvedTurnWindow,
 	selector appwire.ThreadTurnWindow,
@@ -193,10 +197,6 @@ func boundTurnWindowTransfer(
 	turnIDs := resolved.TurnIDs
 	if limit <= 0 || len(turnIDs) == 0 {
 		return resolved.Candidates, turnIDs, nil, nil
-	}
-	keepNewest := selector.Since == ""
-	if resume != nil {
-		keepNewest = resume.Before
 	}
 	candidates := resolved.Candidates
 	if resume != nil {
@@ -225,11 +225,135 @@ func boundTurnWindowTransfer(
 	if total <= limit {
 		return candidates, turnIDs, nil, nil
 	}
+	if resume != nil {
+		served, servedTurnIDs, transfer := boundResumeTransfer(candidates, sizes, *resume, limit)
+		return served, servedTurnIDs, transfer, nil
+	}
+	served, servedTurnIDs, transfer := boundTurnOrderTransfer(candidates, sizes, turnIDs, selector, limit)
+	return served, servedTurnIDs, transfer, nil
+}
 
-	start, end := 0, len(candidates)
-	used := 0
+// boundResumeTransfer serves one item piece of the turn a previous page cut.
+// It returns the item slice, marks the piece's open end, and reports the turn
+// as the page's single served turn.
+func boundResumeTransfer(
+	candidates []appitempaging.TranscriptItemCandidate,
+	sizes []int,
+	resume appwire.ThreadWindowTransfer,
+	limit int,
+) ([]appitempaging.TranscriptItemCandidate, []string, *appwire.ThreadWindowResult) {
+	start, end := transferItemRange(sizes, limit, resume.Before)
+	served := append([]appitempaging.TranscriptItemCandidate(nil), candidates[start:end]...)
+	markTransferOpenEnds(served, start > 0, end < len(candidates), resume.Before)
+	return served, []string{resume.TurnID}, &appwire.ThreadWindowResult{
+		AppliedBy:         historyWindowTransferAppliedBy,
+		ServedTurns:       1,
+		FirstServedTurnID: resume.TurnID,
+		LastServedTurnID:  resume.TurnID,
+		TrimmedEnd:        transferTrimmedEnd(resume.Before),
+	}
+}
+
+// boundTurnOrderTransfer serves whole logical turns from the edge the selector
+// reads first. A turn that alone exceeds the page transfers as an item piece of
+// that one turn, so every other served turn is complete and every withheld turn
+// is absent rather than half-present.
+func boundTurnOrderTransfer(
+	candidates []appitempaging.TranscriptItemCandidate,
+	sizes []int,
+	turnIDs []string,
+	selector appwire.ThreadTurnWindow,
+	limit int,
+) ([]appitempaging.TranscriptItemCandidate, []string, *appwire.ThreadWindowResult) {
+	keepNewest := selector.Since == ""
+	turnSizes := make(map[string]int, len(turnIDs))
+	for index, candidate := range candidates {
+		turnSizes[candidate.TurnID] += sizes[index]
+	}
+	servedCount, used := 0, 0
+	for offset := 0; offset < len(turnIDs); offset++ {
+		turnID := turnIDs[offset]
+		if keepNewest {
+			turnID = turnIDs[len(turnIDs)-1-offset]
+		}
+		size := turnSizes[turnID]
+		if used+size > limit {
+			break
+		}
+		used += size
+		servedCount++
+	}
+	if servedCount == 0 {
+		// The first turn the selector serves is larger than a whole page.
+		boundary := turnIDs[0]
+		withheld := turnIDs[1:]
+		if keepNewest {
+			boundary = turnIDs[len(turnIDs)-1]
+			withheld = turnIDs[:len(turnIDs)-1]
+		}
+		served, servedTurnIDs, transfer := boundBoundaryTurnTransfer(candidates, sizes, boundary, withheld, limit, keepNewest)
+		if transfer == nil {
+			return candidates, turnIDs, nil
+		}
+		return served, servedTurnIDs, transfer
+	}
+	servedTurnIDs := turnIDs[:servedCount]
+	withheld := turnIDs[servedCount:]
 	if keepNewest {
-		start = len(candidates)
+		servedTurnIDs = turnIDs[len(turnIDs)-servedCount:]
+		withheld = turnIDs[:len(turnIDs)-servedCount]
+	}
+	servedSet := make(map[string]bool, len(servedTurnIDs))
+	for _, turnID := range servedTurnIDs {
+		servedSet[turnID] = true
+	}
+	served := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if servedSet[candidate.TurnID] {
+			served = append(served, candidate)
+		}
+	}
+	return served, append([]string(nil), servedTurnIDs...), transferWindowResult(servedTurnIDs, withheld, keepNewest)
+}
+
+// boundBoundaryTurnTransfer serves the items of one turn that alone exceeds a
+// page, keeping the end the selector reads first and marking the other end as
+// the piece's continuation.
+func boundBoundaryTurnTransfer(
+	candidates []appitempaging.TranscriptItemCandidate,
+	sizes []int,
+	boundary string,
+	withheld []string,
+	limit int,
+	keepNewest bool,
+) ([]appitempaging.TranscriptItemCandidate, []string, *appwire.ThreadWindowResult) {
+	items := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
+	itemSizes := make([]int, 0, len(candidates))
+	for index, candidate := range candidates {
+		if candidate.TurnID != boundary {
+			continue
+		}
+		items = append(items, candidate)
+		itemSizes = append(itemSizes, sizes[index])
+	}
+	if len(items) == 0 {
+		// A surface that does not name the boundary turn cannot page safely;
+		// transfer the selection whole as before.
+		return candidates, nil, nil
+	}
+	start, end := transferItemRange(itemSizes, limit, keepNewest)
+	served := append([]appitempaging.TranscriptItemCandidate(nil), items[start:end]...)
+	markTransferOpenEnds(served, start > 0, end < len(items), keepNewest)
+	servedTurnIDs := []string{boundary}
+	return served, servedTurnIDs, transferWindowResult(servedTurnIDs, withheld, keepNewest)
+}
+
+// transferItemRange keeps the newest (keepNewest) or oldest items that fit the
+// page, always with at least one item: the hub bounds what it forwards and
+// AppWire's per-message limit is far larger.
+func transferItemRange(sizes []int, limit int, keepNewest bool) (int, int) {
+	if keepNewest {
+		start, used := len(sizes), 0
 		for start > 0 {
 			if used+sizes[start-1] > limit {
 				break
@@ -237,94 +361,57 @@ func boundTurnWindowTransfer(
 			used += sizes[start-1]
 			start--
 		}
-	} else {
-		end = 0
-		for end < len(candidates) {
-			if end > 0 && used+sizes[end] > limit {
-				break
-			}
-			used += sizes[end]
-			end++
+		if start == len(sizes) && len(sizes) > 0 {
+			start = len(sizes) - 1
 		}
+		return start, len(sizes)
 	}
-	// Keep at least one item even when it alone exceeds the page; the hub
-	// bounds what it forwards and AppWire's per-message limit is far larger.
-	if start >= end {
-		if keepNewest {
-			start = end - 1
-		} else {
-			end = start + 1
-		}
-	}
-	served := append([]appitempaging.TranscriptItemCandidate(nil), candidates[start:end]...)
-	if resume != nil {
-		if start > 0 || end < len(candidates) {
-			if keepNewest {
-				served[0].HasEarlierItems = true
-			} else {
-				served[len(served)-1].HasLaterItems = true
-			}
-		}
-		return served, []string{resume.TurnID}, &appwire.ThreadWindowResult{
-			AppliedBy:         historyWindowTransferAppliedBy,
-			ServedTurns:       1,
-			FirstServedTurnID: resume.TurnID,
-			LastServedTurnID:  resume.TurnID,
-			TrimmedEnd:        transferTrimmedEnd(keepNewest),
-		}, nil
-	}
-	servedStart := turnOrdinal(turnIDs, served[0].TurnID)
-	servedEnd := turnOrdinal(turnIDs, served[len(served)-1].TurnID)
-	if servedStart < 0 || servedEnd < 0 {
-		// A projection that does not name the boundary turn cannot page safely;
-		// transfer the selection whole as before.
-		return candidates, turnIDs, nil, nil
-	}
-	if keepNewest {
-		for index := 0; index < start; index++ {
-			if candidates[index].TurnID != served[0].TurnID {
-				continue
-			}
-			served[0].HasEarlierItems = true
+	end, used := 0, 0
+	for end < len(sizes) {
+		if end > 0 && used+sizes[end] > limit {
 			break
 		}
-	} else {
-		servedEnd++
-		for index := end; index < len(candidates); index++ {
-			if candidates[index].TurnID != served[len(served)-1].TurnID {
-				continue
-			}
-			served[len(served)-1].HasLaterItems = true
-			break
-		}
+		used += sizes[end]
+		end++
 	}
-	var servedTurnIDs []string
-	if keepNewest {
-		servedTurnIDs = append([]string(nil), turnIDs[servedStart:]...)
-	} else {
-		servedTurnIDs = append([]string(nil), turnIDs[:servedEnd]...)
+	if end == 0 && len(sizes) > 0 {
+		end = 1
 	}
+	return 0, end
+}
+
+// markTransferOpenEnds flags the served piece's cut end: earlier when older
+// items of the same turn are withheld, later when newer ones are.
+func markTransferOpenEnds(served []appitempaging.TranscriptItemCandidate, hasEarlier, hasLater, keepNewest bool) {
+	if len(served) == 0 {
+		return
+	}
+	if hasEarlier && keepNewest {
+		served[0].HasEarlierItems = true
+	}
+	if hasLater && !keepNewest {
+		served[len(served)-1].HasLaterItems = true
+	}
+}
+
+func transferWindowResult(servedTurnIDs, withheldTurnIDs []string, keepNewest bool) *appwire.ThreadWindowResult {
 	trimmedEnd := "oldest"
 	if !keepNewest {
 		trimmedEnd = "newest"
 	}
-	withheld := turnIDs[:servedStart]
-	if !keepNewest {
-		withheld = turnIDs[servedEnd:]
-	}
 	transfer := &appwire.ThreadWindowResult{
 		AppliedBy:         historyWindowTransferAppliedBy,
 		ServedTurns:       len(servedTurnIDs),
-		WithheldTurns:     len(withheld),
+		WithheldTurns:     len(withheldTurnIDs),
 		FirstServedTurnID: servedTurnIDs[0],
 		LastServedTurnID:  servedTurnIDs[len(servedTurnIDs)-1],
 		TrimmedEnd:        trimmedEnd,
 	}
-	if len(withheld) > 0 {
-		transfer.FirstWithheldTurnID = withheld[0]
-		transfer.LastWithheldTurnID = withheld[len(withheld)-1]
+	if len(withheldTurnIDs) > 0 {
+		transfer.FirstWithheldTurnID = withheldTurnIDs[0]
+		transfer.LastWithheldTurnID = withheldTurnIDs[len(withheldTurnIDs)-1]
 	}
-	return served, servedTurnIDs, transfer, nil
+	return transfer
 }
 
 // transferWindowCandidates keeps the items a resume page requests: strictly
@@ -360,15 +447,6 @@ func transferTrimmedEnd(keepNewest bool) string {
 		return "oldest"
 	}
 	return "newest"
-}
-
-func turnOrdinal(turnIDs []string, turnID string) int {
-	for index, id := range turnIDs {
-		if id == turnID {
-			return index
-		}
-	}
-	return -1
 }
 
 // before pages the request's ItemLimit items before its cursor from the

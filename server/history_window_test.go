@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,6 +155,108 @@ func TestLiveThreadReadPagesTransferInsideOversizedTurn(t *testing.T) {
 	}
 	if len(seen) != itemCount {
 		t.Fatalf("transfer pages recovered %d of %d items", len(seen), itemCount)
+	}
+}
+
+// A reopened turn can have items on both sides of another selected turn:
+// A1, B1..B6, A2. A transfer page must serve whole logical turns in turn
+// order, so a page never carries a fragment of a turn it reports withheld.
+// The reopened turn's items then arrive on the continuation page named by the
+// page's withheld turns, and each page's items stay in transcript order.
+func TestLiveThreadReadPagesInterleavedTurnAcrossTransferCap(t *testing.T) {
+	previous := historyWindowTransferPageBytes
+	historyWindowTransferPageBytes = 96 << 10
+	t.Cleanup(func() { historyWindowTransferPageBytes = previous })
+
+	const textBytes = 24 << 10
+	const bItems = 6
+	turns := []schema.Turn{
+		inExecution("turn_a", true, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("a", textBytes)))),
+		inExecution("turn_b", true, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("b", textBytes)))),
+	}
+	for range bItems - 1 {
+		turns = append(turns, inExecution("turn_b", false, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("b", textBytes)))))
+	}
+	turns = append(turns, inExecution("turn_a", false, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("a", textBytes)))))
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_interleaved_transfer", turns...)
+
+	latest := appwire.ThreadTurnWindow{Latest: 2}
+	first, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID: st.threadID, IncludeTurns: true, TurnWindow: &latest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Thread.Turns) == 0 {
+		t.Fatal("the first transfer page is empty")
+	}
+	for _, turn := range first.Thread.Turns {
+		if turn.ID == "turn_a" {
+			t.Fatalf("the first transfer page carries a turn_a fragment while reporting turn_a withheld: %+v", first.Thread.Turns)
+		}
+	}
+	if first.Window == nil {
+		t.Fatal("the first transfer page carries no transfer state")
+	}
+	if first.Window.ServedTurns != 1 || first.Window.WithheldTurns != 1 ||
+		first.Window.FirstServedTurnID != "turn_b" || first.Window.FirstWithheldTurnID != "turn_a" {
+		t.Fatalf("transfer state = %+v, want turn_b served and turn_a withheld", first.Window)
+	}
+	firstTurn := first.Thread.Turns[0]
+	if !firstTurn.HasEarlierItems || len(firstTurn.Items) == 0 || firstTurn.Items[0].Position == nil {
+		t.Fatalf("the cut turn fragment = %+v, want an earlier-items continuation", firstTurn)
+	}
+
+	resumeWindow := appwire.ThreadTurnWindow{Turn: "turn_b"}
+	resume := &appwire.ThreadWindowTransfer{TurnID: "turn_b", Position: *firstTurn.Items[0].Position, Before: true}
+	second, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID: st.threadID, IncludeTurns: true, TurnWindow: &resumeWindow, WindowTransfer: resume,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Thread.Turns) != 1 || second.Thread.Turns[0].ID != "turn_b" {
+		t.Fatalf("resume page turns = %+v, want the rest of turn_b", second.Thread.Turns)
+	}
+	if second.Thread.Turns[0].HasEarlierItems {
+		t.Fatalf("resume page still reports earlier items: %+v", second.Thread.Turns[0])
+	}
+
+	withheld := appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_b", Limit: first.Window.WithheldTurns}}
+	third, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID: st.threadID, IncludeTurns: true, TurnWindow: &withheld,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third.Thread.Turns) != 1 || third.Thread.Turns[0].ID != "turn_a" {
+		t.Fatalf("withheld page turns = %+v, want the reopened turn whole", third.Thread.Turns)
+	}
+	if got := len(third.Thread.Turns[0].Items); got != 2 {
+		t.Fatalf("reopened turn items = %d, want both fragments' items", got)
+	}
+
+	positions := make([]appwire.ThreadItemPosition, 0, bItems+2)
+	texts := make([]string, 0, bItems+2)
+	for _, page := range [][]appwire.Turn{first.Thread.Turns, second.Thread.Turns, third.Thread.Turns} {
+		for _, turn := range page {
+			for _, item := range turn.Items {
+				if item.Position == nil {
+					t.Fatalf("transfer page item %q has no position", item.ID)
+				}
+				positions = append(positions, *item.Position)
+				texts = append(texts, item.Text)
+			}
+		}
+	}
+	slices.SortFunc(positions, appitempaging.ComparePosition)
+	for i := 1; i < len(positions); i++ {
+		if appitempaging.ComparePosition(positions[i-1], positions[i]) >= 0 {
+			t.Fatalf("merged transfer positions repeat or reorder at %d: %v", i, positions)
+		}
+	}
+	if len(positions) != bItems+2 {
+		t.Fatalf("transfer pages covered %d items, want %d", len(positions), bItems+2)
 	}
 }
 

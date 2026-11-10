@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -776,9 +778,12 @@ func readThreadWindowTransfer(ctx context.Context, client *appwire.Client, param
 			started = true
 		}
 		if prepend {
-			turns = localDaemonMergeWindowTurns(turns, page.Thread.Turns, true)
+			turns, err = localDaemonMergeWindowTurns(turns, page.Thread.Turns, true)
 		} else {
-			turns = localDaemonMergeWindowTurns(turns, page.Thread.Turns, false)
+			turns, err = localDaemonMergeWindowTurns(turns, page.Thread.Turns, false)
+		}
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
 		}
 		if resume == nil {
 			scope = selector
@@ -845,54 +850,207 @@ func localDaemonWindowTransferRefused(err error) bool {
 }
 
 // localDaemonWindowTransferResume names the intra-turn continuation a bounded
-// transfer page advertises through its partial turn fragment. A page cut at a
-// turn boundary returns nil.
+// transfer page advertises through a partial turn fragment. A reopened turn's
+// items can surround another turn's, so the partial turn is not always the
+// page's first (or last): every fragment is considered, and the resume position
+// is that fragment's own open end. A page cut at a turn boundary returns nil.
 func localDaemonWindowTransferResume(page appwire.ThreadReadResponse, backward bool) *appwire.ThreadWindowTransfer {
-	if len(page.Thread.Turns) == 0 {
-		return nil
-	}
 	if backward {
-		turn := page.Thread.Turns[0]
-		if !turn.HasEarlierItems || len(turn.Items) == 0 || turn.Items[0].Position == nil {
-			return nil
+		for _, turn := range page.Thread.Turns {
+			if !turn.HasEarlierItems || len(turn.Items) == 0 || turn.Items[0].Position == nil {
+				continue
+			}
+			return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *turn.Items[0].Position, Before: true}
 		}
-		return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *turn.Items[0].Position, Before: true}
-	}
-	turn := page.Thread.Turns[len(page.Thread.Turns)-1]
-	if !turn.HasLaterItems || len(turn.Items) == 0 {
 		return nil
 	}
-	last := turn.Items[len(turn.Items)-1]
-	if last.Position == nil {
-		return nil
+	for index := len(page.Thread.Turns) - 1; index >= 0; index-- {
+		turn := page.Thread.Turns[index]
+		if !turn.HasLaterItems || len(turn.Items) == 0 {
+			continue
+		}
+		last := turn.Items[len(turn.Items)-1]
+		if last.Position == nil {
+			continue
+		}
+		return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *last.Position}
 	}
-	return &appwire.ThreadWindowTransfer{TurnID: turn.ID, Position: *last.Position}
+	return nil
 }
 
-// localDaemonMergeWindowTurns adds a page's turns to the walk's accumulated
-// turns, joining the two fragments when the page boundary falls inside one
-// turn. The joined turn keeps the older end's HasEarlierItems and the newer
-// end's HasLaterItems, so only an end the walk has not reached stays partial.
-func localDaemonMergeWindowTurns(accumulated, page []appwire.Turn, prepend bool) []appwire.Turn {
-	merged := appwire.CloneTurns(page)
-	if prepend {
-		if len(merged) > 0 && len(accumulated) > 0 && merged[len(merged)-1].ID == accumulated[0].ID {
-			older := &merged[len(merged)-1]
-			newer := accumulated[0]
-			older.Items = append(older.Items, newer.Items...)
-			older.HasLaterItems = newer.HasLaterItems
-			return append(merged, accumulated[1:]...)
+// localDaemonMergeWindowTurns unions a page's positioned items into the walk's
+// accumulated turns in transcript order. Turns, not pages, are not the physical
+// unit here: a reopened turn can have items on both sides of another turn, so
+// two pages fetched by turn selector can interleave. Appending or prepending
+// would then duplicate a position or place a later fragment before an earlier
+// one, which the packer's strictly-increasing candidate order rejects. The
+// merge keys every item by position, keeps one delivery of each, regroups
+// adjacent turn runs, and leaves a turn open on an end only while the union
+// still lacks items a page reported missing there.
+func localDaemonMergeWindowTurns(accumulated, page []appwire.Turn, prepend bool) ([]appwire.Turn, error) {
+	accumulatedCandidates, err := appitempaging.CandidatesFromTurns(accumulated)
+	if err != nil {
+		return nil, err
+	}
+	pageCandidates, err := appitempaging.CandidatesFromTurns(page)
+	if err != nil {
+		return nil, err
+	}
+	byPosition := make(map[appwire.ThreadItemPosition]appitempaging.TranscriptItemCandidate, len(accumulatedCandidates)+len(pageCandidates))
+	for _, candidate := range pageCandidates {
+		byPosition[candidate.Position] = candidate
+	}
+	for _, candidate := range accumulatedCandidates {
+		byPosition[candidate.Position] = candidate
+	}
+	merged := make([]appitempaging.TranscriptItemCandidate, 0, len(byPosition))
+	for _, candidate := range byPosition {
+		merged = append(merged, candidate)
+	}
+	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
+		return appitempaging.ComparePosition(a.Position, b.Position)
+	})
+	turns, err := appitempaging.RegroupTurnFragments(merged)
+	if err != nil {
+		return nil, err
+	}
+	openEarlier, openLater := localDaemonTransferOpenEnds(accumulated, page)
+	for index := range turns {
+		turns[index].HasEarlierItems = false
+		turns[index].HasLaterItems = false
+	}
+	for turnID, boundary := range openEarlier {
+		if localDaemonTransferCovers(merged, turnID, boundary, false) {
+			continue
 		}
-		return append(merged, accumulated...)
+		for index := range turns {
+			if turns[index].ID == turnID {
+				turns[index].HasEarlierItems = true
+				break
+			}
+		}
 	}
-	if len(merged) > 0 && len(accumulated) > 0 && merged[0].ID == accumulated[len(accumulated)-1].ID {
-		newer := &merged[0]
-		older := accumulated[len(accumulated)-1]
-		newer.Items = append(older.Items, newer.Items...)
-		newer.HasEarlierItems = older.HasEarlierItems
-		return append(accumulated[:len(accumulated)-1:len(accumulated)-1], merged...)
+	for turnID, boundary := range openLater {
+		if localDaemonTransferCovers(merged, turnID, boundary, true) {
+			continue
+		}
+		for index := len(turns) - 1; index >= 0; index-- {
+			if turns[index].ID == turnID {
+				turns[index].HasLaterItems = true
+				break
+			}
+		}
 	}
-	return append(accumulated, merged...)
+	return localDaemonInsertEmptyWindowShells(turns, accumulated, page, prepend), nil
+}
+
+// localDaemonTransferOpenEnds records, per turn, the boundary position a page
+// reported missing items beyond: earlier than an earlier-items fragment's first
+// item, later than a later-items fragment's last item.
+func localDaemonTransferOpenEnds(accumulated, page []appwire.Turn) (map[string]appwire.ThreadItemPosition, map[string]appwire.ThreadItemPosition) {
+	earlier := make(map[string]appwire.ThreadItemPosition)
+	later := make(map[string]appwire.ThreadItemPosition)
+	record := func(turns []appwire.Turn) {
+		for _, turn := range turns {
+			if turn.ID == "" || len(turn.Items) == 0 {
+				continue
+			}
+			first, last := turn.Items[0], turn.Items[len(turn.Items)-1]
+			if turn.HasEarlierItems && first.Position != nil {
+				current, seen := earlier[turn.ID]
+				if !seen || appitempaging.ComparePosition(*first.Position, current) < 0 {
+					earlier[turn.ID] = *first.Position
+				}
+			}
+			if turn.HasLaterItems && last.Position != nil {
+				current, seen := later[turn.ID]
+				if !seen || appitempaging.ComparePosition(*last.Position, current) > 0 {
+					later[turn.ID] = *last.Position
+				}
+			}
+		}
+	}
+	record(accumulated)
+	record(page)
+	return earlier, later
+}
+
+// localDaemonTransferCovers reports whether the union already holds an item of
+// the turn beyond the boundary a page reported open: older for an earlier-items
+// end, newer for a later-items end.
+func localDaemonTransferCovers(merged []appitempaging.TranscriptItemCandidate, turnID string, boundary appwire.ThreadItemPosition, newer bool) bool {
+	for _, candidate := range merged {
+		if candidate.TurnID != turnID {
+			continue
+		}
+		order := appitempaging.ComparePosition(candidate.Position, boundary)
+		if (newer && order > 0) || (!newer && order < 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// localDaemonInsertEmptyWindowShells restores the shells of selected turns that
+// projected no items. Regrouping drops them, but the packer needs the shell to
+// keep the turn in the window. Shells follow the pages' turn order.
+func localDaemonInsertEmptyWindowShells(turns, accumulated, page []appwire.Turn, prepend bool) []appwire.Turn {
+	order := make([]string, 0, len(accumulated)+len(page))
+	seen := make(map[string]bool, len(accumulated)+len(page))
+	appendOrder := func(list []appwire.Turn) {
+		for _, turn := range list {
+			if turn.ID == "" || seen[turn.ID] {
+				continue
+			}
+			seen[turn.ID] = true
+			order = append(order, turn.ID)
+		}
+	}
+	if prepend {
+		appendOrder(page)
+		appendOrder(accumulated)
+	} else {
+		appendOrder(accumulated)
+		appendOrder(page)
+	}
+	rank := make(map[string]int, len(order))
+	for index, id := range order {
+		rank[id] = index
+	}
+	shells := make(map[string]appwire.Turn)
+	collect := func(list []appwire.Turn) {
+		for _, turn := range list {
+			if turn.ID == "" || len(turn.Items) != 0 {
+				continue
+			}
+			if _, exists := shells[turn.ID]; !exists {
+				shells[turn.ID] = turn
+			}
+		}
+	}
+	collect(accumulated)
+	collect(page)
+	present := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		present[turn.ID] = true
+	}
+	merged := append([]appwire.Turn(nil), turns...)
+	for id, shell := range shells {
+		if present[id] {
+			continue
+		}
+		at := len(merged)
+		for index, turn := range merged {
+			if turnRank, ok := rank[turn.ID]; ok && turnRank > rank[id] {
+				at = index
+				break
+			}
+		}
+		merged = append(merged, appwire.Turn{})
+		copy(merged[at+1:], merged[at:])
+		merged[at] = shell
+	}
+	return merged
 }
 
 // localDaemonSourceIncarnation removes the normalized window fence a daemon
