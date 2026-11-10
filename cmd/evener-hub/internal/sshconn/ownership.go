@@ -602,7 +602,9 @@ func (m *Manager) selectedLockCandidatePID(ctx context.Context, host hostreg.Hos
 // whose process, fdinfo, or selected inode is unavailable.
 func selectedLockCandidateRemote(root, pid string) string {
 	return lockIdentityRemote(root) + lockKeyRemote() + lockPinRemote() +
-		"owners=$(awk -v key=\"$key\" '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $7 == key && !seen[$6]++ { print $6 }' \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null && printf '.') || exit; owners=${owners%.}; " +
+		// grep tolerates a descriptor that closes between the glob and the read;
+		// awk exits nonzero if any file in its argument list is unreadable.
+		"owners=$(grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null | awk -v key=\"$key\" '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
 		lockPinRemote() +
 		"printf '%s' \"$owners\""
 }
