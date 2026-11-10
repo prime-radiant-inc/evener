@@ -1797,3 +1797,36 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 		}
 	})
 }
+
+func TestShellCwdWithShellOperatorsGetsPathHint(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory names with ; are POSIX-only")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "a;b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(env.Cleanup)
+
+	got, err := resolveShellWorkingDir(env, "a;b")
+	if err != nil || got != filepath.Join(root, "a;b") {
+		t.Fatalf("existing directory a;b = %q, %v; want it accepted", got, err)
+	}
+	for _, fragment := range []string{
+		"missing 2>/dev/null || sed -n 1p x",
+		"missing && ls",
+		"missing | head",
+		"missing; ls",
+		"cd missing",
+	} {
+		if _, err := resolveShellWorkingDir(env, fragment); !errors.Is(err, errShellCwdIsCommand) {
+			t.Fatalf("cwd %q error = %v, want errShellCwdIsCommand", fragment, err)
+		}
+	}
+	_, err = resolveShellWorkingDir(env, "missing")
+	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
+		t.Fatalf("plain missing path error = %v, want only errShellCwdNotFound", err)
+	}
+}

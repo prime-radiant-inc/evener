@@ -411,9 +411,30 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
+		if looksLikeShellFragment(raw) {
+			return "", fmt.Errorf("cwd %q is not a directory: %w", raw, errShellCwdIsCommand)
+		}
+		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory: %w", raw, abs, errShellCwdNotFound)
 	}
 	return abs, nil
+}
+
+var (
+	// errShellCwdNotFound: cwd names no existing directory.
+	errShellCwdNotFound = errors.New("cwd directory not found")
+	// errShellCwdIsCommand: cwd holds shell syntax that did not resolve to a
+	// directory. The model meant to put it in command.
+	errShellCwdIsCommand = errors.New("cwd takes one directory path; put cd, redirections and pipelines in command")
+)
+
+// looksLikeShellFragment reports whether a cwd value that failed path
+// validation reads as shell syntax: an operator, or a leading cd.
+func looksLikeShellFragment(raw string) bool {
+	if strings.ContainsAny(raw, "|&;<>`") || strings.Contains(raw, "$(") {
+		return true
+	}
+	fields := strings.Fields(raw)
+	return len(fields) > 1 && fields[0] == "cd"
 }
 
 // shellSingleQuote returns s as one literal word for a POSIX shell. The
