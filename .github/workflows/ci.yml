@@ -18,6 +18,13 @@ permissions:
   contents: read
 
 jobs:
+  # Every job carries a timeout-minutes of about three times its slowest green
+  # run, never under 20, so a hang ends in tens of minutes instead of at the
+  # hosted runner's six-hour limit. They are backstops, not budgets: the timing
+  # ratchet polices speed, and a hung Go test is named by its test binary's own
+  # timeout, which each lane's bound leaves room for. A lane that grows past
+  # a third of its bound needs the bound raised with it.
+  #
   # The frontend gate runs on separate runners, because its halves share
   # nothing: the unit/type/lint checks in one lane, and the production build
   # plus the real-browser guards in web-browser, which is itself split into
@@ -25,6 +32,7 @@ jobs:
   # lane does.
   web-unit:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -95,6 +103,7 @@ jobs:
       matrix:
         shard: [overflow, skill, cascade]
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -149,7 +158,7 @@ jobs:
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
       # So are the background Jobs and job output paging guards'.
       - name: Keep the browser guards' artifacts
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: browser-guards-artifacts-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -168,6 +177,7 @@ jobs:
     if: always()
     needs: [web-unit, web-browser]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require both frontend lanes
         env:
@@ -178,6 +188,7 @@ jobs:
 
   native:
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -199,6 +210,7 @@ jobs:
 
   api-package:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -216,6 +228,7 @@ jobs:
 
   static-build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -240,6 +253,7 @@ jobs:
 
   lint-golangci:
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -299,6 +313,7 @@ jobs:
   # this lane's own kind. `static` requires this lane too.
   lint-tagged:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -345,6 +360,7 @@ jobs:
 
   lint-repository:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -376,6 +392,7 @@ jobs:
   # gates keep their teeth.
   fuzz-checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -400,6 +417,7 @@ jobs:
     if: always()
     needs: [static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every static lane
         env:
@@ -419,6 +437,7 @@ jobs:
       matrix:
         part: [hub, rest]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -453,7 +472,7 @@ jobs:
 
       # Race skips the survey and timing capture, so raw hub output stays here.
       - name: Keep failed hub race logs
-        if: failure() && matrix.part == 'hub'
+        if: (failure() || cancelled()) && matrix.part == 'hub'
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-race-root-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -469,6 +488,7 @@ jobs:
     if: always()
     needs: [race-root-parts]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require both root race lanes
         env:
@@ -485,6 +505,7 @@ jobs:
       matrix:
         scope: [agent, nonagent]
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -497,7 +518,7 @@ jobs:
 
       # Agent race tests are unsharded, and the module log has full got/want.
       - name: Keep failed agent race log
-        if: failure() && matrix.scope == 'agent'
+        if: (failure() || cancelled()) && matrix.scope == 'agent'
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-race-modules-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -513,6 +534,7 @@ jobs:
     if: always()
     needs: [race-module-shards]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every non-root race lane
         env:
@@ -531,6 +553,7 @@ jobs:
       matrix:
         scope: [root, nonroot]
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -553,8 +576,11 @@ jobs:
 
       # Survey failure replay is abbreviated. Keep the full surveys and raw
       # timing-capture shard text, never the surrounding homes or test binaries.
+      # A job stopped at its time limit can end cancelled rather than failed,
+      # and a hang's logs are the ones most worth keeping, so a cancelled job
+      # keeps them too. The same holds for every failed-log step in this workflow.
       - name: Keep failed hub and agent test logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-tests-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -590,6 +616,7 @@ jobs:
   # lane runs it without a timing budget because its wall time tracks the runner.
   hub-integration:
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -607,6 +634,7 @@ jobs:
     if: always()
     needs: [tests-parts, hub-integration]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every test lane
         env:
@@ -617,6 +645,7 @@ jobs:
 
   fuzz:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -645,6 +674,7 @@ jobs:
     if: always() && github.event_name == 'merge_group' && failure()
     needs: [web, tests, static, race-root, race-modules, fuzz]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       # Reads the group's commits and this run's failed jobs, and writes one
       # comment on each member PR. No other job in this workflow gets these.

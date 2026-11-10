@@ -27,12 +27,31 @@ func TestMain(m *testing.M) {
 		_, _ = fmt.Fprintf(os.Stderr, "shardfixture TestMain: %v\n", err)
 		os.Exit(2)
 	}
+	recordTestTimeout()
 	done := announceLiveShard()
 	code := m.Run()
 	if done != nil {
 		done()
 	}
 	os.Exit(code)
+}
+
+// recordTestTimeout, when SHARD_FIXTURE_TIMEOUT_DIR is set, records the
+// -test.timeout this invocation runs under as <role>.<pid>: "shard" for an
+// invocation carrying the run file, "survey" for any other that runs tests.
+// The listing runs no test, so it records nothing. Inert unless the test asks
+// for it.
+func recordTestTimeout() {
+	dir := os.Getenv("SHARD_FIXTURE_TIMEOUT_DIR")
+	if dir == "" || flag.Lookup("test.list").Value.String() != "" {
+		return
+	}
+	role := "survey"
+	if os.Getenv("EVENER_SHARD_RUN_FILE") != "" {
+		role = "shard"
+	}
+	timeout := flag.Lookup("test.timeout").Value.String()
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%d", role, os.Getpid())), []byte(timeout), 0o644)
 }
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run

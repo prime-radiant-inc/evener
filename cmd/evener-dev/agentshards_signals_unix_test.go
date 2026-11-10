@@ -121,6 +121,65 @@ func awaitPidGone(t *testing.T, pid int, label string) {
 	}
 }
 
+// TestAgentShardsHungTestFailsItsRunAndIsNamed pins what the test timeout is
+// for: a test that never returns ends its own process at the timeout instead
+// of holding the run until something outside kills it, the run is red, and
+// what it prints names the test that was running. The shard path replays the
+// failing shard's log; the survey path prints its excerpt. The caller's short
+// -timeout stands in for the 10m default so the hang costs seconds.
+func TestAgentShardsHungTestFailsItsRunAndIsNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		noSurvey bool
+	}{
+		{name: "shard", noSurvey: true},
+		{name: "survey"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.noSurvey = tc.noSurvey
+			cfg.flags = []string{"-timeout=3s"}
+			holdDir := t.TempDir()
+			fifo := filepath.Join(holdDir, "hold.fifo")
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatalf("mkfifo: %v", err)
+			}
+			t.Setenv("SHARD_FIXTURE_HOLD", holdDir)
+
+			done := make(chan int, 1)
+			go func() { done <- runShards(cfg) }()
+			var rc int
+			select {
+			case rc = <-done:
+			case <-time.After(120 * time.Second):
+				// The run is hung on the held test: release it so the run
+				// can end, then fail. A non-blocking open finds no reader
+				// once the holder is gone.
+				if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_, _ = w.WriteString("x")
+					_ = w.Close()
+				}
+				<-done
+				t.Fatalf("the run outlived its held test's 3s timeout by two minutes\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+			}
+			if rc == 0 {
+				t.Fatalf("a run with a hung test exited 0\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+			}
+			out := stdout.String() + stderr.String()
+			if tc.noSurvey {
+				failed := verdictShards(t, stdout.String(), "FAIL")
+				if len(failed) != 1 {
+					t.Fatalf("expected exactly the held test's shard to fail, got %v:\n%s", failed, stdout)
+				}
+				_, out, _ = strings.Cut(stdout.String(), "=== failing shard output ===")
+			}
+			if !strings.Contains(out, "TestFixtureHold") {
+				t.Fatalf("the failure output does not name the hung test\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestAgentShardsSIGTERMExits143RetainsLogsReapsChildren(t *testing.T) {
 	cmd, heldPid, tmp, _ := startHeldRun(t)
 

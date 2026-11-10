@@ -165,6 +165,10 @@ failures into timeout mysteries. The preference hierarchy:
    load-dependent work. Where pacing itself is under test, use the codebase's
    clock abstraction.
 
+A test binary's own `-timeout` (ten minutes by default, under the shard runners
+too) is a tripwire of the same kind: when it fires it names the tests still
+running. Raising it so a slow test fits is the widening this rule forbids.
+
 For a helper process, the await is a pipe on `exec.Cmd.ExtraFiles`: the child
 writes a milestone line after its file barrier exists, and the parent blocks on
 the read. EOF means the child died before signaling, which is the failure to
@@ -563,6 +567,13 @@ root` (`ROOT_FULL=1 WEB=0 make test TEST_SCOPE=root`), `tests / nonroot`
 job passing only when every lane does. `WEB=0` keeps frontend tests from being
 duplicated.
 
+Every CI job carries a `timeout-minutes` of about three times its slowest green
+run, never under twenty minutes, so a hang ends in tens of minutes rather than
+at the hosted runner's six-hour limit. Each bound leaves room for a lane's own
+test timeout to fire first and name the hung test. The failed-log artifact steps
+run when a job fails or is cancelled, which is how a job stopped at its time
+limit can end, so a hang still leaves its logs.
+
 `make test` runs three packages as cost-balanced shards: the agent module,
 `cmd/evener-hub`, and `cmd/evener`. Its test runner invokes the development
 tooling's `agent-shards`, `hub-shards`, and `cli-shards` commands
@@ -577,6 +588,18 @@ binary as a helper keeps its explicit `-test.run`. `AGENT_SHARDS=0`,
 run because another job runs it, and `ROOT_REST=0` skips the root `go test`
 itself: the CI race lanes use them to run the hub on one runner and the rest of
 the root module on another (scripts/lib/gate-root-shards.sh, `RACE_ROOT_PART`).
+
+A sharded package runs under the same test timeout an unsharded one does. `go
+test` gives each package's test binary a ten-minute `-timeout` by default, but
+the shard runner builds the binary once with `go test -c` and runs it itself,
+and a compiled binary's `-test.timeout` defaults to none. So the runner passes
+one to the survey and to every shard: the caller's `-timeout` when the caller
+gave one, ten minutes otherwise. The timeout is a tripwire, not a budget: a test
+that never returns makes its binary panic with the names of the tests still
+running, the shard fails, and the failure replay (or the survey's excerpt, which
+keeps the whole running-tests list) names the hung test. Without one, a hung
+test holds its lane until the CI job's limit and leaves no name behind. Do not
+lower it to police speed; the timing ratchet does that.
 
 A TestMain that dropped the run-file call would still pass, with every shard
 running the whole package; one that made the call before `flag.Parse` would let

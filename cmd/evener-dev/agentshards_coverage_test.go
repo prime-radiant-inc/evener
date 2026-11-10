@@ -302,6 +302,31 @@ func TestReplaySurveyFailuresExpandedBlockKeepsAfterContext(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsEveryRunningTestOfATimeout covers a survey the
+// test timeout ended. The panic's own message lists every test still running,
+// one indented line each, and that list is the only thing in the log naming
+// the hung test: a survey running many tests at once lists more of them than a
+// block's after-context holds.
+func TestReplaySurveyFailuresKeepsEveryRunningTestOfATimeout(t *testing.T) {
+	var log strings.Builder
+	log.WriteString("=== RUN   TestEarlier\n--- PASS: TestEarlier (0.00s)\n")
+	log.WriteString("panic: test timed out after 10m0s\n\trunning tests:\n")
+	var running []string
+	for i := range surveyContextAfter + 4 {
+		name := fmt.Sprintf("TestRunning%02d", i)
+		running = append(running, name)
+		fmt.Fprintf(&log, "\t\t%s (10m0s)\n", name)
+	}
+	log.WriteString("\ngoroutine 1 [running]:\ntesting.(*M).startAlarm.func1()\n\t/go/src/testing/testing.go:2959 +0x1\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	for _, name := range running {
+		if !strings.Contains(got, name) {
+			t.Fatalf("timeout excerpt dropped running test %s:\n%s", name, got)
+		}
+	}
+}
+
 // TestReplaySurveyFailuresPrefersLateParentAssertion covers a parallel log in
 // which earlier diagnostics from the parent or its subtests precede the
 // parent's assertion, while another test's verdict sits immediately before
