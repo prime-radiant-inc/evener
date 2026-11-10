@@ -28,6 +28,7 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import statusRowStyles from "../chrome/statusrow.module.css";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -135,6 +136,12 @@ test("the wide empty composer folds to one line and unfolds on focus", async () 
   act(() => editor.blur());
   await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
   expect(editor.style.minHeight).toBe("1lh");
+});
+
+test("the composer's inline status row packs its facts to the far end", async () => {
+  await mountComposerWithHandle("ref_a");
+  act(() => textarea().focus());
+  await waitFor(() => expect(screen.getByTestId("status-row").className.split(" ")).toContain(statusRowStyles.rowEnd));
 });
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
@@ -546,12 +553,21 @@ test("the Send button's word collapses to the glyph below the compact pane thres
 
 // The model and effort are the session's facts about the next turn, so they
 // sit beside the verbs rather than immediately after the paperclip. The slot
-// spends the free space before it; calling it a "leading" item must not place
-// it at the leading edge.
-test("the session chrome joins the verbs at the row's far end", () => {
+// fills the row so the status facts keep their full width; the row's own
+// `align="end"` places the facts at its far end.
+test("the session chrome fills the expanded row", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*margin-left:\s*auto/);
-  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*flex:\s*0 1 auto/);
+  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*flex:\s*1 1 auto/);
+});
+
+// The folded row is content-sized, so the leading reports an intrinsic width
+// for it. It must keep the `statusbar` query container: phone exited/fenced
+// composers still render activity chips in this slot.
+test("the folded composer keeps the statusbar container the phone chips query", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toMatch(/\.leading\s*\{[^}]*container:\s*statusbar \/ inline-size/);
+  expect(css).toMatch(/\.leading\[data-folded="true"\]\s*\{[^}]*contain-intrinsic-inline-size:/);
+  expect(css).not.toMatch(/\.leading\[data-folded="true"\]\s*\{[^}]*container-type:\s*normal/);
 });
 
 beforeEach(() => {

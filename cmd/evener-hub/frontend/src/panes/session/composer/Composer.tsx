@@ -267,7 +267,11 @@ export function Composer({
   // on a resting row's own controls - the session menu, Send - never counts
   // as editor engagement. The phone collapse below keys on it, so pressing
   // a resting control cannot expand the row out from under that press.
-  const [editorEngaged, setEditorEngaged] = useState(false);
+  // A focused pane's mount autofocus puts the caret in this editor after
+  // paint. Start engaged so the card does not paint folded and then animate
+  // open on every session load; the DOM attribute still follows the real
+  // focus event.
+  const [editorEngaged, setEditorEngaged] = useState(() => focused && !!mountAutofocus && !isMobile);
   const followUpFocusSequenceRef = useRef(0);
 
   // Steer moves into the menu below the phone-width boundary.
@@ -730,8 +734,8 @@ export function Composer({
   // wire shape is notLoaded + send:false, which the capability alone would not
   // render a card for.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
-  // A resting composer folds to one line below; a draft, attachment or
-  // recovery keeps the writing space it needs after blur.
+  // A resting composer folds to one line below; a draft or attachment keeps
+  // the writing space it needs after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
   // The resting shape: an empty composer whose editor is not engaged folds
   // its field and control row onto one line, giving the transcript back the
@@ -753,10 +757,9 @@ export function Composer({
   // own focus, a send in flight, a stalled storage write) brings the full
   // row back; the actions slot never sheds, so Stop stays reachable while a
   // turn runs, and the resting leading never swaps while one of its own
-  // controls is pressed. The exited follow-up keeps its full row at rest:
-  // that surface is the one place on a phone the model picker is directly
-  // reachable without engaging the editor. The desktop layout always keeps
-  // the full row.
+  // controls is pressed. The exited follow-up keeps the model picker in its
+  // resting row: that surface is the one place on a phone the picker is
+  // directly reachable without engaging the editor.
   const controlsCollapsed =
     isMobile &&
     !ended &&

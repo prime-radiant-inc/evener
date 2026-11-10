@@ -758,9 +758,11 @@ test("the composer editing attribute follows the editor, not composer controls",
 
   // Pressing a composer control from an unfocused composer is not editing:
   // the phone footer must stay visible and the dock must not move under it.
-  // Send is on the folded row; Attach only returns with the expanded one.
-  await user.click(screen.getByTestId("composer-submit"));
+  // The session menu is enabled on the folded row (Send is disabled with no
+  // draft); Attach only returns with the expanded one.
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+  await user.keyboard("{Escape}");
 
   // The editor's own focus is the editing signal.
   await act(async () => {

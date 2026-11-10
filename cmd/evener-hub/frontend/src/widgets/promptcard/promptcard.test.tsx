@@ -1,11 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { blockBody, readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
+
+const motionMock = vi.hoisted(() => ({
+  animate: vi.fn((_element: Element, _target: Record<string, string>, _transition: unknown) => ({
+    finished: Promise.resolve(),
+    stop: vi.fn(),
+  })),
+  reduced: false,
+}));
+
+vi.mock("../../motion", () => ({
+  animate: motionMock.animate,
+  spatialTransition: () => ({ duration: 0.24, ease: "easeOut" }),
+  useReducedMotion: () => motionMock.reduced,
+}));
 
 function moduleCss(): string {
   return readModuleCss(import.meta.url, "promptcard.module.css");
@@ -185,4 +199,46 @@ test("the folded card goes one line only when the card has room", () => {
   const oneLine = blockBody(css, css.indexOf("{", queryStart));
   expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
   expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+});
+
+// jsdom has no layout, so the height measurement that drives the transition
+// is stubbed at the browser boundary. The widget's own logic still runs.
+let originalOffsetHeight: PropertyDescriptor | undefined;
+beforeEach(() => {
+  motionMock.reduced = false;
+  motionMock.animate.mockClear();
+  originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.hasAttribute("hidden")) return 0;
+      return this.getAttribute("data-folded") === "true" ? 38 : 90;
+    },
+  });
+});
+
+afterEach(() => {
+  if (originalOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+});
+
+test("folding animates from the card's previous height", () => {
+  const { rerender } = render(<LiveCard />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).toHaveBeenCalledTimes(1);
+  expect(motionMock.animate.mock.calls[0]?.[1]).toEqual({ height: "38px" });
+});
+
+test("a card returning from ask-pending appears without animating", () => {
+  const { rerender } = render(<LiveCard hidden />);
+  motionMock.animate.mockClear();
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
+});
+
+test("reduced motion applies the folded shape without animating", () => {
+  motionMock.reduced = true;
+  const { rerender } = render(<LiveCard />);
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
 });

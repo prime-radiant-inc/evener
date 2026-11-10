@@ -64,24 +64,31 @@ export function PromptCard({
   // changes the shape, while the DOM still holds it, for the effect below to
   // interpolate between two real measurements rather than guess.
   const priorShape = useRef<{ folded: boolean; height: number | null }>({ folded, height: null });
+  const shapeChanged = useRef(false);
+  const hiddenBefore = useRef(hidden);
   const heightAnimation = useRef<ReturnType<typeof animate> | null>(null);
   const reducedMotion = useReducedMotion();
 
   if (priorShape.current.folded !== folded) {
     priorShape.current = { folded, height: cardRef.current?.offsetHeight ?? null };
+    shapeChanged.current = true;
   }
 
   useLayoutEffect(() => {
     const card = cardRef.current;
+    const wasHidden = hiddenBefore.current;
+    hiddenBefore.current = hidden;
+    const changed = shapeChanged.current;
+    shapeChanged.current = false;
     heightAnimation.current?.stop();
     heightAnimation.current = null;
     if (!card) return undefined;
     // Height stays auto at rest: the field's own autogrow and any control
     // change reflow normally. Only the fold switch interpolates.
     card.style.removeProperty("height");
-    const from = priorShape.current.folded === folded ? priorShape.current.height : null;
+    const from = wasHidden ? null : priorShape.current.folded === folded ? priorShape.current.height : null;
     const to = card.offsetHeight;
-    if (hidden || reducedMotion || from === null || Math.abs(to - from) < 1) return undefined;
+    if (!changed || hidden || reducedMotion || from === null || Math.abs(to - from) < 1) return undefined;
     card.style.height = `${from}px`;
     const animation = animate(card, { height: `${to}px` }, spatialTransition());
     heightAnimation.current = animation;

@@ -68,14 +68,6 @@
   overflow: hidden;
 }
 
-/* The composer's folded row sizes this chrome to its content. The .body's
- * inline-size containment normally reports no intrinsic width, which would
- * collapse the chrome to its menu trigger; this fallback width is wide enough
- * for the model and effort pair the folded row must keep visible. */
-.inlineRung .body {
-  contain-intrinsic-inline-size: 320px;
-}
-
 .right {
   display: flex;
   align-items: center;
