@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -180,7 +181,7 @@ func retireOverlapLog(t *testing.T, format string, args ...any) {
 	t.Log(message)
 	path := os.Getenv("EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE")
 	if path == "" {
-		return
+		path = filepath.Join(os.TempDir(), "retire-overlap-phases.tsv")
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

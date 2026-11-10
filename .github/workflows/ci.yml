@@ -558,7 +558,6 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
-          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: ${{ runner.temp }}/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
       # Survey failure replay is abbreviated. Keep the full surveys and raw
@@ -579,6 +578,8 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
+            /dev/shm/evener-module-tests.*/retire-overlap-phases.tsv
+            /tmp/evener-module-tests.*/retire-overlap-phases.tsv
 
       # Same ordering rule as web-unit above: the cache save precedes the
       # timing gate so a budget failure cannot skip the save.
@@ -593,19 +594,6 @@ jobs:
         env:
           BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
         run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
-
-      - name: Keep retirement timing diagnostics
-        if: ${{ always() && matrix.scope == 'root' }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: retire-overlap-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/retire-overlap-phases.tsv
-            /tmp/gate-timing-root.tsv
-          retention-days: 7
-          if-no-files-found: warn
-
-      - uses: ./.github/actions/go-cache-save
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
