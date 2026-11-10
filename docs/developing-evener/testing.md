@@ -1386,6 +1386,17 @@ on nothing else in the repository) and keeps its own helper. A fixture builder
 that wants to prove it never copies a repository while git maintenance is still
 writing into it wraps its runner in `gittest.MaintenanceProbe`.
 
+`gittest.Env` covers only the fixture's own commands. Code under test spawns git
+with the process environment, so a package whose tests run that code against a
+real repository calls `gittest.IsolateProcess` from `TestMain`: it points
+`GIT_CONFIG_GLOBAL` at one file with automatic maintenance and gc off, sets
+`GIT_CONFIG_NOSYSTEM`, and drops ambient config injection, so every git the
+process spawns is isolated the same way. A detached maintenance writer would
+otherwise outlive the command and race the test's cleanup. Pin the wiring with
+`gittest.RequireIsolated`, passing the runner the code under test uses. The
+`agent`, `agent/execenv`, `internal/plugins`, `cmd/evener-hub` and
+`tools/tool-fluency/cmd/evener-fluency` test binaries do this.
+
 ### Adding a worktree test
 
 Default to the scripted boundary. Reach for real git only when you can name the

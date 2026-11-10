@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
@@ -438,6 +439,15 @@ func TestMain(m *testing.M) {
 		return cfg.Logf
 	}
 	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
+	// Every git the hub, its daemons and their sessions spawn inherits this
+	// process's environment. The config file lands in the host temp root,
+	// which hostTemp.Discard removes with everything else.
+	if _, err := gittest.IsolateProcess(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		testEnv.Discard()
+		_ = hostTemp.Discard()
+		os.Exit(1)
+	}
 	// Refuse to start when a default root still resolves outside the throwaway
 	// env: every test from here on would otherwise read and write the
 	// developer's own ~/.config/evener and ~/.local/state/evener, and a failing
