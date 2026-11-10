@@ -46,15 +46,15 @@ func TestDeliversUserMessageDocuments(t *testing.T) {
 
 func TestRowSeesToolResultMediaStaysImageOnlyForGoogle(t *testing.T) {
 	t.Parallel()
-	for _, cap := range []bool{false, true} {
+	for _, capable := range []bool{false, true} {
 		res := registry.Resolved{Protocol: registry.ProtocolGoogle, Caps: registry.Caps{
-			InputModalities: []string{"text", "image", "pdf"}, MultimodalToolResults: new(cap),
+			InputModalities: []string{"text", "image", "pdf"}, MultimodalToolResults: new(capable),
 		}}
 		if DeliversToolResultMedia(res, "application/pdf") || RowSeesToolResultMedia(res, "application/pdf") {
-			t.Fatalf("cap=%v: PDF tool results must still take the side-channel", cap)
+			t.Fatalf("cap=%v: PDF tool results must still take the side-channel", capable)
 		}
-		if got := RowSeesToolResultMedia(res, "image/png"); got != cap {
-			t.Fatalf("cap=%v: image delivery=%v", cap, got)
+		if got := RowSeesToolResultMedia(res, "image/png"); got != capable {
+			t.Fatalf("cap=%v: image delivery=%v", capable, got)
 		}
 	}
 }

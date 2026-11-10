@@ -494,8 +494,8 @@ func scenarioResolveCitedPath(byBase map[string][]string, cited string) []string
 
 // scenarioCitedBaseName is the file name at the end of a citation path.
 func scenarioCitedBaseName(cited string) string {
-	if i := strings.LastIndexByte(cited, '/'); i >= 0 {
-		return cited[i+1:]
+	if _, base, ok := strings.CutLast(cited, "/"); ok {
+		return base
 	}
 	return cited
 }

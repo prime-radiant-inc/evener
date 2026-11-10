@@ -799,8 +799,8 @@ func startAliasRecoveryDaemon(t *testing.T, sessionID, workspaceID string) *alia
 }
 
 func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
-	for _, clear := range []bool{true, false} {
-		t.Run(map[bool]string{true: "clear to a new transcript", false: "stop the same transcript"}[clear], func(t *testing.T) {
+	for _, clearTranscript := range []bool{true, false} {
+		t.Run(map[bool]string{true: "clear to a new transcript", false: "stop the same transcript"}[clearTranscript], func(t *testing.T) {
 			a, b, c := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
 			cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: hubcore.NewResumeLocks()}
 			cfg.Roster = hubcore.NewRoster(cfg.RunDir, &hubcore.StatusProber{})
@@ -850,7 +850,7 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
 				t.Fatal(err)
 			}
-			if clear {
+			if clearTranscript {
 				mu.Lock()
 				current.session.Store(c)
 				current.entry.SessionID = c
@@ -864,7 +864,7 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := cfg.ResumeLocks.RecoveryState(b)
-			if !clear {
+			if !clearTranscript {
 				if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err == nil {
 					t.Fatal("stale connection crossed newer stop")
 				}
@@ -895,7 +895,7 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 			target := current.entry.SessionID
 			mu.Unlock()
 			want := b
-			if clear {
+			if clearTranscript {
 				want = c
 			}
 			if got != 2 || target != want {

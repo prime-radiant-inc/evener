@@ -218,6 +218,9 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	if len(deltaResponseBody) == 0 {
 		t.Fatal("delta canonical response body is empty")
 	}
+	if deltaAttempt.Response.Usage.InputTokens == nil {
+		t.Fatalf("delta canonical response has no input token usage: %+v", deltaAttempt.Response.Usage)
+	}
 
 	omittedInputItemBytes := phase12OmittedInputItemBytes(t, shadowBody, deltaBody)
 	continuationOverheadBytes := phase12ContinuationOverheadBytes(t, deltaBody)
@@ -232,7 +235,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		omittedInputItemBytes,
 		continuationOverheadBytes,
 		netBodyByteSaving,
-		deltaAttempt.Response.Usage.InputTokens,
+		*deltaAttempt.Response.Usage.InputTokens,
 		deltaReq.FullHistoryInputTokensEstimate,
 	)
 }

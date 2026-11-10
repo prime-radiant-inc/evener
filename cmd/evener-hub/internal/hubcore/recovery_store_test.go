@@ -85,16 +85,16 @@ func TestPersistentRecoveryRejectsCorruptAuthority(t *testing.T) {
 }
 
 func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
-	for _, clear := range []bool{false, true} {
+	for _, persistClear := range []bool{false, true} {
 		for _, renamed := range []bool{false, true} {
-			t.Run(map[bool]string{false: "intent", true: "clear"}[clear]+map[bool]string{false: " before rename", true: " after rename"}[renamed], func(t *testing.T) {
+			t.Run(map[bool]string{false: "intent", true: "clear"}[persistClear]+map[bool]string{false: " before rename", true: " after rename"}[renamed], func(t *testing.T) {
 				root := t.TempDir()
 				locks, err := NewPersistentResumeLocks(root)
 				if err != nil {
 					t.Fatal(err)
 				}
 				finish := locks.BeginForceStop([]string{"A", "B"})
-				if clear {
+				if persistClear {
 					if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 						t.Fatal(err)
 					}
@@ -107,7 +107,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 				} else {
 					locks.store.faults.BeforeRename = fail
 				}
-				if clear {
+				if persistClear {
 					err = locks.ExplicitResumeCompleted("A", locks.RecoveryState("A").Epoch)
 				} else {
 					err = locks.PersistForceStop([]string{"A", "B"}, "B")
@@ -119,7 +119,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 				if state := locks.RecoveryState("A"); state.ResumeRequired && state.ResumeSessionID != "B" {
 					t.Fatalf("memory lost target after uncertain write: %+v", state)
 				}
-				if got := locks.RecoveryState("A").ResumeRequired; got != (clear || renamed) {
+				if got := locks.RecoveryState("A").ResumeRequired; got != (persistClear || renamed) {
 					t.Fatalf("memory obligation=%v", got)
 				}
 				reopened, err := NewPersistentResumeLocks(root)
@@ -129,12 +129,12 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 				if state := reopened.RecoveryState("A"); state.ResumeRequired && state.ResumeSessionID != "B" {
 					t.Fatalf("disk lost target after uncertain write: %+v", state)
 				}
-				wantDisk := renamed != clear
+				wantDisk := renamed != persistClear
 				if got := reopened.RecoveryState("A").ResumeRequired; got != wantDisk {
 					t.Fatalf("reopened obligation=%v want=%v", got, wantDisk)
 				}
 				locks.store.faults = recoveryStoreFaults{}
-				if clear {
+				if persistClear {
 					if err := locks.ExplicitResumeCompleted("A", locks.RecoveryState("A").Epoch); err != nil {
 						t.Fatal(err)
 					}
