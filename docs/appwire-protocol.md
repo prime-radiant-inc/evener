@@ -4584,6 +4584,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `title` | string | yes |  |
 | `cause` | \*[appwire.DiagnosticCause](#diagnosticcause) | yes |  |
+| `resumesAt` | int64 | yes |  |
 
 
 ### `ThreadForceStopParams`

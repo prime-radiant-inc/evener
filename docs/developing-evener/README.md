@@ -12,8 +12,8 @@ Keep those references current when changing the behavior they describe.
   and the frontend install prerequisite they share with the frontend test
   gates.
 - **[testing.md](testing.md)** — the test reliability policy, the
-  post-merge gate, the test-family targets, and the gates that are not make
-  targets.
+  post-merge gate, the test-family targets, the gates that are not make
+  targets, and the CI cache budget.
 - **[linting.md](linting.md)** — the static checks that gate merges without
   running tests: formatting, generated-output freshness, compile floors, and
   the repo secret scan.

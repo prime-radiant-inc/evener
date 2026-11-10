@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // TestRenderWideTableForTargetsWithFields is the populated shape: a target
@@ -13,7 +15,7 @@ import (
 // summary in the second column (ruling R25 — spec §3's own example predates
 // it and shows five).
 func TestRenderWideTableForTargetsWithFields(t *testing.T) {
-	targets := []Target{{
+	targets := []makefile.Target{{
 		Name:      "lint",
 		Summary:   "Go lint, formatting, tagged floors, generated outputs, and secrets.",
 		Proves:    "TOML naming; gofmt over every tracked .go file.",
@@ -38,7 +40,7 @@ func TestRenderWideTableForTargetsWithFields(t *testing.T) {
 // byte-identical and `make lint` passed. Keep the summary in a published
 // column, or that hole reopens for every fielded target in the repository.
 func TestRenderWideTablePublishesTheSummary(t *testing.T) {
-	targets := []Target{{
+	targets := []makefile.Target{{
 		Name:    "coverage-floor",
 		Summary: "The repo's one coverage ratchet.",
 		Proves:  "Per-module statement coverage against its floor.",
@@ -66,7 +68,7 @@ func TestRenderWideTablePublishesTheSummary(t *testing.T) {
 // TestRenderMixedFamilyPutsCompactListAfterWideTable for the shape where
 // the heading is warranted.
 func TestRenderCompactListForSummaryOnlyTargets(t *testing.T) {
-	targets := []Target{{
+	targets := []makefile.Target{{
 		Name:    "clean",
 		Summary: "Remove the built binaries from the repo root.",
 	}}
@@ -85,7 +87,7 @@ func TestRenderCompactListForSummaryOnlyTargets(t *testing.T) {
 // summary-only target (also in file order) — never mixed into the same
 // table, and never appearing as empty cells in the wide one.
 func TestRenderMixedFamilyPutsCompactListAfterWideTable(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "build", Summary: "Build the binary.", Proves: "It compiles.", Trigger: "CI.", Requires: "Go.", FailsWhen: "Build fails."},
 		{Name: "clean", Summary: "Remove the built binary."},
 	}
@@ -112,7 +114,7 @@ func TestRenderMixedFamilyPutsCompactListAfterWideTable(t *testing.T) {
 // repo chore, none a gate, so its README.md region is the compact list with
 // no heading at all.
 func TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable(t *testing.T) {
-	targets := []Target{
+	targets := []makefile.Target{
 		{Name: "fuzz-ledger", Summary: "Pretty-print the triage ledger."},
 		{Name: "fuzz-nightly", Summary: "Run the unbounded coverage-guided search."},
 	}
@@ -141,7 +143,7 @@ func TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable(t *testing.T) {
 // into extra (broken) columns. Defend against that rather than assume it
 // never happens.
 func TestRenderEscapesPipeInCellText(t *testing.T) {
-	targets := []Target{{
+	targets := []makefile.Target{{
 		Name:    "build",
 		Summary: "Build A | B.",
 	}}
@@ -166,7 +168,7 @@ func TestRenderEncodesTargetNamesInsideCommandCells(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := Render([]Target{{Name: tt.name, Summary: "Run it."}})
+			got := Render([]makefile.Target{{Name: tt.name, Summary: "Run it."}})
 			want := "| Command | Summary |\n" +
 				"| --- | --- |\n" +
 				"| " + tt.wantCommand + " | Run it. |"

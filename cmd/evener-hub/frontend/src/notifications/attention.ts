@@ -55,16 +55,6 @@ export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[]
   return snapshot;
 }
 
-/** Compatibility seam for the notification owner during the migration. */
-export function snapshotFromTree(input: unknown): Map<string, AttentionEntry> {
-  if (Array.isArray(input)) return snapshotFromNavigation(input as NavigationSessionSummary[]);
-  if (input && typeof input === "object" && "needs_you" in input) {
-    const rows = (input as { needs_you?: unknown }).needs_you;
-    return Array.isArray(rows) ? snapshotFromNavigation(rows as NavigationSessionSummary[]) : new Map();
-  }
-  return new Map();
-}
-
 function isLoud(entry: AttentionEntry, loudScope: NotificationsLoudScopePref): boolean {
   return (
     loudScope === "all" || entry.askPending || entry.approvalPending || entry.needsResponse || entry.level === "error"

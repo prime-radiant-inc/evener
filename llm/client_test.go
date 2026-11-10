@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 type fakeAdapter struct {
@@ -1022,5 +1024,87 @@ func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 		if i2 > i1 {
 			t.Fatalf("expected mw2 to observe %s before mw1; mw2=%d mw1=%d (order=%v)", ev, i2, i1, order)
 		}
+	}
+}
+
+// ReleaseSessionAPILog asks every middleware that routes session API logs to
+// release the session, and reports what they fail with.
+func TestReleaseSessionAPILogReleasesEveryMiddleware(t *testing.T) {
+	releaseErr := errors.New("release failed")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"released", nil},
+		{"release fails", releaseErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient()
+			var released []string
+			c.Use(&sessionReleasingMiddleware{onRelease: func(id string) error {
+				released = append(released, id)
+				return tc.err
+			}})
+			if err := c.ReleaseSessionAPILog("sess-a"); !errors.Is(err, tc.err) || (tc.err == nil) != (err == nil) {
+				t.Fatalf("ReleaseSessionAPILog = %v, want %v", err, tc.err)
+			}
+			if len(released) != 1 || released[0] != "sess-a" {
+				t.Fatalf("released = %v, want [sess-a]", released)
+			}
+		})
+	}
+}
+
+// sessionReleasingMiddleware implements Middleware and sessionAPILogReleaser.
+type sessionReleasingMiddleware struct {
+	onRelease func(string) error
+}
+
+func (m *sessionReleasingMiddleware) WrapComplete(next CompleteFunc) CompleteFunc { return next }
+func (m *sessionReleasingMiddleware) WrapStream(next StreamFunc) StreamFunc       { return next }
+func (m *sessionReleasingMiddleware) ReleaseSession(id string) error              { return m.onRelease(id) }
+
+// A provider operation begun without a context still gets one, owning a fresh
+// attempt group bound to the client's sink middleware.
+func TestBeginProviderOperationOwnsAGroupForANilContext(t *testing.T) {
+	c := NewClient()
+	sink := &sinkMiddleware{sink: &recordingAPIAttemptSink{}}
+	c.Use(sink)
+	var input context.Context
+	ctx, op := c.beginProviderOperation(input)
+	if ctx == nil {
+		t.Fatal("beginProviderOperation(nil) should return a non-nil context")
+	}
+	if op == nil {
+		t.Fatal("beginProviderOperation should return a non-nil operation when a sink is present")
+	}
+	if !op.ownsGroup || op.group == nil || apiAttemptGroupFromContext(ctx) != op.group {
+		t.Fatalf("operation = %+v, context group = %p; want one owned attached group", op, apiAttemptGroupFromContext(ctx))
+	}
+	state, _ := ctx.Value(apiAttemptSinkContextKey{}).(apiAttemptSinkContext)
+	if state.sink != sink {
+		t.Fatalf("context sink = %T %p, want middleware %p", state.sink, state.sink, sink)
+	}
+}
+
+type sinkMiddleware struct {
+	sink *recordingAPIAttemptSink
+}
+
+func (m *sinkMiddleware) WrapComplete(next CompleteFunc) CompleteFunc { return next }
+func (m *sinkMiddleware) WrapStream(next StreamFunc) StreamFunc       { return next }
+func (m *sinkMiddleware) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
+	return m.sink.AppendAttempt(ctx, rec)
+}
+func (m *sinkMiddleware) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
+	return m.sink.AppendSettlement(ctx, rec)
+}
+
+// A nil client has no middleware to read: the snapshot helper is what every
+// entry point consults, so it must answer nil rather than dereference.
+func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
+	var c *Client
+	if got := c.middlewareSnapshot(); got != nil {
+		t.Fatalf("nil client middleware = %v, want nil", got)
 	}
 }

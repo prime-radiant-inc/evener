@@ -36,7 +36,7 @@ import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
 import { openTopLevelSession } from "./sessionPlacement";
-import { resetMobileViewportForTests } from "./useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "./useIsMobile";
 import {
   consumePaneFocus,
   documentPaneState,
@@ -2264,7 +2264,7 @@ test.each(["session", "explicit settings route"])(
       component: lazy(() => Promise.resolve({ default: DocFixture })),
     });
     vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: query === "(max-width: 899px)",
+      matches: query === MOBILE_QUERY,
       media: query,
       onchange: null,
       addListener: () => {},

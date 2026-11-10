@@ -5,7 +5,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { Switch } from "./index";
 
 function ControlledSwitch(props: { onChange?: (checked: boolean) => void; disabled?: boolean }) {
@@ -202,7 +203,11 @@ test("the unchecked track background is --field", () => {
 test("the clickable label gets the coarse-pointer touch floor", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "switch.module.css"), "utf8");
-  const tapFloor = [...css.matchAll(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/g)]
+  const tapFloor = [
+    ...css.matchAll(
+      new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`, "g"),
+    ),
+  ]
     .map((block) => block[1])
     .join("\n");
   expect(tapFloor).toMatch(/\.label\s*\{[^}]*min-height: var\(--tap-min\)/);
@@ -211,11 +216,15 @@ test("the clickable label gets the coarse-pointer touch floor", () => {
 test("keeps the native mobile button at the touch floor without enlarging the painted track", () => {
   const css = readModuleCss(import.meta.url, "switch.module.css");
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.control\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
   expect(css).toMatch(/\.control\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.control\\s*\\{[^}]*width:\\s*var\\(--tap-min\\)[^}]*min-width:\\s*var\\(--tap-min\\)[^}]*height:\\s*var\\(--tap-min\\)[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
   expect(css).toMatch(/\.control:focus-visible\s*\{/);
   expect(css).toMatch(/\.track\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);

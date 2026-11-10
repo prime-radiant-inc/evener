@@ -1,9 +1,8 @@
 import type { AnsiByteRow, AnsiByteRows, AnsiByteState, DecodedJobOutputPage } from "@evener/appwire-client";
-import { ANSI_BYTE_FRAGMENT_BYTES, parseAnsiByteRows } from "@evener/appwire-client";
+import { parseAnsiByteRows } from "@evener/appwire-client";
 
 export const JOB_LOG_PAGE_BYTES = 64 * 1024;
 export const JOB_LOG_WINDOW_BYTES = 512 * 1024;
-export const JOB_LOG_FRAGMENT_BYTES = ANSI_BYTE_FRAGMENT_BYTES;
 
 export type JobLogRow = AnsiByteRow;
 export type JobLogByteWindow = {
@@ -48,6 +47,35 @@ export type JobLogDemandGap = {
   geometric: boolean;
 };
 
+// The one boundary invariant both wheel directions share: when the reading
+// position has moved past a gap's adjacent loaded row just far enough that the
+// unloaded marker is off-screen, page from that gap. "Backward" looks at the
+// row after the gap and the viewport top; "forward" at the row before the gap
+// and the viewport bottom. The one-viewport allowance keeps a reader deeper
+// inside the loaded window from teleporting to the gap.
+function geometricBoundaryGap(input: {
+  rows: readonly JobLogDemandRow[];
+  gaps: readonly JobLogGapCandidate[];
+  geometry: JobLogBoundaryGeometry;
+  direction: "backward" | "forward";
+}): JobLogDemandGap {
+  const { rows, gaps, geometry, direction } = input;
+  const edge = direction === "backward" ? geometry.viewportTop : geometry.viewportTop + geometry.viewportHeight;
+  for (const { row, index } of gaps) {
+    const adjacentIndex = index + (direction === "backward" ? 1 : -1);
+    const adjacent = rows[adjacentIndex];
+    if (adjacent?.kind !== "output") continue;
+    if (direction === "backward" ? adjacent.row.offsetBytes !== row.endBytes : adjacent.row.endBytes !== row.startBytes)
+      continue;
+    const bottom = geometry.rowBottom(adjacentIndex);
+    if (bottom === undefined) continue;
+    const distance = direction === "backward" ? edge - bottom : bottom - edge;
+    if (distance < 0 || distance > geometry.viewportHeight) continue;
+    return { index, geometric: true };
+  }
+  return { index: -1, geometric: false };
+}
+
 /** The unloaded gap a scroll at this position must page from.
  *
  * A gap is demanded when its marker is on screen, when the reading position
@@ -72,6 +100,9 @@ export function jobLogDemandGapIndex(input: {
   for (const { row, index } of gaps) {
     if (row.startBytes === markerStartBytes || crossed(row)) return { index, geometric: false };
   }
+  // Without a prior capture or a byte offset there is no travel direction to
+  // classify; a following reader is at the live bottom, not at a retained gap.
+  if (previous === null || following || byteOffset === undefined) return { index: -1, geometric: false };
   // A backward wheel that reaches the loaded window's start can leave the
   // unloaded marker just above the viewport: measuring the rows the wheel
   // scrolled past adjusts the offset to keep the visible content still, and the
@@ -80,20 +111,14 @@ export function jobLogDemandGapIndex(input: {
   // page from the gap above it even though the marker cannot be seen. Without
   // this, the wheel that reached the boundary strands the reader until an
   // unrelated scroll reveals the marker again.
-  if (previous === null || following || byteOffset === undefined || byteOffset >= previous.byteOffset)
-    return { index: -1, geometric: false };
-  for (const { row, index } of gaps) {
-    const next = rows[index + 1];
-    if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) continue;
-    const bottom = geometry.rowBottom(index + 1);
-    if (bottom === undefined) continue;
-    // The first loaded row must be fully above the viewport, but only just: a
-    // row more than a viewport above means the reader is inside the loaded
-    // window, where scrolling to the gap would teleport it.
-    const distance = geometry.viewportTop - bottom;
-    if (distance < 0 || distance > geometry.viewportHeight) continue;
-    return { index, geometric: true };
-  }
+  if (byteOffset < previous.byteOffset) return geometricBoundaryGap({ rows, gaps, geometry, direction: "backward" });
+  // The same measurement race runs the other way on a forward wheel toward the
+  // live window: the marker can end up just below the viewport, with the last
+  // loaded row before it still on screen and its bottom below the viewport
+  // bottom. No marker is visible and no gap was crossed, so page from the gap
+  // below that row (#4825).
+  if (byteOffset > previous.byteOffset && !previous.following)
+    return geometricBoundaryGap({ rows, gaps, geometry, direction: "forward" });
   return { index: -1, geometric: false };
 }
 

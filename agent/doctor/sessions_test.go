@@ -718,3 +718,65 @@ func TestDoctorSessionsCancelDuringSessionRead(t *testing.T) {
 		t.Errorf("cancelled census returned partial data: %+v", res)
 	}
 }
+
+// sessionModels reports the creation model and, when it differs, the current
+// model.
+func TestSessionModels(t *testing.T) {
+	cases := []struct {
+		name       string
+		headerMeta string
+		metaModel  string
+		want       []string
+	}{
+		{"both empty", "", "", nil},
+		{"header only", "claude-a", "", []string{"claude-a"}},
+		{"meta only", "", "claude-b", []string{"claude-b"}},
+		{"same model", "claude-a", "claude-a", []string{"claude-a"}},
+		{"mismatched", "claude-a", "claude-b", []string{"claude-a", "claude-b"}},
+	}
+	for _, tc := range cases {
+		got := sessionModels(tc.headerMeta, tc.metaModel)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: sessionModels(%q,%q) = %v, want %v", tc.name, tc.headerMeta, tc.metaModel, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: sessionModels(%q,%q)[%d] = %q, want %q", tc.name, tc.headerMeta, tc.metaModel, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+// A result call whose arguments do not parse has no outcome, the same as a
+// session with no result call; a decision the call carries is surfaced.
+func TestFormatOutcome(t *testing.T) {
+	if got := formatOutcome(json.RawMessage(`{not json`)); got != "none" {
+		t.Errorf("formatOutcome(malformed) = %q, want none", got)
+	}
+	plain := formatOutcome(json.RawMessage(`{"end_turn":true}`))
+	decided := formatOutcome(json.RawMessage(`{"end_turn":true,"output":{"decision":"approve-sentinel"}}`))
+	if !strings.Contains(decided, "approve-sentinel") || !strings.HasPrefix(decided, plain) {
+		t.Errorf("formatOutcome(decision) = %q, want %q plus the decision", decided, plain)
+	}
+}
+
+// A session whose jobs or delegates journal cannot be read is listed as
+// unreadable, never dropped and never shown as a healthy row.
+func TestListSessionsReportsASessionWithACorruptJournalUnreadable(t *testing.T) {
+	for _, journal := range []string{"jobs.jsonl", "delegates.jsonl"} {
+		t.Run(journal, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, hash1)
+			writeSessionsFixtureSession(t, bucket, sidA, transcript.Header{CreatedAt: time.Unix(1, 0).UTC()}, nil, schema.SessionMeta{}, nil, time.Unix(2, 0).UTC())
+			writeFile(t, filepath.Join(bucket, "sessions", sidA, journal), "{not json}\n")
+			res, err := ListSessions(context.Background(), base, SessionsOpts{})
+			if err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+			if len(res.Sessions) != 0 || len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sidA {
+				t.Fatalf("sessions = %d, unreadable = %+v; want the session listed unreadable", len(res.Sessions), res.Unreadable)
+			}
+		})
+	}
+}

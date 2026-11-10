@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { ListRow, type ListRowProps } from "./index";
 
 function css(): string {
@@ -232,7 +233,10 @@ test("the collection meta line is mono and truncates", () => {
 });
 
 test("mobile: interactive and collection rows reach the 44px tap floor", () => {
-  const mobile = /@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css())?.[1] ?? "";
+  const mobile =
+    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`).exec(
+      css(),
+    )?.[1] ?? "";
   expect(mobile).toMatch(/\.collection,\s*\.interactive\s*\{[^}]*min-height: var\(--tap-min\)/);
 });
 

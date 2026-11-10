@@ -15,6 +15,7 @@ import {
 import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
@@ -576,7 +577,7 @@ afterEach(() => {
 test.each([false, true])("repeated composer /status targets its ref, phone=%s", async (mobile) => {
   vi.stubGlobal("matchMedia", (media: string) => ({
     media,
-    matches: mobile && media === "(max-width: 899px)",
+    matches: mobile && media === MOBILE_QUERY,
     addEventListener: () => {},
     removeEventListener: () => {},
   }));

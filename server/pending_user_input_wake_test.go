@@ -28,7 +28,7 @@ func TestSubmitPendingUserInput_DeliveredOnceTheSlotFrees(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
 	// Occupy the single slot with unrelated input.
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 	srv.SubmitPendingUserInput("session-under-full-slot")
 
 	occupant := <-srv.InputCh()
@@ -60,7 +60,7 @@ func TestSubmitPendingUserInput_DeliveredOnceTheSlotFrees(t *testing.T) {
 func TestSubmitPendingUserInput_RepeatedDropsWakeOnce(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 	for range 5 {
 		srv.SubmitPendingUserInput("session-under-full-slot")
 	}
@@ -95,7 +95,7 @@ func TestSubmitPendingUserInput_RepeatedDropsWakeOnce(t *testing.T) {
 // client's turn/queue response behind the serve loop.
 func TestSubmitPendingUserInput_DoesNotBlockItsCaller(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 
 	returned := make(chan struct{})
 	go func() {
@@ -145,7 +145,7 @@ func TestQueuedInputRunsAfterItsWakeIsDropped(t *testing.T) {
 
 	// Occupy the one slot, exactly as a job-completion notification does while a
 	// question is pending. That occupant is what makes the wake below drop.
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID:   "cm-queued-under-full-slot",

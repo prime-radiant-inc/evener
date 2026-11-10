@@ -1,9 +1,9 @@
 name: Setup Go and Node toolchain
 description: >-
-  setup-go pinned to go.work plus setup-node 22 with the hub frontend's npm
-  cache. Used by every job that builds or tests both the Go and web sides.
-  With go-cache-kind it also restores that kind's Go caches through
-  go-cache-restore, and the job must run go-cache-save after its Go work.
+  setup-go pinned to go.work plus setup-node 22. Used by every job that builds
+  or tests both the Go and web sides. With go-cache-kind it also restores that
+  kind's Go caches through go-cache-restore, and the job must run
+  go-cache-save after its Go work.
 inputs:
   go-cache-kind:
     description: >-
@@ -23,8 +23,7 @@ runs:
       with:
         kind: ${{ inputs.go-cache-kind }}
 
+    # No npm cache: see "CI Caches" in docs/developing-evener/testing.md.
     - uses: actions/setup-node@v7
       with:
         node-version: "22"
-        cache: npm
-        cache-dependency-path: cmd/evener-hub/frontend/package-lock.json

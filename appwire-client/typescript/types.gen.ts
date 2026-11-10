@@ -2543,6 +2543,7 @@ export interface NavigationFailure {
   cause_kind?: string;
   provider?: string;
   status?: number;
+  resumes_at?: string;
 }
 
 export interface NavigationInvalidatedPayload {
@@ -4566,6 +4567,7 @@ export interface ThreadCompactStartParams {
 export interface ThreadFailure {
   title?: string;
   cause?: DiagnosticCause;
+  resumesAt?: number;
 }
 
 export interface ThreadForceStopParams {

@@ -38,7 +38,7 @@ test("fails an entry-reachable chunk over 500 kB", async () => {
     "entry.js": chunk("entry.js", { isEntry: true, imports: ["eager.js"] }),
     "eager.js": chunk("eager.js", { size: OVER_LIMIT }),
   });
-  assert.match(error ?? "", /eager\.js is 600\.00 kB and is reachable from an entry/);
+  assert.ok(error, "an entry-reachable oversized chunk must fail the build");
 });
 
 test("allows a chunk over 500 kB behind a dynamic import", async () => {

@@ -31,6 +31,16 @@ const (
 	HookPreCompact HookEvent = "PreCompact"
 	// HookNotification fires on a notification.
 	HookNotification HookEvent = "Notification"
+	// HookSubagentStart fires when a subagent starts.
+	HookSubagentStart HookEvent = "SubagentStart"
+	// HookPostToolUseFailure fires after a tool use fails.
+	HookPostToolUseFailure HookEvent = "PostToolUseFailure"
+	// HookPostToolBatch fires after a round of tool calls completes.
+	HookPostToolBatch HookEvent = "PostToolBatch"
+	// HookStopFailure fires when a turn stops because of an error.
+	HookStopFailure HookEvent = "StopFailure"
+	// HookPostCompact fires after compaction.
+	HookPostCompact HookEvent = "PostCompact"
 )
 
 // SessionStartKind is the matcher target used for SessionStart hooks.
@@ -52,15 +62,20 @@ const (
 // validHookEvents is the set of event names that evener fires today.
 // An event in recognizedClaudeEvents but not here is "recognized but unsupported."
 var validHookEvents = map[HookEvent]bool{
-	HookPreToolUse:       true,
-	HookPostToolUse:      true,
-	HookStop:             true,
-	HookSubagentStop:     true,
-	HookUserPromptSubmit: true,
-	HookSessionStart:     true,
-	HookSessionEnd:       true,
-	HookPreCompact:       true,
-	HookNotification:     true,
+	HookPreToolUse:         true,
+	HookPostToolUse:        true,
+	HookStop:               true,
+	HookSubagentStop:       true,
+	HookUserPromptSubmit:   true,
+	HookSessionStart:       true,
+	HookSessionEnd:         true,
+	HookPreCompact:         true,
+	HookNotification:       true,
+	HookSubagentStart:      true,
+	HookPostToolUseFailure: true,
+	HookPostToolBatch:      true,
+	HookStopFailure:        true,
+	HookPostCompact:        true,
 }
 
 // recognizedClaudeEvents is the full set of event names documented by Claude Code
@@ -69,37 +84,40 @@ var validHookEvents = map[HookEvent]bool{
 // Tier: evener-native (the recognition and classification machinery).
 var recognizedClaudeEvents = map[HookEvent]bool{
 	// Implemented by evener (also in validHookEvents):
-	HookPreToolUse:       true,
-	HookPostToolUse:      true,
-	HookStop:             true,
-	HookSubagentStop:     true,
-	HookUserPromptSubmit: true,
-	HookSessionStart:     true,
-	HookSessionEnd:       true,
-	HookPreCompact:       true,
-	HookNotification:     true,
+	HookPreToolUse:         true,
+	HookPostToolUse:        true,
+	HookStop:               true,
+	HookSubagentStop:       true,
+	HookUserPromptSubmit:   true,
+	HookSessionStart:       true,
+	HookSessionEnd:         true,
+	HookPreCompact:         true,
+	HookNotification:       true,
+	HookSubagentStart:      true,
+	HookPostToolUseFailure: true,
+	HookPostToolBatch:      true,
+	HookStopFailure:        true,
+	HookPostCompact:        true,
 	// reserved-placeholder: recognized but not yet fired by evener:
 	"Setup":               true,
 	"InstructionsLoaded":  true,
 	"UserPromptExpansion": true,
 	"MessageDisplay":      true,
 	"PermissionRequest":   true,
-	"PostToolUseFailure":  true,
-	"PostToolBatch":       true,
 	"PermissionDenied":    true,
-	"SubagentStart":       true,
 	"TaskCreated":         true,
 	"TaskCompleted":       true,
-	"StopFailure":         true,
 	"TeammateIdle":        true,
 	"ConfigChange":        true,
 	"CwdChanged":          true,
 	"FileChanged":         true,
 	"WorktreeCreate":      true,
 	"WorktreeRemove":      true,
-	"PostCompact":         true,
 	"Elicitation":         true,
 	"ElicitationResult":   true,
+	"DirectoryAdded":      true,
+	"PreModelSwitch":      true,
+	"PostModelSwitch":     true,
 }
 
 // hookEventTier maps each known event to its compatibility tier.

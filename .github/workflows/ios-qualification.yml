@@ -52,14 +52,16 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.work
+          # No Go or npm cache: this workflow runs only on pull requests,
+          # whose saves serve only themselves (see "CI Caches" in
+          # docs/developing-evener/testing.md).
+          cache: false
       - name: Set up Node 22.13.1
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.13.1"
-          cache: npm
-          cache-dependency-path: mobile-native/package-lock.json
       - name: Set up Ruby 3.3.6 and locked gems
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: "3.3.6"
           bundler: "2.7.2"

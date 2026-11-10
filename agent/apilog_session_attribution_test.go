@@ -92,7 +92,7 @@ func TestSessionAuxiliaryModelCallsAttributeToSessionAPILog(t *testing.T) {
 					Prompt:  "summarize $MESSAGE",
 				})
 				s.hookRunner = runner
-				s.runNotificationHook(context.Background(), "warning")
+				s.runNotificationHook(context.Background(), "warning", "")
 				return nil
 			},
 		},

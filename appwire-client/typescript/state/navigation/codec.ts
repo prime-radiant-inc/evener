@@ -202,6 +202,7 @@ const FAILURE_KEYS = valueRecordKeys<NavigationFailure>({
   cause_kind: "optional",
   provider: "optional",
   status: "optional",
+  resumes_at: "optional",
 });
 const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
   {
@@ -353,14 +354,16 @@ const questionValue = (value: unknown): boolean =>
   );
 
 // Mirrors navigationFailureValid: a title of 1 to 80 characters or a cause kind
-// (at least one), cause identities, and a safe non-negative status.
+// (at least one), cause identities, a safe non-negative status, and a quota
+// wait's resume time as the hub's RFC 3339 timestamp.
 const failureValue = (value: unknown): boolean =>
   knownKeys(value, FAILURE_KEYS) &&
   (value.title !== undefined || value.cause_kind !== undefined) &&
   optional(value.title, (item) => boundedString(item, 80) && item !== "") &&
   optional(value.cause_kind, (item) => identity(item)) &&
   optional(value.provider, (item) => identity(item)) &&
-  optional(value.status, count);
+  optional(value.status, count) &&
+  optional(value.resumes_at, rfc3339Timestamp);
 
 // sessionFieldsValue checks every field of a session summary except its
 // children, whose rule depends on where the summary travels.

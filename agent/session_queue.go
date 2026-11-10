@@ -389,6 +389,17 @@ func (s *Session) deliverHookUserMessage(text string) {
 	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
+// hookStopText trims a hook's stop reason and supplies the event's fallback when
+// it is empty, so every site that ends an action on continue:false reports it
+// the same way. It does not deliver: the call sites need the text as well as the
+// warning.
+func (s *Session) hookStopText(reason, fallback string) string {
+	if trimmed := strings.TrimSpace(reason); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
 // queuedInput is one entry on the per-session input queue. Text and Images
 // are forwarded together when the entry is drained as a fresh user turn.
 // Provenance carries the causal watch origin (nil for human-typed input) so a
@@ -740,6 +751,7 @@ func (cfg queuedInputDrainConfig) nextTurnContext() context.Context {
 }
 func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()
+	s.noteSteeringDrainLocked()
 	if len(s.steeringQueue) == 0 {
 		s.mu.Unlock()
 		return nil

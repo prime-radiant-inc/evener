@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -503,7 +505,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// publication claims exactly that generation, note generation
 			// included — even for an empty note. A FORCED operation is never
 			// captured here; only its round-tail dispatch claims it.
-			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn); err != nil {
 				s.emit(bareWarningDataFromError("context strategy error", err))
@@ -956,7 +958,43 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
+
+	// StopFailure, the event an operator uses to log a failed turn and send an
+	// alert. It fires after the failure boundary, still in the terminal branch,
+	// so a hook's own duration cannot inflate the failed turn's recorded duration
+	// or delay the idle transition. It fires instead of Stop: a failed turn never
+	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
+	// outside s.mu, and every output they produce is discarded — the turn is
+	// already over, so nothing can steer or stop it.
+	if s.hookRunner != nil {
+		hi := s.hookInput(plugin.HookStopFailure)
+		hi.Error = hooks.ClaudeErrorName(err)
+		hi.ErrorDetails = hookErrorDetails(err)
+		// last_assistant_message is the failure text the conversation records,
+		// trimmed exactly as TurnFailureInfo.Message trims it, not err.Error():
+		// a hook must see what the reader sees.
+		hi.LastAssistantMessage = strings.TrimSpace(errData.Error)
+		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
+	}
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// hookErrorDetails renders a failed model call as the StopFailure
+// error_details value: the HTTP status and provider error code, whichever are
+// known, never a value the error does not carry. It is empty when neither is.
+func hookErrorDetails(err error) string {
+	var providerErr llm.Error
+	if !errors.As(err, &providerErr) {
+		return ""
+	}
+	var parts []string
+	if status := providerErr.StatusCode(); status != 0 {
+		parts = append(parts, fmt.Sprintf("status=%d", status))
+	}
+	if code := strings.TrimSpace(providerErr.ErrorCode()); code != "" {
+		parts = append(parts, "code="+code)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // isProviderTerminalError identifies the wrapper returned by handleModelError
@@ -1631,7 +1669,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// precedes.
 	// The content-filter recovery fold captures no compaction operation —
 	// it is not any intent's requesting caller.
-	_, _ = s.foldWithForceCompact(ctx, "", nil, true)
+	_, _ = s.foldWithForceCompact(ctx, "", nil, triggerAuto, true)
 	s.maybeAutoSave()
 }
 

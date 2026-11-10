@@ -96,7 +96,7 @@ func TestSessionEndHookDescendantIsReapedWhileDiagnosticsRemain(t *testing.T) {
 	})
 	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{Type: "command", Command: script, Timeout: 30, PluginDir: "/tmp"})
 
-	r.RunSessionEnd(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionEnd"})
+	r.RunSessionEndFor(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionEnd"}, "other")
 
 	mu.Lock()
 	got := len(hookEnds)

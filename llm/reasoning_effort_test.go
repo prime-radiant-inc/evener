@@ -179,3 +179,16 @@ func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
 		})
 	}
 }
+
+// TestReasoningBudget covers every recognized effort level and the default.
+func TestReasoningBudget(t *testing.T) {
+	tests := map[string]int{
+		"minimal": 1024, "low": 1024, "medium": 8192, "high": 32768,
+		"xhigh": 131072, "max": 131072, "unknown": 0, "": 0,
+	}
+	for effort, want := range tests {
+		if got := ReasoningBudget(effort); got != want {
+			t.Fatalf("ReasoningBudget(%q) = %d, want %d", effort, got, want)
+		}
+	}
+}

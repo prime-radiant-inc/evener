@@ -40,11 +40,18 @@ import { DetailPaneWidthContext } from "../duo/paneWidth";
 import { SubagentStrip } from "./SubagentStrip";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
+const safeArea = vi.hoisted(() => ({ top: 0, bottom: 0, left: 0, right: 0 }));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",
 	useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1, scale: 3 }),
+}));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	SafeAreaProvider: "SafeAreaProvider",
+	useSafeAreaInsets: () => ({ ...safeArea }),
+	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 0, height: 0 }),
 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
@@ -154,6 +161,7 @@ function hub(pages: (continuation: string | undefined) => unknown) {
 }
 
 beforeEach(() => {
+	Object.assign(safeArea, { top: 0, bottom: 0, left: 0, right: 0 });
 	forgetSubagentTrees("hub-1");
 	forgetStopRequestsForHub("hub-1");
 	client = hub(() => specTree());
@@ -204,6 +212,22 @@ it("titles itself with the count over the coordinator's title", async () => {
 it("sizes its summary strip to the split's detail pane, not the window", async () => {
 	const tree = await mount(true, "agents", 388);
 	expect(tree.root.findByType(SubagentStrip).props.width).toBe(356);
+});
+
+it("keeps the summary strip inside the full-screen landscape insets", async () => {
+	safeArea.left = 47;
+	safeArea.right = 47;
+	const tree = await mount();
+	// 393pt window, 47pt side insets, 16pt page padding each side.
+	expect(tree.root.findByType(SubagentStrip).props.width).toBe(267);
+});
+
+it("subtracts only the right inset inside the split's detail pane", async () => {
+	safeArea.left = 47;
+	safeArea.right = 47;
+	const tree = await mount(true, "agents", 388);
+	// 388pt detail pane, 47pt right inset, 16pt page padding each side.
+	expect(tree.root.findByType(SubagentStrip).props.width).toBe(309);
 });
 
 it("folds every terminal delegate below live work with terminal-inclusive counts", async () => {

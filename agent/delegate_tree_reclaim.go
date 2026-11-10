@@ -297,6 +297,13 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
 				return nil, false
 			}
+			// A turn still running on the runtime -- a parent's notification
+			// drive, whose model call can wait out a usage limit for hours --
+			// would be torn out from under it, by the idle release and by
+			// capacity reclamation alike.
+			if live.runtime != nil && live.runtime.inputsInFlight.Load() > 0 {
+				return nil, false
+			}
 			if live.runtime != nil {
 				entries = append(entries, c.runtimeReclamationEntryLocked(id))
 			}
@@ -1002,10 +1009,8 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // none of the session-local residue retirement refuses on: a
 // delegate-delivery parcel the pump has not consumed, a manager already
 // closing, or restore side effects still settling on this manager's
-// children. In-flight notification and delivery consumers are absent here
-// deliberately: they hold the tree's shared retirement mutation, which
-// ClaimIdleRuntimeRelease takes before any pre-gate runs, so the claim
-// itself refuses while one is executing.
+// children. A turn in flight on the runtime (a parent's notification drive)
+// is refused earlier, by claimableRuntimeSubtreeLocked, for both releases.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
@@ -1027,5 +1032,19 @@ func (s *Session) idleReleasePregatesClear() bool {
 			return false
 		}
 	}
+	return true
+}
+
+// admitRuntimeInput counts an input in flight on runtime unless a
+// reclamation claim already covers its delegate. It runs under c.mu, the
+// lock claimableRuntimeSubtreeLocked reads the count under, so a claim and
+// an admission are ordered: whichever comes second sees the other.
+func (c *delegateTreeController) admitRuntimeInput(runtime *Session) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, reclaiming := c.reclaiming[runtime.owningDelegateID]; reclaiming {
+		return false
+	}
+	runtime.inputsInFlight.Add(1)
 	return true
 }

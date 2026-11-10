@@ -350,10 +350,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
 	// /opt/homebrew/bin; the login shell's own PATH wins for spawned commands
-	// (kata 31gh). LoginShellPATH probes once per process with a short timeout
-	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
-	// on any failure.
-	env.LoginPATH = execenv.LoginShellPATH()
+	// (kata 31gh). The probe has a short timeout and never blocks launch; a
+	// probe failure is reported as the inherited-PATH fallback rather than
+	// cached, so the next launch retries it (#4495).
+	env.LoginPATH, env.LoginPATHProbeError = execenv.LoginShellPATHProbe()
 	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}

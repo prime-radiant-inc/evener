@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # measure-transcript-read-model.sh — the transcript read model's acceptance
 # measurements (docs/superpowers/specs/2026-09-25-transcript-read-model-design.md,
-# "Acceptance criteria"; docs/superpowers/plans/2026-09-25-transcript-read-model-phase3.md,
-# Task 19), run against real transcripts and a real session.
+# "Acceptance criteria"), run against real transcripts and a real session.
 #
 # Runs two opt-in server-package tests:
 #   - TestRealSessionRetainedHistoryMemory: replays every *.transcript.jsonl in

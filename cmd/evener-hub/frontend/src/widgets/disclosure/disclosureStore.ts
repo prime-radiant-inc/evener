@@ -90,7 +90,6 @@ export const setDisclosureOpen = store.setOpen;
 export const toggleDisclosure = store.toggle;
 export const beginDisclosureBaseline = store.beginBaseline;
 export const disclosureDefault = store.defaultFor;
-export const clearDisclosureScope = store.clearScope;
 
 export function resetDisclosureStoreForTests(): void {
   store.setState(store.getInitialState());

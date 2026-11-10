@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -343,5 +344,69 @@ func TestSplitNonAgentJobsFilesCommandOutcomeJobsAsCompleted(t *testing.T) {
 	}
 	if !got["job_cf"] || !got["job_ck"] {
 		t.Errorf("completed = %+v, want job_cf and job_ck", completed)
+	}
+}
+
+// A delegate whose model call waits out a usage limit is a working child of
+// its root, with no live entry of its own. Its daemon attaches the limit's
+// summary, with the resume time, to the child's list row, and the probe
+// carries it on the root's entry for that child alone; a working child that
+// is not waiting carries none.
+func TestProbeCarriesAChildQuotaWait(t *testing.T) {
+	resumesAt := time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC).UnixMilli()
+	wait := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: resumesAt}
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		descendants: map[string]string{"child-waiting": appwire.ThreadStatusActive, "child-working": appwire.ThreadStatusActive},
+		setup: func(srv *server.Server) {
+			srv.SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure {
+				if slices.Contains(threadIDs, "child-waiting") {
+					return map[string]*appwire.ThreadFailure{"child-waiting": wait}
+				}
+				return nil
+			})
+		},
+	})
+	result := prober.Probe(entry)
+	if !result.OK {
+		t.Fatal("expected successful status probe")
+	}
+	got := liveEntryFromProbe(entry, result).ChildQuotaWaits
+	if w := got["child-waiting"]; w == nil || w.ResumesAt != resumesAt || w.Cause == nil || w.Cause.Status != 429 {
+		t.Fatalf("child quota waits = %+v, want the waiting child's usage limit resuming at %d", got, resumesAt)
+	}
+	if _, carried := got["child-working"]; carried || result.Failure != nil {
+		t.Fatalf("child quota waits = %+v, root failure = %+v: want only the waiting child's", got, result.Failure)
+	}
+}
+
+// A finished delegate whose parent-driven notification turn waits out a
+// usage limit is working, though its durable lifecycle still reads idle.
+// The probe's lifecycle correction must not turn the waiting child idle:
+// the quota summary its row carries says it is working, for hours.
+func TestProbeKeepsAQuotaWaitingFinishedDelegateWorking(t *testing.T) {
+	wait := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Status: 429}, ResumesAt: time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC).UnixMilli()}
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		descendants: map[string]string{"child-driven": appwire.ThreadStatusActive, "child-quiet": appwire.ThreadStatusActive},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Delegates: []server.DelegateStatusInfo{
+			{DelegateID: "dlg_driven", ChildSessionID: "child-driven", Lifecycle: "idle"},
+			{DelegateID: "dlg_quiet", ChildSessionID: "child-quiet", Lifecycle: "idle"},
+		}}},
+		setup: func(srv *server.Server) {
+			srv.SetDescendantQuotaWaitsFunc(func([]string) map[string]*appwire.ThreadFailure {
+				return map[string]*appwire.ThreadFailure{"child-driven": wait}
+			})
+		},
+	})
+	result := prober.Probe(entry)
+	if !result.OK {
+		t.Fatal("expected successful status probe")
+	}
+	if got := result.RunningSubagentStates["child-driven"]; got != appwire.ThreadStatusActive {
+		t.Fatalf("waiting delegate state = %q, want active: its turn is waiting out a usage limit", got)
+	}
+	if got := result.RunningSubagentStates["child-quiet"]; got != appwire.ThreadStatusIdle {
+		t.Fatalf("idle delegate state = %q, want the lifecycle's idle", got)
 	}
 }

@@ -89,6 +89,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
 	var childWatches map[string][]appwire.EvenerWatchInfo
+	var childQuotaWaits map[string]*appwire.ThreadFailure
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
 		if statusThreadID(thread) == rootID && strings.TrimSpace(thread.ID) != "" {
@@ -122,6 +123,15 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 			}
 			childWatches[id] = append([]appwire.EvenerWatchInfo(nil), watches...)
 		}
+		// A child whose model call waits out a usage limit carries the
+		// limit's summary with its resume time (the daemon attaches it to the
+		// child's list row).
+		if failure := thread.Evener.Failure; failure != nil && failure.ResumesAt > 0 {
+			if childQuotaWaits == nil {
+				childQuotaWaits = make(map[string]*appwire.ThreadFailure)
+			}
+			childQuotaWaits[id] = appwire.CloneThreadFailure(failure)
+		}
 	}
 	if listedRoot == nil {
 		return ProbeResult{}
@@ -130,7 +140,10 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 
 	delegateStates := subagentStatesFromDelegates(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
-		if delegateStates[id] == appwire.ThreadStatusIdle {
+		// A finished delegate whose notification turn waits out a usage limit
+		// is working although its lifecycle reads idle: its quota summary
+		// says so, and its row keeps its own active status.
+		if delegateStates[id] == appwire.ThreadStatusIdle && childQuotaWaits[id] == nil {
 			if runningSubagentStates == nil {
 				runningSubagentStates = make(map[string]string)
 			}
@@ -148,6 +161,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	result.RunningSubagentIDs = runningSubagentIDs
 	result.RunningSubagentStates = runningSubagentStates
 	result.ChildWatches = childWatches
+	result.ChildQuotaWaits = childQuotaWaits
 	result.Lifecycle = lifecycle
 	result.LifecycleFresh = lifecycleFresh
 	result.OK = true
@@ -171,7 +185,6 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	return ProbeResult{
 		SessionID:           statusThreadID(root),
 		Status:              root.Status.Type,
-		ActiveFlags:         append([]string(nil), root.Status.ActiveFlags...),
 		ActiveTurnID:        root.Evener.ActiveTurnID,
 		ActiveTurnStartedAt: root.Evener.ActiveTurnStartedAt,
 		PendingAsk:          root.Evener.AskPending,
@@ -203,8 +216,8 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 // in, so every hub row that reads a thread projection fills them the same way:
 // the ask flag, escalation cards, jobs, watches, turn end and tasks, beside
 // the row's other summary fields. The caller keeps the fields only a local
-// probe answers — Capabilities, CapabilitiesKnown and ActiveFlags — as it holds
-// them, so a remote row leaves those absent. The result is a CloneLiveEntry
+// probe answers — Capabilities and CapabilitiesKnown — as it holds them, so a
+// remote row leaves those absent. The result is a CloneLiveEntry
 // copy, so the row never aliases the probe's slices or pointers. (#2638)
 func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.Status = r.Status

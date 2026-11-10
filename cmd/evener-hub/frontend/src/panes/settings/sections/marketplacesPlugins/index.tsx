@@ -3,13 +3,14 @@
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
 import { BrowseSection } from "./BrowseSection";
+import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
@@ -54,6 +55,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<PluginDetailTarget | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   // The registry removal can finish after its sheet closes. Keep its
   // no-repeat marker at the page lifecycle, and tie
   // it to the host that owns the catalog AND the client that owns the
@@ -87,6 +89,11 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
       return next.size === current.names.size ? current : { host: current.host, client: current.client, names: next };
     });
   }, [appliedRemovalGuard.client, appliedRemovalGuard.host, connectionClient, host, marketplacesPublicationVersion]);
+
+  // A sheet that closes over a completed install or remove reshapes the
+  // browse row that opened it, and the modal's own focus restore then loses
+  // the opener: the hook returns focus to the row when that happened.
+  useCatalogRowFocusRehome(selectedPlugin, sectionRef);
 
   function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
@@ -143,7 +150,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const marketplaceCount = marketplaces?.length ?? 0;
 
   return (
-    <section className={CLASS.page}>
+    <section ref={sectionRef} className={CLASS.page}>
       <SegmentedControl
         label="View"
         value={activeSegment}

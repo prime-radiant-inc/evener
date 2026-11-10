@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp } from "../../styles/cssBlock";
 import { Dialog } from "../dialog";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { Menu, type MenuItem } from "./index";
@@ -277,10 +279,14 @@ test("keeps the menu trigger and items at the narrow-viewport tap floor", () => 
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.trigger\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.trigger\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.item\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.item\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
 });
 

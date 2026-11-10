@@ -18,6 +18,20 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// compactionTrigger is the PreCompact/PostCompact matcher value (Claude's
+// vocabulary): "manual" means the user ran /compact; everything else is "auto".
+// It is threaded as a parameter, never a context value: a nested or retried
+// fold must not inherit a trigger its own caller never passed.
+type compactionTrigger string
+
+const (
+	// triggerManual is the /compact path (Session.Compact).
+	triggerManual compactionTrigger = "manual"
+	// triggerAuto is every other fold publisher: request-time ManageContext,
+	// compact_context, and model-recovery ForceCompact.
+	triggerAuto compactionTrigger = "auto"
+)
+
 // Compact forces context compaction regardless of current pressure.
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
@@ -61,7 +75,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	// A transcript that has stopped accepting records is the other
 	// refusal, and it is reported as itself: telling the operator to try again
 	// would send them back to a fold that can only fail the same way.
-	if ok, refusal := s.foldWithForceCompact(ctx, "", nil, false); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, "", nil, triggerManual, false); !ok {
 		if refusal != nil {
 			return refusal
 		}
@@ -546,7 +560,7 @@ func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]
 // recovery) rather than one a user or agent requested: an identical
 // consecutive summary failure stays suppressed, like the pre-request pass,
 // instead of always publishing.
-func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation, automatic bool) (ok bool, refusal error) {
+func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation, trigger compactionTrigger, automatic bool) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
 		s.mu.Lock()
@@ -556,7 +570,7 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 		s.mu.Unlock()
 
-		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy)
+		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy, trigger, instructions)
 		commit.captured = captured
 		if automatic {
 			s.contextMgr.ForceCompactAutomatic(compactionCtx, &histCopy, instructions, emitFn)
@@ -665,6 +679,13 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // actualCompaction reports whether this fold's layers actually compacted
 // anything (staged EventContextCompaction payloads exist) — never merely
 // that the history published: an unchanged publication sets it false.
+//
+// The PreCompact/PostCompact hooks report the fold's trigger ("manual" only for
+// /compact) and, for PostCompact, the text of the fold's last summary turn (else
+// its last checkpoint, else empty). Both are stageCompactionEffects' own state:
+// the trigger is its parameter, and compactSummary is filled at the transcript
+// commit, once every layer has reported the turns it produced. flush reads them
+// only for a winning fold that actually compacted.
 // captured is the explicit operation snapshot the fold's REQUESTING caller
 // captured (the round-tail dispatch's forced operation, or the per-request
 // fold's pending automatic operation); an unrelated manual fold captures
@@ -751,7 +772,7 @@ func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
 	return true
 }
 
-func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), *foldCommit, func() int) {
+func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.Turn, trigger compactionTrigger, instructions string) (context.Context, func(events.EventKind, events.EventData), *foldCommit, func() int) {
 	preCompactRan := false
 	artifactProduced := false
 	var existingArtifacts []schema.Turn
@@ -841,7 +862,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if !preCompactRan {
 				preCompactRan = true
 				var records []steeringTurnRecord
-				records, noteCommit = s.runPreCompactHook(ctx, history)
+				records, noteCommit = s.runPreCompactHook(ctx, history, trigger, instructions)
 				pendingSteering = append(pendingSteering, records...)
 			}
 			return
@@ -867,6 +888,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// carries the typed record a restart reconciles from. Write errors are
 	// carried into flush, where emitting is safe again.
 	commit := &foldCommit{}
+	var compactSummary string
 	commit.prepareVoicePresentationLocked = func(latest schema.Turn, published []schema.Turn) {
 		if len(pendingCompactionTurns) == 0 || latest.VoicePresentation == nil {
 			return
@@ -917,6 +939,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() bool {
+		// The text PostCompact reports as compact_summary: the fold's last
+		// summary turn, else its last checkpoint, else empty. Read here, at the
+		// transcript commit, because every layer has reported by now; flush only
+		// ever reads the stored value.
+		compactSummary = lastCompactionTurnText(pendingCompactionTurns)
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
 				state := pendingCompactionTurns[i].SkillState.Clone()
@@ -986,6 +1013,43 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.mu.Lock()
 			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction that actually took effect
 			s.mu.Unlock()
+		}
+		if hook := s.cfg.testOnly.afterFoldSideEffectsFlush; hook != nil {
+			hook()
+		}
+		// PostCompact fires once per WINNING fold that actually compacted: a
+		// request-time fold publishes on every model request whether or not a
+		// layer folded anything, so actualCompaction (the staged
+		// EventContextCompaction payloads) is the gate. Fairness is judged
+		// HERE, not from the flag sampled above: the events, turn effects,
+		// steering writes, note commit and nudge latch in between can take
+		// long enough for a newer fold to publish, and this hook's
+		// compact_summary would then describe a fold that is no longer the
+		// newest. Re-reading the marker under the same lock the publishers
+		// write it is what keeps the report current.
+		//
+		// It runs here, outside attentionMu and outside the publish
+		// transaction, so a hook that steers or delivers re-enters the lock
+		// machinery safely. It deliberately fires BEFORE
+		// commitSkillCompactionPublication, which runs after flush: that
+		// call finishes evener's OWN delivery bookkeeping for the compaction
+		// operation (the cycle slot, the receipt's phase, the metadata save),
+		// not part of the compaction the hook reports. Everything the hook
+		// describes — the summary, the markers, the history swap — is
+		// already durable when it fires.
+		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostCompact) && commit.actualCompaction {
+			s.mu.Lock()
+			supersededNow := commit.publishedRevision < s.newestPublishedFoldRevision
+			s.mu.Unlock()
+			if !supersededNow {
+				hi := s.hookInput(plugin.HookPostCompact)
+				hi.Trigger = string(trigger)
+				hi.CompactSummary = compactSummary
+				result := s.hookRunner.RunPostCompactFor(s.apiLogContext(s.foldHookContext(ctx)), hi, hi.Trigger)
+				for _, m := range result.UserMessages {
+					s.deliverHookUserMessage(m)
+				}
+			}
 		}
 	}
 	// injectedTurns reports how many turns were appended directly to *history
@@ -1073,6 +1137,55 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 	return false
 }
 
+// lastCompactionTurnText is the compact_summary PostCompact reports: the text of
+// the fold's last summary turn, else its last checkpoint turn, else empty. Kind
+// outranks position: any summary wins over any checkpoint, even one that
+// arrives later, because the summarize layer runs after the checkpoint layer
+// and a fold that reports both still reports the summary as its result.
+func lastCompactionTurnText(turns []schema.Turn) string {
+	for _, want := range []schema.TurnKind{schema.TurnSummary, schema.TurnCheckpoint} {
+		for _, turn := range slices.Backward(turns) {
+			if turn.Kind == want {
+				return turn.Message.Text()
+			}
+		}
+	}
+	return ""
+}
+
+// foldHookContext is the base context for a fold's hooks. base is the fold's own
+// context, so an interrupted request stops waiting on its hooks instead of
+// holding the turn for a hook's full timeout. A nil base (a fold with no turn
+// behind it) degrades to the session's lifetime, which is what a hook that fires
+// outside any turn wants.
+//
+// Either way the close cascade's shared budget supersedes it once one is
+// published: a hook still running when shutdown starts is interrupted by that
+// cancellation instead of holding the close for its full timeout (spec §5.4).
+// The supersession is not a join of the two — the close budget is the shorter of
+// the two deadlines, so it is the one worth honoring.
+func (s *Session) foldHookContext(base context.Context) context.Context {
+	ctx := base
+	if ctx == nil {
+		ctx = s.sessionContext()
+	}
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if closeCtx != nil {
+		ctx = closeCtx
+	}
+	// A fold can run on a context independent of the session (Compact's caller
+	// may pass its own), so sampling closeCtx once is not enough: a close that
+	// starts after this read must still end the hook rather than let it run to
+	// its own timeout while session resources are torn down.
+	sessionCtx := s.sessionContext()
+	if sessionCtx != nil && sessionCtx != ctx {
+		ctx = joinCancel(ctx, sessionCtx)
+	}
+	return ctx
+}
+
 // runPreCompactHook gathers the steering messages re-injected once per fold
 // attempt and appends them to history as TurnSteering turns — that part must
 // happen unconditionally, since it's part of the content the fold produces.
@@ -1095,19 +1208,30 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 // the caller (compactionEmitFunc's flush) only calls it on a winning
 // publish.
 //
-// The hook's own execution (s.hookRunner.RunPreCompact) and the goal/note
+// The hook's own execution (s.hookRunner.RunPreCompactFor) and the goal/note
 // TEXT reads cannot be deferred: their output has to be part of the fold's
 // content before publish is even attempted. A losing, retried fold re-runs
 // the hook again next attempt — the same re-execution
 // foldWithForceCompact's retry already accepts for the rest of the fold.
-func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) (records []steeringTurnRecord, commit func()) {
+//
+// trigger and instructions are the fold's own, not a context value: the hook's
+// matcher and its trigger/custom_instructions inputs must describe the fold
+// that is about to run, even when that fold was entered from a retry.
+func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn, trigger compactionTrigger, instructions string) (records []steeringTurnRecord, commit func()) {
 	if history == nil {
 		return nil, nil
 	}
 	var messages []preCompactMessage
 	var deferred []func()
-	if s.hookRunner != nil {
-		compactResult := s.hookRunner.RunPreCompact(s.apiLogContext(ctx), s.hookInput(plugin.HookPreCompact))
+	if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPreCompact) {
+		hi := s.hookInput(plugin.HookPreCompact)
+		hi.Trigger = string(trigger)
+		// Claude's null custom_instructions means the user passed none, so
+		// whitespace alone is absence, not an instruction.
+		if strings.TrimSpace(instructions) != "" {
+			hi.CustomInstructions = &instructions
+		}
+		compactResult := s.hookRunner.RunPreCompactFor(s.apiLogContext(ctx), hi, hi.Trigger)
 		for _, m := range compactResult.ModelContext {
 			messages = append(messages, preCompactMessage{text: wrapHookContext(m), kind: events.SteeringKindPrecompactHook})
 		}
@@ -1229,4 +1353,18 @@ func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	}
 
 	return meta
+}
+
+// joinCancel returns a context that is cancelled when either parent is. The
+// first parent's values win; the second contributes only its cancellation.
+func joinCancel(primary, secondary context.Context) context.Context {
+	ctx, cancel := context.WithCancel(primary)
+	go func() {
+		defer cancel()
+		select {
+		case <-secondary.Done():
+		case <-ctx.Done():
+		}
+	}()
+	return ctx
 }

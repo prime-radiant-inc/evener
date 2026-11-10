@@ -1,4 +1,4 @@
-.PHONY: test-fuzz mutation-floor fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens fuzz-corpus-scan
+.PHONY: test-fuzz  fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens 
 
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
@@ -179,18 +179,6 @@ fuzz-continuous:
 fuzz-drive:
 	@scripts/fuzz/fuzz-drive.sh $(FUZZ_ARGS)
 
-# mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
-# whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.
-## Gate the gremlins kill score against a curated efficacy floor.
-## proves: Each curated package's test efficacy (gremlins mutation kill
-##   score) meets the floor.
-## trigger: Nightly/manual; not required CI. Slow.
-## requires: gremlins installed.
-## fails-when: MIN=<n> is set and any curated package's kill efficacy drops
-##   below it. With no MIN, this only reports.
-mutation-floor:
-	@scripts/fuzz/fuzz-mutation-score.sh $(if $(MIN),--min-efficacy $(MIN)) $(MUT_ARGS)
-
 # fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
 # replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.
 # `make fuzz-bisect FUZZ_ARGS="--target llm:FuzzParseSSE --crasher <file> --good <ref>"`.
@@ -265,18 +253,3 @@ fuzz-gap-check:
 fuzz-registry-check:
 	@scripts/fuzz/fuzz-registry-check.sh
 
-# fuzz-corpus-scan runs gitleaks over only the fuzz seed corpora — the
-# corpus-scoped subset of secret-scan, for fast harvester feedback.
-## Run gitleaks over only the fuzz seed corpora — the corpus-scoped subset
-## of secret-scan, for fast harvester feedback.
-## proves: The committed fuzz seed corpora contain no secret matching the
-##   gitleaks ruleset. The corpora are deliberately not path-allowlisted, so
-##   the seeds are genuinely inspected — here, and by the repo-wide
-##   secret-scan that shares this ruleset.
-## trigger: Required CI; local harvester feedback.
-## requires: gitleaks; local absence warns and returns zero unless
-##   EVENER_GITLEAKS_REQUIRED=1.
-## fails-when: A finding, or a required-tool absence under
-##   EVENER_GITLEAKS_REQUIRED=1, is nonzero.
-fuzz-corpus-scan:
-	@scripts/ops/gitleaks-scan.sh corpus

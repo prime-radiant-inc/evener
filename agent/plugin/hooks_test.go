@@ -172,7 +172,9 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 	evs := []HookEvent{
 		HookPreToolUse, HookPostToolUse, HookStop, HookSubagentStop,
 		HookUserPromptSubmit, HookSessionStart, HookSessionEnd,
-		HookPreCompact, HookNotification,
+		HookPreCompact, HookNotification, HookSubagentStart,
+		HookPostToolUseFailure, HookPostToolBatch, HookStopFailure,
+		HookPostCompact,
 	}
 
 	// Build JSON with all event types
@@ -481,7 +483,7 @@ func TestParsePluginHooks_WrapperFormatIgnoresSchemaMeta(t *testing.T) {
 }
 
 func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
-	data := []byte(`{"PostToolUseFailure":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}],
+	data := []byte(`{"WorktreeCreate":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}],
 		"TotallyBogusEvent":[{"hooks":[{"type":"command","command":"y"}]}]}`)
 	hooks, unsupported, unknown, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
@@ -490,10 +492,55 @@ func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
 	if len(hooks) != 0 {
 		t.Fatalf("no supported events expected: %v", hooks)
 	}
-	if !unsupported[HookEvent("PostToolUseFailure")] {
-		t.Fatal("PostToolUseFailure should be recognized-but-unsupported")
+	if !unsupported[HookEvent("WorktreeCreate")] {
+		t.Fatal("WorktreeCreate should be recognized-but-unsupported")
 	}
 	if !unknown["TotallyBogusEvent"] {
 		t.Fatal("bogus event should be unknown")
+	}
+}
+
+func TestEventRegistry_NewEventsAreFired(t *testing.T) {
+	for _, e := range []HookEvent{
+		HookSubagentStart, HookPostToolUseFailure, HookPostToolBatch,
+		HookStopFailure, HookPostCompact,
+	} {
+		if !validHookEvents[e] {
+			t.Errorf("%s must be in validHookEvents", e)
+		}
+		if got := EventTier(e); got != "claude-compatible-subset" {
+			t.Errorf("%s tier = %q, want claude-compatible-subset", e, got)
+		}
+	}
+}
+
+func TestEventRegistry_NewlyRecognizedClaudeEventsAreReserved(t *testing.T) {
+	for _, e := range []HookEvent{"DirectoryAdded", "PreModelSwitch", "PostModelSwitch"} {
+		if !recognizedClaudeEvents[e] {
+			t.Errorf("%s must be recognized", e)
+		}
+		if validHookEvents[e] {
+			t.Errorf("%s must not be fired yet", e)
+		}
+		if got := EventTier(e); got != "reserved-placeholder" {
+			t.Errorf("%s tier = %q, want reserved-placeholder", e, got)
+		}
+	}
+}
+
+func TestParsePluginHooks_DirectoryAddedIsReservedNotUnknown(t *testing.T) {
+	data := []byte(`{"hooks":{"DirectoryAdded":[{"hooks":[{"type":"command","command":"true"}]}]}}`)
+	hooks, unsupported, unknown, err := parsePluginHooksDiag(data, "/p", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hooks) != 0 {
+		t.Errorf("hooks = %v, want none", hooks)
+	}
+	if !unsupported["DirectoryAdded"] {
+		t.Errorf("unsupported = %v, want DirectoryAdded", unsupported)
+	}
+	if unknown["DirectoryAdded"] {
+		t.Errorf("unknown = %v, want none", unknown)
 	}
 }

@@ -2,11 +2,12 @@
 # place. Sourced, never executed.
 #
 # The ratchet's comparison (scripts/gate/test-timing-budget.sh, compare.py)
-# reads three tab-separated row kinds:
+# reads four tab-separated row kinds:
 #
 #   PKG  <package>                    one per package-level terminal event
 #   TEST <package> <name> <seconds>   one per test AND subtest result
 #   SUM  <package> <seconds>          the package's own wall time
+#   CPU  <package> <seconds>          its test binary's (or shards') CPU time
 #
 # Two producers emit them today and must agree on that shape, so it lives here
 # rather than copied into each: the ratchet's own measurement pass (which runs
@@ -47,6 +48,16 @@ timing_parse() {
 	else
 		( cd "$root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse "$@" )
 	fi
+}
+
+# timing_go_test_exec — the `go test -exec` value both producers pass, so each
+# test binary runs under test-cpu-exec and its stream carries the package's CPU
+# row. It needs EVENER_DEV_BIN, a built evener-dev. go splits the value into
+# words with its own quoting rules, so the path is single-quoted: a scratch
+# path with a space stays one word. (A path holding a single quote is not one
+# a scratch directory produces.)
+timing_go_test_exec() {
+	printf "'%s' dev test-cpu-exec" "$EVENER_DEV_BIN"
 }
 
 # go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
