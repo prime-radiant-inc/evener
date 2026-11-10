@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test  test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -227,10 +227,6 @@ TEST_SCOPE ?= all
 test:
 	@case "$(TEST_SCOPE)" in all|root|nonroot) ;; *) echo "make test: TEST_SCOPE must be all, root, or nonroot (got $(TEST_SCOPE))" >&2; exit 2;; esac; \
 		MODULES="$(strip $(SCOPE_MODULES_$(TEST_SCOPE)))" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
-
-## Alias for `make test`.
-test-short:
-	@$(MAKE) test
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed

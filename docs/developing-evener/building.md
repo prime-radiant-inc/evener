@@ -73,5 +73,4 @@ the same way the ordinary runtime build does.
 | `make install` | Install the evener binary into PREFIX (default ~/.local), building a fresh SPA first so the installed evener never embeds the tracked placeholder. evener-dev, the dev tooling binary, is not installed: build it with `make build-dev`. |
 | `make install-home` | Install into the user prefix (~/.local). |
 | `make install-system` | Install into the system prefix (/usr/local). |
-| `make test-install` | Integration-test the install path end to end: copy the tracked working tree into a fixture, run the install target with a synthetic HOME, and verify the installed binaries and symlinks. Skipped under -short. |
 <!-- END GENERATED -->

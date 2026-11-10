@@ -270,7 +270,7 @@ assumptions.
 A setup prerequisite for the web, build, browser, and lint gates rather than a
 gate in its own right: `make web-preflight` runs it directly, and `make
 build-web`, `make test-web`, `make test-web-browser`, and `make lint` (through
-`lint-biome`) all reach it.
+the frontend lint script) all reach it.
 
 What it proves, what it may run, and how it fails live in the `make
 web-preflight` row of [building.md's target table](building.md#targets). That row
@@ -1618,6 +1618,5 @@ a subtest appears in that diff as removed; name the subtest that replaces it.
 
 | Command | Summary |
 | --- | --- |
-| `make test-short` | Alias for `make test`. |
 | `make test-rebaseline` | Reset testing-budget.json to what a clean-host run just measured. Run deliberately, on an otherwise idle box, and review the diff in the same commit as whatever change earned it — never to invent a baseline. Not part of any gate. |
 <!-- END GENERATED -->
