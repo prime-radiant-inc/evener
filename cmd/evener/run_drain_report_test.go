@@ -70,11 +70,12 @@ func TestRunAnswerIsTheRootsLatestReport(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			err := run(context.Background(), runConfig{
-				prompt:  rootPrompt + ": delegate, report, then handle its completion.",
-				model:   "openai/gpt-test",
-				workDir: tmp,
-				stdout:  &stdout,
-				stderr:  &stderr,
+				prompt:           rootPrompt + ": delegate, report, then handle its completion.",
+				model:            "openai/gpt-test",
+				workDir:          tmp,
+				maxSubagentDepth: -1,
+				stdout:           &stdout,
+				stderr:           &stderr,
 			})
 			if err != nil {
 				t.Fatalf("run: %v\nstderr: %s", err, stderr.String())

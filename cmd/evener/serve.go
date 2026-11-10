@@ -709,9 +709,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
-	if *lf.maxSubagentDepth >= 0 {
-		sessionCfg.MaxSubagentDepth = *lf.maxSubagentDepth
-	}
+	applyMaxSubagentDepth(&sessionCfg, *lf.maxSubagentDepth)
 	if *lf.maxConcurrentDelegates >= 0 {
 		sessionCfg.MaxConcurrentDelegateTurns = *lf.maxConcurrentDelegates
 	}
