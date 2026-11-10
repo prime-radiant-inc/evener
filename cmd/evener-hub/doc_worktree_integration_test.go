@@ -210,12 +210,11 @@ func newWorktreeDocumentFixture(t *testing.T, scripted ...llm.ProviderAdapter) *
 	if cached, ok := past.Find(sessionID); !ok || cached.Meta.EnvInfo.WorkingDir != root {
 		t.Fatalf("warm past fixture = %+v, want launch root %q", cached, root)
 	}
-	cfg := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		RunDir:       runDir,
-		Past:         past,
-		Roster:       roster,
-	}
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Past:   past,
+		Roster: roster,
+	})
 	sources := newHubSourceRegistry(cfg)
 
 	hubServer := newHubAppServer(cfg, sources)
@@ -565,10 +564,10 @@ func TestDocumentWorktree_LiveSourceUnavailableDoesNotReadPast(t *testing.T) {
 	}, httpClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(), Past: past,
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		Past:   past,
 		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID, Status: appwire.ThreadStatusIdle}),
-	}
+	})
 
 	hostApp := newHubAppServer(cfg, sources)
 	hostHTTP := httptest.NewServer(http.HandlerFunc(hostApp.ServeWebSocket))

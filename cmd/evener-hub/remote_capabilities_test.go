@@ -194,9 +194,7 @@ func TestRemoteHostVoicePresentationStaysMaskedAtPublicHubBoundary(t *testing.T)
 	client := appwire.NewClient(transport)
 	client.Start(t.Context())
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	if !client.Features().VoicePresentationContextV1 {
 		t.Fatal("peer does not advertise its own voice presentation support")
 	}

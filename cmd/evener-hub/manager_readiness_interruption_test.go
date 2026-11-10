@@ -343,8 +343,11 @@ func newReadinessInterruptionFixture(t *testing.T) *readinessInterruptionFixture
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, workerHTTP.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(
-		hubcore.LiveEntry{Entry: entries[0].Entry, SessionID: worker.ID(), Status: "active"}, hubcore.LiveEntry{Entry: entries[1].Entry, SessionID: manager.ID(), Status: "active", Manager: true})}
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		HubID: "hub-test",
+		Roster: hubcore.NewRosterWithEntries(
+			hubcore.LiveEntry{Entry: entries[0].Entry, SessionID: worker.ID(), Status: "active"}, hubcore.LiveEntry{Entry: entries[1].Entry, SessionID: manager.ID(), Status: "active", Manager: true}),
+	})
 	web := NewWebServer(cfg)
 	hub := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	t.Cleanup(func() {

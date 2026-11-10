@@ -35,12 +35,10 @@ func memoryTestSpawner(got *hubcore.SpawnRequest, threadID string) *fakeRPCSpawn
 // the spawn request, and the argv the daemon receives names the disable flag.
 func TestThreadStart_MemoryOverrideReachesSpawn(t *testing.T) {
 	var got hubcore.SpawnRequest
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:       t.TempDir(),
-		HubStateRoot: t.TempDir(),
-		Spawner:      memoryTestSpawner(&got, "th_memory_off"),
-		Past:         hubcore.NewPastIndex(""),
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:  t.TempDir(),
+		Spawner: memoryTestSpawner(&got, "th_memory_off"),
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
@@ -79,13 +77,11 @@ func TestThreadStart_MemoryEnabledOverGlobalDefault(t *testing.T) {
 		t.Fatalf("SetLayer: %v", err)
 	}
 	var got hubcore.SpawnRequest
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:           t.TempDir(),
-		HubStateRoot:     t.TempDir(),
 		LaunchConfigRoot: launchRoot,
 		Spawner:          memoryTestSpawner(&got, "th_memory_on"),
-		Past:             hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
