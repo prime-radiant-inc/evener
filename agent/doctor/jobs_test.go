@@ -278,7 +278,7 @@ func richJobFixtureEvents() []jobstore.Event {
 	return []jobstore.Event{
 		{Kind: jobstore.EventJobStarted, JobID: "job_rich_01", Type: jobstore.JobShell,
 			Command: "make all", Task: "build the thing", Description: "full build",
-			OwnerSessionID: sidA, VisibleToSession: sidA, ParentJobID: "job_parent_01",
+			OwnerSessionID: "owner_sentinel_session", VisibleToSession: "visible_sentinel_session", ParentJobID: "job_parent_01",
 			StartedAt: &started, OutputPath: "/state/jobs/job_rich_01.log"},
 		{Kind: jobstore.EventJobFinished, JobID: "job_rich_01", Status: jobstore.StatusCompleted,
 			ExitCode: &exitOK, EndedAt: &ended, OutputBytes: 100, TerminalGen: "tg1",
@@ -305,6 +305,8 @@ func jobsFixtureWithDelegate(t *testing.T) (base, sid string) {
 	bucket := stateHomeBucket(base, hash1)
 	sid = sidA
 	writeSession(t, bucket, sid)
+	// The job's owner and visibility name other sessions so the rendered
+	// report carries them only through those fields.
 	writeJobsEvents(t, filepath.Join(bucket, "sessions", sid, "jobs.jsonl"), append(richJobFixtureEvents(), legacyDelegateJobEvents()...))
 	writeDelegateEvents(t, filepath.Join(bucket, "sessions", sid, "delegates.jsonl"), []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_jobs_01", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
@@ -327,7 +329,8 @@ func TestJobs_RenderAllFormattingBranches(t *testing.T) {
 	for _, want := range []string{
 		"build the thing",
 		"full build",
-		sid,
+		"owner_sentinel_session",
+		"visible_sentinel_session",
 		"job_parent_01",
 		"/state/jobs/job_rich_01.log",
 		"max_turns",
