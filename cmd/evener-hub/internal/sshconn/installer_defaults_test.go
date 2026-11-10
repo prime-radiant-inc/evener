@@ -108,25 +108,28 @@ func TestPreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(goodLaunchCheck), nil
-		case strings.Contains(joined, " evener launch-check"):
-			// The non-interactive PATH carries no evener.
-			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-		case strings.Contains(joined, executableProbeRemote("evener")):
+		case opLaunchCheck:
+			switch launchCheckTarget(argv) {
+			case resolved:
+				return []byte(goodLaunchCheck), nil
+			case "evener":
+				// The non-interactive PATH carries no evener.
+				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			}
+			return nil, fmt.Errorf("unexpected launch-check target: %v", argv)
+		case opPresenceProbe:
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
+		case opDefaultInstall:
 			return []byte(resolved + "\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -178,28 +181,27 @@ func TestPendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 	restarts := 0
 	healthCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarts++
 			return []byte("Failed to restart evener-hub.service: Interactive authentication required.\n"), errors.New("exit status 1")
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			healthCalls++
 			if healthCalls == 1 {
 				// The hub the restart is meant to replace: a known identity.
@@ -208,7 +210,7 @@ func TestPendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 			// Later probes answer with the expected version but no start time: an
 			// identity that proves nothing about which process is serving.
 			return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
