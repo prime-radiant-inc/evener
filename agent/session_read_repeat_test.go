@@ -74,6 +74,11 @@ func TestRepeatReadOfUnchangedFileIsMarkedUnchanged(t *testing.T) {
 	if changed := read("r4", map[string]any{}); changed.UnchangedSinceTurn != nil {
 		t.Fatal("a changed file must not be marked unchanged")
 	}
+	// Same size, same mtime, different bytes: the content hash catches it.
+	write("one\ntwo\nthree\nFOUR\n")
+	if rewritten := read("r6", map[string]any{}); rewritten.UnchangedSinceTurn != nil {
+		t.Fatal("a same-size, same-mtime rewrite must not be marked unchanged")
+	}
 	if again := read("r5", map[string]any{}); again.UnchangedSinceTurn == nil {
 		t.Fatal("re-reading after the change is a repeat of the new read")
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"time"
@@ -19,7 +20,11 @@ type readStamp struct {
 // when it was read and the turn that read happened in.
 type priorRead struct {
 	stamp readStamp
-	turn  int
+	// content hashes the text the read returned (RecoverableOutput, which the
+	// breaker's repeat nudge never touches), so a rewrite that keeps the size
+	// and mtime still reads as changed.
+	content [sha256.Size]byte
+	turn    int
 }
 
 // readRangeKey names one path and the normalized line range read from it.
@@ -77,10 +82,11 @@ func (s *Session) noteReadFileRepeat(key readRangeKey, before readStamp, res *to
 	if s.priorReads == nil {
 		s.priorReads = map[readRangeKey]priorRead{}
 	}
-	s.priorReads[key] = priorRead{stamp: before, turn: turn}
+	now := priorRead{stamp: before, content: sha256.Sum256([]byte(res.RecoverableOutput)), turn: turn}
+	s.priorReads[key] = now
 	s.readFilesMu.Unlock()
 
-	if seen && prior.stamp.size == before.size && prior.stamp.mtime.Equal(before.mtime) {
+	if seen && prior.stamp.size == before.size && prior.stamp.mtime.Equal(before.mtime) && prior.content == now.content {
 		res.UnchangedSinceTurn = &prior.turn
 		res.Output += "\n[Unchanged since your earlier read: same file, same range.]"
 	}

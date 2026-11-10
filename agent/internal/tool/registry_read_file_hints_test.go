@@ -16,7 +16,7 @@ import (
 func TestTruncatedReadFileExposesOmittedLineRange(t *testing.T) {
 	t.Parallel()
 	const total = 5000
-	text := execenv.NumberLines(strings.Repeat("some source line of moderate length\n", total), nil, intPtr(total))
+	text := execenv.NumberLines(strings.Repeat("some source line of moderate length\n", total), nil, new(total))
 	reg := NewRegistry()
 	if err := reg.Register(RegisteredTool{
 		Definition: DefReadFile(),
@@ -38,7 +38,7 @@ func TestTruncatedReadFileExposesOmittedLineRange(t *testing.T) {
 	// Every line outside the window must be present whole; the window is
 	// exactly what offset/limit must refetch.
 	shown := map[int]bool{}
-	for _, line := range strings.Split(got.Output, "\n") {
+	for line := range strings.SplitSeq(got.Output, "\n") {
 		num, _, ok := strings.Cut(line, "\t")
 		if n, err := strconv.Atoi(strings.TrimSpace(num)); ok && err == nil {
 			shown[n] = true
@@ -51,5 +51,3 @@ func TestTruncatedReadFileExposesOmittedLineRange(t *testing.T) {
 		}
 	}
 }
-
-func intPtr(n int) *int { return &n }
