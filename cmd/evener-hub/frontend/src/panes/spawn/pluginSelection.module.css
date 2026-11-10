@@ -109,6 +109,11 @@
   align-self: flex-start;
 }
 
+/* The inline detail body a row's Details action expands under it. */
+.detailBody {
+  margin: 0 0 var(--space-2) var(--space-5);
+}
+
 /* LauncherPluginSheet body layout: the same rhythm the settings detail sheet
  * gives its description, metadata and switches. */
 .sheetDesc {

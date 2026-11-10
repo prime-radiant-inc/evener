@@ -215,7 +215,7 @@ test("plugin sheet stays open across toggles, Done applies, and Cancel restores 
   expect(document.activeElement).toBe(rowButton);
 });
 
-test("Escape closes only plugin Details and preserves the mobile selection draft", async () => {
+test("plugin Details expand inline and preserve the mobile selection draft", async () => {
   const user = userEvent.setup();
   const onPluginSelectionChange = vi.fn();
   const pluginClient = new FakeClient();
@@ -249,13 +249,16 @@ test("Escape closes only plugin Details and preserves the mobile selection draft
   const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
   await user.click(within(parent).getByRole("switch", { name: "alpha" }));
   await user.click(within(parent).getByRole("button", { name: "Details" }));
-  const details = screen.getByRole("dialog", { name: "alpha" });
+  // The details expand inline under the row - no second dialog opens over the
+  // selection sheet.
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no detail body expanded");
+  expect(screen.queryByRole("dialog", { name: "alpha" })).toBeNull();
   const included = within(details).getByRole("switch", { name: "Included in this session" });
   expect(included.getAttribute("aria-checked")).toBe("false");
-  included.focus();
-  await user.keyboard("{Escape}");
+  await user.click(within(details).getByRole("button", { name: "Hide details" }));
 
-  expect(screen.queryByRole("dialog", { name: "alpha" })).toBeNull();
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
   expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
   expect(within(parent).getByRole("switch", { name: "alpha" }).getAttribute("aria-checked")).toBe("false");
   expect(onPluginSelectionChange).not.toHaveBeenCalled();

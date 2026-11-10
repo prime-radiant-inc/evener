@@ -130,12 +130,16 @@ export function LauncherPluginRow({
   candidate,
   selected,
   removeOnly,
+  expanded = false,
   onToggleSelected,
   onOpen,
 }: {
   candidate: PluginLaunchCandidate;
   selected: boolean;
   removeOnly: boolean;
+  /** Whether this row's detail body is expanded; the Details action says
+   * which way it goes. */
+  expanded?: boolean;
   onToggleSelected: (next: boolean) => void;
   onOpen: () => void;
 }): ReactElement {
@@ -164,7 +168,7 @@ export function LauncherPluginRow({
             {candidate.description && <span className={CLASS.description}>{candidate.description}</span>}
             <span className={CLASS.details}>
               <Button variant="link" size="xs" type="button" onClick={onOpen}>
-                Details
+                {expanded ? "Hide details" : "Details"}
               </Button>
             </span>
           </span>

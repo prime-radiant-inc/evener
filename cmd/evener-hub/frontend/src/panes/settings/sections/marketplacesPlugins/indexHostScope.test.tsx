@@ -178,7 +178,7 @@ test("a remote plugin mutation goes through the proxy, never this hub's plugin m
   const user = userEvent.setup();
 
   await user.click(await screen.findByRole("button", { name: /beta-linter/ }));
-  await screen.findByRole("dialog", { name: "beta-linter" });
+  await waitFor(() => expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull());
   await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
 
   await waitFor(() =>

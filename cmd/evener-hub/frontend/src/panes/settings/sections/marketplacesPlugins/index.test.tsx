@@ -93,13 +93,14 @@ test("catalog details open after the initial plugin list fails without allowing 
   await user.click(screen.getByText(ACME.name, { selector: "summary" }));
   const catalog = await screen.findByRole("list", { name: `${ACME.name} plugins` });
   await user.click(within(catalog).getByRole("button", { name: /formatter/ }));
-  const sheet = screen.getByRole("dialog", { name: "formatter" });
-  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
-  expect(within(sheet).queryByRole("switch")).toBeNull();
-  const install = within(sheet).getByRole("button", { name: "Install" });
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no catalog details expanded");
+  expect(details.getAttribute("data-mode")).toBe("catalog");
+  expect(within(details).queryByRole("switch")).toBeNull();
+  const install = within(details).getByRole("button", { name: "Install" });
   expect((install as HTMLButtonElement).disabled).toBe(true);
   await user.click(install);
-  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(
     fake.calls.filter((call) =>
       /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(call.method),
@@ -152,7 +153,8 @@ test("cached installed details remain inspectable through failed reads and delay
     await extensionsStore.getState().fetchPlugins();
   });
   await user.click(screen.getByRole("button", { name: /linter/ }));
-  const details = screen.getByRole("dialog", { name: LINTER.plugin });
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no details expanded");
   expect(within(details).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
     "true",
   );
@@ -161,12 +163,13 @@ test("cached installed details remain inspectable through failed reads and delay
   expect(within(details).getByRole("button", { name: "Upgrade" }).getAttribute("aria-disabled")).toBe("true");
   await user.click(within(details).getByRole("button", { name: "Upgrade" }));
   expect((within(details).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
-  await user.click(within(details).getByRole("button", { name: "Close" }));
+  await user.click(within(details).getByRole("button", { name: "Hide details" }));
   const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
   await user.click(screen.getByRole("button", { name: "Retry plugins" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
   await user.click(screen.getByRole("button", { name: /linter/ }));
-  const recovering = screen.getByRole("dialog", { name: LINTER.plugin });
+  const recovering = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(recovering instanceof HTMLElement)) throw new Error("no recovering details expanded");
   expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
     "true",
   );
@@ -235,8 +238,8 @@ test.each(["plugin", "marketplace"] as const)(
     await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
     if (failed === "marketplace") {
       await user.click(screen.getByRole("button", { name: /linter/ }));
-      expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
-      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+      await user.click(screen.getByRole("button", { name: "Hide details" }));
     } else {
       await user.click(screen.getByRole("radio", { name: "Browse" }));
       await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
@@ -512,24 +515,25 @@ test("switching to the Marketplaces segment shows the marketplace list and hides
   expect(screen.queryByRole("list", { name: "Installed plugins" })).toBeNull();
 });
 
-test("clicking an installed row opens the detail sheet; its close button dismisses it", async () => {
+test("clicking an installed row expands its details inline; the Hide details action collapses them", async () => {
   const user = userEvent.setup();
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
   await user.click(await screen.findByRole("button", { name: /linter/ }));
-  expect(await screen.findByRole("dialog", { name: "linter" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "linter" })).toBeNull());
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Hide details" }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
 });
 
-test("switching segments while the detail sheet is open closes it", async () => {
+test("switching segments while a row's details are expanded collapses them", async () => {
   const user = userEvent.setup();
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
   await user.click(await screen.findByRole("button", { name: /linter/ }));
-  expect(await screen.findByRole("dialog", { name: "linter" })).toBeTruthy();
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
   await user.click(screen.getByRole("radio", { name: "Browse" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "linter" })).toBeNull());
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
 });
 
 test("switching segments while the marketplace sheet is open closes it", async () => {
@@ -1024,7 +1028,7 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
   await waitFor(() => expect(removeAttempts).toBe(2));
 });
 
-test("a catalog row's main area opens the detail sheet in catalog mode, with no components read", async () => {
+test("a catalog row's main area expands its details in catalog mode, with no components read", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({
     name: ACME.name,
@@ -1046,15 +1050,17 @@ test("a catalog row's main area opens the detail sheet in catalog mode, with no 
   const componentsCallsBefore = fake.calls.filter((c) => c.method === "evener/plugin/components").length;
 
   await user.click(screen.getByRole("button", { name: /formatter/ }));
-  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no catalog details expanded");
   // Catalog mode: description + metadata + the Install footer, no switches
   // and no Contents block (spec decision 2).
-  expect(within(sheet).getByText("Fixture formatter")).toBeTruthy();
-  expect(within(sheet).queryByRole("switch")).toBeNull();
-  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
-  expect(within(sheet).getByRole("button", { name: "Install" })).toBeTruthy();
-  expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
-  // Opening the catalog sheet reads no components: no new call, and no
+  expect(details.getAttribute("data-mode")).toBe("catalog");
+  expect(within(details).getByText("Fixture formatter")).toBeTruthy();
+  expect(within(details).queryByRole("switch")).toBeNull();
+  expect(details.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+  expect(within(details).getByRole("button", { name: "Install" })).toBeTruthy();
+  expect(within(details).queryByRole("button", { name: "Remove" })).toBeNull();
+  // Expanding the catalog details reads no components: no new call, and no
   // components call ever named the not-installed plugin.
   expect(fake.calls.filter((c) => c.method === "evener/plugin/components")).toHaveLength(componentsCallsBefore);
   expect(
@@ -1066,7 +1072,7 @@ test("a catalog row's main area opens the detail sheet in catalog mode, with no 
   ).toBe(false);
 });
 
-test("an install through the catalog sheet returns focus to the row it reshaped", async () => {
+test("an install through the catalog details returns focus to the row it reshaped", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({
     name: ACME.name,
@@ -1094,21 +1100,78 @@ test("an install through the catalog sheet returns focus to the row it reshaped"
   await user.click(screen.getByRole("radio", { name: "Browse" }));
   await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
   await screen.findByRole("list", { name: `${ACME.name} plugins` });
-  // Open from the row's main area, so the sheet's FocusScope remembers the
-  // row's main button as its opener.
+  // Expand the row, then install through the details' own Install action,
+  // which routes to the list's single confirm.
   await user.click(screen.getByRole("button", { name: /formatter/ }));
-  const sheet = screen.getByRole("dialog", { name: "formatter" });
-  await user.click(within(sheet).getByRole("button", { name: "Install" }));
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no catalog details expanded");
+  await user.click(within(details).getByRole("button", { name: "Install" }));
   const confirm = screen.getByRole("dialog", { name: "Install plugin" });
   await user.click(within(confirm).getByRole("button", { name: "Install" }));
   // The install's fresh list reshapes the row - the split row's main button
-  // is replaced by the whole-row button - and the sheet closes.
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "formatter" })).toBeNull());
+  // is replaced by the whole-row button - and the confirm's FocusScope loses
+  // its opener.
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull());
   const reshapedRow = screen.getByRole("button", { name: /formatter/ });
   expect(document.activeElement).toBe(reshapedRow);
 });
 
-test("an already-installed catalog row opens the sheet in installed mode", async () => {
+const TIDY: PluginEntry = {
+  plugin: "tidy",
+  marketplace: "acme-plugins",
+  version: "2.0.0",
+  enabled: false,
+  autoUpgrade: true,
+  broken: false,
+  installPath: "/t",
+  installedAt: 1,
+  lastUpdated: 1,
+};
+
+test("tapping an installed row expands its details inline; tapping again collapses", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  // The row's details expand in place - no dialog opens.
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+});
+
+test("expanding one row collapses another row's details", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => ({ plugins: [LINTER, TIDY] }));
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("button", { name: /tidy/ }));
+  expect(document.querySelectorAll('[data-kind="plugin-detail"]')).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  // Still one open detail - the newly expanded row, not both.
+  const openDetails = document.querySelectorAll('[data-kind="plugin-detail"]');
+  expect(openDetails).toHaveLength(1);
+  expect(openDetails[0]?.getAttribute("data-mode")).toBe("installed");
+  expect(within(openDetails[0] as HTMLElement).getByText("Enabled by default")).toBeTruthy();
+});
+
+test("an already-installed catalog row expands its details in installed mode", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({
     name: ACME.name,
@@ -1131,11 +1194,13 @@ test("an already-installed catalog row opens the sheet in installed mode", async
   // The catalog row reads as installed: no trailing Install control.
   expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
   await user.click(screen.getByRole("button", { name: /linter/ }));
-  const sheet = screen.getByRole("dialog", { name: LINTER.plugin });
-  // The installed entry's editor, not the catalog sheet: switches and the
-  // Remove footer, plus the Contents the components cache holds.
-  expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
-  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
-  expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
-  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no details expanded");
+  // The installed entry's editor, not the catalog body: switches and the
+  // Remove action, plus the Contents the components cache holds.
+  expect(details.getAttribute("data-mode")).toBe("installed");
+  expect(within(details).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+  expect(within(details).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(details).queryByRole("button", { name: "Install" })).toBeNull();
+  await waitFor(() => expect(details.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
 });

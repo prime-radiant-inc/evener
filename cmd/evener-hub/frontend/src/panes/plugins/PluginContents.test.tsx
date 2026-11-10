@@ -4,8 +4,9 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
+import { Sheet } from "../../widgets";
 import { PluginContents, PluginContentsBlock } from "./PluginContents";
-import { PluginSheet } from "./PluginSheet";
+import { PluginDetail } from "./PluginDetail";
 
 const NINE_SERVERS: string[] = Array.from({ length: 9 }, (_, i) => `server-0${i + 1}`);
 
@@ -49,14 +50,13 @@ test("keyboard expansion keeps focus inside the sheet and Escape dismisses it", 
   function Harness() {
     const [open, setOpen] = useState(true);
     return (
-      <PluginSheet
-        open={open}
-        onClose={() => setOpen(false)}
-        title="plugin-focus-sentinel"
-        mode="launcher"
-        metadata={[]}
-        contents={<PluginContents components={{ mcpServers: NINE_SERVERS }} />}
-      />
+      <Sheet open={open} onClose={() => setOpen(false)} title="plugin-focus-sentinel" side="right">
+        <PluginDetail
+          mode="launcher"
+          metadata={[]}
+          contents={<PluginContents components={{ mcpServers: NINE_SERVERS }} />}
+        />
+      </Sheet>
     );
   }
   render(<Harness />);
@@ -86,14 +86,9 @@ test.each([undefined, { status: "loading" as const }])(
     function Harness() {
       const [open, setOpen] = useState(true);
       return (
-        <PluginSheet
-          open={open}
-          onClose={() => setOpen(false)}
-          title="retry-focus-sentinel"
-          mode="launcher"
-          metadata={[]}
-          contents={<Contents />}
-        />
+        <Sheet open={open} onClose={() => setOpen(false)} title="retry-focus-sentinel" side="right">
+          <PluginDetail mode="launcher" metadata={[]} contents={<Contents />} />
+        </Sheet>
       );
     }
     render(<Harness />);

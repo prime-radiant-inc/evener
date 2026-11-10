@@ -158,6 +158,23 @@ test("retry is reachable", async () => {
   expect(onRetry).toHaveBeenCalledOnce();
 });
 
+test("Details expands the candidate's details inline under its row, and again collapses", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  const detailsAction = screen.getAllByRole("button", { name: "Details" })[0];
+  if (!(detailsAction instanceof HTMLElement)) throw new Error("no Details action renders");
+  await user.click(detailsAction);
+  // The details expand in place under the row - no sheet dialog opens.
+  expect(document.querySelector('[data-kind="plugin-detail"][data-mode="launcher"]')).not.toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  // The same action collapses it again.
+  const alphaRow = screen.getByRole("switch", { name: "alpha" }).closest("div");
+  if (!(alphaRow instanceof HTMLElement)) throw new Error("no alpha row renders");
+  await user.click(within(alphaRow).getByRole("button", { name: "Hide details" }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();
@@ -168,7 +185,7 @@ test("shows a removable retained stale name while preserving other selected name
   expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha"] });
 });
 
-describe("the Details action opens the launcher sheet", () => {
+describe("the Details action expands the launcher's inline details", () => {
   const COMPONENTS: PluginComponents = { skills: ["run"], commands: ["fmt"] };
 
   afterEach(() => {
@@ -196,6 +213,13 @@ describe("the Details action opens the launcher sheet", () => {
     return row;
   }
 
+  /** The one expanded detail body (the accordion keeps it unique). */
+  function detailsBody(): HTMLElement {
+    const body = document.querySelector('[data-kind="plugin-detail"]');
+    if (!(body instanceof HTMLElement)) throw new Error("no detail body is expanded");
+    return body;
+  }
+
   test("every row's description ends in a Details action", () => {
     renderPanel();
     expect(document.querySelectorAll('[data-kind="plugin-row"][data-mode="launcher"]')).toHaveLength(2);
@@ -212,7 +236,7 @@ describe("the Details action opens the launcher sheet", () => {
     }
   });
 
-  test("Details opens the candidate's sheet, reading Contents by the candidate's own target", async () => {
+  test("Details expands the candidate's details inline, reading Contents by the candidate's own target", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
@@ -222,54 +246,52 @@ describe("the Details action opens the launcher sheet", () => {
     // picks the read target, not its manifest name.
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
-    const alphaSheet = screen.getByRole("dialog", { name: "alpha" });
+    const alphaBody = detailsBody();
+    expect(alphaBody.getAttribute("data-mode")).toBe("launcher");
     expect(fake.calls.map((call) => call.params)).toEqual([{ targets: [{ path: "/plugins/alpha" }] }]);
-    expect(alphaSheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
-    expect(alphaSheet.querySelector('[data-kind="skills"]')).toBeTruthy();
-    expect(within(alphaSheet).getByText("acme")).toBeTruthy();
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
-
-    await user.click(within(alphaSheet).getByRole("button", { name: "Close" }));
+    expect(alphaBody.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
+    expect(alphaBody.querySelector('[data-kind="skills"]')).toBeTruthy();
+    expect(within(alphaBody).getByText("acme")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
 
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Hide details" }));
+    expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+
     // beta is a directory source with no marketplace: its path picks the
-    // target. One sheet is open at a time.
+    // target. One row's details are expanded at a time.
     await user.click(within(rowOf("beta")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
     expect(fake.calls.map((call) => call.params)).toEqual([
       { targets: [{ path: "/plugins/alpha" }] },
       { targets: [{ path: "/tmp/beta" }] },
     ]);
-    const betaSheet = screen.getByRole("dialog", { name: "beta" });
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    expect(betaSheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
+    expect(document.querySelectorAll('[data-kind="plugin-detail"]')).toHaveLength(1);
+    expect(detailsBody().querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   });
 
-  test("the sheet's switch reflects the row's selection and toggles it", async () => {
+  test("the expanded body's switch reflects the row's selection and toggles it", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
     const { onSelectionChange } = renderPanel({ client: fake });
 
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
-    const alphaSheet = screen.getByRole("dialog", { name: "alpha" });
-    const included = within(alphaSheet).getByRole("switch", { name: "Included in this session" });
+    const included = within(detailsBody()).getByRole("switch", { name: "Included in this session" });
     // alpha is selected in the preview's default selection; beta is not.
     expect(included.getAttribute("aria-checked")).toBe("true");
     await user.click(included);
     // Toggling the only selected plugin off materializes an empty selection.
     expect(onSelectionChange).toHaveBeenCalledWith({ mode: "explicit", names: [] });
 
-    await user.click(within(alphaSheet).getByRole("button", { name: "Close" }));
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Hide details" }));
     await user.click(within(rowOf("beta")).getByRole("button", { name: "Details" }));
-    const betaSheet = screen.getByRole("dialog", { name: "beta" });
-    const betaIncluded = within(betaSheet).getByRole("switch", { name: "Included in this session" });
+    const betaIncluded = within(detailsBody()).getByRole("switch", { name: "Included in this session" });
     expect(betaIncluded.getAttribute("aria-checked")).toBe("false");
     await user.click(betaIncluded);
     expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha", "beta"] });
   });
 
-  test("closing the sheet unmounts it and a reopen reads again", async () => {
+  test("collapsing the details unmounts the body and a re-expand reads again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
@@ -278,18 +300,18 @@ describe("the Details action opens the launcher sheet", () => {
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
     expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(1);
-    await user.click(within(screen.getByRole("dialog", { name: "alpha" })).getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Hide details" }));
+    expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
 
-    // The panel mounts the sheet only while it is open, so each open performs
-    // its own read.
+    // The panel mounts the body only while it is expanded, so each expansion
+    // performs its own read.
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
     expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
-    expect(screen.getByRole("dialog", { name: "alpha" }).querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
+    expect(detailsBody().querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   });
 
-  test("an open sheet follows the current winner and closes when its identity disappears", async () => {
+  test("an expanded body follows the current winner and collapses when its identity disappears", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const fake = fakeWithComponents();
@@ -314,19 +336,18 @@ describe("the Details action opens the launcher sheet", () => {
       ],
     };
     rerender(panel(refreshed));
-    const sheet = screen.getByRole("dialog", { name: "beta" });
-    const included = within(sheet).getByRole("switch", { name: "Included in this session" });
+    const included = within(detailsBody()).getByRole("switch", { name: "Included in this session" });
     expect(included.getAttribute("aria-checked")).toBe("true");
-    expect(sheet.textContent).toContain(refreshed.plugins[0]?.description);
-    expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+    expect(detailsBody().textContent).toContain(refreshed.plugins[0]?.description);
+    expect(detailsBody().querySelector('[data-kind="plugin-contents"]')).toBeNull();
     await settleComponentsRead();
     expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ path: "/new/beta" }] });
     await user.click(included);
     expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: [] });
     rerender(panel({ plugins: [] }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
     rerender(panel(refreshed));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
   });
 
   test("an installed candidate revision re-reads contents even when its pair stays the same", async () => {
@@ -354,9 +375,7 @@ describe("the Details action opens the launcher sheet", () => {
     await settleComponentsRead();
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ path: "/plugins/alpha" }] });
-    expect(
-      screen.getByRole("dialog", { name: "alpha" }).querySelector('[data-kind="commands"]')?.textContent,
-    ).toContain("revision-command");
+    expect(detailsBody().querySelector('[data-kind="commands"]')?.textContent).toContain("revision-command");
   });
 
   test("remove-only mode visibly disables refused inclusion but still allows removal", async () => {
@@ -376,7 +395,7 @@ describe("the Details action opens the launcher sheet", () => {
     const { rerender } = render(panel(["alpha"]));
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
     const included = () =>
-      within(screen.getByRole("dialog", { name: "alpha" })).getByRole("switch", {
+      within(detailsBody()).getByRole("switch", {
         name: "Included in this session",
       }) as HTMLButtonElement;
     expect(included().disabled).toBe(false);
@@ -386,7 +405,7 @@ describe("the Details action opens the launcher sheet", () => {
     expect(included().disabled).toBe(true);
     await user.click(included());
     expect(onSelectionChange).toHaveBeenCalledOnce();
-    await user.click(within(screen.getByRole("dialog", { name: "alpha" })).getByRole("button", { name: "Close" }));
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Hide details" }));
     expect((screen.getByRole("switch", { name: "alpha" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

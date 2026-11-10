@@ -3,15 +3,13 @@ import { WireError } from "@evener/appwire-client";
 import { deferRequest } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
-import { Button } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { chipKinds } from "./marketplacesTestUtils";
-import { PluginDetailSheet, type PluginDetailTarget } from "./PluginDetailSheet";
+import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
 
 const LINTER: PluginEntry = {
   plugin: "linter",
@@ -31,7 +29,7 @@ const ACME: MarketplaceEntry = {
   lastUpdated: 1,
 };
 
-const TARGET: PluginDetailTarget = { mode: "installed", plugin: "linter", marketplace: "acme-plugins" };
+const TARGET: PluginDetailTarget = { plugin: "linter", marketplace: "acme-plugins" };
 
 /** The pair form the sheet's RPCs address a plugin by - the target without
  * its mode, which is a UI-only discriminator. */
@@ -50,6 +48,13 @@ function seededCatalog(plugins: { name: string; description?: string; author?: s
   return new Map([["acme-plugins", { status: "loaded" as const, plugins }]]);
 }
 
+/** The detail body element a row's expansion mounts. */
+function body(): HTMLElement {
+  const el = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(el instanceof HTMLElement)) throw new Error("no detail body renders");
+  return el;
+}
+
 beforeEach(() => {
   resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
@@ -61,13 +66,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders nothing when target is null", () => {
-  connectReadyFakeClient();
-  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
-  render(<PluginDetailSheet target={null} onClose={() => {}} />);
-  expect(screen.queryByRole("dialog")).toBeNull();
-});
-
 test("renders name, state chips, version, marketplace, and source", async () => {
   connectReadyFakeClient();
   extensionsStore.setState({
@@ -75,8 +73,8 @@ test("renders name, state chips, version, marketplace, and source", async () => 
     marketplaces: [ACME],
   });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  expect(body()).toBeTruthy();
   expect(chipKinds()).toEqual(["broken", "disabled", "auto-upgrade"]);
   expect(screen.getByText("v1.2.0")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
@@ -90,8 +88,8 @@ test("omits the source row when the marketplace is not registered", async () => 
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  expect(body()).toBeTruthy();
   expect(screen.queryByText("github: acme/plugins")).toBeNull();
   const browse = browseMarketplace.mock.results[0];
   if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
@@ -102,7 +100,7 @@ test("the Enabled and Auto-upgrade switches reflect the entry's state", async ()
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Auto-upgrade" }).getAttribute("aria-checked")).toBe("false");
   const browse = browseMarketplace.mock.results[0];
@@ -118,7 +116,7 @@ test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable 
     expect(params).toEqual(PAIR);
     return { plugins: [{ ...LINTER, enabled: false }] };
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
     expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("false"),
@@ -134,7 +132,7 @@ test("the Enabled switch calls pluginEnable on a disabled plugin", async () => {
     expect(params).toEqual(PAIR);
     return { plugins: [{ ...LINTER, enabled: true }] };
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
     expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true"),
@@ -149,7 +147,7 @@ test("a failed enable toggle re-enables the switch too", async () => {
   fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   // The refusal is aria-disabled, never the native attribute: the click that
@@ -164,7 +162,7 @@ test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
   fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle enable failed: boom")).toBe(true),
@@ -183,7 +181,7 @@ test("the Enabled switch is disabled while its RPC is in flight, and re-enables 
         resolveDisable = resolve;
       }),
   );
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   expect(enabledSwitch.getAttribute("aria-disabled")).toBe("true");
@@ -202,7 +200,7 @@ test("the Auto-upgrade switch flips the current value; failure toasts", async ()
     expect(params).toEqual({ ...PAIR, autoUpgrade: true });
     return { plugins: [{ ...LINTER, autoUpgrade: true }] };
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("switch", { name: "Auto-upgrade" }));
   await waitFor(() =>
     expect(screen.getByRole("switch", { name: "Auto-upgrade" }).getAttribute("aria-checked")).toBe("true"),
@@ -216,7 +214,7 @@ test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async (
   fake.on("evener/plugin/setAutoUpgrade", () => {
     throw new Error("boom");
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("switch", { name: "Auto-upgrade" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle auto-upgrade failed: boom")).toBe(true),
@@ -227,7 +225,7 @@ test("Upgrade and its badge show only when the hub found an update", async () =>
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
   expect(chipKinds()).not.toContain("update-available");
 
@@ -250,7 +248,7 @@ test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in fl
       resolveUpgrade = resolve;
     });
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   const upgradeButton = screen.getByRole("button", { name: "Upgrade" });
   await user.click(upgradeButton);
   // Its own click made it unavailable: a refusal that keeps the keyboard, not
@@ -279,7 +277,7 @@ test("an upgrade leaves alone focus the user moved while it ran", async () => {
         resolveUpgrade = resolve;
       }),
   );
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("button", { name: "Upgrade" }));
   const autoUpgrade = screen.getByRole("switch", { name: "Auto-upgrade" });
   act(() => autoUpgrade.focus());
@@ -296,7 +294,7 @@ test("a failed upgrade toasts failure", async () => {
   fake.on("evener/plugin/upgrade", () => {
     throw new Error("boom");
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("button", { name: "Upgrade" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Upgrade failed: boom")).toBe(true),
@@ -311,14 +309,14 @@ test("Remove opens a confirm; confirming removes, toasts, and closes the sheet",
     expect(params).toEqual(PAIR);
     return { plugins: [] };
   });
-  const onClose = vi.fn();
-  render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
+  const onCollapse = vi.fn();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
   expect(within(dialog).getByText('Remove plugin "linter"?')).toBeTruthy();
   await user.click(within(dialog).getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(getToasts().some((t) => t.kind === "success" && t.text === "Removed linter")).toBe(true));
-  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  await waitFor(() => expect(onCollapse).toHaveBeenCalled());
 });
 
 test("cancelling the remove confirm does not call pluginRemove and keeps the sheet open", async () => {
@@ -327,13 +325,13 @@ test("cancelling the remove confirm does not call pluginRemove and keeps the she
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const removeSpy = vi.fn();
   fake.on("evener/plugin/remove", removeSpy);
-  const onClose = vi.fn();
-  render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
+  const onCollapse = vi.fn();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(removeSpy).not.toHaveBeenCalled();
-  expect(onClose).not.toHaveBeenCalled();
-  expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+  expect(onCollapse).not.toHaveBeenCalled();
+  expect(body()).toBeTruthy();
 });
 
 test("a failed remove toasts failure and keeps the sheet open", async () => {
@@ -343,16 +341,16 @@ test("a failed remove toasts failure and keeps the sheet open", async () => {
   fake.on("evener/plugin/remove", () => {
     throw new Error("boom");
   });
-  const onClose = vi.fn();
-  render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
+  const onCollapse = vi.fn();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
   await user.click(within(dialog).getByRole("button", { name: "Remove" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Remove failed: boom")).toBe(true),
   );
-  expect(onClose).not.toHaveBeenCalled();
-  expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+  expect(onCollapse).not.toHaveBeenCalled();
+  expect(body()).toBeTruthy();
 });
 
 test("the remove confirm's buttons disable while the removal is in flight", async () => {
@@ -360,7 +358,7 @@ test("the remove confirm's buttons disable while the removal is in flight", asyn
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
   await user.click(within(dialog).getByRole("button", { name: "Remove" }));
@@ -368,14 +366,14 @@ test("the remove confirm's buttons disable while the removal is in flight", asyn
   expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test("the close button calls onClose", async () => {
+test("the Hide details action calls onCollapse", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
-  const onClose = vi.fn();
-  render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
-  await user.click(screen.getByRole("button", { name: "Close" }));
-  expect(onClose).toHaveBeenCalled();
+  const onCollapse = vi.fn();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
+  await user.click(screen.getByRole("button", { name: "Hide details" }));
+  expect(onCollapse).toHaveBeenCalled();
 });
 
 test("lazily browses the marketplace and shows the catalog description when loaded", async () => {
@@ -388,7 +386,7 @@ test("lazily browses the marketplace and shows the catalog description when load
       plugins: [{ name: "linter", description: "Checks code style on every save." }],
     };
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   expect(fake.calls.some((c) => c.method === "evener/marketplace/browse")).toBe(true);
   expect(await screen.findByText("Checks code style on every save.")).toBeTruthy();
 });
@@ -402,7 +400,7 @@ test("does not re-browse a marketplace whose catalog is already cached", async (
       ["acme-plugins", { status: "loaded" as const, plugins: [{ name: "linter", description: "Checks code style." }] }],
     ]),
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
   expect(fake.calls.some((c) => c.method === "evener/marketplace/browse")).toBe(false);
   expect(screen.getByText("Checks code style.")).toBeTruthy();
   // The sheet's lazy components read settles inside the test, not after it.
@@ -412,15 +410,15 @@ test("does not re-browse a marketplace whose catalog is already cached", async (
 test("closes itself when the entry disappears from the store (removed elsewhere)", async () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
-  const onClose = vi.fn();
+  const onCollapse = vi.fn();
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
-  render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
-  expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
+  expect(body()).toBeTruthy();
   const browse = browseMarketplace.mock.results[0];
   if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
   act(() => extensionsStore.setState({ plugins: [] }));
   await act(() => browse.value);
-  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  await waitFor(() => expect(onCollapse).toHaveBeenCalled());
 });
 
 test("installed mode with a loaded cache entry renders the Contents block and today's switches and footer", async () => {
@@ -435,23 +433,23 @@ test("installed mode with a loaded cache entry renders the Contents block and to
   fake.on("evener/plugin/components", () => ({
     results: [{ plugin: "linter", marketplace: "acme-plugins", components: COMPONENTS }],
   }));
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const sheet = screen.getByRole("dialog", { name: "linter" });
-  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
-  expect(within(sheet).getByRole("alert").getAttribute("data-reason")).toBe("load-warnings");
-  expect(within(sheet).getByRole("alert").textContent).toContain(COMPONENTS.warnings?.[0]);
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  const detail = body();
+  await waitFor(() => expect(detail.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
+  expect(within(detail).getByRole("alert").getAttribute("data-reason")).toBe("load-warnings");
+  expect(within(detail).getByRole("alert").textContent).toContain(COMPONENTS.warnings?.[0]);
   // One row per present kind, each with its badge count and mono names.
-  expect(sheet.querySelector('[data-kind="skills"]')?.textContent).toContain("run");
-  expect(sheet.querySelector('[data-kind="agents"]')).toBeNull();
-  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("installed");
-  expect(within(sheet).getByText("acme-mcp")).toBeTruthy();
+  expect(detail.querySelector('[data-kind="skills"]')?.textContent).toContain("run");
+  expect(detail.querySelector('[data-kind="agents"]')).toBeNull();
+  expect(detail.getAttribute("data-mode")).toBe("installed");
+  expect(within(detail).getByText("acme-mcp")).toBeTruthy();
   // The manifest-only reading is reserved for an all-absent inventory.
   expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
   // Today's editor surface is unchanged: both switches, Remove, no Upgrade.
-  expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
-  expect(within(sheet).getByRole("switch", { name: "Auto-upgrade" })).toBeTruthy();
-  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
-  expect(within(sheet).queryByRole("button", { name: "Upgrade" })).toBeNull();
+  expect(within(detail).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+  expect(within(detail).getByRole("switch", { name: "Auto-upgrade" })).toBeTruthy();
+  expect(within(detail).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(detail).queryByRole("button", { name: "Upgrade" })).toBeNull();
 });
 
 test.each([false, true])(
@@ -468,21 +466,21 @@ test.each([false, true])(
     fake.on("evener/plugin/components", () => ({
       results: [{ plugin: "linter", marketplace: "acme-plugins", error: loadError }],
     }));
-    render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-    const sheet = screen.getByRole("dialog", { name: "linter" });
-    const failure = await within(sheet).findByRole("alert");
+    render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+    const detail = body();
+    const failure = await within(detail).findByRole("alert");
     expect(failure.getAttribute("data-reason")).toBe("plugin-broken");
     expect(failure.textContent).toContain(loadError);
     // The failure is the plugin's, not a degraded read: no retry, no
     // manifest-only fallback, no Contents block.
-    expect(within(sheet).queryByRole("status")).toBeNull();
-    expect(within(sheet).queryByRole("button", { name: "Retry" })).toBeNull();
-    expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+    expect(within(detail).queryByRole("status")).toBeNull();
+    expect(within(detail).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(detail.querySelector('[data-kind="plugin-contents"]')).toBeNull();
     expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
     // Chips, switches and Remove are unchanged.
     expect(chipKinds()).toEqual(broken ? ["broken"] : []);
-    expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
-    expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(within(detail).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+    expect(within(detail).getByRole("button", { name: "Remove" })).toBeTruthy();
   },
 );
 
@@ -497,14 +495,14 @@ test.each([false, true])("a request error has working Retry even when the entry 
   fake.on("evener/plugin/components", () => {
     throw new WireError("method not found: evener/plugin/components", -32601);
   });
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const sheet = screen.getByRole("dialog", { name: "linter" });
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  const detail = body();
   // The read failed for the whole method, not for this plugin: a quiet
   // degrade notice where Contents would be, never the load-failure alert.
-  const notice = await within(sheet).findByRole("status");
+  const notice = await within(detail).findByRole("status");
   expect(notice.getAttribute("data-reason")).toBe("components-degraded");
-  expect(within(sheet).queryByRole("alert")).toBeNull();
-  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+  expect(within(detail).queryByRole("alert")).toBeNull();
+  expect(detail.querySelector('[data-kind="plugin-contents"]')).toBeNull();
 
   // The hub is upgraded: the retry's fresh read now answers.
   fake.on("evener/plugin/components", (params) => ({
@@ -514,14 +512,14 @@ test.each([false, true])("a request error has working Retry even when the entry 
       components: { skills: ["run"] },
     })),
   }));
-  await user.click(within(sheet).getByRole("button", { name: "Retry" }));
+  await user.click(within(detail).getByRole("button", { name: "Retry" }));
   expect(fake.calls.filter((c) => c.method === "evener/plugin/components")).toHaveLength(2);
   expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "linter", marketplace: "acme-plugins" }] });
-  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
-  expect(within(sheet).queryByRole("status")).toBeNull();
+  await waitFor(() => expect(detail.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
+  expect(within(detail).queryByRole("status")).toBeNull();
 });
 
-test("keyboard Retry keeps focus inside settings details while loading and Escape dismisses", async () => {
+test("keyboard Retry keeps focus inside the details body while loading", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   extensionsStore.setState({
@@ -532,13 +530,9 @@ test("keyboard Retry keeps focus inside settings details while loading and Escap
   fake.on("evener/plugin/components", () => {
     throw new WireError("unavailable-method-sentinel", -32601);
   });
-  function Harness() {
-    const [target, setTarget] = useState<PluginDetailTarget | null>(TARGET);
-    return <PluginDetailSheet target={target} onClose={() => setTarget(null)} />;
-  }
-  render(<Harness />);
-  const sheet = screen.getByRole("dialog");
-  const notice = await within(sheet).findByRole("status");
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  const detail = body();
+  const notice = await within(detail).findByRole("status");
   const retry = within(notice).getByRole("button");
   for (let i = 0; i < 8 && document.activeElement !== retry; i++) await user.tab();
   expect(document.activeElement).toBe(retry);
@@ -546,13 +540,11 @@ test("keyboard Retry keeps focus inside settings details while loading and Escap
   await user.keyboard("{Enter}");
   expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
   expect(retry.isConnected).toBe(false);
-  expect(sheet.contains(document.activeElement)).toBe(true);
-  await user.keyboard("{Escape}");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(detail.contains(document.activeElement)).toBe(true);
   await act(async () => release({ results: [] }));
 });
 
-test("catalog mode renders description and metadata with no switches, and installs through the confirm flow", async () => {
+test("catalog mode renders description and metadata with no switches, and routes Install to the list", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   extensionsStore.setState({
@@ -561,101 +553,34 @@ test("catalog mode renders description and metadata with no switches, and instal
     browseCatalogs: seededCatalog([{ name: "formatter", description: "Formats code.", author: "Acme Corp" }]),
   });
   fake.on("evener/plugin/install", () => ({ plugins: [LINTER, { ...LINTER, plugin: "formatter" }] }));
-  const onClose = vi.fn();
+  const onInstall = vi.fn();
   render(
-    <PluginDetailSheet
-      target={{ mode: "catalog", plugin: "formatter", marketplace: "acme-plugins" }}
-      onClose={onClose}
+    <PluginDetailBody
+      target={{ plugin: "formatter", marketplace: "acme-plugins" }}
+      onCollapse={() => {}}
+      onInstall={onInstall}
     />,
   );
-  const sheet = screen.getByRole("dialog", { name: "formatter" });
-  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
-  expect(within(sheet).getByText("Formats code.")).toBeTruthy();
+  const detail = body();
+  expect(detail.getAttribute("data-mode")).toBe("catalog");
+  expect(within(detail).getByText("Formats code.")).toBeTruthy();
   // No switches, no Contents block, and no components read in catalog mode.
-  expect(within(sheet).queryByRole("switch")).toBeNull();
-  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+  expect(within(detail).queryByRole("switch")).toBeNull();
+  expect(detail.querySelector('[data-kind="plugin-contents"]')).toBeNull();
   expect(fake.calls.some((c) => c.method === "evener/plugin/components")).toBe(false);
   expect(chipKinds()).toEqual([]);
   // Catalog metadata: Marketplace, Source, Author when present; no Version.
-  expect(within(sheet).getByText("acme-plugins")).toBeTruthy();
-  expect(sheet.querySelector('[data-kind="plugin-source"]')?.textContent).toContain("acme/plugins");
-  expect(within(sheet).getByText("Acme Corp")).toBeTruthy();
-  expect(sheet.querySelector('[data-kind="plugin-version"]')).toBeNull();
+  expect(within(detail).getByText("acme-plugins")).toBeTruthy();
+  expect(detail.querySelector('[data-kind="plugin-source"]')?.textContent).toContain("acme/plugins");
+  expect(within(detail).getByText("Acme Corp")).toBeTruthy();
+  expect(detail.querySelector('[data-kind="plugin-version"]')).toBeNull();
 
-  await user.click(within(sheet).getByRole("button", { name: "Install" }));
-  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
-  await user.click(within(confirm).getByRole("button", { name: "Install" }));
-  expect(fake.calls.filter((c) => c.method === "evener/plugin/install").map((c) => c.params)).toEqual([
-    { plugin: "formatter", marketplace: "acme-plugins" },
-  ]);
-  await waitFor(() => expect(getToasts().some((t) => t.kind === "success")).toBe(true));
-  await waitFor(() => expect(onClose).toHaveBeenCalled());
-  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+  // The body owns no install confirm: the list's single confirm owns it, so
+  // the row's trailing Install and this one share one flow and one focus
+  // recovery.
+  await user.click(within(detail).getByRole("button", { name: "Install" }));
+  expect(onInstall).toHaveBeenCalledWith({ plugin: "formatter", marketplace: "acme-plugins" });
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
+  // An install does not collapse the details.
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
 });
-
-test.each(["current", "different", "reopened"] as const)(
-  "a deferred install closes only its own still-open sheet: %s",
-  async (scenario) => {
-    const user = userEvent.setup();
-    const fake = connectReadyFakeClient();
-    const original: PluginDetailTarget = { mode: "catalog", plugin: "formatter", marketplace: ACME.name };
-    const next: PluginDetailTarget = { ...original, plugin: scenario === "different" ? "inspector" : original.plugin };
-    extensionsStore.setState({
-      plugins: [LINTER],
-      marketplaces: [ACME],
-      browseCatalogs: seededCatalog([{ name: original.plugin }, { name: next.plugin }]),
-    });
-    let resolveInstall: (value: { plugins: PluginEntry[] }) => void = () => {};
-    fake.on(
-      "evener/plugin/install",
-      () =>
-        new Promise((resolve) => {
-          resolveInstall = resolve;
-        }),
-    );
-    const onClose = vi.fn();
-    function Harness() {
-      const [target, setTarget] = useState<PluginDetailTarget | null>(original);
-      return (
-        <>
-          <Button onClick={() => setTarget(next)}>Open next</Button>
-          <PluginDetailSheet
-            target={target}
-            onClose={() => {
-              onClose();
-              setTarget(null);
-            }}
-          />
-        </>
-      );
-    }
-    render(<Harness />);
-    const originalSheet = screen.getByRole("dialog", { name: original.plugin });
-    await user.click(within(originalSheet).getByRole("button", { name: "Install" }));
-    const confirm = screen.getByRole("dialog", { name: "Install plugin" });
-    await user.click(within(confirm).getByRole("button", { name: "Install" }));
-    expect(fake.calls.filter((call) => call.method === "evener/plugin/install").map((call) => call.params)).toEqual([
-      { plugin: original.plugin, marketplace: original.marketplace },
-    ]);
-    expect(extensionsStore.getState().hubWriteBusy).toBe(true);
-
-    if (scenario !== "current") {
-      await user.keyboard("{Escape}");
-      expect(confirm.isConnected).toBe(false);
-      expect(screen.getByRole("dialog", { name: original.plugin })).toBe(originalSheet);
-      expect(originalSheet.contains(document.activeElement)).toBe(true);
-      await user.keyboard("{Escape}");
-      expect(screen.queryByRole("dialog")).toBeNull();
-      expect(onClose).toHaveBeenCalledTimes(1);
-      await user.click(screen.getByRole("button", { name: "Open next" }));
-      expect(screen.getByRole("dialog", { name: next.plugin })).toBeTruthy();
-    }
-
-    await act(async () => resolveInstall({ plugins: [LINTER, { ...LINTER, plugin: original.plugin }] }));
-    await waitFor(() => expect(getToasts().filter((toast) => toast.kind === "success")).toHaveLength(1));
-    expect(extensionsStore.getState().hubWriteBusy).toBe(false);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    if (scenario === "current") expect(screen.queryByRole("dialog")).toBeNull();
-    else expect(screen.getByRole("dialog", { name: next.plugin })).toBeTruthy();
-  },
-);

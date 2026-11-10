@@ -2,8 +2,8 @@
 // Workspace redesign. Every row is the shared InstalledPluginRow - status
 // (dot + chips), identity, and the plugin's component counts once the
 // components cache holds them - and every ACTION (enable/disable,
-// auto-upgrade, upgrade, remove) lives in the PluginDetailSheet that opens
-// when a row is selected, so the list stays a single-tap-target-per-row on
+// auto-upgrade, upgrade, remove) lives in the PluginDetailBody a row tap
+// expands under that row, so the list stays a single-tap-target-per-row on
 // both desktop and mobile. The client-side filter matches plugin name OR
 // marketplace, case-insensitively.
 //
@@ -17,6 +17,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstalledPluginRow } from "../../../plugins/PluginRow";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
+import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -25,11 +26,13 @@ const CLASS = {
 };
 
 export interface InstalledSectionProps {
-  onSelect: (target: { plugin: string; marketplace: string }) => void;
+  /** The one row whose details are expanded, owned by the section's parent. */
+  expanded: PluginDetailTarget | null;
+  onToggle: (target: { plugin: string; marketplace: string }) => void;
   onBrowse?: () => void;
 }
 
-export function InstalledSection({ onSelect, onBrowse }: InstalledSectionProps) {
+export function InstalledSection({ expanded, onToggle, onBrowse }: InstalledSectionProps) {
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const pluginComponents = useExtensionsHostState((s) => s.pluginComponents);
   const [filterQuery, setFilterQuery] = useState("");
@@ -69,13 +72,13 @@ export function InstalledSection({ onSelect, onBrowse }: InstalledSectionProps) 
         ) : (
           visible.map((p) => {
             const key = pluginComponentsKey({ plugin: p.plugin, marketplace: p.marketplace });
+            const pair = { plugin: p.plugin, marketplace: p.marketplace };
+            const isExpanded =
+              expanded !== null && expanded.plugin === p.plugin && expanded.marketplace === p.marketplace;
             return (
               <li key={key}>
-                <InstalledPluginRow
-                  entry={p}
-                  components={pluginComponents.get(key)}
-                  onOpen={() => onSelect({ plugin: p.plugin, marketplace: p.marketplace })}
-                />
+                <InstalledPluginRow entry={p} components={pluginComponents.get(key)} onOpen={() => onToggle(pair)} />
+                {isExpanded && <PluginDetailBody target={pair} onCollapse={() => onToggle(pair)} />}
               </li>
             );
           })
