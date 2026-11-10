@@ -30,14 +30,14 @@ func markdownFences(doc string) ([]markdownFence, error) {
 	for i, line := range strings.Split(doc, "\n") {
 		lineNo := i + 1
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
+		if info, isFence := strings.CutPrefix(trimmed, "```"); isFence {
 			if inFence {
 				open.Lines = current
 				fences = append(fences, open)
 				current = nil
 			} else {
 				openedAt = lineNo
-				open = markdownFence{Lang: strings.TrimSpace(strings.TrimPrefix(trimmed, "```")), LineNo: lineNo}
+				open = markdownFence{Lang: strings.TrimSpace(info), LineNo: lineNo}
 			}
 			inFence = !inFence
 			continue
