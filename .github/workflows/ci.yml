@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # GitHub sometimes drops a PR's pull_request events entirely (see
+  # scripts/ops/pr-ci-watchdog.sh), and a workflow without this trigger cannot
+  # be re-dispatched for the pushed head.
+  workflow_dispatch:
   # The merge queue tests each queued PR on top of main and the PRs ahead of
   # it, and main requires the same checks on that candidate.
   merge_group:
