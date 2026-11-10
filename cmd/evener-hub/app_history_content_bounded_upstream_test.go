@@ -180,12 +180,10 @@ func TestManagerWindowReadWalksBoundedUpstreamPages(t *testing.T) {
 
 	page := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{
 		Turns: &appwire.ThreadTurnsListParams{
-			Ref: ref,
-			ThreadWindowParams: appwire.ThreadWindowParams{
-				TurnWindow:        &appwire.ThreadTurnWindow{Latest: 12},
-				ItemTypes:         []string{"messages"},
-				WindowBudgetBytes: budget,
-			},
+			Ref:               ref,
+			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 12},
+			ItemTypes:         []string{"messages"},
+			WindowBudgetBytes: budget,
 		},
 	}).Turns
 	if page == nil {
@@ -264,12 +262,10 @@ func TestManagerSinceWindowReadWalksBoundedUpstreamPages(t *testing.T) {
 
 	page := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{
 		Turns: &appwire.ThreadTurnsListParams{
-			Ref: ref,
-			ThreadWindowParams: appwire.ThreadWindowParams{
-				TurnWindow:        &appwire.ThreadTurnWindow{Since: "turn-00", Limit: 12},
-				ItemTypes:         []string{"messages"},
-				WindowBudgetBytes: budget,
-			},
+			Ref:               ref,
+			TurnWindow:        &appwire.ThreadTurnWindow{Since: "turn-00", Limit: 12},
+			ItemTypes:         []string{"messages"},
+			WindowBudgetBytes: budget,
 		},
 	}).Turns
 	if page == nil {

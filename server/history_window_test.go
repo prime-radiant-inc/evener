@@ -35,9 +35,7 @@ func TestLiveThreadReadPagesWindowTransferUnderCap(t *testing.T) {
 	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
 		ThreadID:     st.threadID,
 		IncludeTurns: true,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 8},
-		},
+		TurnWindow:   &appwire.ThreadTurnWindow{Latest: 8},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -83,9 +81,7 @@ func TestLiveThreadReadSmallWindowCarriesNoTransferPage(t *testing.T) {
 	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
 		ThreadID:     st.threadID,
 		IncludeTurns: true,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
-		},
+		TurnWindow:   &appwire.ThreadTurnWindow{Latest: 1},
 	})
 	if err != nil {
 		t.Fatal(err)

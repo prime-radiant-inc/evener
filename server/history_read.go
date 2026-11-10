@@ -213,7 +213,7 @@ func boundTurnWindowTransfer(
 			used += turnBytes[turnID]
 		}
 	} else {
-		for servedEnd = 0; servedEnd < len(turnIDs); servedEnd++ {
+		for servedEnd = range len(turnIDs) {
 			turnID := turnIDs[servedEnd]
 			if servedEnd > 0 && used+turnBytes[turnID] > limit {
 				break

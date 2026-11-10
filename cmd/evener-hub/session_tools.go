@@ -1110,10 +1110,13 @@ func (o *sessionOperations) retainedFetchRead(ctx context.Context, params appwir
 		return appwire.ThreadReadResponse{}, false, nil
 	}
 	if _, err := appwire.ParseRef(params.Ref); err != nil {
-		return appwire.ThreadReadResponse{}, false, nil
+		return appwire.ThreadReadResponse{}, true, appwire.InvalidParams(err.Error())
 	}
 	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(params.FetchCursor, params.Ref)
-	if err != nil || cursor.Origin != appitempaging.FetchCursorOriginRemoteSource {
+	if err != nil {
+		return appwire.ThreadReadResponse{}, true, appwire.TranscriptItemCursorStale()
+	}
+	if cursor.Origin != appitempaging.FetchCursorOriginRemoteSource {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
 	if err := deletionFenceError(o.cfg, params.Ref, params.ThreadID, ""); err != nil {

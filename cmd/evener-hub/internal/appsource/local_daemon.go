@@ -735,7 +735,7 @@ func readThreadWindowTransfer(ctx context.Context, client *appwire.Client, param
 	pages := 0
 	for {
 		pageParams := params
-		pageParams.ThreadWindowParams.TurnWindow = &selector
+		pageParams.TurnWindow = &selector
 		if pages > 0 {
 			// The relay's first read holds the subscription; the rest only
 			// continue the same snapshot.
