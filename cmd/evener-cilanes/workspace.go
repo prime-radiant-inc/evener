@@ -335,17 +335,19 @@ func embedDir(pattern string) string {
 	return pattern
 }
 
-// readsWholeTree reports whether a test file reads the whole repository: it
-// names the repository root and lists or walks it. Naming the root alone
-// says only where the paths the test names start, and those names already
-// show what it reads; listing or walking a directory that is not the root
-// reads nothing of this repository. Production code that lists files lists
-// the user's repository, so only tests count.
+// readsWholeTree reports whether a test file may read the whole repository:
+// it names the repository root and lists or walks a directory. Naming the
+// root alone says only where the paths the test names start, and those names
+// already show what it reads; a listing or walk in a file that never names
+// the root reads a temporary tree, not this repository. Production code that
+// lists files lists the user's repository, so only tests count.
 //
-// The rule is per file: a test that names the root in one file and walks it
-// from a helper in another is not seen. A merge group runs every lane, so
-// such a miss can bounce a pull request in the merge queue but cannot reach
-// main.
+// The rule is per file and does not follow what a walk starts from, so a file
+// that names the root and walks some other directory counts too, which runs
+// more lanes rather than fewer. A test that names the root in one file and
+// walks it from a helper in another is not seen. A merge group runs every
+// lane, so such a miss can bounce a pull request in the merge queue but
+// cannot reach main.
 func readsWholeTree(file parsedFile) bool {
 	if !file.test || !namesRoot(file) {
 		return false

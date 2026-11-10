@@ -60,6 +60,7 @@ func markdownFencedBlock(t *testing.T, path, heading string) []string {
 	return nil
 }
 
+// hostileAmbient is the ambient environment the recipes must shed: the
 // state/config/cache roots, the state-dir and run-dir overrides, the hub
 // rendezvous settings (token, address), and the provider and
 // credential config paths. The provider paths matter most — they outrank

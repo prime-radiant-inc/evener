@@ -18,11 +18,8 @@ import (
 // a rule is. The extra step here is excluding a leading-dot directive (.PHONY,
 // .DEFAULT_GOAL): RuleShape accepts those as rule-shaped because ParseFamily
 // has to attach a block to one and reject it, while these audits treat a
-// directive as neither a target nor a rule.
-//
-// This predicate lives in one place because it did not used to: five audits each
-// carried their own copy, and they had already drifted -- only four of the five
-// excluded leading-dot directives.
+// directive as neither a target nor a rule. Every Makefile audit reads rule
+// lines through this one predicate, so they cannot drift apart.
 func ruleLineName(line string) (name, rest string, ok bool) {
 	name, rest, ok = makefile.RuleShape(line)
 	if !ok || strings.HasPrefix(name, ".") {
@@ -57,7 +54,7 @@ func readMakefileSources(a *audit, visit func(path string, raw []byte)) {
 }
 
 // makefileSourcesIncludeRootAndFamilies pins the shape every other
-// Makefile-reading test relies on: the root file first, then the family
+// Makefile-reading check relies on: the root file first, then the family
 // files in sorted order, so a caller can always assume index 0 is "Makefile".
 func makefileSourcesIncludeRootAndFamilies(a *audit) {
 	paths := makefileSourcePaths(a)
@@ -234,23 +231,18 @@ func makefileLintingRuleNames(a *audit) []string {
 }
 
 // everyLintingRuleIsInLintTargets is the mirror
-// everyLintTargetIsPhonyAndHasARule does not cover: that test walks
+// everyLintTargetIsPhonyAndHasARule does not cover: that check walks
 // LINT_TARGETS outward to confirm every member still has a working rule.
 // This one walks make/linting.mk's rules inward to confirm every one of
-// them is still a LINT_TARGETS member. Nothing enforced that direction
-// before this test, and it is the direction PR #273's failure actually
-// took reversed onto this branch: a reviewer proved it by dropping
-// lint-generated from LINT_TARGETS, and all ten prior audits kept passing
-// while `make help`, linting.md's generated table (`trigger: Required CI
-// (via make lint)`), and linting.md's prose kept asserting it runs, and
-// `make -n lint` held zero references to it. lint-generated still exists,
-// still has a working recipe, and `make lint-generated` standing alone
-// still runs it — but the required gate silently stopped calling it.
+// them is still a LINT_TARGETS member. A rule dropped from LINT_TARGETS
+// still exists, still has a working recipe, and still runs standing alone,
+// while `make help`, linting.md's generated table and its prose go on
+// asserting that `make lint` runs it — but the required gate no longer
+// calls it, and every other Makefile audit stays green.
 //
-// Every one of make/linting.mk's rules was checked against `make -n lint`
-// before this test was written, and each is genuinely required except for the
-// one explicitly documented local cleanup action above. That narrow exception
-// is recognized only for lint-cache-clean and only with its exact adjacent
+// Every make/linting.mk rule is required except the one explicitly
+// documented local cleanup action above. That narrow exception is
+// recognized only for lint-cache-clean and only with its exact adjacent
 // comment; a future lint-family rule must not gain a silent skip here.
 func everyLintingRuleIsInLintTargets(a *audit) {
 	rules := makefileLintingRuleNames(a)
@@ -282,10 +274,9 @@ func everyLintingRuleIsInLintTargets(a *audit) {
 }
 
 // everyRuleIsPhony is the mirror of everyPhonyTargetHasARule. That
-// test catches a .PHONY name whose recipe vanished; this one catches a rule
+// check catches a .PHONY name whose recipe vanished; this one catches a rule
 // that was never declared .PHONY, where a file of the same name at the repo
-// root silently turns the target into a no-op. fuzz-drive was in exactly that
-// state when this test was written.
+// root silently turns the target into a no-op.
 func everyRuleIsPhony(a *audit) {
 	phony, rules := makefilePhonyAndRuleNames(a)
 	if len(phony) == 0 || len(rules) == 0 {
@@ -368,7 +359,7 @@ func makefileRulesWithoutRecipes(a *audit) (empty []string, total int) {
 // Both are the same hollow-gate shape this audit exists to catch: a rule
 // that is phony, has a rule line, and does nothing. A rebase conflict
 // resolution that leaves either shape behind passes make cleanly ("Nothing
-// to be done") and, before this fix, passed this audit too.
+// to be done"), so this audit has to read it as recipe-less.
 func rulesWithoutRecipesInLines(lines []string) (empty []string, total int) {
 	for i, line := range lines {
 		name, rest, ok := ruleLineName(line)
@@ -409,6 +400,7 @@ func everyRuleHasARecipe(a *audit) {
 	}
 }
 
+// rootMakefileHasNoRules keeps every rule in a family file. The generator
 // reads make/*.mk only, so a rule left in the root would be annotated by the
 // annotation audit and then have nowhere to be published — documented in the
 // Makefile and invisible in the docs.
@@ -632,16 +624,14 @@ func frontendLintRunsFromTheFrontendDirectory(a *audit) {
 		a.Errorf("test-web shells out to npx (%q); from the repository root that resolves the "+
 			"unrelated biome@0.3.3 and exits 0", strings.TrimSpace(testWeb))
 	}
-	checks := webChecksLintCommand(a)
-	if checks != "npm run lint" {
-		a.Errorf("the web gate's lint check is %q, want the frontend's own `npm run lint`; a "+
-			"re-implemented command would let a package.json edit shrink the gate silently", checks)
-	}
+	webChecksRunNpmLint(a)
 }
 
-// webChecksLintCommand returns the command evener-dev's web-checks runs for the
-// "lint" check, read from cmd/evener-dev/webchecks.go.
-func webChecksLintCommand(a *audit) string {
+// webChecksRunNpmLint holds evener-dev's web-checks (cmd/evener-dev/webchecks.go)
+// to running a "lint" check as the frontend's own `npm run lint`, so the
+// frontend script stays the single definition of the lint scopes and a
+// package.json edit cannot shrink the gate silently.
+func webChecksRunNpmLint(a *audit) {
 	raw, err := os.ReadFile("cmd/evener-dev/webchecks.go")
 	if err != nil {
 		a.Fatalf("reading cmd/evener-dev/webchecks.go: %v", err)
@@ -653,7 +643,6 @@ func webChecksLintCommand(a *audit) string {
 		a.Fatalf("webchecks.go no longer runs each check as `npm run <check>`, so the frontend " +
 			"script is no longer the single definition of the lint scopes")
 	}
-	return "npm run lint"
 }
 
 // lintGolangciLintsDarwinOffDarwin pins the cross-GOOS pass that closed

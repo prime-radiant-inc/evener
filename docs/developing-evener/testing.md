@@ -1022,20 +1022,24 @@ Each changed path is one of four kinds:
 A package whose tests read the whole repository is reached by every change,
 because no name says which files they read. The classifier recognizes such a
 test file by two things together: it names the repository root, and it lists
-or walks it. A file names the root when it is in the root package (whose
+or walks a directory. A file names the root when it is in the root package (whose
 tests run at the root), when it names a `..` chain that climbs from its
 package to the root, or when it asks git for `--show-toplevel`; it lists or
 walks when it names `ls-files` or calls a `Walk` or `WalkDir`. A climb alone
 only says where the paths a test names start, so a test that builds
 `./cmd/evener` from the root depends on that command and nothing else, and a
-`..` handed to code as input names nothing. The rule is per file: a root
-named in one file and walked by a helper in another is not seen, which the
-merge group's full run catches. A rule about the repository's own text
+`..` handed to code as input names nothing. The rule is per file and does
+not follow what a walk starts from: a file that names the root and walks a
+temporary directory counts as a whole-tree read, which runs more lanes, and a
+root named in one file and walked by a helper in another is not seen, which
+the merge group's full run catches. A rule about the repository's own text
 belongs in `make lint-repo-audit` rather than in a test that walks the tree
 ([linting.md](linting.md)).
 
-The root package's tests and the hub's tutorial tests read the whole tree,
-so the root module's lanes run for every change; a change in the
+The root package's tests count as whole-tree reads (`TestInstallTarget`
+copies every tracked file), and so do the hub's tutorial tests, which name
+the root to build binaries and walk session state. The root module's lanes
+therefore run for every change; a change in the
 TypeScript trees reaches the hub anyway, which embeds the frontend. The agent
 and other modules' lanes run only for a change that reaches their packages,
 so a TypeScript-only change skips `race-module-shards` and `tests / nonroot`.

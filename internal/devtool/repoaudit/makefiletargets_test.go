@@ -59,5 +59,3 @@ func TestEveryRuleHasARecipeAllowsRealSemicolonRecipe(t *testing.T) {
 			"reported as recipe-less, got %v", empty)
 	}
 }
-
-// rootMakefileHasNoRules keeps every rule in a family file. The generator

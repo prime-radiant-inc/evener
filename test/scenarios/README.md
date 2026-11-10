@@ -53,12 +53,12 @@ at an unrelated line.
   path may be abbreviated to the part that reads well
   (`internal/hubcore/tree.go`) as long as the suffix is findable.
 
-Citation discipline is by convention: every quoted anchor must appear in
-the doc it names, every cited source path must resolve, and every
-`#symbol` must be declared. (The audits that enforced this were retired
-in the 2026-08 tooling standardization; the rules still stand — a
-renamed heading, a moved package, or a renamed function should be caught
-in review instead of leaving a citation that points at nothing.)
+Every cited source path must resolve, every `#symbol` must be declared,
+and every bare `:NNN` anchor must resolve against the path before it and
+stay inside that file; `make lint-repo-audit` fails on a citation that
+breaks any of these. Every quoted anchor must also appear in the doc it
+names. No check holds that one, so a renamed heading is caught in review
+instead of leaving a citation that points at nothing.
 
 Cite Go code with a symbol anchor (`#Symbol` after the path), never with
 a line number — a line number is invalidated silently by any edit above

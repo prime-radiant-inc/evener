@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-// runbooksRouteIsolationThroughTheHelper covers the runbooks and the scenario
-// cards the #2040 review flagged: agentic-testing.md and the cards hand-rolled
-// the same unsets and omitted EVENER_PROVIDERS_CONFIG/EVENER_CREDENTIALS_CONFIG,
-// so an operator with those exported still loaded real providers and
-// loaded/claimed real state.
+// runbooksRouteIsolationThroughTheHelper keeps the runbooks and scenario
+// cards isolating HOME through e2e_isolate_home. A hand-rolled list of unsets
+// drifts from the harnesses' list; one that omits
+// EVENER_PROVIDERS_CONFIG/EVENER_CREDENTIALS_CONFIG lets an operator with those
+// exported load real providers and load or claim real state.
 //
 // The rule is per block, not per file: any block that sets up an isolated HOME
 // (it sources the helper or assigns HOME) must call e2e_isolate_home, so a

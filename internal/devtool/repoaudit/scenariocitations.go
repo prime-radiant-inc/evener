@@ -42,12 +42,6 @@ var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-
 var scenarioSourceCitation = regexp.MustCompile(
 	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#([A-Za-z0-9_.]+)|:[0-9][0-9,-]*)`")
 
-// scenarioSourceCitationGroups is the length FindStringSubmatch returns for a
-// scenarioSourceCitation match: the whole span, its captured path, and its
-// captured symbol (empty when the anchor is a `:line` range rather than a
-// `#symbol`).
-const scenarioSourceCitationGroups = 3
-
 // scenarioSourceCitationsResolve keeps a card's pointer into source code
 // attached to a file that still exists. Kata 2mzk's audit deliberately exempts
 // source paths from the no-line-numbers rule, because code has no headings to

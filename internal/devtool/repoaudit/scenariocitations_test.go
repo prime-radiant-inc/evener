@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+// scenarioSourceCitationGroups is the length FindStringSubmatch returns for a
+// scenarioSourceCitation match: the whole span, its captured path, and its
+// captured symbol (empty when the anchor is a `:line` range rather than a
+// `#symbol`).
+const scenarioSourceCitationGroups = 3
+
 // TestScenarioSourceCitationNeedleReadsEveryCompiledExtension pins the widening
 // itself. scenarioSourceCitationsResolve is a corpus scan, so it is green both when the corpus
 // is clean and when the needle quietly stops matching a language; the resolved

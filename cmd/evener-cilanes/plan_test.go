@@ -390,7 +390,9 @@ func TestRootPackageChangeRunsOnlyTheRootModuleLanes(t *testing.T) {
 
 // A test that walks or lists the repository from its root reads every file,
 // and no name says which, so every change reaches it: agent/leaf's change
-// and a frontend source alike run the llm module's lanes.
+// and a frontend source alike run the llm module's lanes. A file that names
+// the root and walks any directory counts, since the rule does not follow
+// where a walk starts.
 func TestTestWalkingTheWholeRepositoryIsReachedByEveryChange(t *testing.T) {
 	for name, audit := range map[string]string{
 		"walks from a climb to the root": `package audit
@@ -416,6 +418,16 @@ var _ = fs.WalkDir(os.DirFS("../.."), ".", nil)
 import "os/exec"
 
 var list = exec.Command("git", "-C", "../..", "ls-files", "-z")
+`,
+		"names the root and walks another directory": `package audit
+
+import (
+	"io/fs"
+	"path/filepath"
+)
+
+var root = filepath.Join("..", "..")
+var _ = filepath.WalkDir("/tmp/state", func(string, fs.DirEntry, error) error { return nil })
 `,
 		"lists tracked files from git's top level": `package audit
 
