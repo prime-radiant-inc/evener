@@ -192,21 +192,20 @@ func (s *Session) batchToolInput(call llm.ToolCallData) map[string]any {
 func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
 	out := make([]hooks.BatchToolCall, len(calls))
 	for i, call := range calls {
+		// prepareToolCall synthesizes an ID for a provider call that had none,
+		// and dispatch records the arguments under it. Resolve it first, so the
+		// lookup below finds them and the batch names the call that ran.
+		callID := call.ID
+		if callID == "" && i < len(results) {
+			callID = results[i].CallID
+		}
 		// batchToolInput applies the same raw-argument bound and the same
 		// per-tool decoder as dispatch, so a rejected byte sequence yields no
 		// input and an exact integer keeps its value.
-		input := s.batchToolInput(call)
+		input := s.batchToolInput(llm.ToolCallData{Name: call.Name, ID: callID, Arguments: call.Arguments})
 		response := ""
-		callID := call.ID
 		if i < len(results) {
 			response = results[i].Output
-			// prepareToolCall synthesizes an ID for a provider call that had
-			// none, and dispatch records the arguments under it. The result
-			// carries the ID the call actually ran under, which is what a hook
-			// matches on.
-			if callID == "" {
-				callID = results[i].CallID
-			}
 		}
 		out[i] = hooks.BatchToolCall{
 			ToolName:     toolname.EvenerToClaude(call.Name),

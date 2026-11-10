@@ -559,15 +559,35 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 	if armed {
 		return
 	}
-	// Not re-armed: the stopped run presented the row itself, which is a
-	// legitimate outcome for attention the child's own run consumes. What must
-	// hold either way is that the row is not stranded: it is either armed on the
-	// controller or no longer pending on the child.
+	// Not re-armed under the original identity. That is a legitimate outcome:
+	// the tail may have reopened the row, which re-delivers it under a fresh
+	// identity, or the stopped run may have presented it. What must hold either
+	// way is that the report is not stranded: it is armed on the controller
+	// under some identity, or a row for it is still pending for recovery.
 	pend, pendErr := child.pendingDelegateAttentionIDs()
 	if pendErr != nil {
 		t.Fatalf("inspect the child's pending attention: %v", pendErr)
 	}
-	if len(pend) != 0 {
+	// Two outcomes are legitimate and which one occurs depends on whether the
+	// stopped run presented the row before the tail ran: the row is presented
+	// and gone, or it survives under a reopened identity for a later event.
+	// Either way it must not be stranded, and the stopped child must never have
+	// reached the model.
+	presented := len(pend) == 0
+	if presented {
+		if got := subagentStartChildRequests(fixture.adapter, created.ChildSessionID); got != 0 {
+			t.Fatalf("a hook-stopped child made %d model requests, want zero", got)
+		}
+		return
+	}
+	reopened := false
+	for _, id := range pend {
+		if strings.HasPrefix(id, attention+"/reopened/") {
+			reopened = true
+			break
+		}
+	}
+	if !reopened {
 		t.Fatalf("the row is neither re-armed nor presented: pending=%v", pend)
 	}
 	// The hook stops every launch, so the child never reached the model at all;
