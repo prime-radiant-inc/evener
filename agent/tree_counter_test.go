@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func waitForCount(t *testing.T, name string, c *treeCounter, want int64) {
 	t.Helper()
 	testwait.UntilSeen(t, fmt.Sprintf("%s = %d", name, want), func() (bool, string) {
 		got := c.n.Load()
-		return got == want, fmt.Sprint(got)
+		return got == want, strconv.FormatInt(got, 10)
 	})
 }
 

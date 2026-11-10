@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -65,7 +66,7 @@ func awaitPending(t *testing.T, s *Session, want int) []string {
 	var ids []string
 	testwait.UntilSeen(t, fmt.Sprintf("%d pending escalations", want), func() (bool, string) {
 		ids = pendingIDs(s)
-		return len(ids) == want, fmt.Sprint(len(ids))
+		return len(ids) == want, strconv.Itoa(len(ids))
 	})
 	return ids
 }
