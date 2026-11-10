@@ -70,27 +70,19 @@ func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 
 func TestCompactContextBelowPressureFloorDoesNotSchedule(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	forcePressureAbove(t, s, compactPressureFloor)
-	rt := s.reg.Get("compact_context")
-	if rt == nil {
-		t.Fatal("compact tool not registered")
-	}
-
 	// A fresh session sits far below the floor: the call is a no-op.
-	s2 := newTestSession(t)
-	rt2 := s2.reg.Get("compact_context")
-	out, err := rt2.Exec(context.Background(), nil, map[string]any{
+	low := newTestSession(t)
+	out, err := low.reg.Get("compact_context").Exec(context.Background(), nil, map[string]any{
 		"note_to_self":            "keep the plan",
 		"compaction_instructions": "drop logs",
 	})
 	if err != nil {
 		t.Fatalf("below floor must not error: %v", err)
 	}
-	if _, ok := s2.takeForceRequest(); ok {
+	if _, ok := low.takeForceRequest(); ok {
 		t.Fatal("below the pressure floor no compaction may be scheduled")
 	}
-	if got := s2.pinnedNote(); got != "" {
+	if got := low.pinnedNote(); got != "" {
 		t.Fatalf("a no-op must not pin a note, got %q", got)
 	}
 	state, ok := out.(tool.StateResult)
@@ -108,11 +100,13 @@ func TestCompactContextBelowPressureFloorDoesNotSchedule(t *testing.T) {
 		t.Fatalf("result must carry the current pressure: %v", decoded)
 	}
 
-	// Above the floor the call schedules as before.
-	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "n"}); err != nil {
+	// At the floor the call schedules as before.
+	high := newTestSession(t)
+	forcePressureAbove(t, high, compactPressureFloor)
+	if _, err := high.reg.Get("compact_context").Exec(context.Background(), nil, map[string]any{"note_to_self": "n"}); err != nil {
 		t.Fatalf("above floor: %v", err)
 	}
-	if _, ok := s.takeForceRequest(); !ok {
+	if _, ok := high.takeForceRequest(); !ok {
 		t.Fatal("above the floor a compaction must be scheduled")
 	}
 }
