@@ -274,7 +274,12 @@ and each is traced to the code that implements it.
   persisted (`agent/session_tools.go:1086` records the stop,
   `agent/session_lifecycle.go:2647-2654` reads it, `:2724-2735` ends the turn);
   `Stop` ends the turn and its `stopReason` replaces the vetoed reply
-  (`agent/session_tool_round.go:638-651`); `SubagentStop` ends the child run
+  (`agent/session_tool_round.go:638-651`). Named divergence: the `communicate`
+  call has already recorded and announced its reply by then, so a transcript
+  served after the reconnect still shows the vetoed text; the hook's reason
+  becomes the turn's reply and the warning the user sees. Replacing the
+  recorded turn needs a transcript amendment Evener does not have.
+  `SubagentStop` ends the child run
   (`agent/subagents.go:2682-2697`) so no model turn follows for the hook's own
   reason — a delegate that owns managed jobs can still be driven by their
   finalization; `SubagentStart` keeps the child from launching
