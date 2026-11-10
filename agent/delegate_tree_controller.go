@@ -195,6 +195,103 @@ type delegateFinalizingError struct {
 func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
 func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
+// delegateBusyReason says why a send was refused as target_busy.
+type delegateBusyReason string
+
+const (
+	// delegateBusyFinalizing: the delegate's finished generation has not
+	// released its finalization within the send's wait ceiling. Clears when
+	// the finalize tail releases, which no notification is guaranteed to
+	// announce.
+	delegateBusyFinalizing delegateBusyReason = "finalizing"
+	// delegateBusyStopping: a stop is pending or in progress on the delegate;
+	// it ends idle (retry succeeds) or closed (not_resumable).
+	delegateBusyStopping delegateBusyReason = "stopping"
+	// delegateBusyConcurrentSend: another send, drive or run holds the
+	// delegate's next generation.
+	delegateBusyConcurrentSend delegateBusyReason = "concurrent_send"
+	// delegateBusyReclaiming: the delegate's idle runtime is being released.
+	delegateBusyReclaiming delegateBusyReason = "reclaiming"
+	// delegateBusyLaneHandoff: a lane handoff covers the delegate.
+	delegateBusyLaneHandoff delegateBusyReason = "lane_handoff"
+	// delegateBusyClosing: the controller is closing, so this session takes no
+	// further sends. Permanent for this session.
+	delegateBusyClosing delegateBusyReason = "closing"
+	// delegateBusyNotResumable: the delegate was closed or lost its
+	// resumability (turn budget exhausted, worktree disposed). Permanent.
+	delegateBusyNotResumable delegateBusyReason = "not_resumable"
+)
+
+// delegateFinalizationRetryAfter is the retry hint for a send that outwaited a
+// finalization: the delegate's finalize tail is slow, so an immediate retry
+// fails the same way.
+const delegateFinalizationRetryAfter = 5 * time.Second
+
+// delegateBusyRetryAfter is the retry hint for refusals whose cause clears
+// within moments.
+const delegateBusyRetryAfter = 2 * time.Second
+
+// delegateBusyGuidance is what the caller should do next, matching what the
+// system does after the refusal. Guidance never depends on a notification:
+// none is guaranteed to announce that a refusal cleared.
+type delegateBusyGuidance int
+
+const (
+	// delegateBusyRetryShortly: the cause clears on its own; retry after
+	// retryAfter.
+	delegateBusyRetryShortly delegateBusyGuidance = iota
+	// delegateBusyDoNotRetry: the cause is permanent; retrying cannot succeed.
+	delegateBusyDoNotRetry
+)
+
+// delegateBusyError is errDelegateTargetBusy with the reason the model needs
+// to act on it. retryAfter is set exactly when guidance is
+// delegateBusyRetryShortly.
+type delegateBusyError struct {
+	reason     delegateBusyReason
+	retryAfter time.Duration
+}
+
+// busyBecause is the refusal for reason with its default retry hint.
+func busyBecause(reason delegateBusyReason) error {
+	e := delegateBusyError{reason: reason}
+	switch {
+	case e.guidance() == delegateBusyDoNotRetry:
+	case reason == delegateBusyFinalizing:
+		e.retryAfter = delegateFinalizationRetryAfter
+	default:
+		e.retryAfter = delegateBusyRetryAfter
+	}
+	return e
+}
+
+func (e delegateBusyError) guidance() delegateBusyGuidance {
+	switch e.reason {
+	case delegateBusyClosing, delegateBusyNotResumable:
+		return delegateBusyDoNotRetry
+	default:
+		return delegateBusyRetryShortly
+	}
+}
+
+func (e delegateBusyError) Is(target error) bool { return target == errDelegateTargetBusy }
+
+func (e delegateBusyError) Error() string {
+	msg := fmt.Sprintf("%s: reason=%s", errDelegateTargetBusy.Error(), e.reason)
+	switch e.reason {
+	case delegateBusyNotResumable:
+		return msg + ". Nothing was sent. This delegate can take no more input; start a new delegate or report what you have."
+	case delegateBusyClosing:
+		return msg + ". Nothing was sent. This session is shutting down and takes no further sends; do not retry."
+	case delegateBusyFinalizing:
+		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
+		return msg + ". Nothing was sent. Retry after the retry_after_ms delay; a report from the delegate may also arrive, but do not rely on one."
+	default:
+		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
+		return msg + ". Nothing was sent. Retry after the retry_after_ms delay; nothing will announce that it cleared."
+	}
+}
+
 type delegateLiveState struct {
 	runtime       *Session
 	binding       *delegateRuntimeBinding

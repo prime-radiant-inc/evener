@@ -269,6 +269,11 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	return DefDelegateWithResultTool(agentTypes, sandboxSchema, DefaultResultToolName)
 }
 
+// DelegateRoleWriteNote tells the model which role may write files. The
+// explorer role has no edit tools, so a seat that must write (a reviewer that
+// files its report, an implementer) takes subagent.
+const DelegateRoleWriteNote = "explorer is read-only and cannot edit or write files; a seat that must write files uses subagent."
+
 // DefDelegateWithResultTool is DefDelegateWithSandbox for a session whose
 // result tool is named resultTool.
 func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
@@ -276,7 +281,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{
 		"type":        "string",
-		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
+		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section. " + DelegateRoleWriteNote,
 	}
 	if len(agentTypes) > 0 {
 		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)

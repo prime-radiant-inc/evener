@@ -101,7 +101,7 @@ func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	definition.Description += " Role capabilities are listed in the agent_type schema and available-agents prompt."
 	if properties, ok := definition.Parameters["properties"].(map[string]any); ok {
 		if agentType, ok := properties["agent_type"].(map[string]any); ok {
-			agentType["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster + "."
+			agentType["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster + ". " + tool.DelegateRoleWriteNote
 		}
 	}
 	return definition

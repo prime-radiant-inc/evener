@@ -300,13 +300,10 @@ func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 		s.delegateController.mu.Unlock()
 	})
 
-	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "live-steer-wait",
-		Name:      "delegate_send",
-		Arguments: json.RawMessage(`{"to":"dlg_live_wait","message":"steer now","max_wait_ms":1000}`),
-	})
-	if !call.IsError || call.Output != "target_busy" {
-		t.Fatalf("live steer with positive max_wait_ms was not rejected as busy: %#v", call)
+	_, err := delegateSendTool(context.Background(), s, map[string]any{"to": "dlg_live_wait", "message": "steer now", "max_wait_ms": 1000}, 10_000)
+	busy := busyErrorOf(t, err)
+	if busy.reason != delegateBusyConcurrentSend {
+		t.Fatalf("live steer with positive max_wait_ms reason = %q, want %q", busy.reason, delegateBusyConcurrentSend)
 	}
 }
 
