@@ -734,9 +734,9 @@ func (x *Index) extend(length int64) error {
 		if err != nil {
 			return x.fail(err)
 		}
-		x.builder.committedItemCounts = counts
+		x.builder.replayOrdinals = counts
 	} else {
-		x.builder.committedItemCounts = nil
+		x.builder.replayOrdinals = nil
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -776,7 +776,7 @@ func (x *Index) extend(length int64) error {
 	// call for the handle's whole life. A later extension then resolves only
 	// what it sees itself and marks a turn inexact when a name it needs is gone.
 	x.builder.failures.Reset()
-	x.builder.committedItemCounts = nil
+	x.builder.replayOrdinals = nil
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
@@ -856,20 +856,23 @@ func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 	return offsets, turnAdvanced, nil
 }
 
-// committedItemCountsByTurn counts the committed item records per turn slot.
-// A replayed entry's ordinal therefore starts where the committed items end,
-// not where an interrupted extension's rewritten summary says they end.
+// committedItemCountsByTurn counts the committed item records per turn slot,
+// zero for a committed turn with no items. A replayed entry's ordinal therefore
+// starts where the committed items end, not where an interrupted extension's
+// rewritten summary says they end.
 func (x *Index) committedItemCountsByTurn() (map[uint32]uint32, error) {
-	counts := make(map[uint32]uint32)
-	if x.items.n == 0 {
-		return counts, nil
+	counts := make(map[uint32]uint32, int(x.turns.n))
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		counts[uint32(slot)] = 0
 	}
-	buf, err := x.items.read(0, int(x.items.n))
-	if err != nil {
-		return nil, err
-	}
-	for slot := uint64(0); slot < x.items.n; slot++ {
-		counts[decodeItem(buf[slot*itemRecordSize:]).Turn]++
+	if x.items.n > 0 {
+		buf, err := x.items.read(0, int(x.items.n))
+		if err != nil {
+			return nil, err
+		}
+		for slot := uint64(0); slot < x.items.n; slot++ {
+			counts[decodeItem(buf[slot*itemRecordSize:]).Turn]++
+		}
 	}
 	return counts, nil
 }

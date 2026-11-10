@@ -169,6 +169,8 @@ func TestIndexExtensionKilledAfterExistingTurnItemsRecoversOrdinals(t *testing.T
 
 	appendBytes(t, path, encodeEntry(t, 3, answer("two")))
 	appendBytes(t, path, encodeEntry(t, 4, answer("three")))
+	appendBytes(t, path, encodeEntry(t, 5, completion("turn_ord", schema.TurnCompleted, 4, 10)))
+	appendBytes(t, path, encodeEntry(t, 6, answer("four")))
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +182,7 @@ func TestIndexExtensionKilledAfterExistingTurnItemsRecoversOrdinals(t *testing.T
 	testKillAfterRecordWrites = nil
 
 	recovered := openIndex(t, path, dir)
+	assertDenseItemOrdinals(t, recovered)
 	got, err := recovered.Latest(appwire.TranscriptItemPageLimit)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +194,38 @@ func TestIndexExtensionKilledAfterExistingTurnItemsRecoversOrdinals(t *testing.T
 	}
 	if !reflect.DeepEqual(got.Candidates, want.Candidates) {
 		t.Fatalf("recovered candidates = %s, want the reference %s", dump(got.Candidates), dump(want.Candidates))
+	}
+}
+
+// assertDenseItemOrdinals requires every turn's item records to carry the
+// ordinals 0..count-1 in record order, and its summary to count exactly those
+// items: an ordinal that skips or repeats is what a replay starting from an
+// advanced summary leaves behind.
+func assertDenseItemOrdinals(t *testing.T, x *Index) {
+	t.Helper()
+	next := map[uint32]uint32{}
+	counts := map[uint32]uint32{}
+	for slot := uint64(0); slot < x.items.n; slot++ {
+		buf, err := x.items.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeItem(buf)
+		if record.ItemIndex != next[record.Turn] {
+			t.Fatalf("item %d of turn %d has ordinal %d, want %d", slot, record.Turn, record.ItemIndex, next[record.Turn])
+		}
+		next[record.Turn]++
+		counts[record.Turn]++
+	}
+	for turnSlot, count := range counts {
+		buf, err := x.turns.read(uint64(turnSlot), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeTurn(buf)
+		if record.ItemCount != count {
+			t.Fatalf("turn %d records %d items, want %d", turnSlot, record.ItemCount, count)
+		}
 	}
 }
 

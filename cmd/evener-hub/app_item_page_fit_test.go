@@ -704,6 +704,36 @@ func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision
 	}
 }
 
+func TestPackTranscriptItemWindowWithholdsTheSuffixAfterCursorElision(t *testing.T) {
+	items := make([]appwire.ThreadItem, 0, 12)
+	for i := range 10 {
+		items = append(items, appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("message-%02d", i), Text: "truncate", Version: uint64(i + 1)})
+	}
+	items = append(items,
+		appwire.ThreadItem{Type: "reasoning", ID: "elided-beyond-limit", Text: strings.Repeat("s", transcriptWindowBudgetFloorBytes*2), Version: 11},
+		appwire.ThreadItem{Type: "agentMessage", ID: "after-elision", Text: "small", Version: 12},
+	)
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: "turn-k"},
+		MessageBytes:      4,
+		WindowBudgetBytes: 1,
+	})
+	options.ItemLimit = appwire.TranscriptItemPageLimit
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-k", items)), nil, options)
+	if err != nil {
+		t.Fatalf("pack cursor-bound turn: %v", err)
+	}
+	for _, item := range flattenTestItems(got.Data) {
+		if item.ID == "after-elision" {
+			t.Fatal("a page served an item after the position its continuation resumes at, so the next page replays it")
+		}
+	}
+	elision := got.Data[0].Elision
+	if elision == nil || elision.ElidedBeyondCursorLimit != 2 || elision.ContinuationCursor == "" {
+		t.Fatalf("cursor overflow elision = %+v, want the elided item and its suffix withheld with a continuation", elision)
+	}
+}
+
 func TestPackTranscriptItemWindowRecoversWithheldInFlightItemByReread(t *testing.T) {
 	items := []appwire.ThreadItem{
 		{Type: "agentMessage", ID: "settled", Text: "settled", Version: 1},

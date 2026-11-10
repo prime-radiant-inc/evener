@@ -77,9 +77,15 @@ type builder struct {
 	entryItemIndex uint32
 	entryItemCount uint32
 	entryItems     bool
-	// committedItemCounts is set only while a crash replay extends turns whose
-	// summaries the interrupted extension already advanced; see itemBase.
-	committedItemCounts map[uint32]uint32
+	// replayOrdinals is set only while a crash replay extends turns whose
+	// summaries the interrupted extension already advanced: each committed
+	// turn's item count as the replay has advanced it; see itemBase.
+	replayOrdinals map[uint32]uint32
+	// entryReplayTurn and entryReplayOrdinal record that the entry being
+	// applied took its ordinal base from replayOrdinals, so each appended item
+	// advances that turn's count.
+	entryReplayTurn    uint32
+	entryReplayOrdinal bool
 	// assistant is the latest ASSISTANT entry with tool calls this builder
 	// applied, at assistantOffset, so the results after it need not read it
 	// back.
@@ -717,6 +723,9 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, ItemIndex: b.entryItemIndex, Context: context}
 	b.entryItemIndex++
+	if b.entryReplayOrdinal {
+		b.replayOrdinals[b.entryReplayTurn]++
+	}
 	if apptranscript.MergesByCallID(item) || item.Type == "agentMessage" && item.Observation != nil && item.CallID != "" {
 		var err error
 		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
@@ -731,11 +740,16 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 // before its meta commit; its count already includes items this replay has not
 // re-appended, so the committed records' count is the correct base.
 func (b *builder) itemBase(slot uint64, summary turnRecord, version uint64) uint32 {
-	if summary.Version > version {
-		if count, ok := b.committedItemCounts[uint32(slot)]; ok {
+	// A summary at or past this entry was rewritten by the interrupted
+	// extension, which already counted the items this replay appends; its
+	// count is not the committed one. The replay's own running count is.
+	if summary.Version >= version {
+		if count, ok := b.replayOrdinals[uint32(slot)]; ok {
+			b.entryReplayTurn, b.entryReplayOrdinal = uint32(slot), true
 			return count
 		}
 	}
+	b.entryReplayOrdinal = false
 	return summary.ItemCount
 }
 

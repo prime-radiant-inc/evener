@@ -1015,11 +1015,14 @@ func packItemCandidates[T any](
 						cursorLines++
 						turn.Items[itemIndex] = item
 					} else {
-						turn.Items = append(turn.Items[:itemIndex], turn.Items[itemIndex+1:]...)
-						boundTruncated = append(boundTruncated[:itemIndex], boundTruncated[itemIndex+1:]...)
-						bodyBytes = append(bodyBytes[:itemIndex], bodyBytes[itemIndex+1:]...)
-						lineCandidates = append(lineCandidates[:itemIndex], lineCandidates[itemIndex+1:]...)
-						elision.ElidedBeyondCursorLimit++
+						// The continuation cursor resumes at this item, so the
+						// rest of the turn belongs to that page: serving a later
+						// item here would serve it twice.
+						elision.ElidedBeyondCursorLimit += len(turn.Items) - itemIndex
+						turn.Items = turn.Items[:itemIndex]
+						boundTruncated = boundTruncated[:itemIndex]
+						bodyBytes = bodyBytes[:itemIndex]
+						lineCandidates = lineCandidates[:itemIndex]
 						elision.ElidedBeyondCursorLimitRecovery = appwire.ThreadElisionRecoveryContinuation
 						first := candidate
 						if firstContinuation == nil || appitempaging.ComparePosition(first.Position, firstContinuation.Position) < 0 {
