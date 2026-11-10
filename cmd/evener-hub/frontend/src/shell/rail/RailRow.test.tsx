@@ -683,6 +683,59 @@ describe("compact session status", () => {
     },
   );
 
+  // The wait is a fact about the row, not only about its hover card: a glance
+  // at the rail must say the session is waiting and not stuck.
+  test.each([
+    ["working with the resume time ahead", "active", 90 * 60_000, true],
+    ["working with the resume time passed", "active", -60_000, false],
+    ["not working with the resume time ahead", "idle", 90 * 60_000, false],
+  ] as const)("the row shows the quota wait for a session %s: %s", (_when, state, offsetMs, shown) => {
+    const resumesAt = new Date(Date.now() + offsetMs).toISOString();
+    renderRow({
+      state,
+      failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+    });
+
+    const line = screen.queryByTestId("rail-row-quota-wait");
+    expect(line !== null).toBe(shown);
+    if (line) expect(line.closest("[data-session-ref]")).not.toBeNull();
+  });
+
+  test("the row's quota wait counts down with the rail clock and ends at the resume time", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      render(
+        <RailTickProvider>
+          <RailRow
+            node={sessionRailNode(
+              apiNode({
+                state: "active",
+                failure: {
+                  title: "Usage limit reached",
+                  cause_kind: "provider",
+                  status: 429,
+                  resumes_at: new Date(start + 90 * 60_000).toISOString(),
+                },
+              }),
+            )}
+            info={info()}
+            actions={actions()}
+          />
+        </RailTickProvider>,
+      );
+      const before = screen.getByTestId("rail-row-quota-wait").textContent;
+      act(() => vi.advanceTimersByTime(60 * 60_000));
+      const after = screen.getByTestId("rail-row-quota-wait").textContent;
+      expect(after).not.toBe(before);
+      act(() => vi.advanceTimersByTime(31 * 60_000));
+      expect(screen.queryByTestId("rail-row-quota-wait")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The bug this pins: on a touch-only device the row's own tap must open the
   // session, and only a long press may expose the context card. A real tap
   // first fires mousedown, which RailRow uses to focus the owning tree row -
