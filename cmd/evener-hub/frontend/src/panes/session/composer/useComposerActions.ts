@@ -796,5 +796,3 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     queueProps,
   };
 }
-
-export type ComposerActions = ReturnType<typeof useComposerActions>;

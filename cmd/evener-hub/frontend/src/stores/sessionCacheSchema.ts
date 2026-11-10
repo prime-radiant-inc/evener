@@ -138,11 +138,6 @@ export interface TranscriptAggregateMetaRow {
 
 // The durable Clear epoch row. Entry-owned: it lives in ENTRY_META_STORE keyed
 // by CLEAR_EPOCH_KEY.
-export interface EntryClearEpochRow {
-  historyKey: typeof CLEAR_EPOCH_KEY;
-  epoch: number;
-}
-
 export function entryHistoryKey(identity: {
   clientId: string;
   hostId: string;
