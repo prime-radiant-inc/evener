@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -36,11 +37,12 @@ import (
 // first and then stops pprof, the reverse of the order they started in. On
 // error nothing is left running.
 func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTrace, func(), error) {
+	log := componentlog.NewWriter("hub", stderr)
 	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+		log.Info(fmt.Sprintf(format, args...))
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return nil, nil, err
 	}
 	if opts.appwireTrace == "" {
@@ -49,19 +51,19 @@ func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTr
 	tracePath, absErr := filepath.Abs(opts.appwireTrace)
 	if absErr != nil {
 		stopPprof()
-		_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
+		log.Info(fmt.Sprintf("appwire trace path: %v", absErr))
 		return nil, nil, fmt.Errorf("resolve appwire trace path: %w", absErr)
 	}
 	trace, err := appserver.NewWebSocketTrace(tracePath)
 	if err != nil {
 		stopPprof()
-		_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
+		log.Info(fmt.Sprintf("appwire trace: %v", err))
 		return nil, nil, fmt.Errorf("create appwire trace: %w", err)
 	}
-	_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
+	log.Info(fmt.Sprintf("recording raw browser AppWire frames at %s; this file contains sensitive data", tracePath))
 	return trace, func() {
 		if closeErr := trace.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
+			log.Info(fmt.Sprintf("close appwire trace: %v", closeErr))
 		}
 		stopPprof()
 	}, nil
@@ -101,20 +103,21 @@ func publishEndpoint(web *WebServer, endpoint EndpointConfig, configIdentity, hu
 
 // announceHub tells the operator where the hub is listening and how to sign in.
 func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRoot, authToken string) {
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, record.BoundAddr, runDir)
-	_, _ = fmt.Fprintf(stderr, "[hub] configured listener: %s (%s)\n", record.RequestedListenAddr, record.ListenSource)
+	log := componentlog.NewWriter("hub", stderr)
+	log.Info(fmt.Sprintf("evener-hub %s listening on %s (run_dir=%s)", Version, record.BoundAddr, runDir))
+	log.Info(fmt.Sprintf("configured listener: %s (%s)", record.RequestedListenAddr, record.ListenSource))
 	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
+		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
-			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
+			log.Info("Private sign-in link (treat as a password): " + link)
 		}
 	} else {
-		_, _ = fmt.Fprintf(stderr, "[hub] cannot advertise browser origin: %v\n", originErr)
+		log.Info(fmt.Sprintf("cannot advertise browser origin: %v", originErr))
 	}
-	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintln(stderr, "[hub] retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
-	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	log.Info("Keep this terminal running while you use Evener in the browser.")
+	log.Info("retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
+	log.Info(fmt.Sprintf("Auth token file: %s (use as Authorization: Bearer ... for scripted clients)", filepath.Join(hubStateRoot, hubedge.TokenFileName)))
 }
 
 // hubRuntime is the state the startup phases share. Each phase reads what an
@@ -205,7 +208,7 @@ type hubRuntime struct {
 }
 
 func (r *hubRuntime) logf(format string, args ...any) {
-	_, _ = fmt.Fprintf(r.stderr, "[hub] "+format+"\n", args...)
+	componentlog.NewWriter("hub", r.stderr).Info(fmt.Sprintf(format, args...))
 }
 
 func (r *hubRuntime) bump() { r.inputs.Bump() }

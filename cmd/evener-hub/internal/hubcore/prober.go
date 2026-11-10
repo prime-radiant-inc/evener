@@ -185,7 +185,6 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	return ProbeResult{
 		SessionID:           statusThreadID(root),
 		Status:              root.Status.Type,
-		ActiveFlags:         append([]string(nil), root.Status.ActiveFlags...),
 		ActiveTurnID:        root.Evener.ActiveTurnID,
 		ActiveTurnStartedAt: root.Evener.ActiveTurnStartedAt,
 		PendingAsk:          root.Evener.AskPending,
@@ -217,8 +216,8 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 // in, so every hub row that reads a thread projection fills them the same way:
 // the ask flag, escalation cards, jobs, watches, turn end and tasks, beside
 // the row's other summary fields. The caller keeps the fields only a local
-// probe answers — Capabilities, CapabilitiesKnown and ActiveFlags — as it holds
-// them, so a remote row leaves those absent. The result is a CloneLiveEntry
+// probe answers — Capabilities and CapabilitiesKnown — as it holds them, so a
+// remote row leaves those absent. The result is a CloneLiveEntry
 // copy, so the row never aliases the probe's slices or pointers. (#2638)
 func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.Status = r.Status

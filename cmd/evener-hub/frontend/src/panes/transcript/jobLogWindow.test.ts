@@ -387,3 +387,128 @@ test("still pages from a visible marker and from a crossed gap", () => {
   // The reading position was past the gap and is now before it.
   expect(jobLogDemandGapIndex({ ...base, byteOffset: 50 })).toEqual({ index: 1, geometric: false });
 });
+
+// #4825: the same measurement race runs the other way when the reader wheels
+// forward toward the live window. The unloaded marker can end up just below the
+// viewport while the last loaded row before it is still on screen, with its
+// bottom below the viewport bottom. No marker is visible and no gap was
+// crossed, so only a forward geometric boundary can page from the gap.
+const forwardRows: JobLogDemandRow[] = [
+  { kind: "pruned", startBytes: 0, endBytes: 100 },
+  { kind: "output", row: { offsetBytes: 100, endBytes: 200 } },
+  { kind: "unloaded", startBytes: 200, endBytes: 300 },
+  { kind: "output", row: { offsetBytes: 300, endBytes: 400 } },
+];
+const forwardGaps = forwardRows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : []));
+const forwardBase = {
+  rows: forwardRows,
+  gaps: forwardGaps,
+  markerStartBytes: undefined,
+  previous: { byteOffset: 150, following: false },
+  byteOffset: 180,
+  following: false,
+  // Viewport top 50, bottom 150. The last loaded row before the gap ends at
+  // 170, twenty pixels below the viewport bottom.
+  geometry: { viewportTop: 50, viewportHeight: 100, rowBottom: (index: number) => (index === 1 ? 170 : undefined) },
+};
+
+test("pages forward at the geometric boundary when measurement hides the unloaded marker", () => {
+  const { index, geometric } = jobLogDemandGapIndex(forwardBase);
+  expect(index).toBe(2);
+  expect(geometric).toBe(true);
+  expect(forwardRows[index]).toMatchObject({ kind: "unloaded", startBytes: 200, endBytes: 300 });
+});
+
+const separatedForwardRows: JobLogDemandRow[] = [
+  { kind: "output", row: { offsetBytes: 100, endBytes: 190 } },
+  { kind: "unloaded", startBytes: 200, endBytes: 300 },
+  { kind: "output", row: { offsetBytes: 300, endBytes: 400 } },
+];
+const forwardBoundaryMisses: Array<{
+  label: string;
+  overrides: Partial<Parameters<typeof jobLogDemandGapIndex>[0]>;
+}> = [
+  {
+    label: "the last loaded row is above the viewport bottom",
+    overrides: { geometry: { ...forwardBase.geometry, rowBottom: (index) => (index === 1 ? 140 : undefined) } },
+  },
+  {
+    label: "the wheel moved backward",
+    overrides: { previous: { byteOffset: 180, following: false }, byteOffset: 150 },
+  },
+  {
+    label: "the gap is more than a viewport below the reader",
+    overrides: { geometry: { ...forwardBase.geometry, rowBottom: (index) => (index === 1 ? 400 : undefined) } },
+  },
+  {
+    label: "the gap is not adjacent to the loaded row",
+    overrides: {
+      rows: separatedForwardRows,
+      gaps: separatedForwardRows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : [])),
+    },
+  },
+  {
+    label: "the reader is following the bottom",
+    overrides: { following: true },
+  },
+  {
+    label: "the gap has no loaded row before it",
+    overrides: {
+      rows: [
+        { kind: "unloaded", startBytes: 200, endBytes: 300 },
+        { kind: "output", row: { offsetBytes: 300, endBytes: 400 } },
+      ],
+      gaps: [{ row: { startBytes: 200, endBytes: 300 }, index: 0 }],
+      byteOffset: 190,
+    },
+  },
+  {
+    label: "the row before the gap is pruned",
+    overrides: {
+      rows: [
+        { kind: "pruned", startBytes: 0, endBytes: 200 },
+        { kind: "unloaded", startBytes: 200, endBytes: 300 },
+        { kind: "output", row: { offsetBytes: 300, endBytes: 400 } },
+      ],
+      gaps: [{ row: { startBytes: 200, endBytes: 300 }, index: 1 }],
+      byteOffset: 190,
+    },
+  },
+  {
+    label: "the reader just left following",
+    overrides: {
+      previous: { byteOffset: 150, following: true },
+      following: false,
+    },
+  },
+];
+
+test.each(forwardBoundaryMisses)("does not page at the forward boundary when $label", ({ overrides }) => {
+  expect(jobLogDemandGapIndex({ ...forwardBase, ...overrides })).toEqual({ index: -1, geometric: false });
+});
+
+test("pages from the forward gap when an earlier gap is not at the boundary", () => {
+  const rows: JobLogDemandRow[] = [
+    { kind: "output", row: { offsetBytes: 0, endBytes: 100 } },
+    { kind: "unloaded", startBytes: 100, endBytes: 200 },
+    { kind: "output", row: { offsetBytes: 200, endBytes: 300 } },
+    { kind: "unloaded", startBytes: 300, endBytes: 400 },
+    { kind: "output", row: { offsetBytes: 400, endBytes: 500 } },
+  ];
+  const gaps = rows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : []));
+  const decision = jobLogDemandGapIndex({
+    ...forwardBase,
+    rows,
+    gaps,
+    previous: { byteOffset: 250, following: false },
+    byteOffset: 280,
+    geometry: {
+      ...forwardBase.geometry,
+      // The first gap's predecessor ends above the viewport bottom; the second
+      // precedes it by twenty pixels.
+      rowBottom: (index) => (index === 0 ? 100 : index === 2 ? 170 : undefined),
+    },
+  });
+  expect(decision).toEqual({ index: 3, geometric: true });
+  expect(rows[decision.index]).toMatchObject({ kind: "unloaded", startBytes: 300, endBytes: 400 });
+});

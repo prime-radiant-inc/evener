@@ -1606,9 +1606,7 @@ func (o forkThreadOwner) statusFenced() bool {
 	if !o.live {
 		return false
 	}
-	return hubForkRecoveryFenced(appwire.Thread{
-		Status: appwire.ThreadStatus{Type: o.entry.Status, ActiveFlags: o.entry.ActiveFlags},
-	})
+	return hubForkStatusFenced(appwire.ThreadStatus{Type: o.entry.Status})
 }
 
 // sessionID is the session this daemon is running, with the fallback order

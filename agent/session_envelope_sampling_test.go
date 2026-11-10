@@ -139,10 +139,6 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.drainAbandonedMu.Lock()
 		return s.drainAbandonedMu.Unlock
 	}},
-	{owner: "Session", field: "drainParkMu", hold: func(s *Session) func() {
-		s.drainParkMu.Lock()
-		return s.drainParkMu.Unlock
-	}},
 	{owner: "Session", field: "laneEvidenceMu", hold: func(s *Session) func() {
 		s.laneEvidenceMu.Lock()
 		return s.laneEvidenceMu.Unlock

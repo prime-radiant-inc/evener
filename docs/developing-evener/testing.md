@@ -943,10 +943,8 @@ everywhere else.
 
 GitHub gives the repository 10GB of Actions cache. Past that it evicts the
 least recently accessed entries, whatever they are, so an over-budget cache
-evicts entries lanes are still restoring, and those lanes run cold. A cold
-`lint-golangci` can exceed golangci-lint's 5-minute limit on its GOOS=darwin
-pass over the agent module, so that lane depends on staying inside the
-budget. Keep the steady state under 6GB: the
+evicts entries lanes are still restoring, and those lanes run cold and slow.
+Keep the steady state under 6GB: the
 headroom absorbs the second generation each main push writes before
 `cache-prune` deletes the first.
 

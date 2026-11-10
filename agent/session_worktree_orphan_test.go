@@ -1041,8 +1041,9 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	classifications := &delegateDeliveryClassificationLog{}
 	root.cfg.testOnly.delegateDeliveryClassified = classifications.observe
 	// tailParked closes when the first finalize tail, the retained child's,
-	// parks on the announce hold.
-	tailParked := make(chan struct{})
+	// parks on the announce hold. drainParked closes when the delegate's
+	// finalization drain parks after that, waiting on the held child.
+	tailParked, drainParked := make(chan struct{}), make(chan struct{})
 	if takenAnnounceHold != nil {
 		// Register after root.Close, before the first send below can fatal:
 		// cleanups run last-in-first-out, so the hold releases before the
@@ -1054,6 +1055,17 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) {
 			parkedOnce.Do(func() { close(tailParked) })
 			<-takenAnnounceHold
+		}
+		var drainParkedOnce sync.Once
+		root.cfg.testOnly.jobTreeDrainParked = func(s *Session) {
+			if s.id != fixture.childID {
+				return
+			}
+			select {
+			case <-tailParked:
+				drainParkedOnce.Do(func() { close(drainParked) })
+			default:
+			}
 		}
 	}
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
@@ -1097,7 +1109,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	}
 	if takenAnnounceHold != nil {
 		waitForTestSignal(t, tailParked, "the retained child's finalize tail to park on the announce hold")
-		waitForTestSignal(t, delegateSub.sess.nextDrainPark(), "the delegate's finalization drain to park behind the held child")
+		waitForTestSignal(t, drainParked, "the delegate's finalization drain to park behind the held child")
 	}
 	// The shared child is found through the tree's durable records by its
 	// parent edge, the way the tree's own tests do.

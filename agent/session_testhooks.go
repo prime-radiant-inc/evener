@@ -74,6 +74,11 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// interruptSampled observes an accepted interrupt after it sampled the
+	// running execution and the session state, before it reserves the fence.
+	// Tests use it to move the active turn across that window. Nil in
+	// production.
+	interruptSampled func()
 	// failTurnBeforeRecording, when set, makes a turn fail before its user entry
 	// is recorded. It is the one seam that reaches the pre-incorporation,
 	// non-transcript failure the start path's give-back keys on: an integration
@@ -237,6 +242,11 @@ type testConfig struct {
 	// released. An inline result can be acknowledged while this seam is held.
 	// Nil in production.
 	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// jobTreeDrainParked observes a session's job-tree drain as it parks: it
+	// has finished a pass over its subtree, and the work it waits on is still
+	// outstanding. It receives the parking session, since child sessions
+	// inherit the hook. Nil in production.
+	jobTreeDrainParked func(*Session)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that

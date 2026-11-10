@@ -27,8 +27,7 @@ type LiveEntry struct {
 	// RosterInstanceID preserves a remote session's identity when SessionID
 	// is its stable, source-qualified tree key. Local entries use SessionID.
 	RosterInstanceID string
-	Status           string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags      []string // the status flags the daemon reported alongside Status
+	Status           string // most-recent daemon state ("active", "idle", "awaiting", etc.)
 	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
 	// successful local probe. A retained record clears both rather than claiming
 	// that a previously observed turn is still running.
@@ -155,7 +154,6 @@ type LiveEntry struct {
 type ProbeResult struct {
 	SessionID           string
 	Status              string
-	ActiveFlags         []string
 	ActiveTurnID        string
 	ActiveTurnStartedAt int64
 	PendingAsk          bool
@@ -275,7 +273,6 @@ func cloneChildQuotaWaits(in map[string]*appwire.ThreadFailure) map[string]*appw
 // with it, so a roster hand-off never aliases the roster's own snapshot.
 func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
-	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
 	out.PendingAskState = appwire.ClonePendingAsk(in.PendingAskState)
@@ -1334,7 +1331,6 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
-		ActiveFlags:           result.ActiveFlags,
 		ActiveTurnID:          result.ActiveTurnID,
 		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
 		ProbeState:            appwire.ThreadProbeStateFresh,

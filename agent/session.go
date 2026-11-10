@@ -443,11 +443,6 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren map[string]drainGraceChild
-	// drainParkMu guards drainParked, the channel nextDrainPark hands out and
-	// the job-tree drain closes when it parks.
-	// LOCK ORDER: leaf.
-	drainParkMu sync.Mutex
-	drainParked chan struct{}
 	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
 	// its own — nothing is acquired under it — and is deliberately separate from
 	// drainAbandonedMu so the send-start claim never couples to drain state.
