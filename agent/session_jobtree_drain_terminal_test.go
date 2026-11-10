@@ -349,7 +349,9 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 // notification turn that delivers the completion the final answer missed
 // starts another background job instead of answering. The drain continues as
 // for any notification turn and finishes with that job's outcome as the run's
-// answer.
+// answer. The follow-up job runs under a held launcher and finishes while the
+// third request's reply is generated: a completion that lands before that
+// request is built rides it, which is a different scenario.
 func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *testing.T) {
 	t.Parallel()
 	const firstAnswer = "first answer, written before the build finished"
@@ -357,6 +359,8 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	var sess *Session
 	var firstJobID string
 	var releaseShell func()
+	env := newHeldJobEnvironment(t.TempDir())
+	t.Cleanup(env.releaseJob)
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
@@ -368,16 +372,27 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 				Arguments: json.RawMessage(`{"command":"printf second-job-output","mode":"background"}`),
 			})
 		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("started a follow-up job; waiting") },
+		func(llm.Request) llm.Response {
+			// The request carrying the tool result is built; finish the
+			// follow-up job before the reply so its completion lands inside
+			// this reply's generation window.
+			running := sess.jobManager.runningJobIDs()
+			if len(running) != 1 {
+				t.Errorf("running jobs at the tool-result request = %v, want only the follow-up job", running)
+			} else {
+				finalizeShell(t, sess.jobManager, running[0], env.releaseJob)
+			}
+			return agenttest.FinalResponse("started a follow-up job; waiting")
+		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
-	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+	sess = newSession(t, withAdapter(adapter), withEnv(env), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
-	// TRIPWIRE: scripted adapter, a controlled shell and one real printf; 30s
-	// only fires on a genuine hang.
+	// TRIPWIRE: scripted adapter and two controlled shells; 30s only fires on
+	// a genuine hang.
 	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
