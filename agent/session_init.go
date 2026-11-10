@@ -1670,7 +1670,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
 	// established occupancy tracking above. The function decides repo-ness
 	// structurally, not from ei.IsGitRepo (#4132).
-	s.applyInitInsideWorktreeLock()
+	if lane := s.cfg.AdoptWorktreeLane; lane != nil {
+		if err := s.adoptWorktreeLane(env, *lane); err != nil {
+			return nil, fmt.Errorf("adopt worktree lane: %w", err)
+		}
+	} else {
+		s.applyInitInsideWorktreeLock()
+	}
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.

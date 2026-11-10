@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync/atomic"
 
@@ -213,16 +214,40 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		}
 		defer releaseAdmission()
 		oldEnv := live.environment()
+		oldMeta := oldSess.Meta()
+		// A session that started in, or entered, a worktree lane keeps that
+		// lane across clear. The launch directory is only the pre-worktree
+		// home; the live session owns the lane (#2957).
+		oldLane := oldSess.WorktreeLane()
+		lane := strings.TrimSpace(oldLane.Path)
+		clearWd := wd
+		if lane != "" {
+			info, err := os.Stat(lane)
+			if err != nil {
+				return fmt.Errorf("clear: worktree lane %s is unavailable: %w", lane, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("clear: worktree lane %s is not a directory", lane)
+			}
+			clearWd = lane
+		}
 		clearCfg := sessionCfg
 		// A resumed daemon has no Manager launch flag; the session owns it.
-		clearCfg.Manager = oldSess.Meta().Manager
+		clearCfg.Manager = oldMeta.Manager
 		// The same holds for provenance: a resumed session owns the persisted
 		// mode, and clear replaces the session without re-reading launch config.
-		clearCfg.CommitProvenance = oldSess.Meta().Config.CommitProvenance
+		clearCfg.CommitProvenance = oldMeta.Config.CommitProvenance
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
+		if lane != "" {
+			clearCfg.AdoptWorktreeLane = &agent.WorktreeLane{
+				Path:        lane,
+				Managed:     oldLane.Managed,
+				RestoreRoot: oldLane.RestoreRoot,
+			}
+		}
 		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
 		// the persisted mode, not the launch flag), so its persisted config matches what
 		// it runs under. Reconcile from the live env before building the new session.
@@ -232,9 +257,9 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// than leaving a live session running unconfined while persisting a sandbox mode
 		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
 		// so oldSess.Close() no longer pulls the tmp out from under the new session.
-		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
+		clearEnv := execenv.NewLocalExecutionEnvironment(clearWd)
 		clearEnv.LoginPATH, clearEnv.LoginPATHProbeError = execenv.LoginShellPATHProbe() // a cached answer is free; a failure retries
-		if err := deps.provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
+		if err := deps.provisionSandbox(clearEnv, &clearCfg, clearWd); err != nil {
 			return fmt.Errorf("clear sandbox: %w", err)
 		}
 		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
@@ -263,6 +288,18 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("prepare app identity: %w", err)
 		}
+		// Hand the managed lane's occupancy marker to the replacement while the
+		// predecessor is still live, so the lane is never unlocked between
+		// owners. A failed rendezvous below reverses it.
+		var undoWorktreeLane func()
+		if clearCfg.AdoptWorktreeLane != nil && clearCfg.AdoptWorktreeLane.Managed {
+			undo, err := oldSess.TransferWorktreeLaneTo(newSess.ID())
+			if err != nil {
+				newSess.Close() // disposes clearEnv
+				return fmt.Errorf("transfer worktree lane: %w", err)
+			}
+			undoWorktreeLane = undo
+		}
 		// The rendezvous is the last fallible step and the daemon's public
 		// address for this thread. Moving it before the replacement means a
 		// client that discovers the new session id can always reach a daemon
@@ -278,7 +315,10 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 				return errors.New("old session bridge did not drain before clear deadline")
 			}
 		}
-		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
+		if err := deps.updateIdentity(rvRegistration, newSess.ID(), clearWd); err != nil {
+			if undoWorktreeLane != nil {
+				undoWorktreeLane()
+			}
 			live.transitionMu.Unlock()
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
@@ -288,6 +328,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// while a resync tells every client to hydrate the new instance.
 		srv.WireTranscriptHistory(newSess)
 		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { live.set(newSess, clearEnv) })
+		srv.SetWorkingDir(clearWd)
 		servedBootGeneration.Store(clearGeneration)
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this

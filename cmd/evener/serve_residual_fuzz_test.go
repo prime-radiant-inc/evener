@@ -494,7 +494,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 				return prepare(sourceID, threadID, ref, transcriptPath)
 			}
 		}},
-		{"clear rendezvous error", func(d *serveDeps) { d.updateSessionID = func(*rvreg.Registration, string) error { return boom } }},
+		{"clear rendezvous error", func(d *serveDeps) { d.updateIdentity = func(*rvreg.Registration, string, string) error { return boom } }},
 	} {
 		t.Run(clearCase.name, func(t *testing.T) {
 			d, args := base(t)

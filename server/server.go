@@ -824,15 +824,15 @@ func (s *Server) InputCh() <-chan InputMessage {
 }
 
 // SubmitContinuation feeds a goal continuation prompt into the input channel as
-// an EntryContinuation-kind message. The send is non-blocking: if the 1-slot
-// buffer is full a turn is already pending, whose drain-loop gate is the
-// reliable backstop for the goal, so dropping the kick is safe (spec §7). It is
-// the send-side counterpart to InputCh, used by the idle-kick callback wired
-// from serve.go (the agent module must not import server, so the kick is a
-// callback that lands here).
-func (s *Server) SubmitContinuation(prompt string) {
+// an EntryContinuation-kind message tagged with the session whose goal produced
+// it. The send is non-blocking: if the 1-slot buffer is full a turn is already
+// pending, whose drain-loop gate is the reliable backstop for the goal, so
+// dropping the kick is safe (spec §7). It is the send-side counterpart to
+// InputCh, used by the idle-kick callback wired from serve.go (the agent module
+// must not import server, so the kick is a callback that lands here).
+func (s *Server) SubmitContinuation(sessionID, prompt string) {
 	select {
-	case s.inputCh <- InputMessage{Kind: agent.EntryContinuation, Text: prompt}:
+	case s.inputCh <- InputMessage{Kind: agent.EntryContinuation, Text: prompt, SessionID: sessionID}:
 	default:
 	}
 }

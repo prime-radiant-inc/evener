@@ -139,6 +139,39 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	}
 }
 
+// TestServerAppWireThreadClearReplaysWhileATurnHoldsTheMutationReadGate pins
+// the recovery path after a lost response: the replacement is serving, a turn
+// holds WithMutationRead, and the retry must replay the saved receipt rather
+// than fail before reading it.
+func TestServerAppWireThreadClearReplaysWhileATurnHoldsTheMutationReadGate(t *testing.T) {
+	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
+	srv.SetAppIdentity("local", "old")
+	setReplacingClearFunc(srv, "new")
+	params := appwire.ThreadClearParams{Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old"}
+	if _, err := srv.handleAppThreadClear(context.Background(), params); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		srv.WithMutationRead(func() {
+			close(held)
+			<-release
+		})
+	}()
+	<-held
+	defer close(release)
+
+	replayed, err := srv.handleAppThreadClear(context.Background(), params)
+	if err != nil {
+		t.Fatalf("replayed clear while a replacement turn held the gate: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed || replayed.Thread.ID != "new" {
+		t.Fatalf("replay = (%q, %q), want (new, replayed)", replayed.Thread.ID, replayed.Receipt.Disposition)
+	}
+}
+
 func TestServerAppWireThreadClearRejectsConcurrentDifferentMutation(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "old")

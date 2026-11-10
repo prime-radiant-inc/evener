@@ -7,11 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/identifier"
 )
+
+// WorktreeLane is the occupied managed or path-entered worktree a replacement
+// session inherits from its predecessor. RestoreRoot is the pre-worktree home
+// the hub groups the lane under and exit/remove restores to; empty means init
+// resolves it from the lane's own repository. It is a config input, not a
+// persisted mirror of SessionMeta's three worktree fields.
+type WorktreeLane struct {
+	Path        string
+	Managed     bool
+	RestoreRoot string
+}
 
 // currentStateDir reads s.stateDir under s.mu.
 func (s *Session) currentStateDir() string {
@@ -195,17 +207,26 @@ func (s *Session) worktreeControlRunWithFiles(ctx context.Context, mainRepoRoot 
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
+	run, _, dispose, err := s.worktreeCleanupRunWithFiles(mainRepoRoot)
+	return run, dispose, err
+}
+
+// worktreeCleanupRunWithFiles is worktreeCleanupRun with the control
+// environment's file layer, for an undo that edits the worktree registry.
+func (s *Session) worktreeCleanupRunWithFiles(
+	mainRepoRoot string,
+) (worktree.GitRunner, execenv.FileMutator, func(), error) {
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
 	s.closeCtxMu.RUnlock()
 	budget := closePassBudget(closeCtx)
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
+	run, files, dispose, err := s.worktreeControlRunWithFiles(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return run, func() { cancel(); dispose() }, nil
+	return run, files, func() { cancel(); dispose() }, nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize
@@ -486,10 +507,11 @@ func (s *Session) worktreeStateSnapshotWith(allowAnchorFallback bool) worktreeSt
 	local, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	restore := s.worktreeRestoreEnv
 	current := s.worktreeCurrentPath
+	managed := s.worktreeCurrentManaged
 	stateDir := s.stateDir
 	s.mu.Unlock()
 
-	st := worktreeState{env: local, restoreEnv: restore, currentWorktree: current}
+	st := worktreeState{env: local, restoreEnv: restore, currentWorktree: current, currentManaged: managed}
 	if local == nil {
 		return st
 	}
@@ -645,6 +667,131 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 		hook()
 	}
 	return nil
+}
+
+// adoptWorktreeLane records a fresh session's inherited lane. The caller builds
+// the session inside the lane and transfers the predecessor's occupancy lock
+// before publishing it, so init must not run applyInitInsideWorktreeLock (which
+// would classify the predecessor's live marker as foreign and warn).
+func (s *Session) adoptWorktreeLane(env execenv.ExecutionEnvironment, lane WorktreeLane) error {
+	path := strings.TrimSpace(lane.Path)
+	if path == "" {
+		return nil
+	}
+	canonical := canonicalOrClean(path)
+	restoreRoot := strings.TrimSpace(lane.RestoreRoot)
+	if restoreRoot == "" {
+		if project, err := resolveWorktreeProject(env, canonical); err == nil {
+			restoreRoot = project.CanonicalPath
+		}
+	}
+	var restore *execenv.LocalExecutionEnvironment
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok &&
+		restoreRoot != "" && canonicalOrClean(restoreRoot) != canonical {
+		restore = local.WithWorkingDirectory(restoreRoot)
+		// A parked restore env the host cannot re-anchor would run unconfined
+		// if exit later swapped to it. Refuse the adoption before publishing
+		// the session, exactly as enterWorktree refuses a bad switch.
+		if err := restore.SandboxReRootError(); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.worktreeCurrentPath = canonical
+	s.worktreeCurrentManaged = lane.Managed
+	s.worktreeRestoreEnv = restore
+	s.mu.Unlock()
+	return nil
+}
+
+// WorktreeLane returns the lane this session occupies, from the live session
+// state rather than a persisted meta read. thread/clear uses it as the
+// replacement's placement input (#2957).
+func (s *Session) WorktreeLane() WorktreeLane {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	restoreRoot := ""
+	if s.worktreeRestoreEnv != nil {
+		restoreRoot = s.worktreeRestoreEnv.WorkingDirectory()
+	}
+	return WorktreeLane{
+		Path:        s.worktreeCurrentPath,
+		Managed:     s.worktreeCurrentManaged,
+		RestoreRoot: restoreRoot,
+	}
+}
+
+// TransferWorktreeLaneTo rewrites this session's managed-lane occupancy marker
+// to the replacement session. It runs while the predecessor is still live, so
+// the lane is never unlocked between owners: the lock file is rewritten in
+// place under the control policy's write authority, and the undo rewrites the
+// old marker the same way. An unmanaged, unlocked or foreign lane is a no-op.
+func (s *Session) TransferWorktreeLaneTo(newSessionID string) (func(), error) {
+	newSessionID = strings.TrimSpace(newSessionID)
+	if newSessionID == "" {
+		return nil, errors.New("replacement session id is required")
+	}
+	st := s.worktreeStateSnapshot()
+	if st.err != nil {
+		return nil, st.err
+	}
+	if st.currentWorktree == "" || st.mainRepoRoot == "" || !st.currentManaged {
+		return nil, nil
+	}
+	path := st.currentWorktree
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(worktreeGitTimeoutMS)*time.Millisecond)
+	defer cancel()
+	run, files, done, err := s.worktreeControlRunWithFiles(ctx, st.mainRepoRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	locked, reason, err := lockStateOf(run, path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect the lane lock: %w", err)
+	}
+	if !locked || worktree.ClassifyReason(reason, s.id, "") != worktree.OwnSession {
+		return nil, nil
+	}
+	oldMarker := worktree.FormatSessionMarker(s.id)
+	newMarker := worktree.FormatSessionMarker(newSessionID)
+	if err := s.rewriteLaneLock(files, path, oldMarker, newMarker); err != nil {
+		return nil, fmt.Errorf("rewrite the lane lock for the replacement: %w", err)
+	}
+	return func() {
+		_, undoFiles, undoDone, err := s.worktreeCleanupRunWithFiles(st.mainRepoRoot)
+		if err != nil {
+			return
+		}
+		defer undoDone()
+		_ = s.rewriteLaneLock(undoFiles, path, newMarker, oldMarker)
+	}, nil
+}
+
+// rewriteLaneLock replaces the lane lock file's marker without unlocking it:
+// the expected marker is verified through the control file layer, then written
+// atomically over the lock file, so a competing git worktree lock sees the path
+// occupied throughout. The control policy's write authority is checked before
+// the file layer is asked to write.
+func (s *Session) rewriteLaneLock(files execenv.FileMutator, lanePath, expected, marker string) error {
+	lockFile, err := laneLockFile(lanePath)
+	if err != nil {
+		return err
+	}
+	current, err := files.ReadFileRaw(lockFile)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(current)) != expected {
+		return errors.New("lane lock is no longer the expected marker")
+	}
+	if err := requireRegistryWrite(files, filepath.Dir(lockFile)); err != nil {
+		return err
+	}
+	if hook := s.cfg.testOnly.worktree.beforeLaneLockRewrite; hook != nil {
+		hook(lanePath)
+	}
+	return files.WriteFileRaw(lockFile, []byte(marker+"\n"), 0o644)
 }
 
 // exitWorktree implements worktreeGuard.exitWorktree() (spec §7): restore the

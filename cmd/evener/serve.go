@@ -158,7 +158,7 @@ type serveServer interface {
 	SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure)
 	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
-	SubmitContinuation(string)
+	SubmitContinuation(string, string)
 	SubmitNotification()
 	SubmitClientMutationStart(string)
 	SubmitPendingUserInput(string)
@@ -231,7 +231,7 @@ type serveDeps struct {
 	// is injectable: a test needs a deterministic preparation failure to prove
 	// thread/clear abandons a half-built session instead of publishing it.
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
-	updateSessionID    func(*rvreg.Registration, string) error
+	updateIdentity     func(*rvreg.Registration, string, string) error
 	observeCallbacks   func(serveCallbackObserver)
 	// reclaimScratch removes the session scratch that daemons now gone
 	// retained, for a serve working in the directory it is handed — the one
@@ -309,7 +309,7 @@ func defaultServeDeps() serveDeps {
 		provisionSandbox:     provisionSandbox,
 		newClearSession:      agent.NewSession,
 		prepareAppIdentity:   server.PrepareAppIdentityForRef,
-		updateSessionID:      func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		updateIdentity:       func(r *rvreg.Registration, id, workingDir string) error { return r.UpdateIdentity(id, workingDir) },
 	}
 }
 
@@ -917,7 +917,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	go func() {
 		defer close(inputLoopDone)
 		processMessage := func(sess *agent.Session, msg server.InputMessage) bool {
-			if msg.ClientMutationStart && msg.SessionID != sess.ID() {
+			// User, queued, start and continuation messages that name a
+			// session belong only to it. A continuation queued while clear
+			// builds a replacement must not run its predecessor's objective
+			// in the replacement after the gate releases.
+			if !inputBelongsToSession(msg, sess.ID()) {
 				return false
 			}
 			runnerDone := make(chan struct{})
@@ -1028,7 +1032,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		for {
 			sess := live.session()
 			if !processNextServeInput(ctx, srv.InputCh(), sess.ID(), func(msg server.InputMessage) bool {
-				return processMessage(live.session(), msg)
+				return processWithMutationRead(srv, func() bool {
+					return processMessage(live.session(), msg)
+				})
 			}) {
 				return
 			}
@@ -1185,6 +1191,27 @@ func processNextServeInput(
 		process(msg)
 		return true
 	}
+}
+
+// processWithMutationRead admits one process-local input turn only while no
+// thread/clear owns the mutation gate. The gate is held for clear's whole
+// preparation and publication; after it releases, the live session sampled
+// inside the callback is the replacement, not the closed predecessor.
+func processWithMutationRead(srv serveServer, fn func() bool) bool {
+	if gate, ok := srv.(interface{ WithMutationRead(func()) }); ok {
+		var processed bool
+		gate.WithMutationRead(func() { processed = fn() })
+		return processed
+	}
+	return fn()
+}
+
+// inputBelongsToSession reports whether msg may run against sessionID. An
+// untagged notification wake belongs to whichever session is live; every
+// input that names a session belongs only to that session, so a continuation
+// queued by a predecessor cannot execute its objective in the replacement.
+func inputBelongsToSession(msg server.InputMessage, sessionID string) bool {
+	return msg.SessionID == "" || msg.SessionID == sessionID
 }
 
 func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []appwire.SandboxEscalationRequested {
