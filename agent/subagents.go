@@ -1772,11 +1772,16 @@ func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, s
 		return
 	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	_, attentionRun := ctx.Value(delegateAttentionRunContextKey{}).(struct{})
 	sub.finalizeRun(subagentFinalize{
 		result:    stopReason,
 		finish:    sub.hookStoppedFinish(stopReason, nil),
 		lease:     lease,
 		stableRun: stableRun,
+		// An attention-triggered launch consumed its row before the hook could
+		// stop it. Without this the unpresented-trigger recovery is skipped and
+		// the report is neither presented nor left pending.
+		attentionRun: attentionRun,
 	})
 }
 
@@ -1951,10 +1956,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
 		restoreParentDriveNotify = nil
-		if a.hookStoppedRun() || a.sess.stopHookReplacedReplyNow() {
+		if a.hookStoppedRun() || a.sess.stopHookReplacedReplyNow() || a.sess.hookStoppedTheInput() {
 			// A hook ended the run or vetoed its reply. drainForFinalization
 			// would return the child's earlier communicated reply in place of
-			// the hook's text.
+			// the hook's text. A hook-stopped input is excluded for a second
+			// reason: the drain starts an EntryNotification turn, whose per-turn
+			// reset clears the marker, and the stopped prompt then reaches the
+			// model.
 		} else if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
@@ -1989,7 +1997,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					continue
 				case delegateSupervisionSuppress:
 				}
-				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() {
+				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
 			}

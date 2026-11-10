@@ -259,7 +259,15 @@ func TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "run a tool", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	awaitWarningNaming(t, warnings, "a tool hook stopped this round")
+	// A reasonless stop still warns the user; only the fallback wording is
+	// evener's, so this waits for any warning rather than naming one.
+	select {
+	case <-warnings:
+	// TRIPWIRE: the warning is emitted synchronously while the turn runs, so a
+	// healthy run reaches the receive first.
+	case <-time.After(30 * time.Second):
+		t.Fatal("a reasonless continue:false must still warn the user that a tool hook stopped the round")
+	}
 	sess.Close()
 
 	if got := len(adapter.Requests()); got != 1 {
