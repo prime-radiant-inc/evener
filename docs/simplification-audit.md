@@ -300,17 +300,16 @@ cited by Go code. Two mass deletions landed before this finding was published
 and took it to 81 files and 55,129 lines, so the original figure was stale on
 arrival. `docs-site/scripts/check.mjs` excludes `docs/superpowers/` from link
 checking, so no gate reads them. Jesse's ruling: plans may go, specs stay.
-**Done:** 38 plans deleted (44,597 lines), keeping 43. The retention rule is the
-one now in `docs/superpowers/README.md`: a plan stays if it is dated 2026-10-15
-or later, or if a retained document, test, or other plan cites it. Recent plans
-are where undelivered decisions live, and review proved the point three times:
-the fleet-audit plan holds D4 (replace the 50-delivery watch budget with one
-coalesced delivery per minute), which no code implements; the
-notification-delivery plan holds a bookkeeping ruling the code still
-contradicts; and `docs/design/session-activity-api.md` calls itself a target
-contract whose implementation is tracked in `session-activity-api.md`. A fourth
-review caught a retained plan linking into a deleted one.
-**Risk:** low. **Delta:** −44,597 lines.
+**Done:** all 44 plans deleted (11,942 lines); the directory is gone. The first
+pass kept 43 by a retention rule (dated 2026-10-15 or later, or cited), because
+the fleet-audit plan held D4 (replace the 50-delivery watch budget with one
+coalesced delivery per minute) and five other decisions no code implemented.
+The live program's open work and its six decisions were handed to issue #6029
+first, which is what let the directory go. Five references were repaired in the
+same commit: the archive index, `docs/design/session-activity-api.md`,
+`docs/research/2026-10-17-documentation-patterns.md`, `sendQueueGate.test.ts`
+(provenance only), and `scripts/measure-transcript-read-model.sh`.
+**Risk:** low. **Delta:** −11,942 lines.
 
 **F24. The doc archive beyond specs is also mostly uncited.** 899 superpowers
 files, 522,157 lines; only 68 are cited anywhere outside the tree. `handoffs` (6),
