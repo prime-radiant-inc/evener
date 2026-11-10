@@ -267,7 +267,6 @@ sanitizes recorded sessions into seeds), so two gitleaks scans guard against a
 real secret slipping in:
 
 ```sh
-make secret-scan        # gitleaks over the whole working tree
 make secret-scan        # gitleaks over the repo, the fuzz seed corpora included
 ```
 

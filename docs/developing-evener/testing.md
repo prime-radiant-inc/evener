@@ -269,8 +269,9 @@ assumptions.
 
 A setup prerequisite for the web, build, browser, and lint gates rather than a
 gate in its own right: `make web-preflight` runs it directly, and `make
-build-web`, `make test-web`, `make test-web-browser`, and `make lint` (through
-the frontend lint script) all reach it.
+build-web`, `make test-web`, and `make test-web-browser` all reach it. The
+frontend lint script runs from `make test-web`, so that is the gate that
+reaches it, not `make lint`.
 
 What it proves, what it may run, and how it fails live in the `make
 web-preflight` row of [building.md's target table](building.md#targets). That row
