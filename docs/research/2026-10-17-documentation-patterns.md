@@ -67,6 +67,6 @@ No competitor CLI examples were executed. The study did not test their runtime g
 
 ## Application to Evener
 
-The [design](../superpowers/specs/2026-10-17-documentation-overhaul-design.md) assigns content owners and editorial failure criteria. The [implementation plan](../superpowers/plans/2026-10-17-documentation-overhaul.md) assigns isolated writing scopes and independent checks.
+The [design](../superpowers/specs/2026-10-17-documentation-overhaul-design.md) assigns content owners and editorial failure criteria. Its implementation plan, which assigned isolated writing scopes and independent checks, is deleted with the rest of `plans/`.
 
 Jesse's product scope is explicit: omit the retiring TUI, retain the CLI, and publish documentation for main automatically to GitHub Pages. The first-run path therefore uses a snapshot build and explains the release alternative. Public navigation and search exclude this research record, internal implementation plans and historical mockups.
