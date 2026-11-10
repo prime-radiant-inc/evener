@@ -1082,6 +1082,30 @@ async function dottedAncestorStatus(ref) {
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "ancestor provider completion never changes geometry");
   await read("window.__cascadeGeometryObserver.disconnect()");
   driver.milestone("dotted-ancestor-status", { ref, active: active.state, reducedMotionActive: activeReduced.state, idle: idle.state, glyph: active.glyphState, knownDiagnostics: knownDiagnostics.length });
+  return releasedAfter;
+}
+
+// The released ancestor reports to the source after its held round and again
+// with its final reply, which carries its retained transcript. The source
+// answers each report with a turn of its own, and those turns land after the
+// ancestor is already idle. Until the source has answered the final report,
+// released work can still append rows under an end-following source reader and
+// move its top entry, so Return's baseline waits for that answer to render.
+async function sourceAnswersReleasedAncestor(ref, releasedAfter) {
+  const retained = `Scope ${fixture.refs.indexOf(ref)} retained transcript paragraph.`;
+  let answer = null;
+  await waitFrames(() => {
+    const updates = frames.slice(releasedAfter).filter(frame => frame.direction === "Network.webSocketFrameReceived" &&
+      frame.method === "history/updated" && frame.params.ref === fixture.rootRef);
+    const reportAt = updates.findIndex(frame => (frame.params.items ?? []).some(item => item.type === "steering" && item.text?.includes(retained)));
+    if (reportAt < 0) return false;
+    const reportTurns = new Set(updates[reportAt].params.items.filter(item => item.type === "steering").map(item => item.turnId));
+    answer = updates.slice(reportAt).flatMap(frame => frame.params.turns ?? [])
+      .find(turn => turn.status === "completed" && !reportTurns.has(turn.id))?.id ?? null;
+    return answer !== null;
+  }, "the source completes its answer to the released ancestor's final report");
+  await wait(`(${sourcePortExpr})?.querySelector(${q(`[data-row-id="${answer}"]`)}) != null`,
+    "the source reader renders its answer to the released ancestor's final report");
 }
 
 // Enter once, prove the held ancestor while it is a spine, and release it
@@ -1097,7 +1121,8 @@ async function dottedAncestorJourney() {
   await drill(fixture.edges[0], 1);
   await drill(fixture.edges[1], 2);
   await drill(fixture.edges[2], 3);
-  await dottedAncestorStatus(fixture.refs[1]);
+  const releasedAfter = await dottedAncestorStatus(fixture.refs[1]);
+  await sourceAnswersReleasedAncestor(fixture.refs[1], releasedAfter);
   await pinSourceDom();
   // A remounted reader shows its first rows at the top before it moves to the
   // end of the transcript; Return's baseline is the settled end, not that
