@@ -218,3 +218,23 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoteSelectedLockCandidateToleratesVanishedDescriptor pins the
+// pipefail case: grep returns 2 for a descriptor that closed mid-read while
+// still printing the held row. The grouped `|| true` keeps the probe alive.
+func TestRemoteSelectedLockCandidateToleratesVanishedDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "selected root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	heldSelectedLock(t, root)
+	pid := fmt.Sprintf("%d", os.Getpid())
+	script := `grep() { command grep "$@"; return 2; }; ` + selectedLockCandidateRemote(root, pid)
+	cmd := exec.Command("/bin/bash", "-o", "pipefail", "-c", script)
+	cmd.Env = append(selectedLockToolEnv(t), "PATH=/usr/bin:/bin")
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != pid {
+		t.Fatalf("candidate probe = (%q, %v), want %s despite grep exit 2", out, err, pid)
+	}
+}
