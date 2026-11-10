@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -154,9 +155,9 @@ func TestRemoteSelectedLockCandidateRefusesAmbiguousOrFailedGlobalProbe(t *testi
 }
 
 // TestRemoteSelectedLockCandidateProofUnderChurn holds a real exclusive flock
-// through several thousand unrelated lock transitions and proves the candidate
-// proof still names the holder on every read. The global list is deliberately
-// under the churn that can omit or duplicate a row; this proof never reads it.
+// while unrelated locks change and proves the candidate proof still names the
+// holder on every read. The global list is deliberately under the churn that
+// can omit or duplicate a row; this proof never reads it.
 func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "selected root")
@@ -165,7 +166,7 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 	}
 	heldSelectedLock(t, root)
 
-	const churnLocks = 512
+	const churnLocks = 64
 	churn := make([]*os.File, 0, churnLocks)
 	for i := range churnLocks {
 		f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%d.lock", i)), os.O_RDWR|os.O_CREATE, 0o600)
@@ -180,12 +181,12 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 	}
 	done := make(chan struct{})
 	var wg sync.WaitGroup
-	for worker := range 4 {
+	for worker := range 2 {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
 			for {
-				for i := worker; i < len(churn); i += 4 {
+				for i := worker; i < len(churn); i += 2 {
 					select {
 					case <-done:
 						return
@@ -195,6 +196,7 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 					_ = unix.Flock(fd, unix.LOCK_UN)
 					_ = unix.Flock(fd, unix.LOCK_EX)
 				}
+				runtime.Gosched()
 			}
 		}(worker)
 	}

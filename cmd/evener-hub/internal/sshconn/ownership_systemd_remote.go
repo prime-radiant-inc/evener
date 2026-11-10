@@ -124,14 +124,17 @@ func (m *Manager) checkServiceRoot(ctx context.Context, host hostreg.Host, pid s
 }
 
 // Require a regular, non-symlink selected lock, an open candidate descriptor,
-// and exactly one FLOCK WRITE owner matching that candidate on the pinned vnode.
-// Pin the selected vnode on both sides. Observe only, without acquiring a lock.
+// and exactly one FLOCK ADVISORY WRITE row for that descriptor with the pinned
+// key and owning PID. The candidate's own fdinfo comes from the open file
+// description, so unrelated global lock-list churn cannot hide or duplicate the
+// row. Pin the selected vnode on both sides. Observe only, without acquiring a
+// lock.
 func serviceLockVnodeRemote(root, pid string) string {
-	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; " +
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; fdpath=; " +
 		"[ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; " +
-		"if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; " +
+		"if [ \"$current\" = \"$identity\" ]; then found=yes; fdpath=$fd; break; fi; done; [ \"$found\" = yes ] || exit 1; " +
 		lockKeyRemote() +
-		"awk -v key=\"$key\" -v pid=" + pid + " '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { count++; owner=$5 } END { if (count != 1 || owner != pid) exit 1 }' /proc/locks || exit; " +
+		"fdinfo=/proc/" + pid + "/fdinfo/${fdpath##*/}; count=$(awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key { count++ } END { print count + 0 }' \"$fdinfo\" 2>/dev/null) || exit; [ \"$count\" = 1 ] || exit 1; " +
 		"[ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; " +
 		"[ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
 }
