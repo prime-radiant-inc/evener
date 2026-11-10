@@ -238,6 +238,26 @@ loading them, since each opens a socket the moment its body runs.
   coverage-percentage label.
 - New compatibility code names its removal condition in the PR description.
 
+## Agent workflow budget
+
+- **Review.** Run par once on the finished change, before the PR. After that,
+  RoboRev is the review: do not add reviewer fan-out on each round.
+- **Spec review.** A spec judged ready stays ready unless implementation shows
+  a defect in it. Three spec-review rounds without convergence go to Jesse.
+- **Duplicate delegates.** Before you start a delegate, check your running
+  delegates for one already working on the same question or commit.
+- **Waiting.** Long work runs as a background job. When you have nothing else
+  to do until it finishes, end your turn; its completion wakes you. Do not
+  write `sleep` or polling loops, and give any server or loop you start a
+  time bound.
+- **Host load.** No stress or CPU-burner jobs on this machine. Run `make lint`
+  once before you push, not after each edit.
+- **Scope.** A request to find, research or audit something does not become an
+  implementation PR without asking. Do not commit to a repository the request
+  did not name. A layout redesign keeps the workflow as it is.
+- **Missing skill.** If a skill you were asked to use is not installed, say
+  so. Do not search the filesystem for it.
+
 ## Shepherding a PR through RoboRev
 
 - **Simplify-code**
