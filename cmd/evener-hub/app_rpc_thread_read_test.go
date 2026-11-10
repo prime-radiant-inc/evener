@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2197,7 +2198,22 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 				t.Fatal(err)
 			}
 			if read.FetchCursor != "" {
-				t.Fatalf("controller forwarded fetch cursor to remote hub: %+v", read)
+				cursor, identity, err := appitempaging.DecodeFetchCursorForRef(read.FetchCursor, "local:remote")
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				canonical, err := json.Marshal(item)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				fetch, err := appitempaging.BuildFetchResponseBytes(canonical, identity, cursor)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return appwire.ThreadReadResponse{
+					Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:remote"}},
+					Fetch:  &fetch,
+				}
 			}
 			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
@@ -2276,7 +2292,179 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 		}
 	}
 	if reads < 2 {
-		t.Fatalf("remote thread reads = %d, want initial window plus fetch reread", reads)
+		t.Fatalf("remote thread reads = %d, want the initial window read plus the fetch's remote hop", reads)
+	}
+}
+
+// TestSessionOperationsRetainsRemoteFetchTokenBytes proves remote retention
+// keeps the encoding behind the window's fetch token, not a later re-read of
+// the same item version whose file-backed image descriptors changed.
+func TestSessionOperationsRetainsRemoteFetchTokenBytes(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 11, Item: 2}
+	windowImage := appwire.OutputImage{
+		Source: "written-file", Name: "plot.png", MediaType: "image/png", Size: 11,
+		URL: "/doc/image?session=remote&path=plot.png", SHA: strings.Repeat("a", 64), Path: "plot.png",
+	}
+	windowItem := appwire.ThreadItem{
+		ID: "remote-write", Type: "commandExecution", TurnID: "turn-remote", TranscriptKey: "remote-write", ToolName: "write_file",
+		ArgumentsJSON: `{"file_path":"plot.png"}`, Output: strings.Repeat("window-output", 20_000),
+		Actor:        &appwire.SessionActor{Kind: "manager", ManagerRef: "local:manager-on-remote"},
+		OutputImages: []appwire.OutputImage{windowImage},
+		Position:     &position, Version: 7,
+	}
+	// The file changed between the window read and the retention read, so the
+	// re-read observes a different descriptor at the same item version.
+	changedImage := windowImage
+	changedImage.Size = 12
+	changedImage.SHA = strings.Repeat("b", 64)
+	changedItem := windowItem
+	changedItem.OutputImages = []appwire.OutputImage{changedImage}
+
+	var fetchReads atomic.Int32
+	var forwarded appitempaging.FetchCursor
+	remote, _ := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}}}
+		case appwire.MethodThreadRead:
+			var read appwire.ThreadReadParams
+			if err := json.Unmarshal(raw, &read); err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			if read.FetchCursor != "" {
+				cursor, identity, err := appitempaging.DecodeFetchCursorForRef(read.FetchCursor, "local:remote")
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				fetchReads.Add(1)
+				forwarded = cursor
+				canonical, err := json.Marshal(windowItem)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				fetch, err := appitempaging.BuildFetchResponseBytes(canonical, identity, cursor)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return appwire.ThreadReadResponse{
+					Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:remote"}},
+					Fetch:  &fetch,
+				}
+			}
+			items := []appwire.ThreadItem{changedItem}
+			if read.TurnWindow != nil {
+				items = []appwire.ThreadItem{windowItem}
+			}
+			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: items}},
+			}, Snapshot: &appwire.SnapshotIdentity{Incarnation: "remote-history", Length: 1}}
+			if read.TurnWindow != nil {
+				packed, err := packCurrentRemoteHubRead(response, read.ThreadWindowParams, read.ItemLimit)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return packed
+			}
+			return response
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+
+	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref:        "host-b:remote",
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("remote window = %+v, want one fetchable item", window.Turns)
+	}
+	controllerCursor := window.Turns.Data[0].Items[0].FetchCursor
+	windowCursor, _, err := appitempaging.DecodeFetchCursorForRef(controllerCursor, "host-b:remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantItem := windowItem
+	wantItem.Actor = &appwire.SessionActor{Kind: "manager", ManagerRef: "host-b:manager-on-remote"}
+	wantItem.OutputImages = []appwire.OutputImage{{
+		Source: "written-file", Name: "plot.png", MediaType: "image/png", Size: 11,
+		URL: "/doc/image?session=" + url.QueryEscape("host-b:remote") + "&path=plot.png",
+		SHA: strings.Repeat("a", 64), Path: "plot.png",
+	}}
+	want, err := json.Marshal(wantItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedWantItem := wantItem
+	changedWantItem.OutputImages = []appwire.OutputImage{{
+		Source: "written-file", Name: "plot.png", MediaType: "image/png", Size: 12,
+		URL: "/doc/image?session=" + url.QueryEscape("host-b:remote") + "&path=plot.png",
+		SHA: strings.Repeat("b", 64), Path: "plot.png",
+	}}
+	changedWant, err := json.Marshal(changedWantItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Equal(want, changedWant) {
+		t.Fatal("changed descriptor produced the same canonical bytes; the test cannot tell the reads apart")
+	}
+
+	retained, ok := operations.canonicalItemStore().borrow(windowCursor.Token)
+	if !ok {
+		t.Fatal("controller retained no canonical encoding for the remote window token")
+	}
+	if !slices.Equal(retained, want) {
+		var retainedItem appwire.ThreadItem
+		_ = json.Unmarshal(retained, &retainedItem)
+		t.Fatalf("retained remote bytes differ from the window encoding: got images %+v, want %+v",
+			retainedItem.OutputImages, wantItem.OutputImages)
+	}
+	if fetchReads.Load() == 0 {
+		t.Fatal("controller never resolved the remote fetch token from the owning hub")
+	}
+	if forwarded.Position != position || forwarded.ItemVersion != windowItem.Version {
+		t.Fatalf("forwarded fetch cursor = %+v, want the window item fence", forwarded)
+	}
+	if forwarded.Token == windowCursor.Token {
+		t.Fatalf("controller forwarded its own token %q instead of the owning hub's", forwarded.Token)
+	}
+
+	cursor := controllerCursor
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{
+			Ref: "host-b:remote", FetchCursor: cursor,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		var fetchedItem appwire.ThreadItem
+		_ = json.Unmarshal(got, &fetchedItem)
+		t.Fatalf("controller fetch differs from the window encoding: got images %+v, want %+v",
+			fetchedItem.OutputImages, wantItem.OutputImages)
 	}
 }
 
@@ -2356,6 +2544,117 @@ func TestSessionOperationsDefersRemoteFetchUnavailability(t *testing.T) {
 	data, ok := appwire.DecodedErrorData(wireErr.Data)
 	if !ok || data.EvenerErrorInfo != appwire.ErrorFetchUnavailableRemote {
 		t.Fatalf("remote unavailable fetch error data = %#v", wireErr.Data)
+	}
+}
+
+// TestSessionOperationsFetchReadServesRetainedRemoteBytes proves the owning
+// hub answers a forwarded remote-source fetch cursor from the encoding it
+// retained when it minted the cursor, without a second read of the source.
+func TestSessionOperationsFetchReadServesRetainedRemoteBytes(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 5}
+	windowItem := appwire.ThreadItem{
+		ID: "remote-message", Type: "agentMessage", TurnID: "turn-remote", TranscriptKey: "remote-message",
+		Text: strings.Repeat("retained", 2_000), Position: &position, Version: 3,
+	}
+	var fetchReads atomic.Int32
+	remote, _ := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}}}
+		case appwire.MethodThreadRead:
+			var read appwire.ThreadReadParams
+			if err := json.Unmarshal(raw, &read); err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			if read.FetchCursor != "" {
+				fetchReads.Add(1)
+				cursor, identity, err := appitempaging.DecodeFetchCursorForRef(read.FetchCursor, "local:remote")
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				canonical, err := json.Marshal(windowItem)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				fetch, err := appitempaging.BuildFetchResponseBytes(canonical, identity, cursor)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return appwire.ThreadReadResponse{
+					Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:remote"}},
+					Fetch:  &fetch,
+				}
+			}
+			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{windowItem}}},
+			}, Snapshot: &appwire.SnapshotIdentity{Incarnation: "remote-history", Length: 1}}
+			if read.TurnWindow != nil {
+				packed, err := packCurrentRemoteHubRead(response, read.ThreadWindowParams, read.ItemLimit)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return packed
+			}
+			return response
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+
+	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "host-b:remote", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, PreviewBytes: 64,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("remote window = %+v, want one fetchable item", window.Turns)
+	}
+	cursor := window.Turns.Data[0].Items[0].FetchCursor
+	want, err := json.Marshal(windowItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retention resolved the token once; the read under test must not re-read
+	// the owning hub again.
+	fetchReads.Store(0)
+
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Read(t.Context(), appwire.ThreadReadParams{Ref: "host-b:remote", FetchCursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Fetch == nil {
+			t.Fatal("retained fetch read returned no fetch")
+		}
+		if response.Thread.Evener.Ref != "host-b:remote" {
+			t.Fatalf("retained fetch thread ref = %q, want the cursor's ref", response.Thread.Evener.Ref)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("retained fetch bytes = %s, want %s", got, want)
+	}
+	if fetchReads.Load() != 0 {
+		t.Fatalf("retained fetch read re-read the owning hub %d times", fetchReads.Load())
 	}
 }
 
