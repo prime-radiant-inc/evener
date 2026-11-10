@@ -184,11 +184,9 @@ func TestRetryContinuationJourney(t *testing.T) {
 }
 
 func retryContinuationDriverCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "node", args...)
 	// Let the driver's lifecycle reap its detached browser and remove its
 	// profile before the existing bounded forced-stop policy takes over.
-	configureBackgroundDriverCommand(cmd)
-	return cmd
+	return backgroundDriverCommand(ctx, args...)
 }
 
 // retryNativeJourneyDriver runs the actual native screen test against the real
