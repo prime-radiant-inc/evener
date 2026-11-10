@@ -2069,8 +2069,9 @@ func TestSessionConfigDisableSubagentsSnapshotRoundTrip(t *testing.T) {
 
 // TestSessionConfigDisableSubagentsRemovesDelegation is the behavioral half of
 // the disable rule: a root session launched with the disable choice keeps a
-// zero delegation allowance and does not register the root-only delegate or
-// manage_worktree tools, while the default keeps both.
+// zero delegation allowance and does not register the root-only delegate tool.
+// manage_worktree stays with the root: it is the session's own worktree
+// lifecycle, independent of delegation. The default keeps both.
 func TestSessionConfigDisableSubagentsRemovesDelegation(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -2088,9 +2089,14 @@ func TestSessionConfigDisableSubagentsRemovesDelegation(t *testing.T) {
 			if sess.delegationAllowance != tc.wantAllow {
 				t.Fatalf("delegation allowance = %d, want %d", sess.delegationAllowance, tc.wantAllow)
 			}
+			wantTools := map[string]bool{}
 			for _, name := range rootOnlySubagentTools() {
-				if got := sess.reg.Get(name) != nil; got != tc.wantRootOnly {
-					t.Errorf("root-only tool %q registered = %v, want %v", name, got, tc.wantRootOnly)
+				wantTools[name] = tc.wantRootOnly
+			}
+			wantTools["manage_worktree"] = true
+			for name, want := range wantTools {
+				if got := sess.reg.Get(name) != nil; got != want {
+					t.Errorf("root-only tool %q registered = %v, want %v", name, got, want)
 				}
 			}
 		})

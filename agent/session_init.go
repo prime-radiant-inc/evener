@@ -1800,7 +1800,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	if s.delegationAllowance <= 0 {
+		rootSession := s.cfg.spawn.parentSessionID == ""
 		for _, name := range rootOnlySubagentTools() {
+			// manage_worktree is the root session's own worktree lifecycle,
+			// independent of delegation: a root that turned subagents off
+			// still creates, switches and exits its lane. Children keep the
+			// denial.
+			if rootSession && name == "manage_worktree" {
+				continue
+			}
 			s.reg.Remove(name)
 		}
 	}
