@@ -130,6 +130,11 @@ func TestPreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
 		case opDefaultInstall:
+			// The classifier matches the probe's guard, not its path, so pin the
+			// documented default here: a probe pointed elsewhere must not pass.
+			if !strings.Contains(strings.Join(argv, " "), "${HOME-}/.local/bin/evener") {
+				return nil, fmt.Errorf("installer-default probe does not name ~/.local/bin/evener: %v", argv)
+			}
 			return []byte(resolved + "\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
