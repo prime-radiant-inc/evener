@@ -73,8 +73,8 @@ func TestDelegateShellRepairProducesWatchEndNoticeForFinishOnlyPrefix(t *testing
 	}
 
 	records, watches := readDelegateShellStore(t, path)
-	if record := records["job-shell"]; record == nil || record.Status != jobstore.StatusStopped || record.NotifyState != jobstore.NotifyNotArmed {
-		t.Fatalf("repaired shell from finish-only prefix = %#v, want stopped with no notification armed", record)
+	if record := records["job-shell"]; record == nil || record.Status != jobstore.StatusStopped || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("repaired shell from finish-only prefix = %#v, want stopped with pending notification", record)
 	}
 	if watch := watches["watch-shell"]; watch == nil || watch.Active {
 		t.Fatalf("terminal watch after repair = %#v, want cleared", watch)
@@ -165,10 +165,20 @@ func TestDelegateShellRepairLeavesCallbackWatchForRestoreFromFinishOnlyPrefix(t 
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(plans.shellRepairs) != 0 {
-		t.Fatalf("shell repair plans = %#v, want none: a callback watch is left for the child's restore", plans.shellRepairs)
+	// The terminal record is still at not_armed with no consumed marker, so the
+	// cold repair must re-arm its notification. The repair must not touch the
+	// no-send callback watch: only the child's restore can cancel it and tell
+	// its receiver.
+	if len(plans.shellRepairs) != 1 {
+		t.Fatalf("shell repair plans = %#v, want one plan for the unsettled completion", plans.shellRepairs)
 	}
-	_, watches := readDelegateShellStore(t, path)
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, watches := readDelegateShellStore(t, path)
+	if record := records["job-shell"]; record == nil || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("terminal shell after repair = %#v, want pending notification", record)
+	}
 	if watch := watches["watch-shell"]; watch == nil || !watch.Active {
 		t.Fatalf("callback watch after cold repair = %#v, want left active for restore", watch)
 	}
@@ -607,6 +617,69 @@ func TestDelegateShellRepairRestoresForegroundRuntimeTimeoutNotificationFromFini
 		t.Fatalf("foreground runtime-timeout shell after repair = %#v, want pending notification for its terminal generation", record)
 	}
 
+	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence after repair: %v", err)
+	}
+	plans, err = c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile after repair: %v", err)
+	}
+	if len(plans.shellRepairs) != 0 {
+		t.Fatalf("notification repair repeated after landing: %#v", plans.shellRepairs)
+	}
+}
+
+// TestDelegateShellRepairRestoresForegroundKeptCompletionNotification covers a
+// foreground shell kept as a durable job because its output could not ride
+// inline: the live path settles its notification only after the tool reply is
+// durable. A crash between job_finished and that settlement leaves a terminal
+// not_armed record with no consumed marker; cold bootstrap must re-arm it, or
+// the kept result is undisclosed until an explicit resume (#5834 review).
+func TestDelegateShellRepairRestoresForegroundKeptCompletionNotification(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-kept",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-kept",
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-kept",
+		},
+	)
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 1 {
+		t.Fatalf("shell repair plans = %#v, want one plan for the unsettled kept completion", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, _ := readDelegateShellStore(t, path)
+	if record := records["job-kept"]; record == nil || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("kept completion after repair = %#v, want pending notification", record)
+	}
 	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
 	if err != nil {
 		t.Fatalf("collectDelegateReconcileEvidence after repair: %v", err)

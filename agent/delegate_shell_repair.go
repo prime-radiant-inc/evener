@@ -235,18 +235,20 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 	return evidence, nil
 }
 
-// shellTerminalNeedsNotification reports whether the live finish path would
-// have armed an owner completion notification for this terminal record. A
-// background shell always does. A foreground shell does only when its process
-// hit max_runtime_ms: finishForegroundRuntimeTimeout finalizes through the
-// notification-arming path while Background stays false, whereas a kept-sync
-// completion uses finalizeKeptSync and never arms one. Reason is the durable
-// evidence of that path, and Background survives from the start event.
+// shellTerminalNeedsNotification reports whether a terminal shell record still
+// at not_armed has an unsettled completion. Any durable foreground shell record
+// exists only because its output could not ride inline; the live path settles
+// its notification only after the tool reply is durable
+// (consumePersistedTerminalJobNotifications). A background shell always owes a
+// notification. The existing restore contract, rearmTerminalNotificationDecision,
+// re-arms every owned terminal not_armed record for the same reason: a record
+// still at not_armed has no durable evidence that the caller learned the
+// outcome, and a repeated notification is preferred to a lost one.
 func shellTerminalNeedsNotification(record *jobstore.JobRecord) bool {
 	if record == nil || !record.Status.IsTerminal() || record.TerminalGen == "" {
 		return false
 	}
-	return record.Background || record.Reason == "run_timeout"
+	return true
 }
 
 // hasActiveSendWatchFor reports whether a send watch that can still be cleared
