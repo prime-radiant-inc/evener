@@ -672,3 +672,120 @@ func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
 		t.Fatalf("candidate source calls = read %d/list %d, want read 0/list 1", source.candidateReadCalls, source.candidateListCalls)
 	}
 }
+
+type windowListRPCSource struct {
+	relayLifecycleSource
+	thread     appwire.Thread
+	candidates []appitempaging.TranscriptItemCandidate
+	identity   appitempaging.CursorIdentity
+}
+
+// selected returns the fixture's requested turn only, as a current daemon's
+// window decoder would, so a caller that ignores the window is visible.
+func (s *windowListRPCSource) selected(window *appwire.ThreadTurnWindow) ([]appwire.Turn, []appitempaging.TranscriptItemCandidate) {
+	if window == nil || window.Turn == "" {
+		return s.thread.Turns, s.candidates
+	}
+	var turns []appwire.Turn
+	for _, turn := range s.thread.Turns {
+		if turn.ID == window.Turn {
+			turns = append(turns, turn)
+		}
+	}
+	var candidates []appitempaging.TranscriptItemCandidate
+	for _, candidate := range s.candidates {
+		if candidate.TurnID == window.Turn {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return turns, candidates
+}
+
+func (s *windowListRPCSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	turns, _ := s.selected(params.TurnWindow)
+	thread := s.thread
+	thread.Turns = turns
+	return appwire.ThreadReadResponse{Thread: thread}, nil
+}
+
+func (s *windowListRPCSource) ReadItemCandidates(_ context.Context, params appwire.ThreadReadParams) (appsource.ItemCandidateResult, error) {
+	_, candidates := s.selected(params.TurnWindow)
+	return appsource.ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: s.identity, Exhausted: true,
+	}, nil
+}
+
+func (s *windowListRPCSource) ItemCandidatesFromRead(_ context.Context, params appwire.ThreadReadParams, _ appwire.ThreadReadResponse) (appsource.ItemCandidateResult, error) {
+	_, candidates := s.selected(params.TurnWindow)
+	return appsource.ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: s.identity, Exhausted: true,
+	}, nil
+}
+
+func (s *windowListRPCSource) ListItemCandidates(_ context.Context, _ appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+	return appsource.ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: s.candidates}, Identity: s.identity, Exhausted: true,
+	}, nil
+}
+
+func TestHubRPCInitialWindowListUsesTheWindowPath(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:window-list", Incarnation: "window-list", ProjectionVersion: 1}
+	turns := make([]appwire.Turn, 3)
+	candidates := make([]appitempaging.TranscriptItemCandidate, len(turns))
+	for index := range turns {
+		id := fmt.Sprintf("turn-%d", index+1)
+		position := appwire.ThreadItemPosition{Entry: uint64(index + 1)}
+		item := appwire.ThreadItem{
+			ID: fmt.Sprintf("message-%d", index+1), TranscriptKey: fmt.Sprintf("message-%d", index+1),
+			TurnID: id, Type: "agentMessage", Position: &position, Version: 1, Text: "text",
+		}
+		turns[index] = appwire.Turn{ID: id, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+			Items: []appwire.ThreadItem{item}}
+		candidates[index] = appitempaging.TranscriptItemCandidate{TurnID: id, Turn: turns[index], Item: item, Position: position}
+	}
+	source := &windowListRPCSource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:     "window-list",
+			Evener: appwire.EvenerThread{Ref: identity.ThreadRef, Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+		}},
+		thread: appwire.Thread{
+			ID: "window-list", SessionID: "window-list", Source: "codex",
+			Evener: appwire.EvenerThread{Ref: identity.ThreadRef}, Turns: turns,
+		},
+		candidates: candidates, identity: identity,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	params := appwire.ThreadTurnsListParams{
+		Ref:          identity.ThreadRef,
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn-2"},
+		ItemTypes:    []string{"messages"},
+		PreviewBytes: 64, MessageBytes: 64, WindowBudgetBytes: transcriptWindowBudgetFloorBytes,
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList, Params: raw,
+	})
+	if err != nil {
+		t.Fatalf("initial window list: %v", err)
+	}
+	page, ok := value.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("initial window list response = %T", value)
+	}
+	if page.Window == nil || page.Window.AppliedBy != transcriptWindowAppliedByServingDaemon {
+		t.Fatalf("initial window list window = %+v, want the requested window applied", page.Window)
+	}
+	if len(page.Data) != 1 || page.Data[0].ID != "turn-2" {
+		var ids []string
+		for _, turn := range page.Data {
+			ids = append(ids, turn.ID)
+		}
+		t.Fatalf("initial window turns = %v, want only the requested turn", ids)
+	}
+}

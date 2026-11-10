@@ -2249,3 +2249,29 @@ func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
 		t.Fatalf("saved page before a future position: error data = %#v, want stale cursor", wireErr.Data)
 	}
 }
+
+func TestHubRPCInitialWindowListServesSavedSessions(t *testing.T) {
+	cfg, readParams := seedBoundedPastThread(t)
+	params := appwire.ThreadTurnsListParams{
+		Ref:        readParams.Ref,
+		ItemLimit:  readParams.ItemLimit,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+	}
+	server := newHubAppServer(cfg, appsource.NewRegistry())
+	value, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList, Params: mustPagingJSON(t, params),
+	})
+	if err != nil {
+		t.Fatalf("saved initial window list: %v", err)
+	}
+	page, ok := value.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("saved initial window list response = %T", value)
+	}
+	if page.Window == nil || page.Window.AppliedBy != transcriptWindowAppliedBySavedIndex {
+		t.Fatalf("saved initial window list window = %+v, want the saved index", page.Window)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("saved initial window turns = %d, want the single requested turn", len(page.Data))
+	}
+}
