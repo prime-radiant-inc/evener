@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // TestRenderWideTableForTargetsWithFields is the populated shape: a target

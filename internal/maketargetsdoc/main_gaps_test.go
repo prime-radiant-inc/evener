@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // TestParseFamilyNonCommentLineSeparatesBlock covers the branch in ParseFamily

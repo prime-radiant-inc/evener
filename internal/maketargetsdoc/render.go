@@ -8,8 +8,9 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"strings"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // beginMarker returns the exact BEGIN comment line a family's marked

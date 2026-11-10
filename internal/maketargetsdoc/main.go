@@ -10,9 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // stemToDoc maps a make/<stem>.mk family file to the docs/developing-evener

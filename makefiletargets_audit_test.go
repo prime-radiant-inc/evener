@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 	"regexp"
 	"slices"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/internal/devtool/repoaudit"
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // makefileSourcePaths returns repoaudit.MakefileSources: the root Makefile
