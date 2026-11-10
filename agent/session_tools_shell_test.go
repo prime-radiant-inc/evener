@@ -1820,10 +1820,16 @@ func TestShellCwdWithShellOperatorsGetsPathHint(t *testing.T) {
 		"missing | head",
 		"missing; ls",
 		"cd missing",
+		"ls -la missing",
+		"git -C missing status",
 	} {
 		if _, err := resolveShellWorkingDir(env, fragment); !errors.Is(err, errShellCwdIsCommand) {
 			t.Fatalf("cwd %q error = %v, want errShellCwdIsCommand", fragment, err)
 		}
+	}
+	_, err = resolveShellWorkingDir(env, "my missing dir")
+	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
+		t.Fatalf("missing path with spaces error = %v, want only errShellCwdNotFound", err)
 	}
 	_, err = resolveShellWorkingDir(env, "missing")
 	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {

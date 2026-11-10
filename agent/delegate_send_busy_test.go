@@ -100,3 +100,18 @@ func TestDelegateSendTargetBusyCarriesReason(t *testing.T) {
 		}
 	})
 }
+
+func TestWithBusyReasonTypesOnlyUntypedBusy(t *testing.T) {
+	t.Parallel()
+	if busy := busyErrorOf(t, withBusyReason(errDelegateTargetBusy)); busy.reason != delegateBusyConcurrentSend {
+		t.Fatalf("untyped busy reason = %q, want %q", busy.reason, delegateBusyConcurrentSend)
+	}
+	stopping := busyBecause(delegateBusyStopping)
+	if busy := busyErrorOf(t, withBusyReason(stopping)); busy.reason != delegateBusyStopping {
+		t.Fatalf("typed busy reason = %q, want it kept", busy.reason)
+	}
+	other := errors.New("boom")
+	if got := withBusyReason(other); got != other {
+		t.Fatalf("non-busy error = %v, want it unchanged", got)
+	}
+}

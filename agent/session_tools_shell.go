@@ -428,13 +428,22 @@ var (
 )
 
 // looksLikeShellFragment reports whether a cwd value that failed path
-// validation reads as shell syntax: an operator, or a leading cd.
+// validation reads as shell syntax: an operator, or whitespace-separated
+// words led by a common command name. The command list stays short so a
+// missing directory with spaces in its name keeps the ordinary error.
 func looksLikeShellFragment(raw string) bool {
 	if strings.ContainsAny(raw, "|&;<>`") || strings.Contains(raw, "$(") {
 		return true
 	}
 	fields := strings.Fields(raw)
-	return len(fields) > 1 && fields[0] == "cd"
+	return len(fields) > 1 && shellCommandWords[fields[0]]
+}
+
+var shellCommandWords = map[string]bool{
+	"cd": true, "ls": true, "git": true, "sed": true, "grep": true, "cat": true,
+	"find": true, "echo": true, "head": true, "tail": true, "awk": true,
+	"mkdir": true, "rm": true, "cp": true, "mv": true, "make": true,
+	"go": true, "npm": true, "test": true, "pwd": true,
 }
 
 // shellSingleQuote returns s as one literal word for a POSIX shell. The

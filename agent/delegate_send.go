@@ -112,6 +112,20 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 	return reservation, err
 }
 
+// withBusyReason gives a target_busy refusal that reached the send without a
+// reason (a race after the reservation, in CommitStart or AttachRuntime) the
+// concurrent_send reason. Any other error, and a busy error that already
+// carries a reason, is returned as is.
+func withBusyReason(err error) error {
+	if !errors.Is(err, errDelegateTargetBusy) {
+		return err
+	}
+	if _, typed := errors.AsType[delegateBusyError](err); typed {
+		return err
+	}
+	return busyBecause(delegateBusyConcurrentSend)
+}
+
 func finalizationOutwaited() error {
 	return delegateBusyError{reason: delegateBusyFinalizing, retryAfter: delegateFinalizationRetryAfter}
 }
@@ -138,7 +152,7 @@ func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Sessio
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) delegateSendOutcome {
 	s := runtime.owner
 	failed := func(err error) delegateSendOutcome {
-		return delegateSendOutcome{result: sendMessageFailed(delegateID, err)}
+		return delegateSendOutcome{result: sendMessageFailed(delegateID, withBusyReason(err))}
 	}
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))

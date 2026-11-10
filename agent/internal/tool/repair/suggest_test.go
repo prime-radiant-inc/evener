@@ -114,3 +114,33 @@ func TestJobNotificationIsReportedAsSystemMessageNotTool(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownToolAliasSuggestsTheSurfaceVisibleShellName(t *testing.T) {
+	surfaces := map[string][]string{
+		"openai": {"apply_patch", "exec_command", "find_files", "grep_files"},
+		"google": {"read_file", "run_shell_command", "list_directory"},
+	}
+	for surface, available := range surfaces {
+		visible := "exec_command"
+		if surface == "google" {
+			visible = "run_shell_command"
+		}
+		for _, requested := range []string{"bash", "execute_command", "exec_command", "run_shell_command"} {
+			d := DiagnoseUnknownTool(requested, available)
+			if requested == visible {
+				continue // the model called a real tool here
+			}
+			if !slices.Contains(d.Suggestions, visible) {
+				t.Fatalf("%s: %s suggestions = %v, want %s", surface, requested, d.Suggestions, visible)
+			}
+			if slices.Contains(d.Suggestions, requested) {
+				t.Fatalf("%s: %s suggested itself: %v", surface, requested, d.Suggestions)
+			}
+		}
+	}
+	// A foreign shell name that is not this surface's never suggests itself.
+	d := DiagnoseUnknownTool("run_shell_command", []string{"exec_command", "run_shell_command"})
+	if slices.Contains(d.Suggestions, "run_shell_command") {
+		t.Fatalf("suggestions = %v, must not repeat the called name", d.Suggestions)
+	}
+}
