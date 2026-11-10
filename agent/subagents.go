@@ -1459,12 +1459,15 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// notification maintenance never starves user fan-out. At capacity the drive
 	// does not launch — return false, the not-launched signal the caller already
 	// honors (no settle), so the child's durable ledger stays queued and the next
-	// loop boundary retries (spec §3).
-	treeSlot, ok := s.reserveDriveSlot()
+	// loop boundary retries (spec §3). A child call waiting out a usage limit
+	// gives the slot back for the wait and takes one again to retry
+	// (heldDriveSlot), so waits that can last days never fill the budget.
+	reserved, ok := s.reserveDriveSlot()
 	if !ok {
 		sub.mu.Unlock()
 		return false
 	}
+	treeSlot := &heldDriveSlot{owner: s, turn: sub.sess, slot: reserved}
 	// The drive ctx is parented to the session's lifetime ctx (cancelled by
 	// cancelFunc at the very start of close(), before child closes and before
 	// sendersWG.Wait) — NOT to context.Background(): the drive goroutine holds
@@ -1513,7 +1516,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()
-		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
+		_, err := childSess.ProcessInputKind(withHeldDriveSlot(driveCtx, treeSlot), "", nil, EntryNotification)
 		if err != nil {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
 				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))

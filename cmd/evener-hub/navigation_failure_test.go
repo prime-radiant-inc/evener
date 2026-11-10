@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
@@ -24,7 +25,7 @@ func TestNavigationRowsCarryTheFailure(t *testing.T) {
 			Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed},
 		}},
 		{ID: "session-wide", Title: "wide", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{Title: "Provider\nerror " + strings.Repeat("x", 200)}},
-		{ID: "session-quota", Title: "quota", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{
+		{ID: "session-quota", Title: "quota", Kind: "session", State: "active", Failure: &appwire.ThreadFailure{
 			Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "oai-jrv", Status: 429},
 			ResumesAt: time.Date(2026, 11, 7, 14, 30, 0, 0, time.UTC).UnixMilli(),
 		}},
@@ -45,6 +46,60 @@ func TestNavigationRowsCarryTheFailure(t *testing.T) {
 	}
 	if failure, carried := navigationSummaryJSONFields(t, rows["session-idle"])["failure"]; carried {
 		t.Fatalf("a row that is not failed carries %s", failure)
+	}
+}
+
+// A session whose model call waits out a usage limit is working, not Failed,
+// and its daemon's thread carries the limit's summary with the time the call
+// resumes. That summary must survive the hub's own tree builder onto the
+// working row the web rail and the phone Board read, while a working row
+// with no resume time still carries no failure.
+func TestNavigationRowsCarryAQuotaWaitFromAWorkingThread(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	resumesAt := now.Add(2 * time.Hour)
+	thread := func(id string, failure *appwire.ThreadFailure) hubcore.LiveEntry {
+		t.Helper()
+		_, entry, ok := appThreadTreeEntries(appwire.Thread{
+			ID: id, Source: "local", ModelProvider: "gpt-5.6",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			Evener: appwire.EvenerThread{Ref: "local:" + id, Failure: failure},
+		})
+		if !ok {
+			t.Fatalf("appThreadTreeEntries rejected %s", id)
+		}
+		entry.PID = len(id)
+		return entry
+	}
+	live := []hubcore.LiveEntry{
+		thread("01WAITING", &appwire.ThreadFailure{
+			Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "oai-jrv", Status: 429},
+			ResumesAt: resumesAt.UnixMilli(),
+		}),
+		thread("01WORKING", &appwire.ThreadFailure{Title: "Provider error", Cause: &appwire.DiagnosticCause{Kind: "provider", Status: 500}}),
+	}
+	var metas []schema.SessionMeta
+	liveIDs := map[string]bool{}
+	for _, entry := range live {
+		liveIDs[entry.SessionID] = true
+		metas = append(metas, schema.SessionMeta{ID: entry.SessionID, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.BuildTreeAt(metas, live, nil, now), Live: liveIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]hubapi.NavigationSessionSummary{}
+	for _, row := range projection.LivePage(0, 0).Sessions {
+		rows[row.SessionID] = row
+	}
+	waiting, listed := rows["01WAITING"]
+	if !listed || hubcore.NormalizeState(waiting.State) == "errored" {
+		t.Fatalf("waiting row = %+v (listed %v), want a working row", waiting, listed)
+	}
+	if waiting.Failure == nil || waiting.Failure.ResumesAt == nil || !waiting.Failure.ResumesAt.Equal(resumesAt) || waiting.Failure.Status != 429 {
+		t.Fatalf("waiting row failure = %+v, want the usage limit resuming at %v", waiting.Failure, resumesAt)
+	}
+	if working := rows["01WORKING"]; working.Failure != nil {
+		t.Fatalf("a working row with no resume time carries the failure %+v", working.Failure)
 	}
 }
 

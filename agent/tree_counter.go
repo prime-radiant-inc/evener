@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -109,6 +110,12 @@ type treeCounter struct {
 	jobs   atomic.Int64
 	drives atomic.Int64
 	limit  int64
+
+	// freedMu guards freed, which is closed at the next release so a turn
+	// waiting to take a slot back (heldDriveSlot.retake) wakes on it instead
+	// of polling.
+	freedMu sync.Mutex
+	freed   chan struct{}
 }
 
 // newTreeCounter returns a treeCounter with the given cap; cap <= 0 selects
@@ -142,6 +149,24 @@ func (c *treeCounter) reserve(kind slotKind) bool {
 func (c *treeCounter) releaseKind(kind slotKind) {
 	decClamped(&c.n)
 	decClamped(c.kindCounter(kind))
+	c.freedMu.Lock()
+	if c.freed != nil {
+		close(c.freed)
+		c.freed = nil
+	}
+	c.freedMu.Unlock()
+}
+
+// nextRelease returns a channel closed at the next release. Read it before
+// a reserve attempt, so a release between a refused reserve and the wait is
+// not missed.
+func (c *treeCounter) nextRelease() <-chan struct{} {
+	c.freedMu.Lock()
+	defer c.freedMu.Unlock()
+	if c.freed == nil {
+		c.freed = make(chan struct{})
+	}
+	return c.freed
 }
 
 func (c *treeCounter) kindCounter(kind slotKind) *atomic.Int64 {

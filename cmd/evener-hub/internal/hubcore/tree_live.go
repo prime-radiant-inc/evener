@@ -164,14 +164,17 @@ func (lv *treeLive) pendingQuestionFor(id string) *appwire.PendingQuestion {
 // failureFor resolves why a session failed from the same live map, so its
 // rows agree (S1c). A crash-retained entry's daemon is gone, so its rows
 // say it crashed whatever it last reported; an errored entry names the
-// summary its daemon reported; any other session names none, whatever its
-// entry still carries. Each row gets its own copy.
+// summary its daemon reported, and so does a working session whose model
+// call waits out a usage limit (its summary names when the call resumes);
+// any other session names none, whatever its entry still carries. Each row
+// gets its own copy.
 func (lv *treeLive) failureFor(id string) *appwire.ThreadFailure {
 	entry := lv.liveMap[id]
 	if entry.Crashed {
 		return &appwire.ThreadFailure{Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed}}
 	}
-	if NormalizeState(entry.Status) != "errored" {
+	waiting := entry.Failure != nil && entry.Failure.ResumesAt > 0
+	if NormalizeState(entry.Status) != "errored" && !waiting {
 		return nil
 	}
 	return appwire.CloneThreadFailure(entry.Failure)

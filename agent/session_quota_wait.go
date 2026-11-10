@@ -131,11 +131,18 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
 	s.emitQuotaWait(callErr, model, resetAt.Sub(now))
+	driveSlot := heldDriveSlotFor(ctx, s)
+	driveSlot.giveBack()
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
 	case <-timer.C():
 	case <-wait.wake:
+	}
+	// Still inside the wait, so a drive's hung-turn bound does not cut the
+	// turn loose while it queues for a slot behind other drives.
+	if err := driveSlot.retake(ctx); err != nil {
+		return false, err
 	}
 	end()
 	s.applyQueuedModelSwitches(true)
@@ -159,7 +166,8 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 
 // emitQuotaWait announces the wait the way the retry loop announces each of
 // its backoffs: a model retry whose delay runs to the reset. Like a
-// wall-budgeted rate limit, it counts no attempts against a budget.
+// wall-budgeted rate limit, it counts no attempts against a budget, so every
+// wait says attempt 1 and clients read only its delay.
 func (s *Session) emitQuotaWait(callErr error, model string, delay time.Duration) {
 	data := events.ModelRetryData{
 		Attempt:    1,
@@ -195,7 +203,11 @@ func boundHungTurn(sess *Session, timeout time.Duration, cancel context.CancelFu
 			select {
 			case <-ended:
 				mu.Lock()
-				timer.Reset(timeout)
+				select {
+				case <-stopped:
+				default:
+					timer.Reset(timeout)
+				}
 				mu.Unlock()
 			case <-stopped:
 			}
@@ -207,4 +219,76 @@ func boundHungTurn(sess *Session, timeout time.Duration, cancel context.CancelFu
 		timer.Stop()
 		mu.Unlock()
 	})
+}
+
+// heldDriveSlot is the drive-budget slot a parent's notification drive holds
+// for its child's turn (driveSubagentNotificationTurn). A model call of that
+// turn waiting out a usage limit gives it back for the wait and takes one
+// again before it retries, so children on healthy models are not queued
+// behind waits that can last days.
+type heldDriveSlot struct {
+	// owner is the session whose drive budget the slot belongs to.
+	owner *Session
+	// turn is the session whose turn the drive runs: only that session's
+	// model calls give the slot back, never a descendant's that inherits the
+	// turn's context.
+	turn *Session
+
+	mu   sync.Mutex
+	slot *treeReservation
+}
+
+type heldDriveSlotKey struct{}
+
+func withHeldDriveSlot(ctx context.Context, slot *heldDriveSlot) context.Context {
+	return context.WithValue(ctx, heldDriveSlotKey{}, slot)
+}
+
+// heldDriveSlotFor is the drive slot s's current turn holds, nil when the
+// turn is not a drive's.
+func heldDriveSlotFor(ctx context.Context, s *Session) *heldDriveSlot {
+	slot, _ := ctx.Value(heldDriveSlotKey{}).(*heldDriveSlot)
+	if slot == nil || slot.turn != s {
+		return nil
+	}
+	return slot
+}
+
+// giveBack returns the slot to the drive budget; release does the same when
+// the drive ends. Both are no-ops on a slot already given back.
+func (h *heldDriveSlot) giveBack() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.slot.release()
+	h.slot = nil
+	h.mu.Unlock()
+}
+
+func (h *heldDriveSlot) release() { h.giveBack() }
+
+// retake takes a drive slot again for a given-back drive, waiting for a
+// release while the budget is full. It fails only when ctx ends.
+func (h *heldDriveSlot) retake(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	for {
+		var released <-chan struct{}
+		if h.owner.driveCounter != nil {
+			released = h.owner.driveCounter.nextRelease()
+		}
+		if slot, ok := h.owner.reserveDriveSlot(); ok {
+			h.mu.Lock()
+			h.slot = slot
+			h.mu.Unlock()
+			return nil
+		}
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }

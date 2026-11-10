@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -264,6 +266,24 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 		}
 		t.Fatalf("requests ran on %v, want the limited one then one retry on gpt-5.4", models)
 	}
+	// The switch is recorded inside the turn, before the answer the new
+	// model gave.
+	s.mu.Lock()
+	switchAt, answerAt := -1, -1
+	for i, turn := range s.history {
+		switch turn.Kind {
+		case schema.TurnModelSwitch:
+			if turn.ModelSwitch != nil && turn.ModelSwitch.NewModel == "gpt-5.4" {
+				switchAt = i
+			}
+		case schema.TurnAssistant:
+			answerAt = i
+		}
+	}
+	s.mu.Unlock()
+	if switchAt < 0 || answerAt < switchAt {
+		t.Fatalf("history has the switch at %d and the last answer at %d, want the switch recorded before the new model's answer", switchAt, answerAt)
+	}
 }
 
 // A user message while waiting tries the provider once: the user may know
@@ -468,7 +488,7 @@ func TestUsageLimitWithoutResetTimeDoesNotWait(t *testing.T) {
 
 // newQuotaDelegateRoot is a root session that can run real delegates, every
 // one of them on adapter and the fake clock.
-func newQuotaDelegateRoot(t *testing.T, adapter *streamingAdapter) (*Session, *agenttest.FakeClock) {
+func newQuotaDelegateRoot(t *testing.T, adapter llm.ProviderAdapter) (*Session, *agenttest.FakeClock) {
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -685,8 +705,11 @@ func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
 	waitUntil(t, trip, "the drive turn waits for quota", sub.sess.waitingForQuota)
 	// Several hung-turn bounds pass while the turn waits.
 	time.Sleep(5 * driveTurnTimeout)
-	if !sub.sess.waitingForQuota() || root.driveCounter.n.Load() != 1 {
-		t.Fatalf("after the drive's bound: waiting=%t drives=%d, want the drive turn still waiting", sub.sess.waitingForQuota(), root.driveCounter.n.Load())
+	sub.mu.Lock()
+	driving := sub.driving
+	sub.mu.Unlock()
+	if !sub.sess.waitingForQuota() || !driving {
+		t.Fatalf("after the drive's bound: waiting=%t driving=%t, want the drive turn still waiting", sub.sess.waitingForQuota(), driving)
 	}
 
 	recoverProvider(adapter)
@@ -729,5 +752,146 @@ func TestRootNotificationTurnWaitsForQuota(t *testing.T) {
 	}
 	if s.pendingRootDelegateAttention() {
 		t.Fatal("the delegate report is still pending after the turn that carried it")
+	}
+}
+
+// limitedForAdapter meets a usage limit on every request that carries
+// marker, while limited is set, and answers every other request as adapter
+// does: one account exhausted, the rest of the tree healthy.
+type limitedForAdapter struct {
+	*streamingAdapter
+	marker  string
+	limit   error
+	limited atomic.Bool
+	refused atomic.Int64
+}
+
+func (a *limitedForAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if a.limited.Load() && requestsContain([]llm.Request{req}, a.marker) {
+		a.refused.Add(1)
+		return nil, a.limit
+	}
+	return a.streamingAdapter.Stream(ctx, req)
+}
+
+// A drive turn waiting out a usage limit gives its drive-budget slot back
+// for the wait: waits can last days, and a child on a healthy model must not
+// queue behind them. With the drive budget full of a waiting drive, a drive
+// for a healthy child still runs; the waiting drive takes a slot again to
+// retry once the reset comes.
+func TestWaitingDriveGivesBackItsDriveSlot(t *testing.T) {
+	base := &streamingAdapter{name: "openai"}
+	recoverProvider(base)
+	adapter := &limitedForAdapter{streamingAdapter: base, marker: "job_on_limited_account", limit: usageLimitError(t, "openai", quotaResetAt)}
+	adapter.limited.Store(true)
+	root, clk := newQuotaDelegateRoot(t, adapter)
+	root.driveCounter.limit = 1
+	trip := tripwireCtx(t).Done()
+	limited, _ := startQuotaDelegate(t, root)
+	healthy, _ := startQuotaDelegate(t, root)
+	waitUntil(t, trip, "both delegates finish their first runs", func() bool { return subagentDone(limited) && subagentDone(healthy) })
+
+	enqueueCompletedJobNotification(t, limited.sess, "job_on_limited_account")
+	if !root.driveSubagentNotificationTurn(limited) {
+		t.Fatal("the limited child's drive did not launch")
+	}
+	waitUntil(t, trip, "the limited child's drive waits for quota", limited.sess.waitingForQuota)
+	enqueueCompletedJobNotification(t, healthy.sess, "job_on_healthy_account")
+	if !root.driveSubagentNotificationTurn(healthy) {
+		t.Fatal("a healthy child's drive could not launch: the waiting drive kept the only drive slot")
+	}
+	waitUntil(t, trip, "the healthy child's drive delivers", func() bool { return healthy.sess.jobNotificationsDelivered() == 1 })
+	waitUntil(t, trip, "the healthy drive ends", func() bool { return root.driveCounter.n.Load() == 0 })
+	if !limited.sess.waitingForQuota() {
+		t.Fatal("the limited child stopped waiting while its limit holds")
+	}
+
+	adapter.limited.Store(false)
+	reachReset(clk)
+	waitUntil(t, trip, "the limited child's drive delivers after the reset", func() bool { return limited.sess.jobNotificationsDelivered() == 1 })
+	waitUntil(t, trip, "the limited drive ends", func() bool { return root.driveCounter.n.Load() == 0 })
+	if got := adapter.refused.Load(); got != 1 {
+		t.Fatalf("requests against the limit = %d, want only the one that began the wait", got)
+	}
+}
+
+// A goal the user clears while a call waits does not come back when the
+// call resumes: the turn finishes, and nothing continues the goal.
+func TestQuotaWaitDoesNotResumeAClearedGoal(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	serveSession(t, s)
+	if _, err := s.SetGoal(context.Background(), "ship the release"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	var kicks atomic.Int64
+	s.SetKickFunc(func(string) { kicks.Add(1) })
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s, trip)
+
+	if err := s.ClearGoal(); err != nil {
+		t.Fatalf("ClearGoal: %v", err)
+	}
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if run.err != nil {
+		t.Fatalf("the input after the reset: %v", run.err)
+	}
+	if status, iterations, _ := s.GoalStatus(); status == string(goal.StatusActive) || iterations != 0 {
+		t.Fatalf("goal after the wait = %q with %d continuations, want the cleared goal left alone", status, iterations)
+	}
+	if got := kicks.Load(); got != 0 {
+		t.Fatalf("goal kicks after the wait = %d, want none for a cleared goal", got)
+	}
+}
+
+// A notification arriving while a notification turn's call waits joins the
+// call's next try, and only that one: a wake that meets the limit again and
+// the retry at the reset carry it once between them, and it is delivered
+// once.
+func TestNotificationArrivingDuringAWaitIsDeliveredOnce(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	serveSessionWithMutationStore(t, s)
+	trip := tripwireCtx(t).Done()
+	enqueueCompletedJobNotification(t, s, "job_before_wait")
+	run := startInput(context.Background(), s, "", EntryNotification)
+	run.awaitQuotaWait(t, s, trip)
+
+	enqueueCompletedJobNotification(t, s, "job_during_wait")
+	s.notify()
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-during-wait",
+		Input:            []appwire.InputItem{{Type: "text", Text: "anything yet?"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	waitUntil(t, trip, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	run.awaitQuotaWait(t, s, trip)
+	if !requestsContain(adapterRequests(adapter)[1:2], "job_during_wait") {
+		t.Fatal("the retry after the notification arrived did not carry it")
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if run.err != nil {
+		t.Fatalf("the notification turn after the reset: %v", run.err)
+	}
+	if got := s.jobNotificationsDelivered(); got != 2 {
+		t.Fatalf("job notifications delivered = %d, want each of the two delivered once", got)
+	}
+	reqs := adapterRequests(adapter)
+	mentions := func(req llm.Request) int {
+		n := 0
+		for _, m := range req.Messages {
+			n += strings.Count(m.Text(), "job_during_wait")
+		}
+		return n
+	}
+	// The reminder is in the transcript once: the request at the reset
+	// mentions it exactly as often as the retry that first carried it.
+	if carried, again := mentions(reqs[1]), mentions(reqs[2]); carried == 0 || again != carried {
+		t.Fatalf("mentions of the notification that arrived during the wait: %d in the retry, %d at the reset; want it injected once", carried, again)
 	}
 }
