@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -61,11 +62,11 @@ func NewOpenAIProfile(model string) *Profile {
 func surfaceConventions(surface string) (docFiles []string, toolNameMap map[string]string) {
 	switch surface {
 	case registry.SurfaceOpenAI:
-		return []string{"AGENTS.md", ".codex/instructions.md"}, map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
+		return []string{"AGENTS.md", ".codex/instructions.md"}, wirenames.ForSurface(surface)
 	case registry.SurfaceAnthropic:
 		return []string{"CLAUDE.md", "AGENTS.md"}, nil
 	case registry.SurfaceGoogle:
-		return []string{"GEMINI.md", "AGENTS.md"}, map[string]string{"shell": "run_shell_command", "grep": "grep_search", "list_dir": "list_directory"}
+		return []string{"GEMINI.md", "AGENTS.md"}, wirenames.ForSurface(surface)
 	default:
 		return []string{"AGENTS.md"}, nil
 	}

@@ -194,11 +194,18 @@ const NavigationFailureCrashed = "crashed"
 // from which a client composes the row's why line ("codex-jesse-fsck.com
 // sign-in expired (401)"). It never carries the failure's message, which can
 // quote a provider's error body.
+//
+// ResumesAt is set while a working session's model call waits out a
+// provider usage limit that named its reset time: when the call resumes by
+// itself (appwire.ThreadFailure.ResumesAt). A failure with it rides a
+// working row, not a Failed one. A client shows it only while it is still
+// ahead.
 type NavigationFailure struct {
-	Title     string `json:"title,omitempty"`
-	CauseKind string `json:"cause_kind,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Status    int    `json:"status,omitempty"`
+	Title     string     `json:"title,omitempty"`
+	CauseKind string     `json:"cause_kind,omitempty"`
+	Provider  string     `json:"provider,omitempty"`
+	Status    int        `json:"status,omitempty"`
+	ResumesAt *time.Time `json:"resumes_at,omitempty"`
 }
 
 // NavigationQuestion is the first question of a live session's pending ask

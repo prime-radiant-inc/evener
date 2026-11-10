@@ -47,6 +47,7 @@ type ConfigSnapshot struct {
 	ProviderIdleTimeout         string   `json:"provider_idle_timeout,omitempty"`         // positive response-byte idle duration; default 10m
 	Sandbox                     string   `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
 	SandboxNet                  *bool    `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
+	CommitProvenance            string   `json:"commit_provenance,omitempty"`             // commit message provenance: empty/coauthor = on, off = omit the instruction
 	VisionModel                 string   `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
 }
 

@@ -58,6 +58,7 @@ export {
 export type { NavigationPinSectionSummary } from "./selectors";
 export {
   findSessionNode,
+  quotaWaitRemainingMs,
   relativeAge,
   selectAttentionSummary,
   selectDisplaySources,
@@ -78,6 +79,7 @@ export {
   selectSessionSummary,
   selectSources,
   subagentTallyToShow,
+  waitingForQuotaText,
 } from "./selectors";
 export type {
   BackgroundLivePages,

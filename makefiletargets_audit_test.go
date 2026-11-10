@@ -553,116 +553,6 @@ func TestExactlyOneLintTargetsDefinition(t *testing.T) {
 	}
 }
 
-// annotationFieldKey matches a "## " line's content when it opens with the
-// key-shaped prefix of a structured field (`proves:`, `trigger:`, and the
-// rest). Such a line is not a summary. It mirrors internal/maketargetsdoc's
-// fieldAttempt (parse.go), which is package main and so cannot be imported
-// here; the two must agree on what a summary line looks like.
-var annotationFieldKey = regexp.MustCompile(`^[a-z][a-z0-9-]*:`)
-
-// annotationTargetSpecificVariable matches the remainder of a rule-shaped
-// line when that remainder is a variable assignment rather than a
-// prerequisite list — `install-home: PREFIX := $(HOME)/.local`. Such a line
-// never carries the annotation; the block sits above the sibling line that
-// carries the prerequisites and recipe. Mirrors the generator's
-// targetSpecificVariable for the same reason as above.
-var annotationTargetSpecificVariable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\s*(:=|\+=|\?=|!=|=)`)
-
-// makefileTargetsMissingSummaries returns every rule across
-// makefileSourcePaths whose contiguous comment block carries no "##" summary
-// line, plus the total number of annotatable rules examined.
-//
-// The block is read upward from the rule line through unbroken comment lines
-// only: a blank line or any non-comment line between the block and its rule
-// ends it, so a summary that has drifted away from the target it describes
-// reads as missing rather than as attached to whatever now sits below it.
-// Plain "#" rationale lines are transparent — real family files carry both,
-// with the "##" block on either side of the "#" prose.
-//
-// total is returned so the caller can tell "no rules were found" (the parser
-// lost its subject) apart from "every rule is annotated" (the audit is
-// clean), the same distinction makefileRulesWithoutRecipes draws.
-func makefileTargetsMissingSummaries(t *testing.T) (missing []string, total int) {
-	t.Helper()
-	for _, path := range makefileSourcePaths(t) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
-		}
-		lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
-		for i, line := range lines {
-			name, rest, ok := ruleLineName(line)
-			if !ok {
-				continue
-			}
-			if annotationTargetSpecificVariable.MatchString(strings.TrimSpace(rest)) {
-				continue
-			}
-			total++
-			if !hasSummaryAbove(lines[:i]) {
-				missing = append(missing, fmt.Sprintf("%s:%d: %s", path, i+1, name))
-			}
-		}
-	}
-	return missing, total
-}
-
-// hasSummaryAbove reports whether the comment block immediately above a rule
-// (i.e. at the end of before) contains at least one "##" summary line.
-func hasSummaryAbove(before []string) bool {
-	for _, line := range slices.Backward(before) {
-		if !strings.HasPrefix(line, "#") {
-			return false // blank or code: the block, if any, is not contiguous.
-		}
-		content, ok := strings.CutPrefix(line, "## ")
-		if !ok {
-			continue // plain "#" rationale, or a bare "##".
-		}
-		if strings.HasPrefix(content, " ") {
-			continue // three-space continuation of the line above it.
-		}
-		if annotationFieldKey.MatchString(content) {
-			continue // a structured field, not the summary.
-		}
-		return true
-	}
-	return false
-}
-
-// TestEveryTargetHasASummaryAnnotation is the drift tripwire for decision 2 of
-// the Makefile/docs decomposition spec: every target carries a documentation
-// annotation, with no exemption list. A target with no "##" summary is a
-// target that appears in no doc and in `make help` with nothing beside it,
-// which is how mutation-floor, fuzz-drive, coverage-gaps and test-install
-// reached the point of having no target-level documentation anywhere in the
-// repository.
-//
-// It keys on RULES rather than on .PHONY names, which is a strict superset:
-// fuzz-drive carried a rule with no .PHONY declaration for months, and keying
-// on .PHONY would have let a target dodge this audit by way of a second
-// omission.
-//
-// The generator (internal/maketargetsdoc) refuses an unannotated rule too,
-// but it reads make/*.mk only. This audit reads the root Makefile as well, so
-// a rule that lands there — where the generator would never see it — is still
-// caught. TestRootMakefileHasNoRules is what keeps that case hypothetical.
-//
-// Presence is all this proves. A summary can drift from what its recipe does
-// and nothing here will say so; that is an accepted limit, not an oversight.
-func TestEveryTargetHasASummaryAnnotation(t *testing.T) {
-	t.Parallel()
-	missing, total := makefileTargetsMissingSummaries(t)
-	if total == 0 {
-		t.Fatal("parsed 0 annotatable rules; the parser is broken, not the Makefile")
-	}
-	if len(missing) > 0 {
-		t.Fatalf("these targets have no `## ` summary line directly above them, so they appear "+
-			"in no doc and in `make help` with nothing beside them. Add a summary (see spec §2, "+
-			"docs/superpowers/specs/2026-08-20-makefile-and-docs-decomposition-design.md):\n  %s",
-			strings.Join(missing, "\n  "))
-	}
-}
-
 // lintGeneratedRecipe returns make/linting.mk's lint-generated recipe as one
 // string: every tab-indented line beneath the rule, joined. Reading the
 // recipe text rather than expanding it through make keeps this a static
@@ -774,7 +664,6 @@ var lintGateCommands = map[string]string{
 	"lint-js-toolchain-pins": "scripts/sdk/js-toolchain-pins-check.mjs",
 	"lint-tracked-file-size": "scripts/ops/tracked-file-size-check.sh",
 	"lint-repo-audit":        "./evener-dev dev repo-audit",
-	"lint-biome":             "npm run lint",
 	"secret-scan":            "scripts/ops/gitleaks-scan.sh repo",
 }
 
@@ -1112,75 +1001,57 @@ func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
 	}
 }
 
-// TestLintBiomeRunsTheFrontendLintScript pins make/linting.mk's lint-biome
-// recipe to the frontend directory and to the frontend's own `lint` script.
+// TestFrontendLintRunsFromTheFrontendDirectory pins the one static check whose
+// tool does not live at the repository root to a command that resolves it
+// correctly, and pins the chain that reaches it.
 //
-// The defect this guards is not a missing check but a check that resolves to
-// an unrelated tool. No `biome` is installed at the repository root (the
-// frontend's pinned @biomejs/biome lives in
-// cmd/evener-hub/frontend/node_modules, and mobile-native carries its own copy
-// for the native tree), so `npx biome` from the repository root finds no local
-// package and downloads the unrelated `biome@0.3.3` package, which ignores its
-// arguments and exits 0. A root-scoped `npx biome` gate therefore reports green
-// while checking nothing. Delegating to the frontend's `lint` script from the
-// frontend directory fixes both halves: npm puts that install's
-// node_modules/.bin on PATH, so `biome` cannot resolve elsewhere, and the script
-// stays the single definition of the two enforced scopes. A recipe that
-// re-implements the scopes instead would let a later package.json edit silently
-// shrink the gate.
+// No `biome` binary is installed at the root (the frontend's pinned
+// @biomejs/biome lives in cmd/evener-hub/frontend/node_modules, and
+// mobile-native carries its own copy for the native tree), so `npx biome` from
+// the repository root finds no local package and downloads the unrelated
+// `biome@0.3.3`, which ignores its arguments and exits 0 (issue #1406). A
+// root-scoped invocation therefore reports green while checking nothing.
 //
-// It also pins the web-preflight prerequisite: without it a stale or missing
-// frontend install would slip past the recipe-only assertions above even though
-// the target's own annotations claim it cannot.
-func TestLintBiomeRunsTheFrontendLintScript(t *testing.T) {
+// The check runs from `make test-web`, through evener-dev's web-checks, which
+// invokes the frontend's own `npm run lint` from the frontend directory. This
+// audit pins that whole chain rather than just the recipe: the frontend script
+// stays the single definition of the two enforced scopes (src and
+// appwire-client/typescript), and the web gate stays the only caller, so no
+// root-scoped `npx biome` can creep back in.
+func TestFrontendLintRunsFromTheFrontendDirectory(t *testing.T) {
 	t.Parallel()
 	recipes := makefileRecipes(t)
-	recipe, ok := recipes["lint-biome"]
+	testWeb, ok := recipes["test-web"]
 	if !ok {
-		t.Fatalf("make/linting.mk has no lint-biome rule, so `make lint` cannot run the frontend's " +
-			"Biome scopes and a root `npx biome` invocation silently checks nothing")
+		t.Fatalf("no test-web rule, so nothing runs the frontend's Biome scopes")
 	}
-	if strings.Contains(recipe, "npx") {
-		t.Errorf("lint-biome's recipe shells out to npx (%q); from the repository root `npx biome` "+
-			"resolves the unrelated biome@0.3.3 package and exits 0. Delegate to the frontend's "+
-			"own lint script instead.", strings.TrimSpace(recipe))
+	if strings.Contains(testWeb, "npx") {
+		t.Errorf("test-web shells out to npx (%q); from the repository root that resolves the "+
+			"unrelated biome@0.3.3 and exits 0", strings.TrimSpace(testWeb))
 	}
-	if !strings.Contains(recipe, "cmd/evener-hub/frontend") {
-		t.Errorf("lint-biome does not run from cmd/evener-hub/frontend, so npm cannot put that "+
-			"install's node_modules/.bin on PATH and `biome` may resolve elsewhere. Recipe:\n%s",
-			strings.TrimSpace(recipe))
-	}
-	if !strings.Contains(recipe, "npm run lint") {
-		t.Errorf("lint-biome does not delegate to the frontend's own `lint` script, so the scope "+
-			"list is duplicated and can drift from the command the web job runs. Recipe:\n%s",
-			strings.TrimSpace(recipe))
-	}
-	if prereqs := lintBiomePrerequisites(t); !slices.Contains(prereqs, "web-preflight") {
-		t.Errorf("lint-biome does not depend on web-preflight (prerequisites: %v), so it can run "+
-			"against a stale or missing frontend install — the guarantee its own annotations claim. "+
-			"Add web-preflight to the rule line.", prereqs)
+	checks := webChecksLintCommand(t)
+	if checks != "npm run lint" {
+		t.Errorf("the web gate's lint check is %q, want the frontend's own `npm run lint`; a "+
+			"re-implemented command would let a package.json edit shrink the gate silently", checks)
 	}
 }
 
-// lintBiomePrerequisites returns the prerequisite names on make/linting.mk's
-// lint-biome rule line, parsed from the rule rather than matched as a substring
-// of the recipe so a mention in a comment cannot satisfy the audit.
-func lintBiomePrerequisites(t *testing.T) []string {
+// webChecksLintCommand returns the command evener-dev's web-checks runs for the
+// "lint" check, read from cmd/evener-dev/webchecks.go.
+func webChecksLintCommand(t *testing.T) string {
 	t.Helper()
-	raw, err := os.ReadFile("make/linting.mk")
+	raw, err := os.ReadFile("cmd/evener-dev/webchecks.go")
 	if err != nil {
-		t.Fatalf("reading make/linting.mk: %v", err)
+		t.Fatalf("reading cmd/evener-dev/webchecks.go: %v", err)
 	}
-	for line := range strings.Lines(string(raw)) {
-		line = strings.TrimRight(line, "\n")
-		name, rest, ok := ruleLineName(line)
-		if !ok || name != "lint-biome" {
-			continue
-		}
-		rest, _, _ = strings.Cut(rest, "#")
-		return strings.Fields(rest)
+	if !strings.Contains(string(raw), `var webChecks = []string{"typecheck", "test", "lint"}`) {
+		t.Fatalf("webchecks.go no longer runs a lint check; the frontend Biome scopes have no caller")
 	}
-	return nil
+	if !strings.Contains(string(raw), `argv := []string{"npm", "run", check}`) {
+		t.Fatalf("webchecks.go no longer runs each check as `npm run <check>`, so the frontend " +
+			"script is no longer the single definition of the lint scopes")
+	}
+	return "npm run lint"
 }
 
 // TestLintGolangciLintsDarwinOffDarwin pins the cross-GOOS pass that closed

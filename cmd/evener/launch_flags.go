@@ -41,6 +41,7 @@ type launchFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	commitProvenance            *string
 	apiLog                      *string
 }
 
@@ -82,6 +83,7 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.commitProvenance = fs.String("commit-provenance", "", "record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	return flags
 }

@@ -305,6 +305,11 @@ type Server struct {
 	// on no row. An ID the answer omits keeps its cached projection, which is the
 	// historical behavior when no watch source is wired.
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
+	// appDescendantQuotaWaitsFunc resolves the descendant row IDs of one thread
+	// LIST page to the usage-limit summary of each whose model call is waiting
+	// out a usage limit. A descendant projection samples no envelope, so this
+	// is how a waiting delegate's row carries the wait and its resume time.
+	appDescendantQuotaWaitsFunc func(threadIDs []string) map[string]*appwire.ThreadFailure
 	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
 	// for the thread list's root row (S3); nil disables it.
 	appSubagentTallyFunc func() (appwire.SubagentTally, bool)

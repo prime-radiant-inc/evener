@@ -2191,3 +2191,88 @@ func TestRunAudit_ExplicitSessionsHonorCancellation(t *testing.T) {
 		})
 	}
 }
+
+// An audit check the doctor could not evaluate as written fails the whole
+// runbook parse rather than silently checking nothing.
+func TestParseRunbookRejectsAnInvalidCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, check string
+	}{
+		{"missing title", "  - severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"invalid suggested_fix", "  - title: x\n    severity: high\n    category: timeout\n    suggested_fix: unknown\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"missing metric", "  - title: x\n    severity: high\n    category: timeout\n    op: \">=\"\n    value: 5\n"},
+		{"both metric and all", "  - title: x\n    severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n    all:\n      - metric: longest_identical_run.length\n        op: \">=\"\n        value: 3\n"},
+		{"all condition missing metric", "  - title: x\n    severity: high\n    category: timeout\n    all:\n      - op: \">=\"\n        value: 3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseRunbook("bad", []byte("## CLASSIFY\n```yaml\naudit:\n"+tc.check+"```\n")); err == nil {
+				t.Fatal("ParseRunbook accepted the invalid check")
+			}
+		})
+	}
+}
+
+// An audit fence with no entries, or with no audit key at all, is not an audit
+// block.
+func TestParseAuditFenceEmptyList(t *testing.T) {
+	t.Parallel()
+	if _, found := parseAuditFence("audit: []"); found {
+		t.Fatal("empty audit list should not be found")
+	}
+	if _, found := parseAuditFence("other: value"); found {
+		t.Fatal("non-audit YAML should not be found")
+	}
+}
+
+// A non-indented prose line closes the open manual step, so an indented line
+// after the prose is not folded into that step.
+func TestParseRunbookDefaultStepReset(t *testing.T) {
+	t.Parallel()
+	content := []byte("## CLASSIFY\n" +
+		"- A manual step.\n" +
+		"Some prose line that is not a bullet.\n" +
+		"  indented after the prose.\n")
+	rb, err := ParseRunbook("step-reset-test", content)
+	if err != nil {
+		t.Fatalf("ParseRunbook: %v", err)
+	}
+	if len(rb.ManualSteps) != 1 || rb.ManualSteps[0] != "A manual step." {
+		t.Fatalf("manual steps = %q, want only the bullet's own text", rb.ManualSteps)
+	}
+}
+
+// RenderAudit surfaces every part of the result: the summary rows, each
+// manual step, each unreadable session, and each finding.
+func TestRenderAuditShowsEveryPartOfTheResult(t *testing.T) {
+	t.Parallel()
+	out := RenderAudit(AuditResult{
+		Runbook:         "runbook-sentinel",
+		SessionsChecked: 1,
+		Findings: []Finding{{
+			Signature: "signature-sentinel", Severity: "high", Category: "cat", Title: "finding-title-sentinel",
+			Description:  "desc",
+			SuggestedFix: SuggestedFix{Type: "diagnosis"},
+		}},
+		Summary:    []AuditSummaryRow{{Title: "summary-title-sentinel", Severity: "high", Sessions: 1}},
+		Manual:     []string{"manual-step-sentinel"},
+		Unreadable: []UnreadableSession{{SessionID: "session-sentinel", TranscriptRef: "local:session-sentinel", Error: "error-sentinel"}},
+	})
+	for _, want := range []string{"runbook-sentinel", "summary-title-sentinel", "manual-step-sentinel", "session-sentinel", "error-sentinel", "signature-sentinel"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered audit missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAudit_SweepListError(t *testing.T) {
+	t.Parallel()
+	// A file (not a directory) as state base makes the --since sweep's
+	// session listing fail, and the audit reports that failure.
+	rb := mustParseFixtureRunbook(t)
+	tmpFile := t.TempDir() + "/notadir"
+	writeFile(t, tmpFile, "x")
+	if _, err := RunAudit(context.Background(), tmpFile, rb, AuditOpts{Since: time.Hour}); err == nil {
+		t.Fatal("want error from ListSessions sweep on invalid state base")
+	}
+}

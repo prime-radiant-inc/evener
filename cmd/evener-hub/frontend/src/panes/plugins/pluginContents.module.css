@@ -1,0 +1,44 @@
+/* The Contents block inside a plugin detail sheet: an eyebrow, then one grid
+ * row per present component kind - kind label, count badge, wrapped mono
+ * names. Shared by every sheet that shows a plugin's contents (the settings
+ * detail sheet's installed mode, the launcher's plugin sheet), so it lives
+ * with the component rather than in any one pane's styles. Token-composed
+ * from the same recipe as the /dev/plugins-mockups stand-in. */
+
+.contents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(11ch, auto) auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.kindLabel {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.names {
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.manifestOnly {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}

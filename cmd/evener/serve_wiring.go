@@ -216,6 +216,9 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		clearCfg := sessionCfg
 		// A resumed daemon has no Manager launch flag; the session owns it.
 		clearCfg.Manager = oldSess.Meta().Manager
+		// The same holds for provenance: a resumed session owns the persisted
+		// mode, and clear replaces the session without re-reading launch config.
+		clearCfg.CommitProvenance = oldSess.Meta().Config.CommitProvenance
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""

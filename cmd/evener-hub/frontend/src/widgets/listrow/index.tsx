@@ -25,9 +25,16 @@ interface ListRowContentProps
 }
 
 interface InteractiveListRowProps extends ListRowContentProps {
-  /** Makes the whole row one <button>. */
+  /** Makes the row's main area a real <button> that runs this - the whole
+   * row without `trailingAction`, the area before the trailing slot with
+   * it. */
   onSelect: () => void;
   disabled?: boolean;
+  /** The row's one trailing control, rendered in the trailing slot before
+   * the drill-in chevron. Two tab stops (main, then control) is the
+   * accepted keyboard shape; the control swallows its own clicks, so it
+   * never fires `onSelect`. */
+  trailingAction?: ReactNode;
   action?: never;
 }
 
@@ -37,6 +44,7 @@ interface ReadOnlyListRowProps extends ListRowContentProps {
   /** The read-only row's one trailing control. §10 caps a row at one: more
    * than that belongs in the item's detail sheet. */
   action?: ReactNode;
+  trailingAction?: never;
 }
 
 export type ListRowProps = InteractiveListRowProps | ReadOnlyListRowProps;
@@ -52,6 +60,9 @@ const CLASS = {
   meta: requireClass(styles.meta, "listrow.module.css", "meta"),
   trailing: requireClass(styles.trailing, "listrow.module.css", "trailing"),
   chevron: requireClass(styles.chevron, "listrow.module.css", "chevron"),
+  split: requireClass(styles.split, "listrow.module.css", "split"),
+  splitMain: requireClass(styles.splitMain, "listrow.module.css", "splitMain"),
+  splitTrailing: requireClass(styles.splitTrailing, "listrow.module.css", "splitTrailing"),
 };
 
 const VARIANT_CLASS: Record<ListRowVariant, string> = {
@@ -61,27 +72,36 @@ const VARIANT_CLASS: Record<ListRowVariant, string> = {
 
 /**
  * A full-width list row: leading glyph, label with state chips, one meta
- * line. With `onSelect` the whole row is one real <button> (§10: the row is a
- * single target on desktop and touch alike); without it the row is a passive
- * <div> that may carry one trailing `action`. Wrapping rows in <ul>/<li> and
- * spacing them is the caller's layout.
+ * line. With `onSelect` the row is interactive in two shapes: the whole row
+ * is one real <button> (§10: the row is a single target on desktop and touch
+ * alike), or, with `trailingAction`, a container whose main area is that
+ * button and whose trailing slot holds the control before the drill-in
+ * chevron. Without `onSelect` the row is a passive <div> that may carry one
+ * trailing `action`. Wrapping rows in <ul>/<li> and spacing them is the
+ * caller's layout.
  *
- * Forwards its ref to the root (the button when interactive - a sheet that
- * restores focus to the row that opened it needs it) and spreads other native
- * attributes onto it, before its own type/className/onClick/disabled so those
- * stay the widget's, the same merge order as Button.
+ * Forwards its ref to the root (the whole-row button when interactive
+ * without `trailingAction`, the split container with it - a sheet that
+ * restores focus to the row that opened it needs it) and spreads other
+ * native attributes onto it, before its own type/className/onClick/disabled
+ * so those stay the widget's, the same merge order as Button.
  */
 export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
-  { label, leading, chips, meta, variant = "collection", onSelect, disabled, action, ...rest },
+  { label, leading, chips, meta, variant = "collection", onSelect, disabled, action, trailingAction, ...rest },
   ref,
 ) {
   const interactive = onSelect !== undefined;
+  const split = interactive && trailingAction !== undefined;
   const className = [
     CLASS.row,
     VARIANT_CLASS[variant],
-    leading !== undefined ? CLASS.withLeading : "",
+    leading !== undefined && !split ? CLASS.withLeading : "",
     interactive ? CLASS.interactive : "",
+    split ? CLASS.split : "",
   ]
+    .filter(Boolean)
+    .join(" ");
+  const mainClassName = [CLASS.row, leading !== undefined ? CLASS.withLeading : "", CLASS.interactive, CLASS.splitMain]
     .filter(Boolean)
     .join(" ");
   const content = (
@@ -95,6 +115,31 @@ export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
     </>
   );
   if (interactive) {
+    if (split) {
+      // Invariant: the container is never a button and carries no click
+      // handler - the main area owns the row's onSelect, so the trailing
+      // control swallows its own clicks and never selects the row.
+      return (
+        <div ref={ref as Ref<HTMLDivElement>} {...rest} className={className}>
+          <button
+            type="button"
+            className={mainClassName}
+            onClick={isAriaRefusal(rest["aria-disabled"]) ? refuseClick : onSelect}
+            disabled={disabled}
+          >
+            {content}
+          </button>
+          <span className={`${CLASS.trailing} ${CLASS.splitTrailing}`}>
+            {trailingAction}
+            {variant === "collection" && (
+              <span className={CLASS.chevron} aria-hidden="true">
+                <Chevron direction="right" />
+              </span>
+            )}
+          </span>
+        </div>
+      );
+    }
     return (
       <button
         ref={ref as Ref<HTMLButtonElement>}

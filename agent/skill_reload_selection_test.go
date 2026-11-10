@@ -167,6 +167,7 @@ func TestSkillReloadElicitation_Blocks(t *testing.T) {
 func TestSkillReloadSelection_CompactToolStoresValidSelection(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	forcePressureAbove(t, s, compactPressureFloor)
 	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{Description: "opaque-probe"}}
 	rt := s.reg.Get("compact_context")
 	if rt == nil {
@@ -197,6 +198,7 @@ func TestSkillReloadSelection_CompactToolStoresValidSelection(t *testing.T) {
 func TestSkillReloadSelection_CompactToolUnknownNameKeepsNote(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	forcePressureAbove(t, s, compactPressureFloor)
 	rt := s.reg.Get("compact_context")
 	_, err := rt.Exec(context.Background(), nil, map[string]any{
 		"note_to_self":  "keep the plan",
@@ -224,6 +226,7 @@ func TestSkillReloadSelection_CompactToolUnknownNameKeepsNote(t *testing.T) {
 func TestSkillReloadSelection_CompactToolSelectionOnlyRequestsCompaction(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	forcePressureAbove(t, s, compactPressureFloor)
 	rt := s.reg.Get("compact_context")
 	s.setPinnedNote("old")
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{
@@ -258,6 +261,7 @@ func TestSkillReloadSelection_CompactToolSelectionOnlyRequestsCompaction(t *test
 func TestSkillReloadSelection_CompactToolDoubleCallKeepsFirstSelection(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	forcePressureAbove(t, s, compactPressureFloor)
 	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{Description: "opaque-probe"}}
 	rt := s.reg.Get("compact_context")
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{
@@ -286,6 +290,7 @@ func TestSkillReloadSelection_CompactToolDoubleCallKeepsFirstSelection(t *testin
 func TestSkillReloadSelection_CompactToolSchemaShape(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	forcePressureAbove(t, s, compactPressureFloor)
 	rt := s.reg.Get("compact_context")
 	if rt == nil {
 		t.Fatal("compact tool not registered")

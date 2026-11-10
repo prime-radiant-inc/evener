@@ -740,6 +740,7 @@ func (cfg queuedInputDrainConfig) nextTurnContext() context.Context {
 }
 func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()
+	s.noteSteeringDrainLocked()
 	if len(s.steeringQueue) == 0 {
 		s.mu.Unlock()
 		return nil

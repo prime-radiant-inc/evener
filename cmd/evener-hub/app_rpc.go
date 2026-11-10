@@ -183,6 +183,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
 				Capabilities:      entry.Capabilities,
 				CapabilitiesKnown: entry.CapabilitiesKnown,
+				Failure:           appwire.CloneThreadFailure(item.ChildQuotaWaits[childID]), // the child's own usage-limit wait
 				ReadOnlyAlias:     true,
 			})
 		}
@@ -1909,6 +1910,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins(ctx)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginComponents, func(ctx context.Context, params appwire.PluginComponentsParams) (appwire.PluginComponentsResponse, error) {
+		return pluginsController.Components(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)

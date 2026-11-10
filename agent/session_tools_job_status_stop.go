@@ -205,6 +205,7 @@ func stopDelegate(ctx context.Context, s *Session, delegateID string, maxWaitMS 
 	// the subtree, not just the target, because a subtree stop leaves
 	// descendant watches live too.
 	executeDelegateCancelPlan(cancelPlan)
+	s.stopSubtreeDrives(delegateID)
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		return "", err
 	}

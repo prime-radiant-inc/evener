@@ -59,11 +59,49 @@ export function openSessionByRef(ref: string, options: SessionOpenOptions = {}):
   if (url) navigate(url, { ordinary: true });
   if (existing) {
     workspace.focusPane(existing.id);
-  } else if (options.topLevel === true) {
-    openTopLevelSession(ref);
   } else {
-    workspace.openPane("session", { ref });
+    if (options.topLevel === true) {
+      openTopLevelSession(ref);
+    } else {
+      workspace.openPane("session", { ref });
+    }
+    // A cascade main that covers the route is the reader this press opened;
+    // focus it now rather than leaving a secondary pane selected (#3687).
+    if (!focusRoutedSession(ref)) requestRoutedSessionFocus(ref);
   }
+}
+
+/** Focus the reader a routed session placement produced: its own conversation
+ * pane, or the cascade main that covers it. Placement and focus are one user
+ * interaction for every interactive navigation (#3687); boot restoration calls
+ * placement without this seam and keeps the saved layout's focus. */
+let pendingRoutedFocus: string | null = null;
+
+/** Request focus of the reader a pending session route will place. The route
+ * effect consumes it once placement exists; a caller that already focused its
+ * reader does not request. */
+export function requestRoutedSessionFocus(ref: string): void {
+  pendingRoutedFocus = ref;
+}
+
+/** Take the pending routed-focus request, if any. */
+export function consumeRoutedSessionFocus(): string | null {
+  const ref = pendingRoutedFocus;
+  pendingRoutedFocus = null;
+  return ref;
+}
+
+export function focusRoutedSession(ref: string, existing?: OpenPaneRecord): boolean {
+  const workspace = workspaceStore.getState();
+  const pane = existing ?? presentedPanes(workspace.panes).find((candidate) => isSessionPaneFor(candidate, ref));
+  if (pane) {
+    workspace.focusPane(pane.id);
+    return true;
+  }
+  const main = cascadeMainForRef(ref);
+  if (main === null) return false;
+  workspace.focusPane(main.id);
+  return true;
 }
 
 // A legacy cascade retains its original route role: opening the session a cascade
@@ -77,10 +115,14 @@ export function openSessionByRef(ref: string, options: SessionOpenOptions = {}):
 // boot shape a loaded machine produces, where the deferred placement used to
 // discard the whole restored workspace), and every later placement of the
 // same route.
-function cascadeMainCoversRef(ref: string): boolean {
+function cascadeMainForRef(ref: string): OpenPaneRecord | null {
   const main = workspaceStore.getState().mainPane();
   const params = main === null ? null : zoomIntentOf(main);
-  return params !== null && !params.inspection && params.source.params.ref === ref;
+  return main !== null && params !== null && !params.inspection && params.source.params.ref === ref ? main : null;
+}
+
+function cascadeMainCoversRef(ref: string): boolean {
+  return cascadeMainForRef(ref) !== null;
 }
 
 // Reusable session-placement helpers shared by AppShell and contextual callers.

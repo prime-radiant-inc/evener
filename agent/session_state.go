@@ -114,9 +114,16 @@ func (s *Session) restingWireState() string {
 // failure the live one did. It is nil when the session rests on no failed
 // turn, or when the failure recorded no diagnostic (a legacy entry): the row
 // still reads Failed, and there is nothing more to say.
+//
+// While a model call waits out a usage limit (session_quota_wait.go) the
+// session is busy in its turn, not resting, and this is that limit's summary
+// instead: the failure the call met, and when it resumes by itself.
 func (s *Session) RestingFailure() *appwire.ThreadFailure {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.quotaWait != nil {
+		return appwire.CloneThreadFailure(&s.quotaWait.failure)
+	}
 	turn, failed := s.restingFailureLocked()
 	if !failed || turn.Error == nil {
 		return nil

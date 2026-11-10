@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -154,6 +155,7 @@ type serveServer interface {
 	Close()
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
+	SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure)
 	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
@@ -659,6 +661,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		memoryProjectID = resolveMemoryProjectID(env, logOut)
 	}
 	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), logOut)
+	commitProvenance, err := commitprovenance.Normalize(*lf.commitProvenance)
+	if err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
@@ -699,6 +705,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         *lf.providerIdleTimeout,
+		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
@@ -753,6 +760,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
+			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.
 			ExportATIFPath:            sessionCfg.ExportATIFPath,

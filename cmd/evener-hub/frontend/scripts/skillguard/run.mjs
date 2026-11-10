@@ -25,6 +25,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
   createBrowserProcessCleanup,
@@ -48,7 +49,6 @@ import { ReactionBudget } from "./budgets.mjs";
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
-const CHILD_EXIT_GRACE_MS = 2_000;
 
 // Mint the profile Chrome is pointed at under a short root, never the ambient
 // temp directory. This guard runs under a deep TMPDIR (a test harness nested in
@@ -260,11 +260,21 @@ function selectEditorRange(editor, start, end) {
 }
 
 export class Driver {
-  constructor({ url, artifactDir, controlPath, milestonePath }) {
+  constructor({
+    url,
+    artifactDir,
+    controlPath,
+    milestonePath,
+    spawnChrome = spawn,
+    chromeBinary = null,
+  }) {
     this.url = url;
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // Launch seam for the unit tests: the real guard spawns Chrome itself, but
+    // the startup deadline is a timing contract that needs no browser.
+    this.spawnChrome = spawnChrome;
     // How slow THIS machine has proven to be: every wait's budget is sized
     // from the slowest reaction a completed wait has already observed, so a
     // loaded runner gets a proportional hang tripwire instead of the fixed
@@ -274,7 +284,7 @@ export class Driver {
     // an earlier settle can never confirm a later one.
     this.settleKeys = 0;
     this.failures = [];
-    this.chromeBinary = null;
+    this.chromeBinary = chromeBinary;
     this.chromeArgv = [];
     this.chromeStderr = "";
     this.page = null;
@@ -294,7 +304,7 @@ export class Driver {
   }
 
   async start() {
-    this.chromeBinary = findChrome();
+    this.chromeBinary ??= findChrome();
     this.profileDir = skillGuardChromeProfileDir();
     this.lifecycle = createBrowserProcessCleanup({ profileDir: this.profileDir });
     this.chromeArgv = [
@@ -308,7 +318,7 @@ export class Driver {
       `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       "about:blank",
     ];
-    this.chrome = spawn(this.chromeBinary, this.chromeArgv, {
+    this.chrome = this.spawnChrome(this.chromeBinary, this.chromeArgv, {
       stdio: ["ignore", "ignore", "pipe"],
       env: chromeProfileEnvironment(this.profileDir),
       detached: process.platform !== "win32",
@@ -321,8 +331,8 @@ export class Driver {
     let lineBuffer = "";
     const announced = new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHILD_EXIT_GRACE_MS * 5}ms`)),
-        CHILD_EXIT_GRACE_MS * 5,
+        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHROME_ANNOUNCEMENT_DEADLINE_MS}ms`)),
+        CHROME_ANNOUNCEMENT_DEADLINE_MS,
       );
       const finish = (fn, value) => {
         clearTimeout(timer);

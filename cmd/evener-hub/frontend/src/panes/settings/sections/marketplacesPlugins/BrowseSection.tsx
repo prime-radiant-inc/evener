@@ -11,7 +11,6 @@ import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
 import {
   Button,
-  Chip,
   ConfirmDialog,
   Disclosure,
   EmptyState,
@@ -21,6 +20,8 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { CatalogPluginRow } from "../../../plugins/PluginRow";
+import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -31,11 +32,7 @@ const CLASS = {
   treeNode: requireClass(styles.treeNode, "marketplacesPlugins.module.css", "treeNode"),
   treeCount: requireClass(styles.treeCount, "marketplacesPlugins.module.css", "treeCount"),
   treeChildren: requireClass(styles.treeChildren, "marketplacesPlugins.module.css", "treeChildren"),
-  row: requireClass(styles.row, "marketplacesPlugins.module.css", "row"),
-  rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
-  rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
-  rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
 };
 
 const FILTER_DEBOUNCE_MS = 150;
@@ -49,9 +46,19 @@ export interface BrowseSectionProps {
   expandedMarketplaces: Set<string>;
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
   onSources?: () => void;
+  /** Opens the plugin detail sheet when a catalog row's main area is
+   * selected. The section's parent owns the sheet and resolves the target
+   * (an already-installed row opens its installed entry); absent for a
+   * standalone render, whose rows then carry no open action. */
+  onOpen?: (plugin: string, marketplace: string) => void;
 }
 
-export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, onSources }: BrowseSectionProps) {
+export function BrowseSection({
+  expandedMarketplaces,
+  setExpandedMarketplaces,
+  onSources,
+  onOpen,
+}: BrowseSectionProps) {
   const store = useExtensionsHostStore();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
@@ -65,6 +72,12 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
   const [filterQuery, setFilterQuery] = useState("");
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const openPlugin = onOpen ?? (() => {});
+  const sectionRef = useRef<HTMLElement>(null);
+  // An inline install's fresh list reshapes the confirmed row, and the
+  // confirm's own focus restore then loses its opener: the hook returns
+  // focus to the row when that happened.
+  useCatalogRowFocusRehome(pendingInstall, sectionRef);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -187,7 +200,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
       : marketplaces.filter((m) => marketplaceUnresolved(m.name) || marketplaceHasMatch(m.name));
 
   return (
-    <section className={CLASS.section}>
+    <section ref={sectionRef} className={CLASS.section}>
       <div className={CLASS.filterRow}>
         <Input
           value={filterQuery}
@@ -224,6 +237,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
               isInstalled={isInstalled}
               installDisabled={hubWriteBusy || pluginsUnavailable}
               onToggle={() => toggleExpanded(m.name)}
+              onOpen={openPlugin}
               onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
             />
           ))
@@ -260,6 +274,7 @@ function MarketplaceNode({
   isInstalled,
   installDisabled,
   onToggle,
+  onOpen,
   onInstall,
 }: {
   marketplace: MarketplaceEntry;
@@ -269,6 +284,7 @@ function MarketplaceNode({
   isInstalled: (plugin: string, marketplace: string) => boolean;
   installDisabled: boolean;
   onToggle: () => void;
+  onOpen: (plugin: string, marketplace: string) => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
   const store = useExtensionsHostStore();
@@ -316,24 +332,20 @@ function MarketplaceNode({
               <EmptyState size="compact" reason="empty" title="This marketplace has no plugins." />
             </li>
           ) : (
+            // data-plugin/data-marketplace identify the row to focusCatalogRow:
+            // the row's own elements do not survive a reshape (split row and
+            // whole-row button remount), but this <li> does.
             rows.map((p) => (
-              <li key={p.name} className={CLASS.row}>
-                <div className={CLASS.rowMain}>
-                  <div className={CLASS.rowText}>{p.name}</div>
-                  <div className={CLASS.rowMeta}>
-                    {p.description}
-                    {p.category ? ` · ${p.category}` : ""}
-                  </div>
-                </div>
-                <div className={CLASS.rowActions}>
-                  {isInstalled(p.name, marketplace.name) ? (
-                    <Chip kind="installed">Installed</Chip>
-                  ) : (
-                    <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
-                      Install
-                    </Button>
-                  )}
-                </div>
+              <li key={p.name} data-plugin={p.name} data-marketplace={marketplace.name}>
+                <CatalogPluginRow
+                  plugin={p}
+                  installed={isInstalled(p.name, marketplace.name)}
+                  installDisabled={installDisabled}
+                  // The main area opens the plugin detail sheet; the
+                  // section's parent resolves installed-vs-catalog.
+                  onOpen={() => onOpen(p.name, marketplace.name)}
+                  onInstall={() => onInstall(p.name, marketplace.name)}
+                />
               </li>
             ))
           )}

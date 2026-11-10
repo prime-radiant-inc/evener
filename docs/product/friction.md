@@ -669,7 +669,14 @@ Preserve the goal and completed work, show a quiet and accurate waiting status,
 and automatically continue when the provider recovers, even after a long outage.
 Waiting alone does not expire the user's instruction. Recheck cancellation,
 applicable budgets and newer instructions before resuming, so recovery continues
-the user's current intent. Implementation remains pending.
+the user's current intent.
+
+A usage limit that names its reset time is handled: the model call waits for
+the reset inside its turn, with the goal active (see S09 in the
+[subsystem map](subsystems.md)).
+
+**Still pending.** Other temporary provider failures (an outage outlasting the
+transport retries, or a usage limit with no reset time) still block the goal.
 
 **Acceptance.** Let a temporary scripted provider failure persist well beyond
 normal retries, then heal it. Requests remain paced during the outage,

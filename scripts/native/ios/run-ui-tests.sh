@@ -288,9 +288,11 @@ set +e
 xcodebuild test \
 	-workspace mobile-native/ios/Evener.xcworkspace \
 	-scheme Evener \
+	-configuration Release \
 	-only-testing:EvenerQualificationUITests/testSavedHubMarkdownAndDraftRecovery \
 	-destination "id=$sim_udid" \
 	-derivedDataPath "$derived_data" \
+	ONLY_ACTIVE_ARCH=YES \
 	>"$output/absent-target-red.log" 2>&1
 red_exit=$?
 set -e
@@ -313,6 +315,7 @@ xcodebuild build-for-testing \
 	-configuration Release \
 	-destination "id=$sim_udid" \
 	-derivedDataPath "$derived_data" \
+	ONLY_ACTIVE_ARCH=YES \
 	-quiet >"$output/build-for-testing.log" 2>&1
 
 generated_run="$(find "$derived_data/Build/Products" -name '*.xctestrun' -print -quit)"

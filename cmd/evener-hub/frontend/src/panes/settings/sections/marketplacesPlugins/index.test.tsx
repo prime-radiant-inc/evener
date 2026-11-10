@@ -79,6 +79,34 @@ test("cached inventory keeps install disabled throughout a delayed retry", async
   expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
+test("catalog details open after the initial plugin list fails without allowing writes", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => {
+    throw new Error("initial-list-failure-sentinel");
+  });
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await waitFor(() => expect(extensionsStore.getState().pluginsError).not.toBeNull());
+  expect(extensionsStore.getState().plugins).toBeNull();
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(ACME.name, { selector: "summary" }));
+  const catalog = await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  await user.click(within(catalog).getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
+  expect(within(sheet).queryByRole("switch")).toBeNull();
+  const install = within(sheet).getByRole("button", { name: "Install" });
+  expect((install as HTMLButtonElement).disabled).toBe(true);
+  await user.click(install);
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(
+    fake.calls.filter((call) =>
+      /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(call.method),
+    ),
+  ).toHaveLength(0);
+});
+
 test("an install confirmation reconciles a target installed during inventory recovery", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
@@ -994,4 +1022,120 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
   await waitFor(() => expect(removeAttempts).toBe(2));
+});
+
+test("a catalog row's main area opens the detail sheet in catalog mode, with no components read", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  const componentsCallsBefore = fake.calls.filter((c) => c.method === "evener/plugin/components").length;
+
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  // Catalog mode: description + metadata + the Install footer, no switches
+  // and no Contents block (spec decision 2).
+  expect(within(sheet).getByText("Fixture formatter")).toBeTruthy();
+  expect(within(sheet).queryByRole("switch")).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+  expect(within(sheet).getByRole("button", { name: "Install" })).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
+  // Opening the catalog sheet reads no components: no new call, and no
+  // components call ever named the not-installed plugin.
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/components")).toHaveLength(componentsCallsBefore);
+  expect(
+    fake.calls.some(
+      (c) =>
+        c.method === "evener/plugin/components" &&
+        (c.params as { targets: { plugin?: string }[] }).targets.some((t) => t.plugin === "formatter"),
+    ),
+  ).toBe(false);
+});
+
+test("an install through the catalog sheet returns focus to the row it reshaped", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      LINTER,
+      {
+        plugin: "formatter",
+        marketplace: ACME.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  // Open from the row's main area, so the sheet's FocusScope remembers the
+  // row's main button as its opener.
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  await user.click(within(sheet).getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  // The install's fresh list reshapes the row - the split row's main button
+  // is replaced by the whole-row button - and the sheet closes.
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "formatter" })).toBeNull());
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
+});
+
+test("an already-installed catalog row opens the sheet in installed mode", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: LINTER.plugin, description: "The linter" }],
+  }));
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+
+  // The catalog row reads as installed: no trailing Install control.
+  expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const sheet = screen.getByRole("dialog", { name: LINTER.plugin });
+  // The installed entry's editor, not the catalog sheet: switches and the
+  // Remove footer, plus the Contents the components cache holds.
+  expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
+  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
 });

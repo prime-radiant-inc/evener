@@ -100,19 +100,24 @@ func podUnlockCommand(names []string) []string {
 }
 
 // decodeSectionDump turns `otool -X -s __TEXT __entitlements` output into the
-// section's raw bytes. Only two-character hex tokens are bytes; anything else
-// (a section header, an address column) is skipped.
+// section's raw bytes. otool prints two-character byte tokens for a universal
+// binary and little-endian four-byte words for a thin arm64 one, so both shapes
+// decode; anything else (a section header, an address column) is skipped.
 func decodeSectionDump(dump []byte) ([]byte, error) {
 	var out []byte
 	for token := range strings.FieldsSeq(string(dump)) {
-		if len(token) != 2 || !isHexPair(token) {
+		if (len(token) != 2 && len(token) != 4 && len(token) != 8) || !isHexPair(token) {
 			continue
 		}
-		value, err := strconv.ParseUint(token, 16, 8)
+		value, err := strconv.ParseUint(token, 16, 32)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, byte(value))
+		// A word prints its byte pairs in reverse: the token's last pair is
+		// the section's first byte.
+		for shift := 0; shift < 8*(len(token)/2); shift += 8 {
+			out = append(out, byte(value>>shift))
+		}
 	}
 	if len(out) == 0 {
 		return nil, errors.New("entitlements section dump has no bytes")
@@ -158,18 +163,28 @@ func checkLock(ctx context.Context, committed, resolved, output string) error {
 	if err != nil {
 		return fmt.Errorf("%w: committed lock: %w", errLockMismatch, err)
 	}
-	diff, err := exec.CommandContext(ctx, "git", "diff", "--no-index", "--no-ext-diff", "--text", "--", committed, candidatePath).CombinedOutput()
-	var exit *exec.ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
-		return fmt.Errorf("lock diff: %w", err)
+	diffPath := filepath.Join(output, "Podfile.lock.diff")
+	// An equal nonempty lock needs no external diff: write the empty diff Git
+	// would have produced and return without launching it. This also makes an
+	// equal lock's outcome independent of whether Git is installed or the
+	// context was cancelled. An empty committed lock is never equal evidence:
+	// it still falls through to rejection below, with Git's diff retained.
+	equal := len(original) > 0 && bytes.Equal(original, candidate)
+	var diff []byte
+	if !equal {
+		diff, err = exec.CommandContext(ctx, "git", "diff", "--no-index", "--no-ext-diff", "--text", "--", committed, candidatePath).CombinedOutput()
+		var exit *exec.ExitError
+		if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+			return fmt.Errorf("lock diff: %w", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(output, "Podfile.lock.diff"), diff, 0o600); err != nil {
+	if err := os.WriteFile(diffPath, diff, 0o600); err != nil {
 		return err
 	}
-	if len(original) == 0 || !bytes.Equal(original, candidate) {
-		return errLockMismatch
+	if equal {
+		return nil
 	}
-	return nil
+	return errLockMismatch
 }
 
 func selectSimulator(data []byte) (string, string, error) {

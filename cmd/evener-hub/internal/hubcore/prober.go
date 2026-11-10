@@ -89,6 +89,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
 	var childWatches map[string][]appwire.EvenerWatchInfo
+	var childQuotaWaits map[string]*appwire.ThreadFailure
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
 		if statusThreadID(thread) == rootID && strings.TrimSpace(thread.ID) != "" {
@@ -122,6 +123,15 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 			}
 			childWatches[id] = append([]appwire.EvenerWatchInfo(nil), watches...)
 		}
+		// A child whose model call waits out a usage limit carries the
+		// limit's summary with its resume time (the daemon attaches it to the
+		// child's list row).
+		if failure := thread.Evener.Failure; failure != nil && failure.ResumesAt > 0 {
+			if childQuotaWaits == nil {
+				childQuotaWaits = make(map[string]*appwire.ThreadFailure)
+			}
+			childQuotaWaits[id] = appwire.CloneThreadFailure(failure)
+		}
 	}
 	if listedRoot == nil {
 		return ProbeResult{}
@@ -130,7 +140,10 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 
 	delegateStates := subagentStatesFromDelegates(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
-		if delegateStates[id] == appwire.ThreadStatusIdle {
+		// A finished delegate whose notification turn waits out a usage limit
+		// is working although its lifecycle reads idle: its quota summary
+		// says so, and its row keeps its own active status.
+		if delegateStates[id] == appwire.ThreadStatusIdle && childQuotaWaits[id] == nil {
 			if runningSubagentStates == nil {
 				runningSubagentStates = make(map[string]string)
 			}
@@ -148,6 +161,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	result.RunningSubagentIDs = runningSubagentIDs
 	result.RunningSubagentStates = runningSubagentStates
 	result.ChildWatches = childWatches
+	result.ChildQuotaWaits = childQuotaWaits
 	result.Lifecycle = lifecycle
 	result.LifecycleFresh = lifecycleFresh
 	result.OK = true

@@ -7,7 +7,7 @@
 // over NavigationStoreState - no store handle, no host API - so an app
 // passes whichever instance's state it holds, and a selector that memoizes
 // for one host's render loop stays in that host.
-import { durationParts } from "../../displayFormat";
+import { compactDuration, durationParts, parseTimestampMs } from "../../displayFormat";
 import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "../../types.gen";
 import type { NavigationStoreState } from "./store";
 import {
@@ -274,6 +274,24 @@ export function selectSessionSummary(ref: string, state: NavigationStoreState): 
   return walk(rows);
 }
 export const findSessionNode = selectSessionSummary;
+
+/** How long until a session whose model call waits out a provider usage
+ * limit resumes by itself, or null when it is not waiting: its failure names
+ * no resume time, or that time has passed. The waiting session is working, so
+ * the summary rides a working row. A passed time is not shown because the
+ * call resumes then, and the row may refresh a little after it. */
+export function quotaWaitRemainingMs(session: NavigationSessionSummary, nowMs: number): number | null {
+  const resumesAt = parseTimestampMs(session.failure?.resumes_at);
+  if (resumesAt === undefined || resumesAt <= nowMs) return null;
+  return resumesAt - nowMs;
+}
+
+/** The status words of a session waiting out a usage limit, for every list
+ * that shows one: the wait is a failure the session recovers from by
+ * itself, so the words say when instead of what went wrong. */
+export function waitingForQuotaText(remainingMs: number): string {
+  return `Waiting for quota · resumes in ${compactDuration(remainingMs)}`;
+}
 
 /** The subagent counts a row's tally chip shows, or null when there is
  * nothing to show. Only a live root carries a tally (past and archived roots

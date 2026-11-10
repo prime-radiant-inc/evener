@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import type { NavigationManifest, NavigationSessionSummary } from "../../types.gen";
 import { normalizedGraphFromSnapshot } from "./codec";
 import {
+  quotaWaitRemainingMs,
   selectDisplaySources,
   selectSectionCanDemand,
   selectSectionRemaining,
@@ -193,6 +194,31 @@ test("subagentTallyToShow shows a live root's running and failed counts and hide
   expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 0, done: 4 } }))).toBeNull();
   expect(subagentTallyToShow(row({}))).toBeNull();
   expect(subagentTallyToShow(row({ live: false, subagents: { running: 3, failed: 0, done: 0 } }))).toBeNull();
+});
+
+// A row whose model call waits out a usage limit says how long until it
+// resumes, only while that time is still ahead: the call resumes then, and the
+// row may refresh a little after it.
+test("quotaWaitRemainingMs counts down to a waiting row's resume time and stops there", () => {
+  const now = Date.parse("2026-11-07T12:00:00Z");
+  const row = (failure: NavigationSessionSummary["failure"]): NavigationSessionSummary => ({
+    ref: "local:s",
+    host_id: "local",
+    session_id: "s",
+    title: "t",
+    project: "p",
+    state: "active",
+    kind: "session",
+    live: true,
+    children: [],
+    failure,
+  });
+  const quota = { title: "Usage limit reached", cause_kind: "provider", status: 429 };
+  expect(quotaWaitRemainingMs(row({ ...quota, resumes_at: "2026-11-07T14:30:00Z" }), now)).toBe(150 * 60_000);
+  expect(quotaWaitRemainingMs(row({ ...quota, resumes_at: "2026-11-07T12:00:00Z" }), now)).toBeNull();
+  expect(quotaWaitRemainingMs(row({ ...quota, resumes_at: "2026-11-07T11:00:00Z" }), now)).toBeNull();
+  expect(quotaWaitRemainingMs(row(quota), now)).toBeNull();
+  expect(quotaWaitRemainingMs(row(undefined), now)).toBeNull();
 });
 
 // selectSectionCanDemand is the one rule every navigation surface asks before

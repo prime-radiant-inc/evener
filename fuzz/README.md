@@ -280,8 +280,8 @@ handling; their recording is independent of these fuzz-recorder switches.
 ## Secret scanning (gitleaks)
 
 ```sh
-make secret-scan        # gitleaks over the whole repo (part of `make lint`)
-make fuzz-corpus-scan   # gitleaks over only the fuzz seed corpora
+make secret-scan        # gitleaks over the whole repo (part of `make lint`),
+                        # the fuzz seed corpora included
 ```
 
 Both use the committed `.gitleaks.toml`; the harvester's write-time barrier

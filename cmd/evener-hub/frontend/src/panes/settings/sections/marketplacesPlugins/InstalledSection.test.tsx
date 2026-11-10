@@ -1,4 +1,5 @@
-import type { PluginEntry } from "@evener/appwire-client";
+import type { PluginComponents, PluginEntry } from "@evener/appwire-client";
+import { type PluginComponentsEntry, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -151,4 +152,25 @@ test("marks a plugin the hub found an update for", () => {
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(chipKinds()).toEqual(["update-available"]);
+});
+
+test("a loaded cache entry shows the plugin's component counts in its row meta", () => {
+  connectReadyFakeClient();
+  const components: PluginComponents = {
+    skills: ["lint"],
+    agents: ["reviewer", "planner"],
+    mcpServers: ["github"],
+  };
+  const entry: PluginComponentsEntry = { status: "loaded", components };
+  extensionsStore.setState({
+    plugins: [LINTER],
+    pluginComponents: new Map([
+      [pluginComponentsKey({ plugin: LINTER.plugin, marketplace: LINTER.marketplace }), entry],
+    ]),
+  });
+  render(<InstalledSection onSelect={() => {}} />);
+  const row = screen.getByRole("button", { name: /linter/ });
+  expect(row.getAttribute("data-kind")).toBe("plugin-row");
+  expect(row.getAttribute("data-mode")).toBe("installed");
+  expect(row.querySelector('[data-kind="plugin-counts"]')?.textContent?.match(/\d+/g)).toEqual(["1", "2", "1"]);
 });
