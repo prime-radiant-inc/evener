@@ -3,13 +3,14 @@
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
 import { BrowseSection } from "./BrowseSection";
+import { focusCatalogRow } from "./catalogRowFocus";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
@@ -54,6 +55,9 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<PluginDetailTarget | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  // The row whose sheet just closed, for the effect below to rehome focus.
+  const closedSheetRow = useRef<PluginDetailTarget | null>(null);
   // The registry removal can finish after its sheet closes. Keep its
   // no-repeat marker at the page lifecycle, and tie
   // it to the host that owns the catalog AND the client that owns the
@@ -87,6 +91,22 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
       return next.size === current.names.size ? current : { host: current.host, client: current.client, names: next };
     });
   }, [appliedRemovalGuard.client, appliedRemovalGuard.host, connectionClient, host, marketplacesPublicationVersion]);
+
+  // A plugin sheet that closes over a completed action leaves its browse row
+  // reshaped - an install completes into the whole-row button, a remove back
+  // into the split row - and that remount unmounts the opener FocusScope
+  // remembered, so the sheet's own focus restore no-ops and focus falls to
+  // <body>. The row's <li> keeps its identity across the reshape, so focus
+  // can return to the row's main target; a restore that worked (a plain
+  // dismiss, an opener that still exists) is left alone.
+  useEffect(() => {
+    if (selectedPlugin !== null) return;
+    const target = closedSheetRow.current;
+    if (target === null) return;
+    closedSheetRow.current = null;
+    if (document.activeElement !== document.body) return;
+    focusCatalogRow(sectionRef.current ?? document, target);
+  }, [selectedPlugin]);
 
   function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
@@ -143,7 +163,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const marketplaceCount = marketplaces?.length ?? 0;
 
   return (
-    <section className={CLASS.page}>
+    <section ref={sectionRef} className={CLASS.page}>
       <SegmentedControl
         label="View"
         value={activeSegment}
@@ -211,7 +231,15 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
             onOpen={handleSelectCatalog}
           />
         ))}
-      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
+      <PluginDetailSheet
+        target={selectedPlugin}
+        onClose={() => {
+          // Remember which row's sheet closed so the effect above can rehome
+          // focus when the closing action replaced that row.
+          closedSheetRow.current = selectedPlugin;
+          setSelectedPlugin(null);
+        }}
+      />
       {marketplaces !== null && (
         <MarketplaceSheet
           name={selectedMarketplace}
