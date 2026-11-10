@@ -174,7 +174,7 @@ func TestWithBusyReasonTypesOnlyUntypedBusy(t *testing.T) {
 		t.Fatalf("typed busy reason = %q, want it kept", busy.reason)
 	}
 	other := errors.New("boom")
-	if got := withBusyReason(other); got != other {
+	if got := withBusyReason(other); !errors.Is(got, other) {
 		t.Fatalf("non-busy error = %v, want it unchanged", got)
 	}
 }

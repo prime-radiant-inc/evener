@@ -4,7 +4,11 @@
 // name a surface actually exposes.
 package wirenames
 
-import "primeradiant.com/evener/llm/registry"
+import (
+	"maps"
+
+	"primeradiant.com/evener/llm/registry"
+)
 
 var (
 	openAI = map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
@@ -37,8 +41,6 @@ func NamesOf(canonical string) []string {
 
 func cloneMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
