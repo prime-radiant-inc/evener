@@ -688,7 +688,7 @@ func rejectUntrustedExternalGitPointer(layout sandbox.GitLayout, retained *sandb
 		return fmt.Errorf("%w: external target .git pointer is outside the retained repository metadata", errUntrustedWorktreeProject)
 	}
 	current := common
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		current = filepath.Join(current, component)
 		entry, err := os.Lstat(current)
 		if err != nil || entry.Mode()&os.ModeSymlink != 0 {
