@@ -3,8 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { chipKinds } from "../settings/sections/marketplacesPlugins/marketplacesTestUtils";
-import { CatalogPluginRow, InstalledPluginRow } from "./PluginRow";
-import { countsSummary } from "./pluginCounts";
+import { CatalogPluginRow, InstalledPluginRow, LauncherPluginRow } from "./PluginRow";
 
 const INSTALLED: PluginEntry = {
   plugin: "superpowers",
@@ -21,7 +20,10 @@ const INSTALLED: PluginEntry = {
 const COMPONENTS: PluginComponents = {
   skills: ["brainstorm", "debug", "plan"],
   commands: ["commit"],
-  hooks: [{ event: "PreToolUse", count: 2 }],
+  hooks: [
+    { event: "PreToolUse", count: 3 },
+    { event: "PostToolUse", count: 2 },
+  ],
   mcpServers: ["github", "sentry"],
 };
 
@@ -31,24 +33,11 @@ const CATALOG: MarketplaceCatalogPlugin = {
   category: "productivity",
 };
 
-/** The counts segment a row must show for these components: countsSummary's
- * output for the fixture's own per-kind totals, computed here so the
- * assertion can never drift from the fixture. */
-function countsOf(components: PluginComponents): string {
-  return countsSummary(
-    components.skills?.length ?? 0,
-    components.agents?.length ?? 0,
-    components.commands?.length ?? 0,
-    components.hooks?.length ?? 0,
-    components.mcpServers?.length ?? 0,
-  );
-}
-
 test("an installed row with a broken entry shows the failed dot and its status chips", () => {
   render(
     <InstalledPluginRow entry={{ ...INSTALLED, broken: true, enabled: false, autoUpgrade: true }} onOpen={() => {}} />,
   );
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expect(document.querySelector('[role="img"][data-state="failed"]')).toBeTruthy();
   expect(chipKinds()).toEqual(["broken", "disabled", "auto-upgrade"]);
 });
 
@@ -63,7 +52,12 @@ test("a loaded components cache appends the plugin's counts to its identity meta
   const meta = screen.getByRole("button", { name: /superpowers/ }).textContent ?? "";
   expect(meta).toContain(`@ ${INSTALLED.marketplace}`);
   expect(meta).toContain(`v${INSTALLED.version}`);
-  expect(meta).toContain(` · ${countsOf(COMPONENTS)}`);
+  expect(document.querySelector('[data-kind="plugin-counts"]')?.textContent?.match(/\d+/g)).toEqual([
+    "3",
+    "1",
+    "5",
+    "2",
+  ]);
 });
 
 test("an absent, loading, or error cache entry keeps today's identity-only meta", () => {
@@ -76,7 +70,7 @@ test("an absent, loading, or error cache entry keeps today's identity-only meta"
   rerender(
     <InstalledPluginRow
       entry={INSTALLED}
-      components={{ status: "error", error: "directory unreadable" }}
+      components={{ status: "error", source: "request", error: "directory unreadable" }}
       onOpen={() => {}}
     />,
   );
@@ -106,6 +100,7 @@ test("a catalog row that is not installed carries Install in its trailing slot b
   // The meta line is the catalog description with its category.
   expect(main.textContent).toContain(CATALOG.description ?? "");
   expect(main.textContent).toContain(CATALOG.category ?? "");
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
 });
 
 test("Install installs without opening; the main area opens; both are keyboard targets", async () => {
@@ -152,4 +147,54 @@ test("the Install control carries installDisabled", () => {
     <CatalogPluginRow plugin={CATALOG} installed={false} installDisabled onOpen={() => {}} onInstall={() => {}} />,
   );
   expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a category without a description has no leading metadata separator", () => {
+  render(
+    <CatalogPluginRow
+      plugin={{ name: CATALOG.name, category: CATALOG.category }}
+      installed={false}
+      installDisabled={false}
+      onOpen={() => {}}
+      onInstall={() => {}}
+    />,
+  );
+  expect(document.querySelector('[data-kind="plugin-meta"]')?.textContent).toBe(CATALOG.category);
+});
+
+test("launcher mode preserves Switch selection and separate Details with registered-hook totals", async () => {
+  const user = userEvent.setup();
+  const onToggleSelected = vi.fn();
+  const onOpen = vi.fn();
+  render(
+    <LauncherPluginRow
+      candidate={{
+        name: "launch-fixture",
+        source: "directory",
+        path: "/fixture",
+        selected: false,
+        skillCount: 3,
+        agentCount: 0,
+        commandCount: 1,
+        hookCount: 5,
+        mcpCount: 2,
+      }}
+      selected={false}
+      removeOnly={false}
+      onToggleSelected={onToggleSelected}
+      onOpen={onOpen}
+    />,
+  );
+  expect(document.querySelector('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("launcher");
+  expect(document.querySelector('[data-kind="plugin-counts"]')?.textContent?.match(/\d+/g)).toEqual([
+    "3",
+    "1",
+    "5",
+    "2",
+  ]);
+  await user.click(screen.getByRole("button", { name: "Details" }));
+  expect(onOpen).toHaveBeenCalledOnce();
+  expect(onToggleSelected).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("switch", { name: "launch-fixture" }));
+  expect(onToggleSelected).toHaveBeenCalledWith(true);
 });

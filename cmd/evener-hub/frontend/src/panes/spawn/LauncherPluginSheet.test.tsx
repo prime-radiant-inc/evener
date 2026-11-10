@@ -8,7 +8,11 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { useIsMobile } from "../../shell/useIsMobile";
+import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import { LauncherPluginSheet } from "./LauncherPluginSheet";
+
+vi.mock("../../shell/useIsMobile", () => ({ useIsMobile: vi.fn(() => false) }));
 
 // A directory-source candidate: no marketplace, so the preview resolved it
 // by path - the same path the sheet's read must target.
@@ -26,7 +30,7 @@ const DIRECTORY_CANDIDATE: PluginLaunchCandidate = {
   mcpCount: 1,
 };
 
-const COMPONENTS: PluginComponents = { skills: ["run"] };
+const COMPONENTS: PluginComponents = { skills: ["run"], warnings: ["launcher-warning-sentinel"] };
 
 function componentsClient(): FakeClient {
   const fake = new FakeClient();
@@ -62,6 +66,7 @@ async function settleRead(): Promise<void> {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.mocked(useIsMobile).mockReturnValue(false);
 });
 
 test("a closed sheet renders no dialog", () => {
@@ -82,13 +87,16 @@ test("a directory-source candidate reads by its path and renders the answer as C
   await settleRead();
   // The one-target batch named the candidate by path alone.
   expect(fake.calls).toEqual([{ method: "evener/plugin/components", params: { targets: [{ path: "/tmp/beta" }] } }]);
-  expect(within(sheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   expect(sheet.querySelector('[data-kind="skills"]')).toBeTruthy();
+  expect(within(sheet).getByRole("alert").getAttribute("data-reason")).toBe("load-warnings");
+  expect(within(sheet).getByRole("alert").textContent).toContain(COMPONENTS.warnings?.[0]);
   expect(sheet.querySelector('[data-reason="manifest-only"]')).toBeNull();
   // Metadata: Version when the candidate carries one, no Marketplace row for
   // a directory source, and the candidate's source kind.
   expect(within(sheet).getByText("v0.9.0")).toBeTruthy();
-  expect(within(sheet).queryByText("Marketplace")).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-marketplace"]')).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("launcher");
   expect(within(sheet).getByText("directory")).toBeTruthy();
   // Launcher mode has no editor: one selection switch, no footer actions.
   const included = within(sheet).getByRole("switch", { name: "Included in this session" });
@@ -97,6 +105,14 @@ test("a directory-source candidate reads by its path and renders the answer as C
   expect(onToggleSelected).toHaveBeenCalledWith(true);
   expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
   expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
+});
+
+test("launcher details use bottom sheet geometry on mobile", () => {
+  vi.mocked(useIsMobile).mockReturnValue(true);
+  renderSheet();
+  const sheet = screen.getByRole("dialog", { name: DIRECTORY_CANDIDATE.name });
+  expect(sheet.classList.contains(sheetStyles.bottom ?? "missing-bottom-class")).toBe(true);
+  expect(sheet.classList.contains(sheetStyles.right ?? "missing-right-class")).toBe(false);
 });
 
 test("an erroring read degrades with the quiet notice where Contents would be, and retry re-reads", async () => {
@@ -114,7 +130,7 @@ test("an erroring read degrades with the quiet notice where Contents would be, a
   const notice = within(sheet).getByRole("status");
   expect(notice.getAttribute("data-reason")).toBe("components-degraded");
   expect(within(sheet).queryByRole("alert")).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
   expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
 
   // The hub learns the method: the retry's fresh read now answers.
@@ -122,7 +138,7 @@ test("an erroring read degrades with the quiet notice where Contents would be, a
   await user.click(within(sheet).getByRole("button", { name: "Retry" }));
   await settleRead();
   expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
-  expect(within(sheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   expect(within(sheet).queryByRole("status")).toBeNull();
 });
 
@@ -130,7 +146,7 @@ test("a plugin whose own load fails shows the failure where Contents would be, n
   vi.useFakeTimers();
   const fake = new FakeClient();
   fake.on("evener/plugin/components", () => ({
-    results: [{ path: "/tmp/beta", error: "beta: manifest is not valid" }],
+    results: [{ path: "/tmp/beta", error: "target-load-error-sentinel" }],
   }));
   renderSheet({ client: fake });
   const sheet = screen.getByRole("dialog", { name: "beta" });
@@ -141,6 +157,6 @@ test("a plugin whose own load fails shows the failure where Contents would be, n
   expect(failure.getAttribute("data-reason")).toBe("plugin-broken");
   expect(within(sheet).queryByRole("status")).toBeNull();
   expect(within(sheet).queryByRole("button", { name: "Retry" })).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
   expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
 });

@@ -14,13 +14,13 @@
 // illustrative - that read does not exist yet (open question 2).
 
 import { type ReactElement, type ReactNode, useState } from "react";
+import { CatalogPluginRow as SharedCatalogPluginRow } from "../panes/plugins/PluginRow";
 import mpStyles from "../panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css";
 import psStyles from "../panes/spawn/pluginSelection.module.css";
 import {
   Badge,
   Button,
   Card,
-  Chevron,
   Chip,
   Disclosure,
   EmptyState,
@@ -436,33 +436,15 @@ function InstalledPluginRow({ plugin }: { plugin: MockPlugin }) {
   );
 }
 
-// Decision 1 ("both"): a browse row that is a drill-in target AND carries a
-// trailing Install control. Today's ListRow cannot do this (its interactive
-// variant is one whole-row button; a nested button is invalid), so the row
-// ListRow will grow is a container whose main area is the tap target and
-// whose trailing slot holds the control - composed here with the same
-// tokens so the spec has the visual.
 function CatalogPluginRow({ plugin }: { plugin: MockPlugin }) {
   return (
-    <div className={styles.composedRow}>
-      <button type="button" className={styles.composedMain} onClick={() => {}}>
-        <span className={styles.composedLabel}>
-          {plugin.name}
-          {plugin.installed && <Chip kind="installed">Installed</Chip>}
-        </span>
-        <span className={mpStyles.rowMeta}>
-          {plugin.category ? `${plugin.description} · ${plugin.category}` : plugin.description}
-        </span>
-      </button>
-      <span className={styles.composedTrailing}>
-        {!plugin.installed && (
-          <Button size="sm" onClick={() => {}}>
-            Install
-          </Button>
-        )}
-        <Chevron direction="right" />
-      </span>
-    </div>
+    <SharedCatalogPluginRow
+      plugin={plugin}
+      installed={plugin.installed}
+      installDisabled={false}
+      onOpen={() => {}}
+      onInstall={() => {}}
+    />
   );
 }
 
@@ -873,9 +855,9 @@ function SharedRowSection() {
       <p className={styles.sectionNote}>
         Installed and to-install render from one row composition. Installed rows carry the status dot, status chips, and
         counts in meta (decision 3). Browse rows carry the description and an inline Install button, and still open the
-        detail sheet (decision 1: both) - which today&apos;s ListRow cannot express, so the browse row below is composed
-        from tokens; ListRow grows that trailing-control shape in the implementation. Upgrade, Remove, Enabled and
-        Auto-upgrade live in the sheet. The filter and the segments work on this page.
+        detail sheet (decision 1: both). Browse rows use the shipped shared plugin row and ListRow trailing-control
+        composition. Upgrade, Remove, Enabled and Auto-upgrade live in the sheet. The filter and the segments work on
+        this page.
       </p>
       <SettingsDemo />
     </section>

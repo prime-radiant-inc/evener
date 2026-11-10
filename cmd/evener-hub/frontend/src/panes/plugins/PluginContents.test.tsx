@@ -23,9 +23,9 @@ function namesOf(row: HTMLElement): string {
 test("a kind with more than eight names shows the first eight and expands the rest", async () => {
   const user = userEvent.setup();
   render(<PluginContents components={{ mcpServers: NINE_SERVERS }} />);
-  expect(screen.getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(document.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   // Only the present kind renders a row.
-  expect(document.querySelectorAll("[data-kind]")).toHaveLength(1);
+  expect(document.querySelectorAll('[data-kind="plugin-contents"] > div > [data-kind]')).toHaveLength(1);
 
   const row = rowFor("mcpServers");
   // The badge carries the whole count, not the truncated one.
@@ -44,9 +44,9 @@ test("a kind with more than eight names shows the first eight and expands the re
 test("a manifest-only object reads as the empty case, never as an error or empty-styled list", () => {
   const components: PluginComponents = {};
   render(<PluginContents components={components} />);
-  expect(screen.getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(document.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   expect(document.querySelector('[data-reason="manifest-only"]')).toBeTruthy();
-  expect(document.querySelectorAll("[data-kind]")).toHaveLength(0);
+  expect(document.querySelectorAll('[data-kind="plugin-contents"] > div > [data-kind]')).toHaveLength(0);
 });
 
 test("a hooks list renders one event-with-count name per declared event", () => {
@@ -54,19 +54,30 @@ test("a hooks list renders one event-with-count name per declared event", () => 
     <PluginContents
       components={{
         hooks: [
-          { event: "PreToolUse", count: 2 },
-          { event: "PostToolUse", count: 1 },
+          { event: "PreToolUse", count: 3 },
+          { event: "PostToolUse", count: 2 },
         ],
       }}
     />,
   );
   const row = rowFor("hooks");
-  // The badge counts the declared events; each name carries its hook count.
-  expect(screen.getByText("2")).toBeTruthy();
+  // The badge counts registered hooks, not events.
+  expect(screen.getByText("5")).toBeTruthy();
   const names = namesOf(row);
-  expect(names).toContain("PreToolUse (2)");
-  expect(names).toContain("PostToolUse (1)");
+  expect(names).toContain("PreToolUse (3)");
+  expect(names).toContain("PostToolUse (2)");
 });
+
+test.each([{}, { skills: ["retained-skill"] }])(
+  "load warnings render even with an empty inventory: %j",
+  (inventory) => {
+    const warnings = ["warning-sentinel-1", "warning-sentinel-2"];
+    render(<PluginContents components={{ ...inventory, warnings }} />);
+    const notice = screen.getByRole("alert");
+    for (const warning of warnings) expect(notice.textContent).toContain(warning);
+    expect(document.querySelector('[data-kind="skills"]') !== null).toBe("skills" in inventory);
+  },
+);
 
 test("each present kind renders its own row with its count", () => {
   render(<PluginContents components={{ skills: ["run"], commands: ["fmt", "lint"] }} />);

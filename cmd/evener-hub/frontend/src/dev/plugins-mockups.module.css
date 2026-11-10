@@ -160,52 +160,6 @@
   font-size: var(--font-size-ui);
 }
 
-/* Decision 1 ("both"): the browse row ListRow will grow - a container whose
- * main area is the tap target and whose trailing slot holds the Install
- * control next to the drill-in chevron. Token-composed here because the
- * widget cannot express it yet. */
-.composedRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-}
-
-.composedMain {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-  padding: 0;
-  border: none;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.composedLabel {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-}
-
-.composedTrailing {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--ink-mid);
-}
-
 .plainList {
   display: flex;
   flex-direction: column;

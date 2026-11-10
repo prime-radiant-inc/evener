@@ -217,6 +217,7 @@ test("rows are the shared shape: the plugin name is the row's main button, Insta
   await screen.findByText("linter");
   const main = screen.getByRole("button", { name: /linter/ });
   const install = screen.getByRole("button", { name: "Install" });
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
   // No nested buttons: the shared row's split shape.
   expect(main.closest("button")).toBe(main);
   expect(install.closest("button")).toBe(install);

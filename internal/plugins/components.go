@@ -21,16 +21,18 @@ type InspectTarget struct {
 // a display-level error is the hub handler's job.
 func (m *Manager) Inspect(ctx context.Context, target InspectTarget) (agentplugin.Instance, error) {
 	if target.Path != "" {
-		return agentplugin.Load(target.Path)
+		return pluginLoad(target.Path)
 	}
-	items, err := m.List(ctx)
+	if _, err := m.loadMigratedMarketplaces(ctx, installAcquireLock); err != nil {
+		return agentplugin.Instance{}, err
+	}
+	registry, err := m.loadRegistry()
 	if err != nil {
 		return agentplugin.Instance{}, err
 	}
-	for _, item := range items {
-		if item.Plugin == target.Plugin && item.Marketplace == target.Marketplace {
-			return agentplugin.Load(item.InstallPath)
-		}
+	key := registryKey(target.Plugin, target.Marketplace)
+	if entries := registry.Plugins[key]; len(entries) > 0 {
+		return pluginLoad(entries[0].InstallPath)
 	}
-	return agentplugin.Instance{}, fmt.Errorf("%s: %w", registryKey(target.Plugin, target.Marketplace), ErrNotInstalled)
+	return agentplugin.Instance{}, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 }

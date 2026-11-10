@@ -57,7 +57,7 @@ export function pluginComponentsKey(target: PluginComponentsReadTarget): string 
 export type PluginComponentsEntry =
   | { status: "loading" }
   | { status: "loaded"; components: PluginComponents }
-  | { status: "error"; error: string };
+  | { status: "error"; source: "target" | "request"; error: string };
 
 export interface PluginsState {
   plugins: PluginEntry[] | null;
@@ -223,8 +223,10 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
     const setEntry = (key: string, entry: PluginComponentsEntry): void =>
       set((s) => ({ pluginComponents: new Map(s.pluginComponents).set(key, entry) }));
 
-    const entryFor = (result: PluginComponentsResult): PluginComponentsEntry => {
-      if (result.error) return { status: "error", error: result.error };
+    const entryFor = (row: PluginComponentsResult | undefined): PluginComponentsEntry => {
+      const result = pluginComponentsResultOrMissing(row);
+      if (!row) return { status: "error", source: "request", error: result.error ?? "" };
+      if (result.error) return { status: "error", source: "target", error: result.error };
       return { status: "loaded", components: result.components ?? {} };
     };
 
@@ -272,10 +274,10 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         const entry = issued.get(key);
         if (!entry || !components.current(key, entry.revision)) return;
         if (failed) {
-          setEntry(key, { status: "error", error: friendlyErrorMessage(failure) });
+          setEntry(key, { status: "error", source: "request", error: friendlyErrorMessage(failure) });
           return;
         }
-        setEntry(key, entryFor(pluginComponentsResultOrMissing(rows?.[index])));
+        setEntry(key, entryFor(rows?.[index]));
       });
       for (const { key } of missing) {
         const entry = issued.get(key);
@@ -292,9 +294,11 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
     // list owns the error and the loading flag with it - a read this one
     // outran publishes none of the three, the flag it raised included.
     const mutate = async (request: () => Promise<PluginListResponse>): Promise<void> => {
-      const ran = await gate.run(() => {
+      const ran = await gate.run(async () => {
         const issuedIn = lifecycle.epoch();
-        return writeRevisioned(listRevision, request, (resp) => {
+        let retired = false;
+        let published = false;
+        await writeRevisioned(listRevision, request, (resp) => {
           // A reset or a dispose ended the generation this write was issued in:
           // its answer is about a store that has forgotten everything it read.
           if (issuedIn !== lifecycle.epoch()) return null;
@@ -305,8 +309,20 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
           set((s) => ({
             pluginComponents: retirePluginComponents(s.pluginComponents, [...s.pluginComponents.keys()]),
           }));
-          return () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+          retired = true;
+          return () => {
+            published = true;
+            set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+          };
         });
+        // A newer list may already have refilled before this answer retired
+        // inventories. Its list remains authoritative, and no notification is
+        // left to refill it, so the superseded write must do that work itself.
+        if (retired && !published && issuedIn === lifecycle.epoch()) {
+          await get().fetchPluginComponents(
+            (get().plugins ?? []).map(({ plugin, marketplace }) => ({ plugin, marketplace })),
+          );
+        }
       });
       if (!ran) throw new HubWriteBusyError();
     };

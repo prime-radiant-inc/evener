@@ -1,8 +1,10 @@
-// The one counts vocabulary every plugin surface speaks - the launcher's own
-// pluralized form, moved here from PluginSelectionPanel's componentCounts so
-// the installed list's row meta and the launcher's switch rows can never
-// drift apart. An all-zero inventory reads "No components"; callers render
-// the string as-is.
+// All plugin surfaces share the same per-kind counts vocabulary.
+
+import type { PluginComponents } from "@evener/appwire-client";
+
+export function hookTotal(components: PluginComponents): number {
+  return (components.hooks ?? []).reduce((total, hook) => total + hook.count, 0);
+}
 
 export function countsSummary(
   skills: number,

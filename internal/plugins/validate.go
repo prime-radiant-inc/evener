@@ -9,13 +9,15 @@ import (
 	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
+var pluginLoad = agentplugin.Load
+
 // validatePluginDir returns nil iff the plugin at dir loads cleanly — manifest
 // plus every component (agents, commands, hooks, mcp, skills) parses. It reuses
 // the exact loader the session uses, so "installs" and "loads" agree. A session
 // runs a plugin around a component file it skips, but installing or upgrading
 // to a revision with one is refused, which keeps the working revision in place.
 func validatePluginDir(dir string) error {
-	instance, err := agentplugin.Load(dir)
+	instance, err := pluginLoad(dir)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,4 +96,43 @@ func TestInspect(t *testing.T) {
 			t.Errorf("instance = %+v, want the empty Instance alongside the error", instance)
 		}
 	})
+}
+
+func TestInspectBatchLoadsOnlyFreshTargets(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "store"))
+	registry := map[string][]InstallEntry{}
+	for i := range 3 {
+		registry[fmt.Sprintf("plugin%d@m", i)] = []InstallEntry{{InstallPath: pluginFixture(t, "full")}}
+	}
+	saveTestRegistry(t, m, registry)
+	original := pluginLoad
+	loads := map[string]int{}
+	pluginLoad = func(dir string) (agentplugin.Instance, error) {
+		loads[dir]++
+		return original(dir)
+	}
+	t.Cleanup(func() { pluginLoad = original })
+	for i := range 3 {
+		name := fmt.Sprintf("plugin%d", i)
+		dir := registry[name+"@m"][0].InstallPath
+		// Disk changes after registration must be seen by the fresh target read.
+		if err := os.Remove(filepath.Join(dir, "commands", "build.md")); err != nil {
+			t.Fatal(err)
+		}
+		instance, err := m.Inspect(context.Background(), InspectTarget{Plugin: name, Marketplace: "m"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(instance.Commands) != 0 {
+			t.Fatalf("stale target commands: %v", instance.Commands)
+		}
+	}
+	for dir, count := range loads {
+		if count != 1 {
+			t.Errorf("loads for %s = %d, want 1", dir, count)
+		}
+	}
+	if len(loads) != 3 {
+		t.Fatalf("loaded %d target directories, want 3", len(loads))
+	}
 }

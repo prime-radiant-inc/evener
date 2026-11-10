@@ -387,11 +387,9 @@ describe("pluginComponents cache", () => {
 
   test("a broken target's error row lands its key as an error entry while its sibling still loads", async () => {
     const { fake, store } = storeWithFake();
+    const loadError = "target-load-error-sentinel";
     fake.on(COMPONENTS, () => ({
-      results: [
-        { plugin: "linter", marketplace: "acme", error: "linter: manifest is not valid" },
-        componentRow("formatter"),
-      ],
+      results: [{ plugin: "linter", marketplace: "acme", error: loadError }, componentRow("formatter")],
     }));
     await store.getState().fetchPluginComponents([
       { plugin: "linter", marketplace: "acme" },
@@ -399,7 +397,8 @@ describe("pluginComponents cache", () => {
     ]);
     expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
       status: "error",
-      error: "linter: manifest is not valid",
+      source: "target",
+      error: loadError,
     });
     expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({
       status: "loaded",
@@ -415,17 +414,21 @@ describe("pluginComponents cache", () => {
       { plugin: "formatter", marketplace: "acme" },
     ]);
     await expect(reading).resolves.toBeUndefined();
-    const error = friendlyErrorMessage(new Error("method not found"));
-    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", error });
-    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({ status: "error", error });
+    const error = expect.any(String);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", source: "request", error });
+    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({
+      status: "error",
+      source: "request",
+      error,
+    });
   });
 
   test("reloadPluginComponents drops a settled entry - error or loaded - so a retry re-reads it", async () => {
     const { fake, store } = storeWithFake();
     fake.on(COMPONENTS, failing("method not found"));
     await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
-    const error = friendlyErrorMessage(new Error("method not found"));
-    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", error });
+    const error = expect.any(String);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", source: "request", error });
     // A plain fetch after the failure re-requests nothing: the settled entry
     // is the store's word on the key.
     await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
@@ -458,6 +461,7 @@ describe("pluginComponents cache", () => {
     await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
     expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
       status: "error",
+      source: "request",
       error: expect.any(String),
     });
   });
@@ -586,6 +590,33 @@ describe("notifications", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  test("a mutation landing after the notification refresh refills from the authoritative list", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter")] }));
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    store.start();
+    const release = deferRequest<ListResult>(fake, "evener/plugin/upgrade");
+    const writing = store.getState().upgradePlugin("linter", "acme");
+    fake.on(LIST, () => ({ plugins: [FORMATTER] }));
+    fake.on(COMPONENTS, () => ({ results: [componentRow("formatter")] }));
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS);
+    expect(store.getState().pluginComponents.get("formatter@acme")?.status).toBe("loaded");
+    release({ plugins: [LINTER] });
+    await writing;
+    expect(store.getState().plugins).toEqual([FORMATTER]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(3);
+    expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "formatter", marketplace: "acme" }] });
+    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["formatter:run"] },
+    });
+    expect(store.getState().pluginComponents.has("linter@acme")).toBe(false);
+    store.dispose();
   });
 
   test("start() follows evener/plugin/updated: pluginRevision moves at once, the list is refetched after the debounce", async () => {

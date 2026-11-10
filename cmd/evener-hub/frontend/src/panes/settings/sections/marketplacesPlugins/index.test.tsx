@@ -1023,7 +1023,7 @@ test("a catalog row's main area opens the detail sheet in catalog mode, with no 
   // and no Contents block (spec decision 2).
   expect(within(sheet).getByText("Fixture formatter")).toBeTruthy();
   expect(within(sheet).queryByRole("switch")).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
   expect(within(sheet).getByRole("button", { name: "Install" })).toBeTruthy();
   expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
   // Opening the catalog sheet reads no components: no new call, and no
@@ -1067,5 +1067,5 @@ test("an already-installed catalog row opens the sheet in installed mode", async
   expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
   expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
   expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
-  expect(await within(sheet).findByRole("heading", { name: "Contents" })).toBeTruthy();
+  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
 });

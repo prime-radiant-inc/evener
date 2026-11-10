@@ -1,15 +1,31 @@
 // The one plugin row family: the installed list, the catalog list, and the
-// launcher all render from these two ListRow compositions, so a plugin row's
+// launcher all render from these contextual compositions, so a plugin row's
 // shape changes in one place. The rows are pure compositions - the caller
 // owns the data (the components cache entry arrives as a prop) and the
 // actions; a row never fetches.
 
-import type { MarketplaceCatalogPlugin, PluginComponents, PluginEntry } from "@evener/appwire-client";
+import type {
+  MarketplaceCatalogPlugin,
+  PluginComponents,
+  PluginEntry,
+  PluginLaunchCandidate,
+} from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import type { ReactElement } from "react";
-import { Button, type CadenceState, Chip, ListRow, StatusDot } from "../../widgets";
-import { countsSummary } from "./pluginCounts";
+import { Button, type CadenceState, Chip, ListRow, StatusDot, Switch } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
+import { countsSummary, hookTotal } from "./pluginCounts";
+import styles from "./pluginRow.module.css";
 import { pluginStatusChips } from "./pluginStatusChips";
+
+const CLASS = {
+  row: requireClass(styles.row, "pluginRow.module.css", "row"),
+  metadata: requireClass(styles.metadata, "pluginRow.module.css", "metadata"),
+  source: requireClass(styles.source, "pluginRow.module.css", "source"),
+  counts: requireClass(styles.counts, "pluginRow.module.css", "counts"),
+  description: requireClass(styles.description, "pluginRow.module.css", "description"),
+  details: requireClass(styles.details, "pluginRow.module.css", "details"),
+};
 
 // StatusDot's CadenceState has no "warning" state, so broken maps onto
 // "failed" (the only failure-family state) rather than inventing a state the
@@ -27,7 +43,7 @@ function componentsCounts(components: PluginComponents): string {
     components.skills?.length ?? 0,
     components.agents?.length ?? 0,
     components.commands?.length ?? 0,
-    components.hooks?.length ?? 0,
+    hookTotal(components),
     components.mcpServers?.length ?? 0,
   );
 }
@@ -45,13 +61,25 @@ export function InstalledPluginRow({
   // Only a loaded cache entry widens the meta: absent, loading and error
   // entries keep the identity-only line - the list-triggered batch fills the
   // cache in, and the row does not fetch.
-  const counts = components?.status === "loaded" ? ` · ${componentsCounts(components.components)}` : "";
+  const counts = components?.status === "loaded" ? componentsCounts(components.components) : undefined;
   return (
     <ListRow
+      data-kind="plugin-row"
+      data-mode="installed"
       leading={<StatusDot state={pluginStatus(entry)} />}
       label={entry.plugin}
       chips={chips.length > 0 ? chips : undefined}
-      meta={`@ ${entry.marketplace} · v${entry.version || "unknown"}${counts}`}
+      meta={
+        <>
+          {`@ ${entry.marketplace} · v${entry.version || "unknown"}`}
+          {counts !== undefined && (
+            <>
+              {" "}
+              · <span data-kind="plugin-counts">{counts}</span>
+            </>
+          )}
+        </>
+      }
       onSelect={onOpen}
     />
   );
@@ -72,9 +100,11 @@ export function CatalogPluginRow({
 }): ReactElement {
   return (
     <ListRow
+      data-kind="plugin-row"
+      data-mode="catalog"
       label={plugin.name}
       chips={installed ? <Chip kind="installed">Installed</Chip> : undefined}
-      meta={`${plugin.description ?? ""}${plugin.category ? ` · ${plugin.category}` : ""}`}
+      meta={<span data-kind="plugin-meta">{[plugin.description, plugin.category].filter(Boolean).join(" · ")}</span>}
       onSelect={onOpen}
       // An installed row has no trailing control, so it stays one whole-row
       // button; a not-installed row splits around the Install control.
@@ -86,5 +116,59 @@ export function CatalogPluginRow({
         )
       }
     />
+  );
+}
+
+/** Launcher mode keeps selection on the Switch and inspection on Details. */
+export function LauncherPluginRow({
+  candidate,
+  selected,
+  removeOnly,
+  onToggleSelected,
+  onOpen,
+}: {
+  candidate: PluginLaunchCandidate;
+  selected: boolean;
+  removeOnly: boolean;
+  onToggleSelected: (next: boolean) => void;
+  onOpen: () => void;
+}): ReactElement {
+  const source =
+    candidate.source === "installed" && candidate.marketplace
+      ? `installed from ${candidate.marketplace}`
+      : candidate.path
+        ? `${candidate.source}: ${candidate.path}`
+        : candidate.source;
+  return (
+    <div className={CLASS.row} data-kind="plugin-row" data-mode="launcher">
+      <Switch
+        checked={selected}
+        label={candidate.name}
+        disabled={removeOnly && !selected}
+        onChange={(next) => {
+          if (!removeOnly || !next) onToggleSelected(next);
+        }}
+        description={
+          <span className={CLASS.metadata} data-testid="plugin-row-metadata">
+            <span className={CLASS.source}>{source}</span>
+            <span className={CLASS.counts} data-kind="plugin-counts">
+              {countsSummary(
+                candidate.skillCount,
+                candidate.agentCount,
+                candidate.commandCount,
+                candidate.hookCount,
+                candidate.mcpCount,
+              )}
+            </span>
+            {candidate.description && <span className={CLASS.description}>{candidate.description}</span>}
+            <span className={CLASS.details}>
+              <Button variant="link" size="xs" type="button" onClick={onOpen}>
+                Details
+              </Button>
+            </span>
+          </span>
+        }
+      />
+    </div>
   );
 }

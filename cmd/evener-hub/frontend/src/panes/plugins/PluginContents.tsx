@@ -1,18 +1,13 @@
-// PluginContents: the Contents block a plugin detail sheet renders from a
-// loaded component inventory - an eyebrow, then one grid row per present
-// kind (kind label, count badge, mono names) or the manifest-only reading
-// when every kind is absent. The caller owns the data (the components cache
-// entry arrives as a prop) and the failures (a broken plugin's load error
-// and an unreadable inventory never reach this component - the sheet renders
-// its notices where this block would be); the block never fetches. Hooks
-// carry their count beside their event, so one row reads one event.
+// Loaded inventories retain their healthy components beside load diagnostics.
+// Target and request failures belong to the sheet. This block never fetches.
 
 import type { PluginComponents } from "@evener/appwire-client";
 import type { ReactElement } from "react";
 import { useState } from "react";
-import { Badge, Button, Eyebrow } from "../../widgets";
+import { Badge, Button, Eyebrow, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginContents.module.css";
+import { hookTotal } from "./pluginCounts";
 
 const CLASS = {
   contents: requireClass(styles.contents, "pluginContents.module.css", "contents"),
@@ -38,14 +33,24 @@ const CONTENT_KINDS: readonly { key: string; label: string; names: (components: 
   { key: "mcpServers", label: "MCP servers", names: (c) => c.mcpServers ?? [] },
 ];
 
-function ContentsRow({ kind, label, names }: { kind: string; label: string; names: string[] }): ReactElement {
+function ContentsRow({
+  kind,
+  label,
+  names,
+  count,
+}: {
+  kind: string;
+  label: string;
+  names: string[];
+  count: number;
+}): ReactElement {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? names : names.slice(0, MAX_NAMES);
   const rest = names.length - visible.length;
   return (
     <div className={CLASS.row} data-kind={kind}>
       <span className={CLASS.kindLabel}>{label}</span>
-      <Badge count={names.length} />
+      <Badge count={count} />
       <span className={CLASS.names}>
         {visible.join(", ")}
         {rest > 0 && <Button variant="link" onClick={() => setShowAll(true)}>{` +${rest} more`}</Button>}
@@ -57,8 +62,13 @@ function ContentsRow({ kind, label, names }: { kind: string; label: string; name
 export function PluginContents({ components }: { components: PluginComponents }): ReactElement {
   const present = CONTENT_KINDS.filter((kind) => kind.names(components).length > 0);
   return (
-    <div className={CLASS.contents}>
+    <div className={CLASS.contents} data-kind="plugin-contents">
       <Eyebrow as="h3">Contents</Eyebrow>
+      {(components.warnings?.length ?? 0) > 0 && (
+        <InlineNotice tone="danger" data-reason="load-warnings">
+          {components.warnings?.join(" · ")}
+        </InlineNotice>
+      )}
       {present.length === 0 ? (
         <p className={CLASS.manifestOnly} data-reason="manifest-only">
           Manifest only - no skills, agents, commands, hooks, or MCP servers.
@@ -66,7 +76,13 @@ export function PluginContents({ components }: { components: PluginComponents })
       ) : (
         <div className={CLASS.list}>
           {present.map((kind) => (
-            <ContentsRow key={kind.key} kind={kind.key} label={kind.label} names={kind.names(components)} />
+            <ContentsRow
+              key={kind.key}
+              kind={kind.key}
+              label={kind.label}
+              names={kind.names(components)}
+              count={kind.key === "hooks" ? hookTotal(components) : kind.names(components).length}
+            />
           ))}
         </div>
       )}

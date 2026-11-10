@@ -12,23 +12,17 @@
 
 import type { AppwireClientLike, PluginComponentsReadArgs, PluginLaunchCandidate } from "@evener/appwire-client";
 import type { ReactElement } from "react";
-import { Button, InlineNotice, PropertyList, type PropertyListRow, Sheet, Switch } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
+import { Button, InlineNotice, Switch } from "../../widgets";
 import { PluginContents } from "../plugins/PluginContents";
-import styles from "./pluginSelection.module.css";
+import { type PluginMetadataRow, PluginSheet } from "../plugins/PluginSheet";
 import { usePluginComponents } from "./usePluginComponents";
-
-const CLASS = {
-  sheetDesc: requireClass(styles.sheetDesc, "pluginSelection.module.css", "sheetDesc"),
-  metaList: requireClass(styles.metaList, "pluginSelection.module.css", "metaList"),
-  switchRows: requireClass(styles.switchRows, "pluginSelection.module.css", "switchRows"),
-};
 
 export interface LauncherPluginSheetProps {
   open: boolean;
   onClose: () => void;
   candidate: PluginLaunchCandidate;
   selected: boolean;
+  selectionDisabled?: boolean;
   onToggleSelected: (next: boolean) => void;
   /** The client the components read goes through: the spawn form's own. */
   client: Pick<AppwireClientLike, "request">;
@@ -42,6 +36,7 @@ export function LauncherPluginSheet({
   onClose,
   candidate,
   selected,
+  selectionDisabled = false,
   onToggleSelected,
   client,
   host,
@@ -54,12 +49,16 @@ export function LauncherPluginSheet({
     candidate.marketplace !== undefined
       ? { plugin: candidate.name, marketplace: candidate.marketplace }
       : { path: candidate.path ?? "" };
-  const read = usePluginComponents({ client, host, target });
+  const read = usePluginComponents({ client, host, target }, JSON.stringify(candidate));
 
-  const metaRows: PropertyListRow[] = [
-    ...(candidate.version ? [{ label: "Version", value: `v${candidate.version}`, mono: true }] : []),
-    ...(candidate.marketplace !== undefined ? [{ label: "Marketplace", value: candidate.marketplace }] : []),
-    { label: "Source", value: candidate.source, mono: true },
+  const metaRows: PluginMetadataRow[] = [
+    ...(candidate.version
+      ? [{ kind: "version" as const, label: "Version", value: `v${candidate.version}`, mono: true }]
+      : []),
+    ...(candidate.marketplace !== undefined
+      ? [{ kind: "marketplace" as const, label: "Marketplace", value: candidate.marketplace }]
+      : []),
+    { kind: "source", label: "Source", value: candidate.source, mono: true },
   ];
 
   // Where the Contents block goes, above the metadata. Only a settled read
@@ -93,20 +92,22 @@ export function LauncherPluginSheet({
     ) : null;
 
   return (
-    <Sheet open={open} onClose={onClose} title={candidate.name}>
-      {candidate.description !== undefined && <p className={CLASS.sheetDesc}>{candidate.description}</p>}
-      {contentsBlock}
-      <div className={CLASS.metaList}>
-        <PropertyList rows={metaRows} />
-      </div>
-      <div className={CLASS.switchRows}>
-        <Switch
-          checked={selected}
-          onChange={onToggleSelected}
-          label="Included in this session"
-          description="Turn off to start this session without this plugin. Only this launch's plugin selection changes."
-        />
-      </div>
-    </Sheet>
+    <PluginSheet
+      open={open}
+      onClose={onClose}
+      title={candidate.name}
+      mode="launcher"
+      description={candidate.description}
+      contents={contentsBlock}
+      metadata={metaRows}
+    >
+      <Switch
+        checked={selected}
+        disabled={selectionDisabled}
+        onChange={onToggleSelected}
+        label="Included in this session"
+        description="Turn off to start this session without this plugin. Only this launch's plugin selection changes."
+      />
+    </PluginSheet>
   );
 }

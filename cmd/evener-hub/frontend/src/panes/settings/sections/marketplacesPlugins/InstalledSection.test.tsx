@@ -7,7 +7,6 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { countsSummary } from "../../../plugins/pluginCounts";
 import { InstalledSection } from "./InstalledSection";
 import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
@@ -170,12 +169,8 @@ test("a loaded cache entry shows the plugin's component counts in its row meta",
     ]),
   });
   render(<InstalledSection onSelect={() => {}} />);
-  const expected = ` · ${countsSummary(
-    components.skills?.length ?? 0,
-    components.agents?.length ?? 0,
-    components.commands?.length ?? 0,
-    components.hooks?.length ?? 0,
-    components.mcpServers?.length ?? 0,
-  )}`;
-  expect(screen.getByRole("button", { name: /linter/ }).textContent).toContain(expected);
+  const row = screen.getByRole("button", { name: /linter/ });
+  expect(row.getAttribute("data-kind")).toBe("plugin-row");
+  expect(row.getAttribute("data-mode")).toBe("installed");
+  expect(row.querySelector('[data-kind="plugin-counts"]')?.textContent?.match(/\d+/g)).toEqual(["1", "2", "1"]);
 });

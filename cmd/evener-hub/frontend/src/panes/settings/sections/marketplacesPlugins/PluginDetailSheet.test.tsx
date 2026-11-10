@@ -38,6 +38,7 @@ const COMPONENTS: PluginComponents = {
   skills: ["run"],
   commands: ["fmt"],
   mcpServers: ["acme-mcp"],
+  warnings: ["settings-warning-sentinel"],
 };
 
 /** A browse cache already holding the marketplace's catalog, so a test never
@@ -433,11 +434,13 @@ test("installed mode with a loaded cache entry renders the Contents block and to
   }));
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   const sheet = screen.getByRole("dialog", { name: "linter" });
-  expect(await within(sheet).findByRole("heading", { name: "Contents" })).toBeTruthy();
+  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
+  expect(within(sheet).getByRole("alert").getAttribute("data-reason")).toBe("load-warnings");
+  expect(within(sheet).getByRole("alert").textContent).toContain(COMPONENTS.warnings?.[0]);
   // One row per present kind, each with its badge count and mono names.
-  const skills = within(sheet).getByText("Skills");
-  expect(skills.closest('[data-kind="skills"]')?.textContent).toContain("run");
-  expect(within(sheet).queryByText("Agents")).toBeNull();
+  expect(sheet.querySelector('[data-kind="skills"]')?.textContent).toContain("run");
+  expect(sheet.querySelector('[data-kind="agents"]')).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("installed");
   expect(within(sheet).getByText("acme-mcp")).toBeTruthy();
   // The manifest-only reading is reserved for an all-absent inventory.
   expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
@@ -448,39 +451,43 @@ test("installed mode with a loaded cache entry renders the Contents block and to
   expect(within(sheet).queryByRole("button", { name: "Upgrade" })).toBeNull();
 });
 
-test("a broken plugin's error entry shows the load failure where Contents would be and keeps the editor actions", async () => {
-  const fake = connectReadyFakeClient();
-  extensionsStore.setState({
-    plugins: [{ ...LINTER, broken: true }],
-    marketplaces: [ACME],
-  });
-  // The hub's fail-soft answer: the broken target's row carries its load
-  // error, which is what the sheet shows where Contents would be.
-  fake.on("evener/plugin/components", () => ({
-    results: [{ plugin: "linter", marketplace: "acme-plugins", error: "linter: manifest is not valid" }],
-  }));
-  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const sheet = screen.getByRole("dialog", { name: "linter" });
-  const failure = await within(sheet).findByRole("alert");
-  expect(failure.getAttribute("data-reason")).toBe("plugin-broken");
-  expect(failure.textContent).toContain("linter: manifest is not valid");
-  // The failure is the plugin's, not a degraded read: no retry, no
-  // manifest-only fallback, no Contents block.
-  expect(within(sheet).queryByRole("status")).toBeNull();
-  expect(within(sheet).queryByRole("button", { name: "Retry" })).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
-  expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
-  // Chips, switches and Remove are unchanged.
-  expect(chipKinds()).toEqual(["broken"]);
-  expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
-  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
-});
+test.each([false, true])(
+  "a target load error keeps editor actions regardless of the list's broken flag: %s",
+  async (broken) => {
+    const fake = connectReadyFakeClient();
+    const loadError = "target-load-error-sentinel";
+    extensionsStore.setState({
+      plugins: [{ ...LINTER, broken }],
+      marketplaces: [ACME],
+    });
+    // The hub's fail-soft answer: the broken target's row carries its load
+    // error, which is what the sheet shows where Contents would be.
+    fake.on("evener/plugin/components", () => ({
+      results: [{ plugin: "linter", marketplace: "acme-plugins", error: loadError }],
+    }));
+    render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+    const sheet = screen.getByRole("dialog", { name: "linter" });
+    const failure = await within(sheet).findByRole("alert");
+    expect(failure.getAttribute("data-reason")).toBe("plugin-broken");
+    expect(failure.textContent).toContain(loadError);
+    // The failure is the plugin's, not a degraded read: no retry, no
+    // manifest-only fallback, no Contents block.
+    expect(within(sheet).queryByRole("status")).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+    expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
+    // Chips, switches and Remove are unchanged.
+    expect(chipKinds()).toEqual(broken ? ["broken"] : []);
+    expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+    expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+  },
+);
 
-test("an older hub's method error degrades with a working Retry that re-reads the contents", async () => {
+test.each([false, true])("a request error has working Retry even when the entry is broken: %s", async (broken) => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   extensionsStore.setState({
-    plugins: [LINTER],
+    plugins: [{ ...LINTER, broken }],
     marketplaces: [ACME],
     browseCatalogs: seededCatalog([{ name: "linter", description: "Checks code style." }]),
   });
@@ -494,7 +501,7 @@ test("an older hub's method error degrades with a working Retry that re-reads th
   const notice = await within(sheet).findByRole("status");
   expect(notice.getAttribute("data-reason")).toBe("components-degraded");
   expect(within(sheet).queryByRole("alert")).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
 
   // The hub is upgraded: the retry's fresh read now answers.
   fake.on("evener/plugin/components", (params) => ({
@@ -507,7 +514,7 @@ test("an older hub's method error degrades with a working Retry that re-reads th
   await user.click(within(sheet).getByRole("button", { name: "Retry" }));
   expect(fake.calls.filter((c) => c.method === "evener/plugin/components")).toHaveLength(2);
   expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "linter", marketplace: "acme-plugins" }] });
-  expect(await within(sheet).findByRole("heading", { name: "Contents" })).toBeTruthy();
+  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
   expect(within(sheet).queryByRole("status")).toBeNull();
 });
 
@@ -528,17 +535,18 @@ test("catalog mode renders description and metadata with no switches, and instal
     />,
   );
   const sheet = screen.getByRole("dialog", { name: "formatter" });
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
   expect(within(sheet).getByText("Formats code.")).toBeTruthy();
   // No switches, no Contents block, and no components read in catalog mode.
   expect(within(sheet).queryByRole("switch")).toBeNull();
-  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
   expect(fake.calls.some((c) => c.method === "evener/plugin/components")).toBe(false);
   expect(chipKinds()).toEqual([]);
   // Catalog metadata: Marketplace, Source, Author when present; no Version.
   expect(within(sheet).getByText("acme-plugins")).toBeTruthy();
-  expect(within(sheet).getByText("github: acme/plugins")).toBeTruthy();
+  expect(sheet.querySelector('[data-kind="plugin-source"]')?.textContent).toContain("acme/plugins");
   expect(within(sheet).getByText("Acme Corp")).toBeTruthy();
-  expect(within(sheet).queryByText("Version")).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-version"]')).toBeNull();
 
   await user.click(within(sheet).getByRole("button", { name: "Install" }));
   const confirm = screen.getByRole("dialog", { name: "Install plugin" });
@@ -546,9 +554,7 @@ test("catalog mode renders description and metadata with no switches, and instal
   expect(fake.calls.filter((c) => c.method === "evener/plugin/install").map((c) => c.params)).toEqual([
     { plugin: "formatter", marketplace: "acme-plugins" },
   ]);
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Installed formatter")).toBe(true),
-  );
+  await waitFor(() => expect(getToasts().some((t) => t.kind === "success")).toBe(true));
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
 });

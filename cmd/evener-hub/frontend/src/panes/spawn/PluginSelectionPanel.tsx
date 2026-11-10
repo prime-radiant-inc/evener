@@ -1,6 +1,5 @@
 import {
   type AppwireClientLike,
-  type PluginLaunchCandidate,
   type PluginPreviewResponse,
   type PluginSelectionState,
   pluginSelectionIssues,
@@ -9,10 +8,10 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import { type ReactElement, useState } from "react";
-import { Button, Card, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
+import { type ReactElement, useEffect, useState } from "react";
+import { Button, Card, Disclosure, EmptyState, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { countsSummary } from "../plugins/pluginCounts";
+import { LauncherPluginRow } from "../plugins/PluginRow";
 import { LauncherPluginSheet } from "./LauncherPluginSheet";
 import styles from "./pluginSelection.module.css";
 
@@ -34,22 +33,10 @@ const CLASS = {
   tools: requireClass(styles.tools, "pluginSelection.module.css", "tools"),
   actions: requireClass(styles.actions, "pluginSelection.module.css", "actions"),
   list: requireClass(styles.list, "pluginSelection.module.css", "list"),
-  row: requireClass(styles.row, "pluginSelection.module.css", "row"),
-  metadata: requireClass(styles.metadata, "pluginSelection.module.css", "metadata"),
-  source: requireClass(styles.source, "pluginSelection.module.css", "source"),
-  counts: requireClass(styles.counts, "pluginSelection.module.css", "counts"),
-  description: requireClass(styles.description, "pluginSelection.module.css", "description"),
-  details: requireClass(styles.details, "pluginSelection.module.css", "details"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
   issueList: requireClass(styles.issueList, "pluginSelection.module.css", "issueList"),
 };
-
-function sourceLabel(plugin: PluginLaunchCandidate): string {
-  if (plugin.source === "installed" && plugin.marketplace) return `installed from ${plugin.marketplace}`;
-  if (plugin.path) return `${plugin.source}: ${plugin.path}`;
-  return plugin.source;
-}
 
 export function PluginSelectionPanel({
   preview,
@@ -64,7 +51,11 @@ export function PluginSelectionPanel({
   // The panel owns the one open sheet: a row's Details opens its candidate,
   // and only one candidate is open at a time. The sheet mounts only while it
   // is open, so its read starts when the sheet does.
-  const [sheetCandidate, setSheetCandidate] = useState<PluginLaunchCandidate | null>(null);
+  const [sheetName, setSheetName] = useState<string | null>(null);
+  const sheetCandidate = preview.plugins.find((plugin) => plugin.name === sheetName);
+  useEffect(() => {
+    if (sheetName !== null && sheetCandidate === undefined) setSheetName(null);
+  }, [sheetName, sheetCandidate]);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
@@ -130,48 +121,26 @@ export function PluginSelectionPanel({
           {preview.plugins.map((plugin) => {
             const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
             return (
-              <div className={CLASS.row} key={plugin.name}>
-                <Switch
-                  checked={selected}
-                  label={plugin.name}
-                  disabled={removeOnly && !selected}
-                  onChange={(next) => {
-                    if (!removeOnly || !next)
-                      onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
-                  }}
-                  description={
-                    <span className={CLASS.metadata} data-testid="plugin-row-metadata">
-                      <span className={CLASS.source}>{sourceLabel(plugin)}</span>
-                      <span className={CLASS.counts}>
-                        {countsSummary(
-                          plugin.skillCount,
-                          plugin.agentCount,
-                          plugin.commandCount,
-                          plugin.hookCount,
-                          plugin.mcpCount,
-                        )}
-                      </span>
-                      {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
-                      <span className={CLASS.details}>
-                        <Button variant="link" size="xs" type="button" onClick={() => setSheetCandidate(plugin)}>
-                          Details
-                        </Button>
-                      </span>
-                    </span>
-                  }
-                />
-              </div>
+              <LauncherPluginRow
+                key={plugin.name}
+                candidate={plugin}
+                selected={selected}
+                removeOnly={removeOnly}
+                onToggleSelected={(next) => onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))}
+                onOpen={() => setSheetName(plugin.name)}
+              />
             );
           })}
         </div>
-        {sheetCandidate !== null && (
+        {sheetCandidate !== undefined && (
           <LauncherPluginSheet
             open
-            onClose={() => setSheetCandidate(null)}
+            onClose={() => setSheetName(null)}
             candidate={sheetCandidate}
             client={client}
             host={host}
             selected={selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected}
+            selectionDisabled={removeOnly && !(selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected)}
             onToggleSelected={(next) => {
               // The same remove-only guard the row's own switch applies: an
               // unreadable preview still allows taking plugins out.

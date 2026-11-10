@@ -13,29 +13,15 @@
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { useEffect, useRef, useState } from "react";
-import { useIsMobile } from "../../../../shell/useIsMobile";
-import {
-  Button,
-  ConfirmDialog,
-  InlineNotice,
-  PropertyList,
-  type PropertyListRow,
-  Sheet,
-  Switch,
-  useFocusRehome,
-  useToasts,
-} from "../../../../widgets";
+import { Button, ConfirmDialog, InlineNotice, Switch, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { PluginContents } from "../../../plugins/PluginContents";
+import { type PluginMetadataRow, PluginSheet } from "../../../plugins/PluginSheet";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
 const CLASS = {
-  sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),
-  chipRow: requireClass(styles.chipRow, "marketplacesPlugins.module.css", "chipRow"),
-  metaList: requireClass(styles.metaList, "marketplacesPlugins.module.css", "metaList"),
-  switchRows: requireClass(styles.switchRows, "marketplacesPlugins.module.css", "switchRows"),
   focusRoot: requireClass(styles.focusRoot, "marketplacesPlugins.module.css", "focusRoot"),
 };
 
@@ -63,7 +49,6 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     (s) => s.plugins === null || s.pluginsError !== null || s.pluginsLoading,
   );
   const mutationDisabled = hubWriteBusy || pluginsUnavailable;
-  const isMobile = useIsMobile();
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
@@ -107,7 +92,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   // Lazy components read for the Contents block: installed mode only (a
   // catalog sheet shows no Contents - spec decision 2). fetchPluginComponents
   // no-ops for keys the cache already holds - loading keys are awaited, and
-  // settled keys send nothing - so this costs one request per target, ever.
+  // settled keys send nothing until the store retires their inventories.
   useEffect(() => {
     if (target === null || target.mode !== "installed") return;
     void store.getState().fetchPluginComponents([{ plugin: target.plugin, marketplace: target.marketplace }]);
@@ -194,18 +179,25 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const description = catalogEntry?.description;
   const marketplaceEntry = pair === undefined ? undefined : marketplaces.find((m) => m.name === pair.marketplace);
 
-  const metaRows: PropertyListRow[] = [
+  const metaRows: PluginMetadataRow[] = [
     ...(target !== null && target.mode === "installed" && entry !== undefined
-      ? [{ label: "Version", value: `v${entry.version || "unknown"}`, mono: true }]
+      ? [{ kind: "version" as const, label: "Version", value: `v${entry.version || "unknown"}`, mono: true }]
       : []),
-    { label: "Marketplace", value: pair?.marketplace ?? "" },
+    { kind: "marketplace", label: "Marketplace", value: pair?.marketplace ?? "" },
     ...(marketplaceEntry !== undefined
-      ? [{ label: "Source", value: marketplaceSourceLabel(marketplaceEntry.source), mono: true }]
+      ? [
+          {
+            kind: "source" as const,
+            label: "Source",
+            value: marketplaceSourceLabel(marketplaceEntry.source),
+            mono: true,
+          },
+        ]
       : []),
     // Catalog metadata carries the author the browse catalog knows; an
     // installed entry's metadata stays today's rows.
     ...(target?.mode === "catalog" && catalogEntry?.author !== undefined
-      ? [{ label: "Author", value: catalogEntry.author }]
+      ? [{ kind: "author" as const, label: "Author", value: catalogEntry.author }]
       : []),
   ];
 
@@ -219,7 +211,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     componentsEntry === undefined ||
     componentsEntry.status === "loading" ? null : componentsEntry.status === "loaded" ? (
       <PluginContents components={componentsEntry.components} />
-    ) : entry?.broken ? (
+    ) : componentsEntry.source === "target" ? (
       <InlineNotice tone="danger" data-reason="plugin-broken">
         {componentsEntry.error}
       </InlineNotice>
@@ -239,11 +231,15 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
 
   return (
     <div ref={focusRoot} className={CLASS.focusRoot}>
-      <Sheet
+      <PluginSheet
         open={open}
         onClose={onClose}
         title={pair?.plugin ?? ""}
-        side={isMobile ? "bottom" : "right"}
+        mode={target?.mode ?? "installed"}
+        description={description}
+        chips={chips.length > 0 ? chips : undefined}
+        contents={contentsBlock}
+        metadata={metaRows}
         footer={
           target !== null &&
           (target.mode === "catalog" ? (
@@ -268,34 +264,24 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
           ))
         }
       >
-        {open && (
+        {target?.mode === "installed" && entry !== undefined && (
           <>
-            {chips.length > 0 && <div className={CLASS.chipRow}>{chips}</div>}
-            {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}
-            {contentsBlock}
-            <div className={CLASS.metaList}>
-              <PropertyList rows={metaRows} />
-            </div>
-            {target?.mode === "installed" && entry !== undefined && (
-              <div className={CLASS.switchRows}>
-                <Switch
-                  checked={entry.enabled}
-                  onChange={() => void handleToggleEnable(entry.enabled)}
-                  pending={mutationDisabled}
-                  label="Enabled by default"
-                  description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
-                />
-                <Switch
-                  checked={entry.autoUpgrade}
-                  onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
-                  pending={mutationDisabled}
-                  label="Auto-upgrade"
-                />
-              </div>
-            )}
+            <Switch
+              checked={entry.enabled}
+              onChange={() => void handleToggleEnable(entry.enabled)}
+              pending={mutationDisabled}
+              label="Enabled by default"
+              description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
+            />
+            <Switch
+              checked={entry.autoUpgrade}
+              onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
+              pending={mutationDisabled}
+              label="Auto-upgrade"
+            />
           </>
         )}
-      </Sheet>
+      </PluginSheet>
       <ConfirmDialog
         open={pendingRemove && target !== null}
         title="Remove plugin"
