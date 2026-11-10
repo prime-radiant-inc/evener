@@ -152,6 +152,12 @@ type Session struct {
 	// session (the transcript keeps them); the rejection recovery adds the IDs
 	// and retries once. Guarded by mu.
 	rejectedToolResultDocuments map[string]struct{}
+	// pendingToolResultDocuments holds tool-call IDs a speculative document
+	// recovery stripped from the retry before the provider named a document.
+	// A successful retry promotes them to rejectedToolResultDocuments; a failed
+	// retry rolls them back, so an unrelated invalid request cannot suppress a
+	// document the provider accepted (#4465). Guarded by mu.
+	pendingToolResultDocuments map[string]struct{}
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.

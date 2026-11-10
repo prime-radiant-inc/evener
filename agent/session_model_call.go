@@ -267,8 +267,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	inFlightFrom := s.turnHistoryBaseline
-	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments))
+	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
 	for id := range s.rejectedToolResultDocuments {
+		suppressedDocuments[id] = struct{}{}
+	}
+	for id := range s.pendingToolResultDocuments {
 		suppressedDocuments[id] = struct{}{}
 	}
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
@@ -291,8 +294,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
 		},
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		// A dropped document was rejected for delivery, not read successfully;
+		// the request copy says so and the transcript keeps the payload (#4465).
+		annotateDroppedToolResult: true,
+		protocolOf:                s.instanceProtocol,
+		canonicalModel:            func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
@@ -934,19 +940,31 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // errors.Unwrap, kata 3xbh). The outer lifecycle error boundary remains an
 // idempotent tail for this provider-owned path.
 func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried, documentRejectRetried *bool, contextWarningEmitted bool) (retry bool, ferr error) {
+	// A document-stripped retry that still fails did not resolve the error, so
+	// its speculative suppression must not outlive it (#4465).
+	s.rollbackSpeculativeToolResultDocuments()
 	// A provider that rejects a tool-result document fails the whole request.
-	// Omit those bytes for the rest of the session and retry the round once
-	// (#4465); the transcript keeps them, and the warning says what happened.
+	// Omit those bytes and retry the round once (#4465); the transcript keeps
+	// them, and the warning says what happened. Only a rejection that names a
+	// document persists the suppression; any other invalid request strips them
+	// for one speculative retry, so an unrelated 400 cannot bury a document the
+	// provider already accepted.
 	if !*documentRejectRetried && llm.Kind(err) == llm.KindInvalidRequest {
 		if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
 			*documentRejectRetried = true
-			s.suppressRejectedToolResultDocuments(ids)
 			subject := "a tool-result document"
 			if len(ids) > 1 {
 				subject = pluralizedUnit(len(ids), "tool-result document")
 			}
-			s.emit(bareWarningDataFromError(
-				"Provider rejected "+subject+" — retrying without the document payload", err))
+			if documentRejectionEvidence(err) {
+				s.suppressRejectedToolResultDocuments(ids)
+				s.emit(bareWarningDataFromError(
+					"Provider rejected "+subject+" — retrying without the document payload", err))
+			} else {
+				s.speculateRejectedToolResultDocuments(ids)
+				s.emit(bareWarningDataFromError(
+					"Provider rejected the request — retrying without the tool-result document payload", err))
+			}
 			return true, nil
 		}
 	}
@@ -1073,6 +1091,74 @@ func (s *Session) suppressRejectedToolResultDocuments(ids []string) {
 	for _, id := range ids {
 		s.rejectedToolResultDocuments[id] = struct{}{}
 	}
+}
+
+// speculateRejectedToolResultDocuments records IDs whose document bytes a
+// speculative retry omits. The strip becomes permanent only if the retry
+// resolves the error (#4465).
+func (s *Session) speculateRejectedToolResultDocuments(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingToolResultDocuments == nil {
+		s.pendingToolResultDocuments = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		s.pendingToolResultDocuments[id] = struct{}{}
+	}
+}
+
+// rollbackSpeculativeToolResultDocuments drops a speculative strip that did
+// not resolve the error, so later requests carry the payload again (#4465).
+func (s *Session) rollbackSpeculativeToolResultDocuments() {
+	s.mu.Lock()
+	s.pendingToolResultDocuments = nil
+	s.mu.Unlock()
+}
+
+// commitSpeculativeToolResultDocuments promotes a speculative strip whose
+// retry succeeded: the rejection was in fact about the documents (#4465).
+func (s *Session) commitSpeculativeToolResultDocuments() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingToolResultDocuments) == 0 {
+		return
+	}
+	if s.rejectedToolResultDocuments == nil {
+		s.rejectedToolResultDocuments = map[string]struct{}{}
+	}
+	for id := range s.pendingToolResultDocuments {
+		s.rejectedToolResultDocuments[id] = struct{}{}
+	}
+	s.pendingToolResultDocuments = nil
+}
+
+// documentRejectionEvidence reports whether a provider rejection names the
+// document payload — the only evidence that justifies suppressing it for the
+// rest of the session (#4465).
+func documentRejectionEvidence(err error) bool {
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "document") || strings.Contains(text, "pdf")
+}
+
+// isDocumentPayloadSizeRejection reports a request-size rejection (HTTP 413 or
+// its error code). Compaction cannot recover one caused by the newest tool
+// results, because compaction preserves that tail (#4465).
+func isDocumentPayloadSizeRejection(err error) bool {
+	var providerErr llm.Error
+	if !errors.As(err, &providerErr) {
+		return false
+	}
+	if providerErr.StatusCode() == 413 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(providerErr.ErrorCode())) {
+	case "request_too_large", "payload_too_large", "too_large":
+		return true
+	}
+	return false
 }
 
 // toolResultDocumentCallIDs returns the tool-call IDs of the tool-result
@@ -1812,6 +1898,10 @@ type replayScope struct {
 	// result's media payload — a document the provider already rejected this
 	// session (#4465). Nil keeps every payload.
 	dropsToolResult func(*llm.ToolResultData) bool
+	// annotateDroppedToolResult marks a request copy of a dropped tool result
+	// as a delivery failure the model can see; the transcript keeps the
+	// original payload and its success state (#4465).
+	annotateDroppedToolResult bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -2010,6 +2100,9 @@ func (rs replayScope) stripToolResultMedia(msg llm.Message) llm.Message {
 		}
 		tr := *p.ToolResult
 		tr.ImageData, tr.ImageMediaType = nil, ""
+		if rs.annotateDroppedToolResult {
+			annotateSuppressedToolResult(&tr)
+		}
 		parts[i].ToolResult = &tr
 		changed = true
 	}
@@ -2018,6 +2111,23 @@ func (rs replayScope) stripToolResultMedia(msg llm.Message) llm.Message {
 	}
 	msg.Content = parts
 	return msg
+}
+
+// toolResultDocumentDeliveryFailure is the model-visible note left on a
+// request copy whose document payload was suppressed after a provider
+// rejection (#4465).
+const toolResultDocumentDeliveryFailure = "[document omitted: the provider rejected this document payload, so its content was not delivered]"
+
+// annotateSuppressedToolResult marks a request copy of a rejected tool-result
+// document as a delivery failure the model can see. The transcript keeps the
+// original, successful payload (#4465).
+func annotateSuppressedToolResult(tr *llm.ToolResultData) {
+	tr.IsError = true
+	if content, ok := tr.Content.(string); ok && strings.TrimSpace(content) != "" {
+		tr.Content = strings.TrimRight(content, "\n") + "\n\n" + toolResultDocumentDeliveryFailure
+		return
+	}
+	tr.Content = toolResultDocumentDeliveryFailure
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
@@ -2088,29 +2198,31 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					imageData, imageMediaType := p.ToolResult.ImageData, p.ToolResult.ImageMediaType
-					if len(imageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult) {
+					dropped := len(imageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
+					if dropped {
 						// The provider rejected this document once; omit the
 						// bytes from every later request (#4465). The text
 						// form stays and the transcript keeps the payload.
 						imageData, imageMediaType = nil, ""
 					}
+					tr := &llm.ToolResultData{
+						ToolCallID:     p.ToolResult.ToolCallID,
+						Name:           p.ToolResult.Name,
+						Content:        p.ToolResult.Content,
+						IsError:        p.ToolResult.IsError,
+						PrevalOnly:     p.ToolResult.PrevalOnly,
+						DurationMS:     p.ToolResult.DurationMS,
+						ToolState:      p.ToolResult.ToolState,
+						ImageData:      imageData,
+						ImageMediaType: imageMediaType,
+					}
+					if dropped && scope.annotateDroppedToolResult {
+						annotateSuppressedToolResult(tr)
+					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
 						ToolCallID: p.ToolResult.ToolCallID,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolResult,
-							ToolResult: &llm.ToolResultData{
-								ToolCallID:     p.ToolResult.ToolCallID,
-								Name:           p.ToolResult.Name,
-								Content:        p.ToolResult.Content,
-								IsError:        p.ToolResult.IsError,
-								PrevalOnly:     p.ToolResult.PrevalOnly,
-								DurationMS:     p.ToolResult.DurationMS,
-								ToolState:      p.ToolResult.ToolState,
-								ImageData:      imageData,
-								ImageMediaType: imageMediaType,
-							},
-						}},
+						Content:    []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: tr}},
 					})
 				}
 			}

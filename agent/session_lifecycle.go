@@ -1640,6 +1640,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LLMCall = time.Since(tPhaseStart)
 
 		if err == nil {
+			// A speculative document strip whose retry succeeded was the fix:
+			// keep those payloads out of later requests (#4465).
+			s.commitSpeculativeToolResultDocuments()
 			if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_model")); abortErr != nil {
 				return "", progressed, abortErr
 			}
@@ -1655,6 +1658,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			if isLocalContextBudgetError(err) {
 				return "", progressed, err
+			}
+			// A request-size rejection (413) on a request carrying tool-result
+			// documents is bounded document recovery, not context pressure:
+			// compaction preserves the newest tool results, so the oversized
+			// payload would survive it and fail again (#4465).
+			if isDocumentPayloadSizeRejection(err) && !documentRejectRetried {
+				if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
+					documentRejectRetried = true
+					s.speculateRejectedToolResultDocuments(ids)
+					s.emit(bareWarningDataFromError(
+						"Provider rejected the request size for a tool-result document — retrying without the document payload", err))
+					s.resetCommunicatePreviews(communicatePreviewCalls)
+					continue
+				}
 			}
 			if isProviderContextLengthError(err) && !providerContextRecovered && s.contextMgr != nil {
 				failedProvider, failedModel := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
