@@ -23,8 +23,8 @@ web UI, use [`docs/web-ui/design-system.md`](../web-ui/design-system.md).
 Older, uncited plans were removed in 2026-11: they were task-by-task
 checklists whose value ended when the work landed, and the specs they
 implemented remain. A plan is kept when it is dated 2026-10-15 or later, or when
-a retained document or test cites it. A stale citation in a code comment points
-at history; the spec for the feature is in `specs/`.
+a retained document, test, or other plan cites it. A stale citation in a code
+comment points at history; the spec for the feature is in `specs/`.
 
 ## Status rules
 
