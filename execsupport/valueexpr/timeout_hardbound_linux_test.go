@@ -3,14 +3,14 @@
 package valueexpr
 
 import (
-	"bytes"
+	"bufio"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,10 +36,22 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	// with `exec -a`, which dash does not support, so the descendant died
 	// at spawn and the test passed without exercising the drain at all.
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "escapee.pid")
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readyR.Close() })
+	// The escaped child reports through an inherited pipe, not a marker file:
+	// the fixture's own write is the readiness signal, and EOF after the parent
+	// closes its write end means the fixture never reported. No harness
+	// deadline decides whether a slow child is a live one.
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, readyW.Fd(), syscall.F_SETFD, 0); errno != 0 {
+		t.Fatal(errno)
+	}
+	var escapeePID string
 	t.Cleanup(func() {
-		if pid, err := os.ReadFile(marker); err == nil {
-			exec.Command("kill", "-9", strings.TrimSpace(string(pid))).Run()
+		if escapeePID != "" {
+			exec.Command("kill", "-9", escapeePID).Run()
 		}
 	})
 	commandTimeout = 500 * time.Millisecond
@@ -56,13 +68,13 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 			path, err := exec.LookPath(tool)
 			t.Logf("fixture tool %s: path=%q err=%v", tool, path, err)
 		}
-		for _, path := range []string{stderr, stages, marker} {
+		for _, path := range []string{stderr, stages} {
 			data, err := os.ReadFile(path)
 			t.Logf("fixture %s: data=%q err=%v", filepath.Base(path), data, err)
 		}
 		data, _ := os.ReadFile(stages)
-		if pid, err := os.ReadFile(marker); err == nil {
-			data = append(data, []byte("\nescapee "+strings.TrimSpace(string(pid)))...)
+		if escapeePID != "" {
+			data = append(data, []byte("\nescapee "+escapeePID)...)
 		}
 		for line := range strings.SplitSeq(string(data), "\n") {
 			fields := strings.Fields(line)
@@ -83,13 +95,21 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 			}
 		}
 	})
-	inner := `printf 'escaped %s\n' "$$" >> ` + shellquote.Literal(stages) + `; sleep 10 & echo $! > ` + shellquote.Literal(marker)
+	inner := `printf 'escaped %s\n' "$$" >> ` + shellquote.Literal(stages) + `; sleep 10 & echo $! > /dev/fd/` + strconv.Itoa(int(readyW.Fd()))
 	// Builtins add no processes. Only this known fixture's stderr is saved,
 	// and stdout remains captured and inherited by the escaped descendant.
 	command := `{ printf 'shell %s\n' "$$" >> ` + shellquote.Literal(stages) + `; setsid sh -c ` + shellquote.Literal(inner) +
 		` & printf 'launcher %s\n' "$!" >> ` + shellquote.Literal(stages) + `; exec sleep 30; } 2> ` + shellquote.Literal(stderr)
+	ready := make(chan struct{})
+	var report string
+	var reportErr error
+	go func() {
+		line, err := bufio.NewReader(readyR).ReadString('\n')
+		report, reportErr = strings.TrimSpace(line), err
+		close(ready)
+	}()
 	start := time.Now()
-	_, err := evaluate(command)
+	_, err = evaluate(command)
 	if err == nil {
 		t.Fatal("evaluate returned nil; want the timeout error")
 	}
@@ -102,59 +122,16 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	// The escapee held the captured stdout until the drain closed it, and
 	// its ten seconds still run: it must exist and have outlived the run's
 	// group kill, or the scenario above never materialized.
-	// The escapee may be scheduled after evaluate returns, so wait for its report.
-	pid, err := waitForPIDReport(marker, 5*time.Second)
-	if err != nil {
-		t.Fatalf("the escaped descendant never reported its pid (%v); the scenario did not run", err)
+	// Closing the parent's write end lets the reader distinguish a report from
+	// the fixture dying without one; a live-but-slow child keeps its own end.
+	_ = readyW.Close()
+	<-ready
+	if reportErr != nil || report == "" {
+		t.Fatalf("the escaped descendant never reported its pid (%v); the scenario did not run", reportErr)
 	}
-	escapee := strings.TrimSpace(string(pid))
-	if exec.Command("kill", "-0", escapee).Run() != nil {
-		t.Fatalf("the escaped descendant (pid %s) did not outlive the run's group kill", escapee)
-	}
-}
-
-// waitForPIDReport waits for a fixture's pid marker to become readable. The
-// marker is the escaped child's own readiness signal, so a slow-but-live child
-// is observed instead of being mistaken for a child that never started.
-func waitForPIDReport(path string, timeout time.Duration) ([]byte, error) {
-	deadline := time.Now().Add(timeout)
-	for {
-		data, err := os.ReadFile(path)
-		// The shell creates the marker with its redirection before it writes
-		// the pid, so an empty read is not the report: keep waiting for one.
-		if err == nil && len(bytes.TrimSpace(data)) != 0 {
-			return data, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("no non-empty pid report in %s within %v", path, timeout)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func TestWaitForPIDReportObservesLateReport(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "late.pid")
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		_ = os.WriteFile(path, []byte("123\n"), 0o600)
-	}()
-
-	data, err := waitForPIDReport(path, time.Second)
-	if err != nil {
-		t.Fatalf("waitForPIDReport: %v", err)
-	}
-	if string(data) != "123\n" {
-		t.Fatalf("pid report = %q; want the child's late write", data)
-	}
-}
-
-func TestWaitForPIDReportTimesOutWithoutAReport(t *testing.T) {
-	start := time.Now()
-	if _, err := waitForPIDReport(filepath.Join(t.TempDir(), "missing.pid"), 100*time.Millisecond); err == nil {
-		t.Fatal("waitForPIDReport returned nil for a marker that never appeared")
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("waitForPIDReport blocked %v past its deadline", elapsed)
+	escapeePID = report
+	if exec.Command("kill", "-0", escapeePID).Run() != nil {
+		t.Fatalf("the escaped descendant (pid %s) did not outlive the run's group kill", escapeePID)
 	}
 }
 
