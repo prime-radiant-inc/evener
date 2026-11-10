@@ -592,6 +592,15 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+      - name: Retirement timing environment
+        if: ${{ matrix.scope == 'root' }}
+        run: |
+          uname -r
+          nproc
+          lscpu
+          findmnt -T /dev/shm -o TARGET,FSTYPE,OPTIONS
+          findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+          df -Pk /dev/shm /tmp
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -600,10 +609,31 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
+          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: /tmp/evener-module-tests.retire/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
-      # Survey failure replay is abbreviated. Keep the full surveys and raw
-      # timing-capture shard text, never the surrounding homes or test binaries.
+
+      # Same ordering rule as web-unit above: the cache save precedes the
+      # timing gate so a budget failure still saves a trimmed entry.
+      - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
+      # The timing ratchet's rows come from the test run above (issue #144), so
+      # the budget is enforced without a second full pass. Each lane checks its
+      # own scope: the rows name only the packages this lane measured, and a
+      # missing file fails the check rather than passing silently. A merge
+      # group is warn-only, for the reason given in web-unit.
+      - name: Timing budget (rows from the same test run)
+        env:
+          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
+        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+
+      # Survey failure replay is abbreviated. Keep the full surveys, raw
+      # timing-capture shard text and the retirement phase trace, never the
+      # surrounding homes or test binaries. After the timing check so a
+      # timing-only failure still collects them.
       # A job stopped at its time limit can end cancelled rather than failed,
       # and a hang's logs are the ones most worth keeping, so a cancelled job
       # keeps them too. The same holds for every failed-log step in this workflow.
@@ -623,23 +653,8 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
-
-      # Same ordering rule as web-unit above: the cache save precedes the
-      # timing gate so a budget failure still saves a trimmed entry.
-      - uses: ./.github/actions/go-cache-save
-        if: ${{ !cancelled() }}
-        with:
-          job-status: ${{ job.status }}
-
-      # The timing ratchet's rows come from the test run above (issue #144), so
-      # the budget is enforced without a second full pass. Each lane checks its
-      # own scope: the rows name only the packages this lane measured, and a
-      # missing file fails the check rather than passing silently. A merge
-      # group is warn-only, for the reason given in web-unit.
-      - name: Timing budget (rows from the same test run)
-        env:
-          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
-        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+            /dev/shm/evener-module-tests.*/retire-overlap-phases.tsv
+            /tmp/evener-module-tests.*/retire-overlap-phases.tsv
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
