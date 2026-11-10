@@ -604,7 +604,7 @@ func selectedLockCandidateRemote(root, pid string) string {
 	return lockIdentityRemote(root) + lockKeyRemote() + lockPinRemote() +
 		// grep tolerates a descriptor that closes between the glob and the read;
 		// awk exits nonzero if any file in its argument list is unreadable.
-		"owners=$(grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null | awk -v key=\"$key\" '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
+		"owners=$( { grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null || true; } | awk -v key=\"$key\" '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
 		lockPinRemote() +
 		"printf '%s' \"$owners\""
 }
