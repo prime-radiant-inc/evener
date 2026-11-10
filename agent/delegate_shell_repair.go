@@ -222,11 +222,10 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 		if record.Status.IsTerminal() && record.TerminalGen != "" && hasActiveSendWatchFor(watches, jobID) {
 			evidence.terminalWatchJobIDs = append(evidence.terminalWatchJobIDs, jobID)
 		}
-		// A background shell always arms a completion notification. A terminal
-		// background job still at not_armed is the finish-only prefix: the
-		// notification record was lost with the torn batch. Kept-sync
-		// completions are not background jobs, so they stay unnotified.
-		if record.Status.IsTerminal() && record.TerminalGen != "" && record.NotifyState == jobstore.NotifyNotArmed && record.Background {
+		// A terminal job whose live finish path armed a completion notification
+		// but still reads not_armed is the finish-only prefix: the notification
+		// record was lost with the torn batch.
+		if shellTerminalNeedsNotification(record) && record.NotifyState == jobstore.NotifyNotArmed {
 			evidence.unnotifiedTerminal = append(evidence.unnotifiedTerminal, shellNotificationIdentity{
 				jobID:              jobID,
 				terminalGeneration: record.TerminalGen,
@@ -234,6 +233,20 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 		}
 	}
 	return evidence, nil
+}
+
+// shellTerminalNeedsNotification reports whether the live finish path would
+// have armed an owner completion notification for this terminal record. A
+// background shell always does. A foreground shell does only when its process
+// hit max_runtime_ms: finishForegroundRuntimeTimeout finalizes through the
+// notification-arming path while Background stays false, whereas a kept-sync
+// completion uses finalizeKeptSync and never arms one. Reason is the durable
+// evidence of that path, and Background survives from the start event.
+func shellTerminalNeedsNotification(record *jobstore.JobRecord) bool {
+	if record == nil || !record.Status.IsTerminal() || record.TerminalGen == "" {
+		return false
+	}
+	return record.Background || record.Reason == "run_timeout"
 }
 
 // hasActiveSendWatchFor reports whether a send watch that can still be cleared

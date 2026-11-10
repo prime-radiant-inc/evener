@@ -556,6 +556,70 @@ func TestDelegateShellRepairConsumesUnnotifiedBackgroundNotification(t *testing.
 	}
 }
 
+// TestDelegateShellRepairRestoresForegroundRuntimeTimeoutNotificationFromFinishOnlyPrefix
+// covers a foreground shell that hit its max_runtime_ms limit: that path arms a
+// completion notification even though the record is not Background, so a
+// finish-only prefix leaves the terminal job at not_armed. The cold repair must
+// arm it like the background case, or cold bootstrap has no pending
+// notification to deliver.
+func TestDelegateShellRepairRestoresForegroundRuntimeTimeoutNotificationFromFinishOnlyPrefix(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-foreground-timeout",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-foreground-timeout",
+			Status:      jobstore.StatusStopped,
+			Reason:      "run_timeout",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-foreground-timeout",
+		},
+	)
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 1 {
+		t.Fatalf("shell repair plans = %#v, want one plan for the foreground runtime-timeout finish-only prefix", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, _ := readDelegateShellStore(t, path)
+	if record := records["job-foreground-timeout"]; record == nil || record.NotifyState != jobstore.NotifyPending || record.TerminalGen != "terminal-foreground-timeout" {
+		t.Fatalf("foreground runtime-timeout shell after repair = %#v, want pending notification for its terminal generation", record)
+	}
+
+	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence after repair: %v", err)
+	}
+	plans, err = c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile after repair: %v", err)
+	}
+	if len(plans.shellRepairs) != 0 {
+		t.Fatalf("notification repair repeated after landing: %#v", plans.shellRepairs)
+	}
+}
+
 func watchEndNoticeFrames(t *testing.T, path string) []jobstore.WatchSendState {
 	t.Helper()
 	events, err := jobstore.ReadEvents(path)
