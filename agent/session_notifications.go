@@ -258,17 +258,24 @@ func (s *Session) settleJobNotificationsCarriedByRequest(ctx context.Context) {
 	}
 }
 
-// endTurnForJobNotificationsAwaitingRequest runs when a turn ends. Completions
-// the turn left without a dispatched request are still owed; the drain loop
-// does not run a notification turn straight after one, so the paced
-// notification retry wakes the session for them. A completion that has now
-// ended maxUndispatchedNotificationTurns turns undispatched settles instead.
-func (s *Session) endTurnForJobNotificationsAwaitingRequest() {
+// endTurnForJobNotificationsAwaitingRequest runs when an input ends.
+// Completions it left without a dispatched request are still owed; the drain
+// loop does not run a notification turn straight after one, so the paced
+// notification retry wakes the session for them. When the input was admitted
+// to its round loop, the turn counts against each completion's allowance, and
+// one that has now ended maxUndispatchedNotificationTurns admitted turns
+// undispatched settles instead. A wake that stood down before admission
+// spends nothing, so a stand-down that lasts (a failing mutation store) keeps
+// the completion owed under the paced retry, which backs off to
+// jobNotificationRetryMaxDelay.
+func (s *Session) endTurnForJobNotificationsAwaitingRequest(admitted bool) {
 	var exhausted []deliverableJobNotification
 	s.pendingJobNotifsMu.Lock()
 	owed := s.jobNotifsAwaitingRequest[:0]
 	for _, a := range s.jobNotifsAwaitingRequest {
-		a.undispatchedTurns++
+		if admitted {
+			a.undispatchedTurns++
+		}
 		if a.undispatchedTurns >= maxUndispatchedNotificationTurns {
 			exhausted = append(exhausted, a.deliverable)
 			continue

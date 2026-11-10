@@ -1060,7 +1060,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
-	defer s.endTurnForJobNotificationsAwaitingRequest()
+	// Only an input that reached its round loop was admitted as a turn; a wake
+	// that stood down earlier (an unnameable turn, a parked rail) does not
+	// count toward an owed completion's undispatched turns.
+	admittedToRounds := false
+	defer func() { s.endTurnForJobNotificationsAwaitingRequest(admittedToRounds) }()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	// Consume the deliveries this turn's settled rounds presented, armed
@@ -1416,6 +1420,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
+	admittedToRounds = true
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being

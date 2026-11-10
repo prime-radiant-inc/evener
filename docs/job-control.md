@@ -64,7 +64,10 @@ wakes again, and the next turn's request carries the entry already in the
 transcript, or the compaction summary that folded it, without writing it a
 second time. A completion gets one such retry: if the next turn also ends without
 a request, the completion settles with that turn's failure visible, and its entry
-stays in the transcript for whatever request comes next. A restart loses the
+stays in the transcript for whatever request comes next. Only turns that run
+count; a wake that stands down before its turn starts (for example, while the
+turn cannot be named) spends nothing, and the completion stays owed under the
+paced retry. A restart loses the
 in-memory owed state, so after one the recorded entry settles the completion as
 described above.
 
