@@ -1845,3 +1845,75 @@ func TestSlowConsumerEvictionIsReported(t *testing.T) {
 		t.Fatalf("the eviction left no log line naming the connection; logged:\n%s", joined)
 	}
 }
+
+// A hub-wide broadcast evicts a connection whose outbound buffer is full, the
+// same as a thread broadcast does.
+func TestServerBroadcastAllEvictsSlowConsumer(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	conn := server.NewConnection("conn-1")
+	server.registerConnection(conn)
+	for range appwire.NotificationBufferCap {
+		conn.send <- appwire.Message{}
+	}
+
+	server.BroadcastAll("test", nil)
+
+	server.mu.RLock()
+	_, registered := server.conns[conn.id]
+	server.mu.RUnlock()
+	if registered {
+		t.Fatal("a connection with a full outbound buffer stayed registered after a hub-wide broadcast")
+	}
+}
+
+// A hub-wide broadcast with no client connected is a no-op; it must not panic.
+func TestServerBroadcastAllNoConnections(t *testing.T) {
+	NewServer(ServerConfig{}).BroadcastAll("test", nil)
+}
+
+func TestServerUnregisterConnectionNil(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	// Must not panic on a nil connection.
+	server.unregisterConnection(nil)
+}
+
+func TestSetBeforeSubscriptionGate(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	called := false
+	server.SetBeforeSubscriptionGate(func() {
+		called = true
+	})
+	conn := server.NewConnection("conn-gate")
+	server.registerConnection(conn)
+	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+	if ok := Subscribe(ctx, "thread-1"); !ok {
+		t.Fatal("Subscribe should succeed")
+	}
+	if !called {
+		t.Fatal("beforeSubscriptionRegistration should have been called")
+	}
+}
+
+func TestServerInitializeWithCorrectProtocol(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", Version: "1.0", SourceID: "src1"})
+	resp, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatalf("correct protocol should not error: %v", err)
+	}
+	if resp.ServerInfo.Name != "test" {
+		t.Fatalf("expected server name 'test', got %q", resp.ServerInfo.Name)
+	}
+}
+
+// An adapter that answers initialize natively accepts any protocol version
+// and reports none of its own.
+func TestServerInitializeAdapterNative(t *testing.T) {
+	server := NewServer(ServerConfig{AdapterNativeInitialize: true})
+	resp, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: "anything"})
+	if err != nil {
+		t.Fatalf("adapter native initialize should not error: %v", err)
+	}
+	if resp.ProtocolVersion != "" {
+		t.Fatalf("adapter native should return empty protocol version, got %q", resp.ProtocolVersion)
+	}
+}

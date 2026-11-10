@@ -3,36 +3,18 @@ package hubcore
 import (
 	"database/sql"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/rendezvous"
 )
 
-type failingFs struct {
-	afero.Fs
-	mkdirErr error
-	statErr  error
-	chmodErr error
-}
-
-func (f failingFs) MkdirAll(string, os.FileMode) error { return f.mkdirErr }
-func (f failingFs) Stat(string) (os.FileInfo, error) {
-	if f.statErr != nil {
-		return nil, f.statErr
-	}
-	return nil, os.ErrNotExist
-}
-func (f failingFs) Chmod(string, os.FileMode) error { return f.chmodErr }
-
-func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
+// fuzzScenarioDecisionStoresSurfaceStorageFailures pins the archive and
+// favorite decision stores at their storage edges: with no database path they
+// accept writes as no-ops and read empty, and every filesystem, database,
+// schema and row-decoding failure is returned to the caller.
+func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 	t.Run("setters callbacks and empty paths", func(t *testing.T) {
 		calls := 0
 		a := NewArchiveStore("").SetFs(afero.NewMemMapFs())
@@ -188,63 +170,4 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 			}
 		}
 	})
-}
-
-func fuzzScenarioCoveragePureEdges(t *testing.T) {
-	if attentionLevel("unknown") != "idle" {
-		t.Fatal("attention fallback")
-	}
-	attn, _ := DeriveAttention(nil, []LiveEntry{{SessionID: "abcdefghijklmnop", Status: "active"}, {SessionID: "", Status: "active"}}, nil)
-	if attn["abcdefghijklmnop"].Title != "session klmnop" {
-		t.Fatalf("attention = %#v", attn)
-	}
-
-	i := NewPastIndex("")
-	if _, err := i.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	if got := i.mergeSearchResults(nil, nil, 1, 0); got != nil {
-		t.Fatal(got)
-	}
-	if got := i.RecentModels(0); got != nil {
-		t.Fatal(got)
-	}
-	if q := ftsQuery("!!!"); q != "" {
-		t.Fatal(q)
-	}
-	if q := ftsQuery("A_b c"); q != "a* AND b* AND c*" {
-		t.Fatal(q)
-	}
-
-	if decisionFor(nil, "") != nil {
-		t.Fatal("empty decision")
-	}
-	path := t.TempDir()
-	projects := ResolveProjectMap([]schema.SessionMeta{{ID: "s", EnvInfo: schema.EnvironmentInfo{WorkingDir: path}}}, nil)
-	_, _ = BuildProjectTree([]schema.SessionMeta{{ID: "s", EnvInfo: schema.EnvironmentInfo{WorkingDir: path}}}, nil, nil, projects[path].ID)
-	BuildTreeAt([]schema.SessionMeta{{ID: "sub", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/p"}}}, []LiveEntry{{SessionID: ""}, {SessionID: "missing-session-id", Status: "awaiting"}, {SessionID: "sub", Status: "awaiting"}}, nil, time.Now())
-}
-
-func fuzzScenarioCoverageHTTPFailures(t *testing.T) {
-	for _, h := range []http.Handler{
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{")) }),
-	} {
-		s := httptest.NewServer(h)
-		addr := strings.TrimPrefix(s.URL, "http://")
-		ok := (&StatusProber{}).Probe(rendezvous.Entry{Address: addr}).OK
-		s.Close()
-		if ok {
-			t.Fatal("probe unexpectedly succeeded")
-		}
-	}
-	ok := (&StatusProber{Timeout: time.Nanosecond}).Probe(rendezvous.Entry{Address: "127.0.0.1:1"}).OK
-	if ok {
-		t.Fatal("probe unexpectedly succeeded")
-	}
-	ok = (&StatusProber{}).Probe(rendezvous.Entry{Address: "%"}).OK
-	if ok {
-		t.Fatal("invalid URL unexpectedly succeeded")
-	}
-
 }

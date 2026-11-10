@@ -73,7 +73,7 @@ func TestSaveDeletionSnapshotWriteError(t *testing.T) {
 		writeErr: errors.New("disk full"),
 	}
 	state := deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
-		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 	}}
 	_, err := saveDeletionSnapshotFS(fs, "/state", state, deletionStoreFaults{})
 	if err == nil || !errContains(err, "write temp deletion state") {
@@ -88,7 +88,7 @@ func TestSaveDeletionSnapshotSyncError(t *testing.T) {
 		syncErr: errors.New("sync failed"),
 	}
 	state := deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
-		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 	}}
 	_, err := saveDeletionSnapshotFS(fs, "/state", state, deletionStoreFaults{})
 	if err == nil || !errContains(err, "sync temp deletion state") {
@@ -103,7 +103,7 @@ func TestSaveDeletionSnapshotCloseError(t *testing.T) {
 		closeErr: errors.New("close failed"),
 	}
 	state := deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
-		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 	}}
 	_, err := saveDeletionSnapshotFS(fs, "/state", state, deletionStoreFaults{})
 	if err == nil || !errContains(err, "close temp deletion state") {
@@ -115,7 +115,7 @@ func TestSaveDeletionSnapshotCloseError(t *testing.T) {
 func TestSaveDeletionSnapshotRenameError(t *testing.T) {
 	fs := &faultRenameFs{Fs: afero.NewMemMapFs(), renameErr: errors.New("cross-device link")}
 	state := deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
-		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 	}}
 	_, err := saveDeletionSnapshotFS(fs, "/state", state, deletionStoreFaults{})
 	if err == nil || !errContains(err, "rename deletion state") {
@@ -127,7 +127,7 @@ func TestSaveDeletionSnapshotRenameError(t *testing.T) {
 func TestSaveDeletionSnapshotBeforeRenameError(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	state := deletionSnapshot{Version: deletionSnapshotVersion, Records: []DeletionRecord{
-		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+		{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 	}}
 	_, err := saveDeletionSnapshotFS(fs, "/state", state, deletionStoreFaults{
 		BeforeRename: func() error { return errors.New("before rename fault") },
@@ -142,7 +142,7 @@ func TestCloneDeletionSnapshot(t *testing.T) {
 	original := deletionSnapshot{
 		Version: deletionSnapshotVersion,
 		Records: []DeletionRecord{
-			{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + covTestThreadID, ThreadID: covTestThreadID}}},
+			{ProjectID: "project-delete-0123456789", Generation: 1, State: DeletionStateDeleting, Targets: []DeletionTarget{{Ref: "local:" + deletionStoreTestThreadID, ThreadID: deletionStoreTestThreadID}}},
 		},
 	}
 	clone := cloneDeletionSnapshot(original)
