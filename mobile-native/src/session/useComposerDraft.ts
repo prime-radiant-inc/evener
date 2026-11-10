@@ -20,12 +20,14 @@ export function useComposerDraft({
 	const document = useMemo(() => drafts.open({ hubId: hubId, sessionRef: sessionRef }), [hubId, sessionRef]);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
 	// A handoff can fail its storage write while the resume itself already moved
-	// the rows. Retry it as the replacement screen mounts and whenever the draft
-	// changes; a destination whose own draft failed to load must not stall the
-	// retry, or storage recovering alone could never finish the handoff.
+	// the rows. Retry it as the replacement screen mounts and whenever its load
+	// state changes; a destination whose own draft failed to load must not stall
+	// the retry, or storage recovering alone could never finish the handoff.
+	// The record is deliberately not a dependency: a retry can update it, and
+	// subscribing to the record would run this effect again from its own update.
 	useEffect(() => {
 		drafts.retryPendingHandoffs();
-	}, [draft.loaded, draft.error, draft.record]);
+	}, [draft.loaded, draft.error]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
 	// Follows the screen in front rather than focus, so a photo being attached
