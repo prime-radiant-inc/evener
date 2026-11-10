@@ -1,10 +1,11 @@
 package repoaudit
 
 import (
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // TestFakeTimerDriftHitsNamesEachTrackedUseUnderTheTrees seeds a repository
@@ -12,13 +13,7 @@ import (
 // and in an untracked file, and expects only the tracked use inside a tree.
 func TestFakeTimerDriftHitsNamesEachTrackedUseUnderTheTrees(t *testing.T) {
 	root := t.TempDir()
-	git := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	git := func(args ...string) { gittest.Run(t, root, args...) }
 	git("init", "-q")
 	writeScriptFixture(t, filepath.Join(root, "web", "src", "clean.test.ts"), "vi.useFakeTimers();\n")
 	writeScriptFixture(t, filepath.Join(root, "web", "src", "drift.test.ts"), "// fake clock\nvi.useFakeTimers({ shouldAdvanceTime: true });\n")
@@ -41,5 +36,10 @@ func TestFakeTimerDriftHitsNamesEachTrackedUseUnderTheTrees(t *testing.T) {
 	}
 	if len(hits) != 0 {
 		t.Fatalf("hits = %q after the only tracked use left the index, want none", hits)
+	}
+
+	// A renamed or removed tree is an error, not a clean scan of nothing.
+	if hits, err := fakeTimerDriftHits(root, []string{"web/src", "moved-away"}); err == nil {
+		t.Fatalf("hits = %q with no error for a missing tree", hits)
 	}
 }

@@ -464,5 +464,5 @@ test("zero matches anywhere shows a not-found message quoting the query", async 
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "zzz");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  expect(await screen.findByText('No plugins match "zzz".')).toBeTruthy();
+  expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
 });

@@ -289,7 +289,7 @@ lint-tracked-file-size:
 ##   TMPDIR, before its trap, or deletes recursively from a variable beyond
 ##   the reviewed allowlists; mobile-native/.gitignore keeps the
 ##   mobile-native/build derived-data tree untracked; and no TypeScript test
-##   lets its fake clock follow wall time (shouldAdvanceTime).
+##   or Vitest config lets a fake clock follow wall time (shouldAdvanceTime).
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.

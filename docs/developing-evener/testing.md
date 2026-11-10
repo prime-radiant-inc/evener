@@ -773,16 +773,18 @@ working: `vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime })
 because user-event's drain after each action, `waitFor` and `findBy*` wait on a
 `setTimeout` and only advance a faked one when they find a `jest` global, and
 `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`, so typing delays
-advance it too. `useTestDrivenFakeTimers` (src/testing/fakeTimers.ts) does the
-first and installs the fake timers. Fake only the timer functions (`toFake:
-["setTimeout", "clearTimeout", "setInterval", "clearInterval"]`);
-src/panes/spawn/Spawn.test.tsx is the worked example. The fake clock moves only
-when the test moves it: advance it with `vi.advanceTimersByTimeAsync`, or
-`vi.runOnlyPendingTimersAsync`, and assert the state right after. Never pass
-`shouldAdvanceTime`, which lets the fake clock follow wall time and so makes a
-debounce or countdown fire earlier on a loaded host; `make lint-repo-audit`'s
-`fake-timers-no-wall-clock-drift` check fails on it in the frontend,
-`appwire-client/typescript` and `mobile-native/src`. To read a Tooltip from a
+advance it too. `useTestDrivenFakeTimers` (src/testing/fakeTimers.ts) installs
+the fake timers and that stub, and removes the stub when the test finishes.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`) unless the test pins `Date` with
+`vi.setSystemTime`, which needs the default set; src/panes/spawn/Spawn.test.tsx
+is the worked example. The fake clock moves only when the test moves it:
+advance it with `vi.advanceTimersByTimeAsync`, or `vi.runOnlyPendingTimersAsync`,
+and assert the state right after. Never pass `shouldAdvanceTime`, which lets the
+fake clock follow wall time and so makes a debounce or countdown fire earlier
+on a loaded host; `make lint-repo-audit`'s `fake-timers-no-wall-clock-drift`
+check fails on it anywhere tracked in the frontend, `appwire-client/typescript`
+and `mobile-native`, Vitest configs included. To read a Tooltip from a
 test that otherwise runs on real timers, use `hoverForTooltip`
 (src/widgets/tooltip/tooltipTestUtils.ts): it crosses the show delay on a fake
 clock scoped to the hover, so it needs none of that wiring, and it must be called
