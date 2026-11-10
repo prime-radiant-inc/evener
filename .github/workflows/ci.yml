@@ -541,6 +541,15 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+      - name: Retirement timing environment
+        if: ${{ matrix.scope == 'root' }}
+        run: |
+          uname -r
+          nproc
+          lscpu
+          findmnt -T /dev/shm -o TARGET,FSTYPE,OPTIONS
+          findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+          df -Pk /dev/shm /tmp
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -549,6 +558,7 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
+          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: ${{ runner.temp }}/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
       # Survey failure replay is abbreviated. Keep the full surveys and raw
@@ -583,6 +593,19 @@ jobs:
         env:
           BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
         run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+
+      - name: Keep retirement timing diagnostics
+        if: ${{ always() && matrix.scope == 'root' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: retire-overlap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/retire-overlap-phases.tsv
+            /tmp/gate-timing-root.tsv
+          retention-days: 7
+          if-no-files-found: warn
+
+      - uses: ./.github/actions/go-cache-save
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
