@@ -749,5 +749,9 @@ func (s *Session) replaceAcceptedReply(text string) {
 		s.comm.text = text
 		s.comm.reply = text
 	}
+	if s.latestReport.called {
+		s.latestReport.text = text
+		s.latestReport.reply = text
+	}
 	s.mu.Unlock()
 }

@@ -2308,15 +2308,29 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		} else {
 			// Naming is a model call, so it waits for the hook's verdict: a
 			// stopped prompt must not reach the naming provider either.
-			s.launchInitialPromptNamer(s.sessionCtx, input)
+			s.launchInitialPromptNamerUnlessStopped(input)
 		}
 	} else {
-		s.launchInitialPromptNamer(s.sessionCtx, input)
+		s.launchInitialPromptNamerUnlessStopped(input)
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
 	return nil
+}
+
+// launchInitialPromptNamerUnlessStopped names the prompt only when no hook stop
+// is already recorded for it. A SessionStart continue:false is recorded during
+// session init and consumed by the turn loop after this function returns, so
+// waiting on UserPromptSubmit's verdict alone would still name a stopped prompt.
+func (s *Session) launchInitialPromptNamerUnlessStopped(input string) {
+	s.mu.Lock()
+	stopped := s.sessionStartHookStop != "" || s.promptHookStop != ""
+	s.mu.Unlock()
+	if stopped {
+		return
+	}
+	s.launchInitialPromptNamer(s.sessionCtx, input)
 }
 
 // goalContinuationMarker is the compact fallback text surfaced for a goal

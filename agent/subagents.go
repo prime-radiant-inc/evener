@@ -1939,6 +1939,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			!budgetExhausted &&
 			a.nudgeEnabled &&
 			needsNudge &&
+			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false

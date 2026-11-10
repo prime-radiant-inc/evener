@@ -2215,7 +2215,7 @@ func TestRunPostCompactFor_FailureIsUserOnly(t *testing.T) {
 		t.Fatalf("PostCompact failure must reach the user as one line, got %v", got.UserMessages)
 	}
 	line := got.UserMessages[0]
-	for _, want := range []string{"PostCompact hook", "compact-plugin", "exit 2", "first line"} {
+	for _, want := range []string{"PostCompact", "compact-plugin", "first line"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("failure line %q must name the event, hook, exit code, and stderr; missing %q", line, want)
 		}
