@@ -3,10 +3,11 @@
 // watcher. Anything a synctest bubble can hold belongs in one instead: there
 // the fake clock makes the wait instant and exact.
 //
-// The wait takes no timeout. A per-call timeout is a guess about how slow the
-// host is, and every guess re-flakes as the suite grows; the test binary's own
-// deadline is the only bound, and the helper gives up just before it so the
-// failure names the condition instead of arriving as a goroutine dump.
+// The wait takes no timeout argument. A per-call timeout is a guess about how
+// slow the host is, and every guess re-flakes as the suite grows; one shared
+// ceiling bounds every wait instead, and the helper gives up early when the
+// test binary's own deadline is nearer, so the failure names the condition
+// instead of arriving as a goroutine dump.
 package testwait
 
 import (
@@ -19,11 +20,12 @@ const (
 	// gives up, so its failure reports before `go test` kills the binary.
 	deadlineMargin = 5 * time.Second
 
-	// noDeadlineCeiling bounds a wait in a test run with no deadline
-	// (`go test -timeout 0`, or a compiled test binary run without
-	// -test.timeout). Nothing else would end such a hang, and a ceiling far
-	// above any healthy wait keeps a loaded host from tripping it.
-	noDeadlineCeiling = 2 * time.Minute
+	// waitCeiling bounds every wait. It sits about 10x above the 3s per-test
+	// ceiling the timing ratchet holds tests to (perTestCeilingSeconds in
+	// testing-budget.json), so only a stall far beyond any observed load hits
+	// it, and a broken wait fails within 30s rather than holding its lane
+	// until the binary's deadline.
+	waitCeiling = 30 * time.Second
 
 	// maxPollInterval caps the backoff between checks: short enough that a
 	// condition that holds is seen promptly, long enough that a wait lasting
@@ -62,15 +64,23 @@ func UntilSeen(t testing.TB, what string, check func() (done bool, seen string))
 	}
 }
 
-// giveUpAt is when a wait starting at now stops polling: deadlineMargin before
-// the test's deadline, or halfway there when less than twice the margin is
-// left, and noDeadlineCeiling after now when the test has no deadline.
+// giveUpAt is when a wait starting at now stops polling: waitCeiling after
+// now, or sooner when the test's deadline is nearer, deadlineMargin before it
+// (halfway there when less than twice the margin is left).
 func giveUpAt(t testing.TB, now time.Time) time.Time {
+	giveUp := now.Add(waitCeiling)
 	if withDeadline, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
 		if deadline, ok := withDeadline.Deadline(); ok {
 			remaining := deadline.Sub(now)
-			return now.Add(remaining - min(deadlineMargin, remaining/2))
+			giveUp = minTime(giveUp, now.Add(remaining-min(deadlineMargin, remaining/2)))
 		}
 	}
-	return now.Add(noDeadlineCeiling)
+	return giveUp
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }

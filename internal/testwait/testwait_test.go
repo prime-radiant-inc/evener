@@ -79,13 +79,29 @@ func TestUntilSeenFailsReportingTheLastObservedState(t *testing.T) {
 	}
 }
 
-// TestGiveUpReportsBeforeTheTestDeadline pins the bound: the wait gives up
-// before the test binary's own timeout would kill it, so the failure names
-// the condition instead of arriving as a goroutine dump.
+// TestGiveUpStopsAtTheCeiling pins the ordinary bound: with plenty of test
+// time left, or none set, a wait that never succeeds fails after waitCeiling,
+// not at the far-off binary deadline.
+func TestGiveUpStopsAtTheCeiling(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	for name, tb := range map[string]testing.TB{
+		"a distant deadline": &recorder{deadline: now.Add(10 * time.Minute)},
+		"no deadline":        noDeadline{},
+	} {
+		if got := giveUpAt(tb, now); !got.Equal(now.Add(waitCeiling)) {
+			t.Errorf("with %s the wait gives up after %s, want the %s ceiling", name, got.Sub(now), waitCeiling)
+		}
+	}
+}
+
+// TestGiveUpReportsBeforeTheTestDeadline pins the near-deadline bound: when
+// the binary's own timeout comes before the ceiling, the wait gives up first,
+// so the failure names the condition instead of arriving as a goroutine dump.
 func TestGiveUpReportsBeforeTheTestDeadline(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
-	for _, remaining := range []time.Duration{10 * time.Minute, 30 * time.Second, 100 * time.Millisecond} {
+	for _, remaining := range []time.Duration{waitCeiling, 8 * time.Second, 100 * time.Millisecond} {
 		deadline := now.Add(remaining)
 		got := giveUpAt(&recorder{deadline: deadline}, now)
 		if !got.Before(deadline) {
@@ -98,13 +114,5 @@ func TestGiveUpReportsBeforeTheTestDeadline(t *testing.T) {
 		if !got.After(now) {
 			t.Errorf("with %s left, the wait gives up at %s, leaving no time to wait", remaining, got.Sub(now))
 		}
-	}
-}
-
-func TestGiveUpWithoutATestDeadlineUsesTheCeiling(t *testing.T) {
-	t.Parallel()
-	now := time.Now()
-	if got := giveUpAt(noDeadline{}, now); !got.Equal(now.Add(noDeadlineCeiling)) {
-		t.Fatalf("with no test deadline the wait gives up after %s, want the %s ceiling", got.Sub(now), noDeadlineCeiling)
 	}
 }

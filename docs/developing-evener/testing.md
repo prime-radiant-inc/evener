@@ -194,10 +194,12 @@ Pick the first of these that fits:
    `testwait.Until(t, "what you are waiting for", cond)` polls `cond` until it
    holds. `testwait.UntilSeen` takes a check that also returns what it saw, so
    a hang fails as "still waiting for X (last seen: Y)". Neither takes a
-   timeout: the test's own deadline (`go test -timeout`) bounds the wait, and
-   the helper gives up a few seconds before it so the failure names the
-   condition instead of arriving as a goroutine dump. A test run with no
-   deadline gets a two-minute ceiling. Do not write a package-local poll
+   timeout argument: one shared 30s ceiling bounds every wait, about ten
+   times the 3s per-test ceiling the timing ratchet holds tests to, so only a
+   stall far beyond observed load reaches it and a broken wait fails within
+   30s. When the test binary's own deadline (`go test -timeout`) is nearer,
+   the helper gives up a few seconds before it, so the failure names the
+   condition instead of arriving as a goroutine dump. Do not write a package-local poll
    loop or a helper with its own timeout; use this one. It lives in the root
    module, so the root and `agent` modules can import it; `llm`, `auth` and
    the other leaf modules cannot without a new module edge.
