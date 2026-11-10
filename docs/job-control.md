@@ -29,7 +29,7 @@ the session ends; it cannot outlive the session.
 For background work, keep the returned ID, continue independent work, then end
 your turn; the completion notification wakes you. A `shell` command that does
 nothing but sleep (`sleep N`, `sleep N && echo ...`, a bare loop whose body is
-only sleep) is refused with `wait_refused` before it runs. Anything Evener does
+only sleep) is refused before it runs, with a park-prefixed error (the same `evener did not execute this call:` prefix the breaker uses). Anything Evener does
 not recognise as sleep-only, such as `sleep 2 && curl ...` or
 `until curl ...; do sleep 1; done`, runs. Use `job_status` or `job_list` once to orient
 yourself when necessary, not in a polling loop. A status read is not delivery of
@@ -1080,7 +1080,7 @@ Canonical behavior:
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
-- Evener refuses a repeat `job_status` call on a running target whose lifecycle status and phase are unchanged since this session's previous call on it (a delegate also counts its latest activity and attention flag). The refusal is a `wait_refused` error and the status is not returned. The first call on a target, a call after the status or phase changed, a call after a notification about the target, and any call on a finished target are all allowed. Evener adds no wait primitive: an agent with nothing else to do ends its turn with the result tool (`end_turn=true`, `end_reason="waiting_on_work"`) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
+- Evener refuses a repeat `job_status` call on a running target when nothing it reports has changed since this session's previous call on it. The comparison is the lifecycle status and phase; a delegate also compares its attention flag and the count of activity reports it has recorded (new progress allows the next read, the passage of time does not). Elapsed clocks such as `running_for_ms` never count. The refusal is an error beginning with the park prefix `evener did not execute this call:` and the status is not returned. The first call on a target, a call after the comparison changed, a call after a notification about the target or after a self-timer wake, a call after any delegate attention report, and any call on a finished target are allowed. Evener adds no wait primitive: an agent with nothing else to do ends its turn with the result tool (`end_turn=true`, plus `end_reason="waiting_on_work"` where the result tool takes it) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
 - Reading an owner's terminal shell status consumes that shell's pending terminal
   notification. Delegate status never consumes its terminal packet; exact
   transcript-backed attention is consumed only by a successful notification turn.
