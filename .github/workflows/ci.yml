@@ -531,7 +531,25 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
-        run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
+          EVENER_DIAG_KEEP: /tmp/diag/json
+        run: |
+          python3 .github/diag-sampler.py /tmp/diag &
+          sampler=$!
+          rc=0
+          ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }} || rc=$?
+          kill -TERM "$sampler"; wait "$sampler" || true
+          cp /tmp/gate-timing-${{ matrix.scope }}.tsv /tmp/diag/ || true
+          nproc > /tmp/diag/nproc; lscpu > /tmp/diag/lscpu || true
+          gzip -r /tmp/diag/json || true
+          exit "$rc"
+
+      - name: Diagnostic upload
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diag-${{ matrix.scope }}-${{ github.run_attempt }}
+          retention-days: 3
+          path: /tmp/diag
 
       # Survey failure replay is abbreviated. Keep the full surveys and raw
       # timing-capture shard text, never the surrounding homes or test binaries.

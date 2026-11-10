@@ -861,5 +861,9 @@ if [ "$timing_enabled" -eq 1 ]; then
 	fi
 fi
 
+if [ -n "${EVENER_DIAG_KEEP:-}" ] && [ "$timing_enabled" -eq 1 ]; then
+	mkdir -p "$EVENER_DIAG_KEEP" && cp -R "$timing_rows_dir"/. "$EVENER_DIAG_KEEP"/ || :
+fi
+
 normal_completion=1
 exit "$fail"
