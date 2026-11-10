@@ -27,6 +27,39 @@ func testEstimateUsedTokens(t *testing.T, lastTokens, measuredLen int, history [
 	return NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil)).estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
 }
 
+// TestEstimateTokens_DropsPlainChatThinkingLikeRequestAssembly pins the split
+// between the two estimates: the compaction estimate applies the request
+// assembly's replay policy (#4563), so plain chat reasoning does not size a
+// window it never crosses, while text a signature-bearing reasoning item needs
+// is still billed because the builder serializes it.
+func TestEstimateTokens_DropsPlainChatThinkingLikeRequestAssembly(t *testing.T) {
+	t.Parallel()
+	reasoning := true
+	chat := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "m", Protocol: registry.ProtocolOpenAIChat,
+		Caps: registry.Caps{Reasoning: &reasoning},
+	}, nil)
+	cm := NewManager(chat, nil, cheapmodel.New(nil))
+	const text = 4000
+	assistant := func(thinking llm.ContentPart) []schema.Turn {
+		return []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			thinking, {Kind: llm.ContentText, Text: "answer"},
+		}})}
+	}
+	plain := assistant(llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("t", text)}})
+	without := []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))}
+	if with, bare := cm.estimateTokens(plain), cm.estimateTokens(without); with != bare {
+		t.Fatalf("chat compaction estimate = %d, want %d: request assembly strips the plain thinking", with, bare)
+	}
+	signed := assistant(llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+		EncryptedContent: `[{"type":"reasoning.text","text":"","signature":"sig"}]`,
+		Text:             strings.Repeat("t", text),
+	}})
+	if unsigned, withSigned := cm.estimateTokens(plain), cm.estimateTokens(signed); withSigned <= unsigned {
+		t.Fatalf("signed reasoning estimate = %d, want more than %d: the builder serializes the text", withSigned, unsigned)
+	}
+}
+
 func TestEstimateTokens_EmptyHistory(t *testing.T) {
 	got := testEstimateTokens(t, nil)
 	if got != 0 {
