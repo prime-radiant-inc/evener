@@ -175,6 +175,11 @@ While work is running, the tool results, job output, and notifications in front 
 Not a git repository.
 </git>
 
+## Commit provenance
+When you create a git commit, end the commit message with this exact line:
+Co-authored-by: Evener [version] ([instance]/[model]) <[session]@[host]>
+Do not add it to pull request descriptions. Do not amend a commit only to add it.
+
 <skill-catalog>
 Load a skill by calling use_skill with its name. Resolve relative references to scripts and other collateral against the response's base_directory, and load only the referenced resources needed for the current task when they are needed. Treat a slash token matching a canonical catalog name as a skill request only when it starts at message start or after whitespace and ends at message end or before whitespace, including inline prose; call use_skill with the exact catalog key before acting. Ignore paths, URLs, code or literal/negated mentions, and unknown names.
 - doctoring-evener: Use when diagnosing a evener session, job, watch, or the session tree — investigating watch runaways (self-influence depth + runaway-fuse drops), dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the evener doctor forensic tools, the Finding contract, runbook authoring, and graduated repair. [skill-path/doctoring-evener]

@@ -132,7 +132,7 @@ func TestGitHubProvenance(t *testing.T) {
 			}
 			records := readRecords(t, testGit(t, clone, nil, "cat-file", "commit", tip))
 			reachable := false
-			for _, ancestor := range strings.Fields(string(testGit(t, clone, nil, "rev-list", tip))) {
+			for ancestor := range strings.FieldsSeq(string(testGit(t, clone, nil, "rev-list", tip))) {
 				reachable = reachable || ancestor == source
 			}
 			if reachable != (method == "merge") {

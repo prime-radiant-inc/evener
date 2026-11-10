@@ -71,7 +71,7 @@ func readRecords(t *testing.T, raw []byte) []map[string]any {
 		t.Fatal("commit has no header separator")
 	}
 	var records []map[string]any
-	for _, line := range bytes.Split(headers, []byte("\n")) {
+	for line := range bytes.SplitSeq(headers, []byte("\n")) {
 		if data, found := bytes.CutPrefix(line, []byte("evener-provenance ")); found {
 			var record map[string]any
 			if err := json.Unmarshal(data, &record); err != nil {

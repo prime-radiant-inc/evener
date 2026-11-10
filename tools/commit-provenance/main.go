@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -50,7 +51,7 @@ func stamp(repo, revision string, record provenance) (string, error) {
 	}
 	headers, message, ok := bytes.Cut(raw, []byte("\n\n"))
 	if !ok {
-		return "", fmt.Errorf("commit has no header separator")
+		return "", errors.New("commit has no header separator")
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -58,7 +59,7 @@ func stamp(repo, revision string, record provenance) (string, error) {
 	}
 	line := append([]byte("evener-provenance "), data...)
 	alreadyPresent := false
-	for _, header := range bytes.Split(headers, []byte("\n")) {
+	for header := range bytes.SplitSeq(headers, []byte("\n")) {
 		if bytes.HasPrefix(header, []byte("gpgsig ")) || bytes.HasPrefix(header, []byte("gpgsig-sha256 ")) {
 			return "", errSignedCommit
 		}
@@ -78,7 +79,7 @@ func stamp(repo, revision string, record provenance) (string, error) {
 }
 
 func gitOutput(repo string, input []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = append(identifier.FilteredGitEnvironment(os.Environ()), "GIT_NO_REPLACE_OBJECTS=1")
 	cmd.Stdin = bytes.NewReader(input)
 	var stderr bytes.Buffer
@@ -101,8 +102,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&record.Host, "host", "", "execution host, required, becomes visible to repository readers")
 	flags.StringVar(&record.SessionID, "session", "", "contributing session ID, required")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: commit-provenance -commit REV -evener-version VERSION -model PROVIDER/MODEL -host HOST -session ID [-repo PATH]")
-		fmt.Fprintln(stderr, "Prototype: writes an unreferenced commit object and prints its ID. Leaves refs, index, worktree and hooks unchanged. Refuses signed commits. Use disposable repositories.")
+		_, _ = fmt.Fprintln(stderr, "Usage: commit-provenance -commit REV -evener-version VERSION -model PROVIDER/MODEL -host HOST -session ID [-repo PATH]")
+		_, _ = fmt.Fprintln(stderr, "Prototype: writes an unreferenced commit object and prints its ID. Leaves refs, index, worktree and hooks unchanged. Refuses signed commits. Use disposable repositories.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -117,11 +118,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	oid, err := stamp(*repo, *revision, record)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if _, err := fmt.Fprintln(stdout, oid); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0
