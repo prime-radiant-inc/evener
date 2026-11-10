@@ -39,6 +39,8 @@ func TestWorktreeList_RefusesFIFOCommondir(t *testing.T) {
 		if !errors.Is(err, errUntrustedWorktreeProject) {
 			t.Fatalf("main root error = %v, want the untrusted-project refusal", err)
 		}
+	// TRIPWIRE: the fixed validation returns in milliseconds; this only fires
+	// when the open blocks on the FIFO, which is the defect under test.
 	case <-time.After(2 * time.Second):
 		t.Fatal("managed-worktree validation blocked on a FIFO commondir")
 	}

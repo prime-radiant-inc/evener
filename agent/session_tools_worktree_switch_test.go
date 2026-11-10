@@ -1582,3 +1582,40 @@ func TestWorktreeList_RefusesMaskedCommondir(t *testing.T) {
 		t.Fatalf("main root error = %v, want the untrusted-project refusal", err)
 	}
 }
+
+// A workspace can contain a nested repository whose linked checkout lives
+// outside it. The nested repository's metadata is inside the retained
+// workspace, so containment alone accepts the external checkout; a forged
+// worktree registry entry must not make a different repository's Git dirs
+// writable (#3724 review).
+func TestWorktreeSwitchByPath_RejectsNestedRepositoriesExternalWorktree(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-nested-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	nested := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyWorktreeBaseRepo(t, nested)
+	_, head := worktreeBaseRepo(t)
+	external := canonicalFixtureTempDir(t, "worktree-nested-external-*")
+	wtGit(t, nested, "worktree", "add", "-q", "-b", "nested-lane", external, head)
+
+	_, _, env := newSandboxedFixtureSession(t, repo, "worktree-nested-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	if err := rejectUntrustedSwitchTarget(env, external); err == nil {
+		t.Fatal("switch target accepted another repository's external linked checkout")
+	}
+	layout, err := sandbox.ClassifyWorkspace(external)
+	if err != nil {
+		t.Fatalf("classify external checkout: %v", err)
+	}
+	next := &execenv.LocalExecutionEnvironment{
+		RootDir: external,
+		Sandbox: &sandbox.ResolvedPolicy{Git: layout},
+	}
+	if err := rejectUntrustedCandidateEnvironment(env, next); err == nil {
+		t.Fatal("candidate environment accepted another repository's external linked checkout")
+	}
+}

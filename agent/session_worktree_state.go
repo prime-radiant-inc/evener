@@ -537,6 +537,9 @@ func rejectUntrustedSwitchTarget(local *execenv.LocalExecutionEnvironment, targe
 	if err := rejectUntrustedNonGitLayout(layout, trusted); err != nil {
 		return err
 	}
+	if err := rejectUntrustedExternalGitLayout(policy, layout, trusted); err != nil {
+		return err
+	}
 	return rejectUntrustedGitMetadata(layout, trustedMetadataRoots(policy, trusted), policy.MaskedPaths)
 }
 
@@ -559,6 +562,9 @@ func rejectUntrustedCandidateEnvironment(local *execenv.LocalExecutionEnvironmen
 	if err := rejectUntrustedNonGitLayout(next.Sandbox.Git, trusted); err != nil {
 		return err
 	}
+	if err := rejectUntrustedExternalGitLayout(local.Sandbox, next.Sandbox.Git, trusted); err != nil {
+		return err
+	}
 	trustedMetadata := trustedMetadataRoots(local.Sandbox, trusted)
 	masked := local.Sandbox.MaskedPaths
 	if err := rejectUntrustedGitMetadata(next.Sandbox.Git, trustedMetadata, masked); err != nil {
@@ -570,6 +576,9 @@ func rejectUntrustedCandidateEnvironment(local *execenv.LocalExecutionEnvironmen
 		}
 		wrapperPolicy := next.Wrapper.Policy()
 		if err := rejectUntrustedNonGitLayout(wrapperPolicy.Git, trusted); err != nil {
+			return err
+		}
+		if err := rejectUntrustedExternalGitLayout(local.Sandbox, wrapperPolicy.Git, trusted); err != nil {
 			return err
 		}
 		if err := rejectUntrustedGitMetadata(wrapperPolicy.Git, trustedMetadata, masked); err != nil {
@@ -593,6 +602,42 @@ func rejectUntrustedNonGitLayout(layout sandbox.GitLayout, trusted string) error
 		return fmt.Errorf("%w: non-git target %s is outside the retained workspace %s", errUntrustedWorktreeProject, root, trusted)
 	}
 	return nil
+}
+
+// rejectUntrustedExternalGitLayout requires an external Git target to belong
+// to the retained repository. Containment alone cannot prove that: the
+// retained trusted roots include the whole workspace, so a nested repository's
+// external linked checkout has metadata under the workspace while its writable
+// Git dirs belong to a different repository. A forged worktree registry entry
+// naming that checkout must not widen the sandbox into it (#3724 review).
+func rejectUntrustedExternalGitLayout(retained *sandbox.ResolvedPolicy, layout sandbox.GitLayout, trusted string) error {
+	if retained == nil || layout.Kind == sandbox.NonGit {
+		return nil
+	}
+	if identifier.PathUnder(filepath.Clean(layout.WorktreeRoot), trusted) {
+		return nil
+	}
+	if retained.Git.CommonDir == "" || !sameCanonicalPath(layout.CommonDir, retained.Git.CommonDir) {
+		return fmt.Errorf("%w: external Git target %s belongs to another repository", errUntrustedWorktreeProject, layout.WorktreeRoot)
+	}
+	return nil
+}
+
+// sameCanonicalPath compares two paths after resolving each existing spelling,
+// so a repository named through a symlink still matches its canonical common
+// dir.
+func sameCanonicalPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ca, cb := filepath.Clean(a), filepath.Clean(b)
+	if resolved, err := filepath.EvalSymlinks(ca); err == nil {
+		ca = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(cb); err == nil {
+		cb = resolved
+	}
+	return ca == cb
 }
 
 // rejectUntrustedGitMetadata validates every Git metadata path a resolved
