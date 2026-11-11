@@ -173,6 +173,7 @@ const (
 	MethodEvenerMarketplaceEdit          = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse        = "evener/marketplace/browse"
 	MethodEvenerPluginList               = "evener/plugin/list"
+	MethodEvenerPluginComponents         = "evener/plugin/components"
 	MethodEvenerPluginInstall            = "evener/plugin/install"
 	MethodEvenerPluginUpgrade            = "evener/plugin/upgrade"
 	MethodEvenerPluginRemove             = "evener/plugin/remove"
@@ -180,7 +181,6 @@ const (
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
 	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
-	MethodEvenerPluginComponents         = "evener/plugin/components"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 

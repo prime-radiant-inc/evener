@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
@@ -137,11 +136,7 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 	if err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
-	names := make([]string, 0, len(mk))
-	for name := range mk {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(mk))
 	entries := make([]appwire.MarketplaceEntry, 0, len(names))
 	for _, name := range names {
 		ref := mk[name]
@@ -459,7 +454,7 @@ func barePluginMCPServerNames(instance agentplugin.Instance) []string {
 	for _, server := range instance.MCPConfigs {
 		names = append(names, strings.TrimPrefix(server.Name, prefix))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

@@ -436,14 +436,19 @@ function InstalledPluginRow({ plugin }: { plugin: MockPlugin }) {
 }
 
 function CatalogPluginRow({ plugin }: { plugin: MockPlugin }) {
+  // The mockup persists nothing, but the smoke test needs to see the shipped
+  // row's Install control reach a handler; the count is that observable.
+  const [installClicks, setInstallClicks] = useState(0);
   return (
-    <SharedCatalogPluginRow
-      plugin={plugin}
-      installed={plugin.installed}
-      installDisabled={false}
-      onOpen={() => {}}
-      onInstall={() => {}}
-    />
+    <div data-install-clicks={installClicks}>
+      <SharedCatalogPluginRow
+        plugin={plugin}
+        installed={plugin.installed}
+        installDisabled={false}
+        onOpen={() => {}}
+        onInstall={() => setInstallClicks((clicks) => clicks + 1)}
+      />
+    </div>
   );
 }
 
