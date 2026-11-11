@@ -29,6 +29,11 @@ package dev
 //	                       the test the operator asked to skip. Pinned by
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
+//	AGENT_SHARD_PART       k/m = run only every m-th shard, starting at shard
+//	                       k-1, so m CI runners split one package between
+//	                       them. Every part packs the same shards, which
+//	                       needs AGENT_SHARD_NO_SURVEY: survey caches are
+//	                       per runner and would pack each part differently.
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
@@ -102,6 +107,8 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// part selects the shards this run starts; the zero value runs them all.
+	part shardPart
 	// liveStack builds ./cmd/evener once, before any child runs, and exports
 	// the directory to every process through shardrun.PrebuiltBinDirEnv. The
 	// hub package's TestMain warms the same binaries otherwise, once per shard
@@ -178,6 +185,11 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
+	part, err := envShardPart(env("PART"), count, envFlag(env("NO_SURVEY")), env("NO_SURVEY"))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
+		return 1
+	}
 	// Two deep, because a second signal must be waiting when the first is
 	// still being handled.
 	signals := make(chan os.Signal, 2)
@@ -195,6 +207,7 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		skip:           os.Getenv(env("SKIP")),
 		noSurvey:       envFlag(env("NO_SURVEY")),
 		resurvey:       envFlag(env("RESURVEY")),
+		part:           part,
 		cacheDir:       os.Getenv(env("CACHE_DIR")),
 		flags:          args,
 		stdout:         os.Stdout,
@@ -301,6 +314,41 @@ func envNonNegativeInt(name string, def int) (int, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer (got %q)", name, raw)
 	}
 	return n, nil
+}
+
+// shardPart is one of several runs that split a single packing's shards:
+// part index of count, zero-based, runs shards index, index+count, and so on.
+// The zero value is the whole run.
+type shardPart struct {
+	index, count int
+}
+
+// runs reports whether the part starts shard i.
+func (p shardPart) runs(i int) bool {
+	return p.count == 0 || i%p.count == p.index
+}
+
+// envShardPart reads a k/m part (1 <= k <= m) from name. Unset is the whole
+// run. Each part must have a shard to run, and every part must pack the same
+// shards, which only the survey-free equal weighting guarantees.
+func envShardPart(name string, shards int, noSurvey bool, noSurveyName string) (shardPart, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return shardPart{}, nil
+	}
+	k, m, found := strings.Cut(raw, "/")
+	index, errK := strconv.Atoi(k)
+	count, errM := strconv.Atoi(m)
+	if !found || errK != nil || errM != nil || count < 1 || index < 1 || index > count {
+		return shardPart{}, fmt.Errorf("%s must be k/m with 1 <= k <= m (got %q)", name, raw)
+	}
+	if count > shards {
+		return shardPart{}, fmt.Errorf("%s=%s splits %d shards into more parts than there are shards", name, raw, shards)
+	}
+	if !noSurvey {
+		return shardPart{}, fmt.Errorf("%s needs %s=1: a survey is per-runner state, and parts packed from different surveys would run some tests twice and others never", name, noSurveyName)
+	}
+	return shardPart{index: index - 1, count: count}, nil
 }
 
 // envFlag reads the script's `-eq 0` convention: unset and "0" are off,
@@ -559,6 +607,15 @@ func runShards(cfg shardsConfig) int {
 		}
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: %d shards, -parallel %d each\n", cfg.label, len(bins), cfg.parallel)
+	selected := 0
+	for i := range bins {
+		if cfg.part.runs(i) {
+			selected++
+		}
+	}
+	if selected < len(bins) {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: part %d/%d runs %d of the %d shards\n", cfg.label, cfg.part.index+1, cfg.part.count, selected, len(bins))
+	}
 
 	// A shard is one OS process, so cfg.parallel bounds only the tests inside
 	// it. limit bounds the processes themselves: on a busy host or a
@@ -567,11 +624,11 @@ func runShards(cfg shardsConfig) int {
 	// or one at least the shard count, starts every shard at once: the
 	// historical behavior and what an idle run still gets.
 	limit := cfg.concurrency
-	if limit < 1 || limit > len(bins) {
-		limit = len(bins)
+	if limit < 1 || limit > selected {
+		limit = selected
 	}
-	if limit < len(bins) {
-		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, len(bins))
+	if limit < selected {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, selected)
 	}
 	slots := make(chan struct{}, limit)
 
@@ -611,6 +668,9 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
+		if !cfg.part.runs(i) {
+			continue
+		}
 		select {
 		case slots <- struct{}{}:
 		default:

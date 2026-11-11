@@ -47,7 +47,7 @@ func TestRunReportsBothSidesOfAMove(t *testing.T) {
 		t.Fatalf("exit %d, stderr:\n%s", code, stderr.String())
 	}
 	got := parseOutputs(t, stdout.String())
-	// The agent side runs race-module-shards/agent and the root side runs
+	// The agent side runs both race-module-shards agent parts and the root side runs
 	// race-root-parts/rest, so neither appears among the exclusions.
 	want := map[string]string{
 		"skip":                       `["web-unit","web-browser","native","api-package","hub-integration"]`,

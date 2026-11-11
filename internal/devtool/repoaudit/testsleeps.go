@@ -16,7 +16,7 @@ import (
 // testSleepBaseline is the most time.Sleep calls Go tests may hold. When the
 // check's NOTE reports a lower count, set this to that count in the same
 // change. See "Waiting in Go tests" in docs/developing-evener/testing.md.
-const testSleepBaseline = 290
+const testSleepBaseline = 285
 
 // testSleepsStayWithinBaseline is the ratchet behind the testing doc's "never
 // a fixed sleep": the time.Sleep calls in tracked Go tests may not outnumber

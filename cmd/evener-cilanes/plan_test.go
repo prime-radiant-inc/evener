@@ -236,7 +236,7 @@ func TestLeafAgentPackageRunsOnlyTheAgentModuleLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "agent/leaf/leaf.go"), append([]string{
 		"fuzz",
 		"tests-parts/nonroot",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 	}, goSourceLanes...)...)
 }
 
@@ -250,7 +250,7 @@ func TestImportedAgentPackageRunsTheLanesOfItsImporters(t *testing.T) {
 		"tests-parts/nonroot",
 		"race-root-parts/hub",
 		"race-root-parts/rest",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 		"hub-integration",
 		"web-browser",
 	}, goSourceLanes...)...)
@@ -262,7 +262,7 @@ func TestTestOnlyChangeRunsOnlyItsOwnPackagesLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "agent/session/session_test.go"), append([]string{
 		"fuzz",
 		"tests-parts/nonroot",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 	}, goSourceLanes...)...)
 }
 
@@ -274,7 +274,7 @@ func TestDevBinaryDependencyRunsWebUnit(t *testing.T) {
 		"tests-parts/root",
 		"tests-parts/nonroot",
 		"race-root-parts/rest",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 		"web-unit",
 		"web-browser",
 	}, goSourceLanes...)...)
@@ -290,7 +290,7 @@ func TestPackageBuiltByATestRunsThatTestsLanes(t *testing.T) {
 		"tests-parts/nonroot",
 		"race-root-parts/hub",
 		"race-root-parts/rest",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 		"hub-integration",
 		"web-browser",
 	}, goSourceLanes...)...)
@@ -353,7 +353,7 @@ func TestEmbeddedFileRunsTheEmbeddingPackagesLanes(t *testing.T) {
 		"tests-parts/nonroot",
 		"race-root-parts/hub",
 		"race-root-parts/rest",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 		"hub-integration",
 	}, typeScriptLanes...)...)
 }
@@ -442,7 +442,7 @@ var list = exec.Command("git", "ls-files", "-z")
 			requireRuns(t, planFixtureWith(t, extra, "agent/leaf/leaf.go"), append([]string{
 				"fuzz",
 				"tests-parts/nonroot",
-				"race-module-shards/agent",
+				"race-module-shards/agent-1", "race-module-shards/agent-2",
 				"race-module-shards/nonagent",
 			}, goSourceLanes...)...)
 			requireRuns(t, planFixtureWith(t, extra, "cmd/evener-hub/frontend/src/other.ts"), append([]string{
@@ -532,7 +532,7 @@ var list = exec.Command("git", "ls-files", "-z")
 // tree, where vitest runs. A change to that Go file runs the TypeScript
 // lanes; Go nothing in a tree names still skips them.
 func TestGoFileATypeScriptTestReadsRunsTheTypeScriptLanes(t *testing.T) {
-	leafLanes := append([]string{"fuzz", "tests-parts/nonroot", "race-module-shards/agent"}, goSourceLanes...)
+	leafLanes := append([]string{"fuzz", "tests-parts/nonroot", "race-module-shards/agent-1", "race-module-shards/agent-2"}, goSourceLanes...)
 	for name, reader := range map[string]map[string]string{
 		"raw import from the file": {"appwire-client/typescript/src/leaf.test.ts": "import leafGo from \"../../../agent/leaf/leaf.go?raw\";\n"},
 		"path from the tree":       {"mobile-native/src/leaf.test.ts": "const s = readFileSync(path.resolve(process.cwd(), '../agent/leaf/leaf.go'), 'utf8');\n"},
@@ -548,7 +548,7 @@ func TestMixedChangeRunsTheUnionOfItsFilesLanes(t *testing.T) {
 	requireRuns(t, planFixture(t, "agent/leaf/leaf.go", "mobile-native/src/app.tsx"), append([]string{
 		"fuzz",
 		"tests-parts/nonroot",
-		"race-module-shards/agent",
+		"race-module-shards/agent-1", "race-module-shards/agent-2",
 		"web-unit",
 		"web-browser",
 		"native",

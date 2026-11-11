@@ -792,7 +792,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	// ways.
 	profile := namedInstanceProfile("tiny", "openai", "m")
 	input := strings.Repeat("a", 40)
-	window := standingRequestTokens(t, dir, profile, input) * 11 / 10
+	window := standingRequestTokens(t, dir, profile, SessionConfig{}, input) * 11 / 10
 
 	sess := newSession(t, withClient(c), withProfile(WithContextWindow(profile, window)), withDir(dir), withConfig(SessionConfig{}))
 	// This test scripts exactly one model step and crosses the compaction threshold;

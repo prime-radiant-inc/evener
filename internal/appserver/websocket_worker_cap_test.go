@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // parkedSlowReadServer builds a captureLogf server whose thread/read handler
@@ -265,7 +266,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 		t.Fatalf("frame = %+v, want ping response id 100", pong)
 	}
 
-	waitUntil(t, "the stall advisory reaches Logf", func() bool {
+	testwait.Until(t, "the stall advisory to reach Logf", func() bool {
 		return strings.Contains(logged(), "parked")
 	})
 	var stall string
@@ -306,7 +307,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryIsRateLimited(t *testing.T) {
 	server.slowReadStallThreshold = 100 * time.Millisecond
 	transport, _ := rawParkedCapConnection(t, server, started)
 
-	waitUntil(t, "the first stall advisory to reach Logf", func() bool {
+	testwait.Until(t, "the first stall advisory to reach Logf", func() bool {
 		return strings.Contains(logged(), "parked")
 	})
 	// Hold the wedge ~3.5 more advisory intervals, then count. A ready
@@ -472,7 +473,7 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	// The slot frees just after the response is queued, so the client can
 	// hear the answer a moment before the slot is back; wait for the slot.
 	conn := registeredConnection(t, server)
-	waitUntil(t, "the finished request's slot to free", func() bool {
+	testwait.Until(t, "the finished request's slot to free", func() bool {
 		conn.requestPoolsMu.Lock()
 		defer conn.requestPoolsMu.Unlock()
 		return conn.requestPools["lists"] < concurrentRequestCap
@@ -637,7 +638,7 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	// Ends either way: the second request either waits in the queue or runs.
 	// Seen in the queue, it stays there: the worker that would dequeue it is
 	// the one running the first request.
-	waitUntil(t, "the second request to queue or run", func() bool {
+	testwait.Until(t, "the second request to queue or run", func() bool {
 		return len(conn.requests) == 1 || len(entered) > 0
 	})
 	if len(entered) > 0 {
@@ -734,7 +735,7 @@ func TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool(t *testing.T) {
 				t.Fatalf("released request: %v", err)
 			}
 		}
-		waitUntil(t, "the drained pool to be forgotten", func() bool {
+		testwait.Until(t, "the drained pool to be forgotten", func() bool {
 			conn.requestPoolsMu.Lock()
 			defer conn.requestPoolsMu.Unlock()
 			return len(conn.requestPools) == 0 && len(conn.requestPoolSaturationAdvised) == 0

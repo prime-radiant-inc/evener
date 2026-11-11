@@ -277,28 +277,36 @@ merge-approval-gate:
 # instead of paying it twice.
 RACE_SCOPE ?= all
 RACE_ROOT_PART ?= all
+RACE_AGENT_PART ?= all
 ## The permanent -race gate across every non-fuzz module.
 ## proves: Data races in the non-fuzz modules surface; frontend is
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
-##   AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's
-##   ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub
+##   AGENT_SHARDS=0 (unless RACE_AGENT_PART splits it) and AGENT_PARALLEL=6 to
+##   cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub
 ##   shards, no cost survey: under -race the survey costs as much as the run).
 ##   RACE_SCOPE defaults to all; CI uses the
-##   explicit root scope plus agent and nonagent on separate runners. The two
+##   explicit root scope plus two agent parts and nonagent on separate
+##   runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
 ##   RACE_ROOT_PART (root scope only) splits the root module across runners:
 ##   all (default), hub (only cmd/evener-hub's shards), or rest (everything
-##   else in the root module).
+##   else in the root module). RACE_AGENT_PART (agent scope only) splits the
+##   agent module the same way: all (default, one unsharded go test) or k/m,
+##   which runs part k of m of 8 equally weighted agent shards, the module's
+##   subpackages riding with the last part.
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		case "$(RACE_ROOT_PART)" in all) hub=1; cli=1; rest=1;; hub) hub=1; cli=elsewhere; rest=0;; rest) hub=elsewhere; cli=1; rest=1;; *) echo "make test-race: RACE_ROOT_PART must be all, hub, or rest (got $(RACE_ROOT_PART))" >&2; exit 2;; esac; \
 		test "$(RACE_ROOT_PART)" = all || test "$(RACE_SCOPE)" = root || { echo "make test-race: RACE_ROOT_PART=$(RACE_ROOT_PART) needs RACE_SCOPE=root" >&2; exit 2; }; \
+		case "$(RACE_AGENT_PART)" in all) agent=0; agent_part=;; */*) agent=1; agent_part="$(RACE_AGENT_PART)";; *) echo "make test-race: RACE_AGENT_PART must be all or k/m (got $(RACE_AGENT_PART))" >&2; exit 2;; esac; \
+		test "$(RACE_AGENT_PART)" = all || test "$(RACE_SCOPE)" = agent || { echo "make test-race: RACE_AGENT_PART=$(RACE_AGENT_PART) needs RACE_SCOPE=agent" >&2; exit 2; }; \
 		modules="$(strip $(SCOPE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
+		MODULES="$$modules" WEB=0 AGENT_SHARDS=$$agent AGENT_PARALLEL=6 \
+		AGENT_SHARD_NO_SURVEY=1 AGENT_SHARD_PART=$$agent_part \
 		EVENER_GATE_KEEP_HUB_INTEGRATION=1 \
 		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
 		scripts/gate/run-module-tests.sh -race -short -count=1
