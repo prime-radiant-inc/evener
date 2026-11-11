@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/gittest"
 )
@@ -128,25 +129,49 @@ func TestProfileTestsCachesByTestBinary(t *testing.T) {
 	}
 }
 
-// A package run that crashed covers only the tests before the crash, so it is
-// an error and is not cached: the run after the cause is gone runs afresh.
+// A package run that did not finish its tests (a panic, an exit before any
+// test, or a hang where the testing package's timeout cannot reach) covers
+// only part of the package, so it is an error and is not cached: the run after
+// the cause is gone runs afresh. A single test whose binary wrote no profile
+// fails rather than caching an empty one.
 func TestProfileRestRefusesToCacheACrashedRun(t *testing.T) {
-	r, _ := fixtureRunner(t)
-	t.Setenv("FIXTURE_PANIC", "1")
-	if _, err := r.ProfileRest(t.Context(), nil); err == nil {
-		t.Fatal("a package run that panicked returned a profile")
-	}
-	t.Setenv("FIXTURE_PANIC", "")
-	rest, err := r.ProfileRest(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("ProfileRest after the panic is gone: %v", err)
-	}
-	p, err := LoadProfile(rest.Profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Covered() == 0 {
-		t.Fatalf("the rerun returned an empty profile: %d of %d", p.Covered(), p.Total())
+	for _, tc := range []struct {
+		env string
+		// wholeBinary: the cause stops every test, not only the one that panics.
+		wholeBinary bool
+	}{{"FIXTURE_PANIC", false}, {"FIXTURE_EXIT_EARLY", true}, {"FIXTURE_INIT_HANG", true}} {
+		env := tc.env
+		t.Run(env, func(t *testing.T) {
+			r, _ := fixtureRunner(t)
+			r.testTimeout, r.restTimeout = time.Second, time.Second
+			t.Setenv(env, "1")
+			if _, err := r.ProfileRest(t.Context(), nil); err == nil {
+				t.Fatal("an unfinished package run returned a profile")
+			}
+			if tc.wholeBinary {
+				runs, err := r.ProfileTests(t.Context(), []string{"TestSignZero"})
+				if err != nil {
+					t.Fatalf("ProfileTests: %v", err)
+				}
+				if runs[0].Status != StatusFailed {
+					t.Fatalf("a test whose binary did not finish is %s, want failed", runs[0].Status)
+				}
+			}
+			t.Setenv(env, "")
+			// The rerun is a real package run; give it the real budget.
+			r.testTimeout, r.restTimeout = defaultTestTimeout, defaultRestTimeout
+			rest, err := r.ProfileRest(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("ProfileRest after the cause is gone: %v", err)
+			}
+			p, err := LoadProfile(rest.Profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Covered() == 0 {
+				t.Fatalf("the rerun returned an empty profile: %d of %d", p.Covered(), p.Total())
+			}
+		})
 	}
 }
 

@@ -4,7 +4,25 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
+
+// init hangs before any test when FIXTURE_INIT_HANG is set, where the testing
+// package's own timeout cannot reach it.
+func init() {
+	if os.Getenv("FIXTURE_INIT_HANG") != "" {
+		time.Sleep(time.Hour)
+	}
+}
+
+// TestMain exits successfully without running a test when FIXTURE_EXIT_EARLY
+// is set, so the binary writes no coverage profile.
+func TestMain(m *testing.M) {
+	if os.Getenv("FIXTURE_EXIT_EARLY") != "" {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // recordRun appends the running test's name to the file FIXTURE_RUN_LOG names,
 // so a test of the profile cache can see which tests really ran.

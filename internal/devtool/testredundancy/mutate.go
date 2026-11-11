@@ -153,7 +153,7 @@ func (r *Runner) baselineProblem(ctx context.Context, bin, pattern string) (stri
 	if pattern == "" {
 		return "an empty run pattern selects every test", nil
 	}
-	run, err := r.runBinary(ctx, bin, false, testTimeout, "-test.run="+pattern)
+	run, err := r.runBinary(ctx, bin, false, r.testTimeout, "-test.run="+pattern)
 	switch {
 	case err != nil:
 		return "", err
@@ -179,15 +179,17 @@ func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res Mut
 		res.Detail = fmt.Sprintf("old text occurs %d times", n)
 		return res, nil
 	}
-	if err := os.WriteFile(path, bytes.Replace(src, []byte(m.Old), []byte(m.New), 1), 0o644); err != nil {
-		return res, err
-	}
+	// The restore is registered before the write, so a write that truncates
+	// the file and then fails is restored too, and it runs even when ctx is
+	// cancelled mid-mutation.
 	defer func() {
-		// A restore must run even when ctx is cancelled mid-mutation.
 		if _, rerr := r.git(context.WithoutCancel(ctx), "restore", "--", path); rerr != nil {
 			err = errors.Join(err, fmt.Errorf("restoring %s: %w", m.File, rerr))
 		}
 	}()
+	if err := os.WriteFile(path, bytes.Replace(src, []byte(m.Old), []byte(m.New), 1), 0o644); err != nil {
+		return res, err
+	}
 
 	if berr := r.goTestBuild(ctx, bin); berr != nil {
 		if !errors.Is(berr, errBuild) {
@@ -196,7 +198,7 @@ func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res Mut
 		res.Detail = berr.Error()
 		return res, nil
 	}
-	run, err := r.runBinary(ctx, bin, false, testTimeout, "-test.run="+m.Run)
+	run, err := r.runBinary(ctx, bin, false, r.testTimeout, "-test.run="+m.Run)
 	if err != nil {
 		return res, err
 	}

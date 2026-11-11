@@ -46,8 +46,8 @@ type RestRun struct {
 }
 
 const (
-	testTimeout = 10 * time.Minute // one test alone, or one mutation's tests
-	restTimeout = 90 * time.Minute // the whole package in one process
+	defaultTestTimeout = 10 * time.Minute // one test alone, or one mutation's tests
+	defaultRestTimeout = 90 * time.Minute // the whole package in one process
 )
 
 // Runner profiles one package's tests through a single cover-instrumented test
@@ -60,6 +60,8 @@ type Runner struct {
 	importPath string
 	cacheDir   string
 	log        io.Writer // one progress line per test run
+
+	testTimeout, restTimeout time.Duration
 }
 
 // testBinary is one build of the package's cover test binary and the cache
@@ -92,7 +94,10 @@ func NewRunner(ctx context.Context, pkgDir, cacheDir string, log io.Writer) (*Ru
 	if cacheDir, err = filepath.Abs(cacheDir); err != nil {
 		return nil, err
 	}
-	return &Runner{pkgDir: pkgDir, absDir: absDir, importPath: importPath, cacheDir: cacheDir, log: log}, nil
+	return &Runner{
+		pkgDir: pkgDir, absDir: absDir, importPath: importPath, cacheDir: cacheDir, log: log,
+		testTimeout: defaultTestTimeout, restTimeout: defaultRestTimeout,
+	}, nil
 }
 
 func goOutput(ctx context.Context, dir string, args ...string) (string, error) {
@@ -175,19 +180,19 @@ func (r *Runner) goTestBuild(ctx context.Context, bin string, flags ...string) e
 
 // binaryRun is what one run of the test binary showed.
 type binaryRun struct {
-	out     []byte
-	failed  []string // top-level tests reported as failed
-	exitErr bool     // the binary exited nonzero
-	noTests bool     // -test.run matched nothing
-	panic   bool     // a panic or timeout ended the binary
-	profile string   // the coverage profile it wrote, which the caller owns
+	out      []byte
+	failed   []string // top-level tests reported as failed
+	exitErr  bool     // the binary exited nonzero
+	noTests  bool     // -test.run matched nothing
+	cutShort bool     // a panic, timeout or hang ended the binary, or it wrote no profile
+	profile  string   // the coverage profile it wrote, which the caller owns
 }
 
 // crashed reports a run that ended before its tests finished: a panic, a
-// -test.timeout, or a nonzero exit with no failed test to account for it. Its
-// profile is missing or partial.
+// timeout or hang, an exit before writing its profile, or a nonzero exit with
+// no failed test to account for it. Its profile is missing or partial.
 func (b binaryRun) crashed() bool {
-	return b.panic || (b.exitErr && len(b.failed) == 0)
+	return b.cutShort || (b.exitErr && len(b.failed) == 0)
 }
 
 // noTestsRun is the testing package's report that -test.run matched nothing.
@@ -227,7 +232,11 @@ func (r *Runner) runBinary(ctx context.Context, bin string, withProfile bool, ti
 		}
 		return binaryRun{}, err
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	// The testing package's timeout cannot fire before tests start, so a hang
+	// in init or TestMain is bounded here, after giving that timeout its turn.
+	runCtx, cancel := context.WithTimeout(ctx, timeout+timeout/10+time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, bin, args...)
 	cmd.Dir = r.absDir
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -251,11 +260,28 @@ func (r *Runner) runBinary(ctx context.Context, bin string, withProfile bool, ti
 	run.out = out.Bytes()
 	run.exitErr = exit != nil
 	run.noTests = bytes.Contains(run.out, noTestsRun)
-	run.panic = panicLine.Match(run.out)
+	run.cutShort = panicLine.Match(run.out) || runCtx.Err() != nil
+	if withProfile && !run.noTests && !profileWritten(run.profile) {
+		run.cutShort = true
+	}
 	for _, m := range failLine.FindAllSubmatch(run.out, -1) {
 		run.failed = append(run.failed, string(m[1]))
 	}
 	return run, nil
+}
+
+// profileWritten reports whether the binary wrote a coverage profile: the file
+// starts with its mode header. A binary that exits before its tests leaves the
+// empty placeholder.
+func profileWritten(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, len("mode:"))
+	_, err = io.ReadFull(f, head)
+	return err == nil && string(head) == "mode:"
 }
 
 // writeFileAtomic writes data to a unique temporary file and renames it over
@@ -300,13 +326,13 @@ func (r *Runner) profileTests(ctx context.Context, bin testBinary, names []strin
 			continue
 		}
 		start := time.Now()
-		res, err := r.runBinary(ctx, bin.path, true, testTimeout, "-test.run=^"+regexp.QuoteMeta(name)+"$")
+		res, err := r.runBinary(ctx, bin.path, true, r.testTimeout, "-test.run=^"+regexp.QuoteMeta(name)+"$")
 		if err != nil {
 			return runs, fmt.Errorf("%s: %w", name, err)
 		}
 		var run TestRun
 		switch {
-		case res.exitErr:
+		case res.exitErr || res.crashed():
 			run = TestRun{Name: name, Status: StatusFailed, Output: string(res.out)}
 		case res.noTests:
 			run = TestRun{Name: name, Status: StatusMissing}
@@ -358,7 +384,7 @@ func (r *Runner) profileRest(ctx context.Context, bin testBinary, skip []string)
 		args = append(args, "-test.skip=^("+strings.Join(quoted, "|")+")$")
 	}
 	start := time.Now()
-	res, err := r.runBinary(ctx, bin.path, true, restTimeout, args...)
+	res, err := r.runBinary(ctx, bin.path, true, r.restTimeout, args...)
 	if err != nil {
 		return RestRun{}, err
 	}
