@@ -338,7 +338,16 @@ navigation summaries carry no frame trace and every session row must stay one li
 is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red diamond = Failed, turning alive
 ring = Working. The shape difference keeps needs-you and failed distinct without hue, and the
 accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
-no indicator. The visible face is indicator, title, and age/actions only. Project,
+no indicator.
+
+**Rail header.** One row carries the `evener` wordmark at the left and the Settings, Search and
+Hide-sidebar icons hard right, so the app's name and its global actions share a line. The
+wordmark never truncates: the row is sized to fit at the 200px sidebar minimum. A needs-you chip
+sits in the same identity block, 4px under that row, rather than equidistant between it and the
+New-session button, which follows a run (8px) below. The rail names the product once; it does not
+also print the hub's advertised server name, which is the constant `evener-hub` on every hub.
+
+The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars

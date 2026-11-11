@@ -272,11 +272,11 @@ function writeBool(name: string, value: boolean): void {
 // aria-valuemin/aria-valuemax, and the drag arithmetic itself.
 //
 // SIDEBAR_WIDTH_MIN is measured against the rail's own header content rather
-// than picked for looks: at 200px the brand row, the full-width search field
-// (its "Search" label plus the ⌘K chord) and the "+ New session" button all
-// still render on one line each inside the header's 2×var(--space-4) padding,
-// verified in a real browser at every font-size pref. Narrower starts
-// clipping the search field's chord.
+// than picked for looks: at 200px the brand row (the `evener` wordmark and the
+// Settings/Search/Hide-sidebar icons, with no ellipsis on the wordmark) and
+// the "+ New session" button all still render on one line each inside the
+// header's 2×var(--space-4) padding, verified in a real browser at every
+// font-size pref. Narrower starts clipping the wordmark.
 // SIDEBAR_WIDTH_MAX keeps the rail a sidebar: past ~560px it starts eating
 // the workspace dockview needs rather than buying any more title text (rows
 // truncate with an ellipsis, so extra width has diminishing returns).
@@ -284,9 +284,25 @@ export const SIDEBAR_WIDTH_MIN = 200;
 export const SIDEBAR_WIDTH_MAX = 560;
 export const SIDEBAR_WIDTH_DEFAULT = 280;
 
+// SIDEBAR_WIDTH_MIN_TOUCH is that same measurement on a coarse pointer, where
+// each icon button takes the 44px tap floor instead of its 32px square and the
+// row no longer fits at 200px. Measured in a real browser, the row needs
+// 232/237/242/249px at the s/m/l/xl font-size prefs, so this is the smallest
+// 16px-grid step that fits all four with the wordmark intact. Below it the
+// row's content overflows the rail and Hide sidebar paints outside the sidebar.
+export const SIDEBAR_WIDTH_MIN_TOUCH = 256;
+
+/** The width floor for this input. A touch target is 44px, not 32px, so the
+ * header's own content sets a higher floor there. Read at call time rather than
+ * captured, because a 2-in-1 can gain or lose a touchscreen mid-session. */
+export function sidebarWidthMin(): number {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return SIDEBAR_WIDTH_MIN;
+  return window.matchMedia("(any-pointer: coarse)").matches ? SIDEBAR_WIDTH_MIN_TOUCH : SIDEBAR_WIDTH_MIN;
+}
+
 export function clampSidebarWidth(value: number): number {
   if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
-  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, value)));
+  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(sidebarWidthMin(), value)));
 }
 
 // Numeric prefs persist as a plain base-10 string. Anything unparseable
