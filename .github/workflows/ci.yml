@@ -9,6 +9,14 @@ on:
   # scripts/ops/pr-ci-watchdog.sh), and a workflow without this trigger cannot
   # be re-dispatched for the pushed head.
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Base SHA or ref for the Go dependency review"
+        required: false
+      acknowledged:
+        description: "A reviewer acknowledged the Go dependency changes"
+        type: boolean
+        default: false
   # The merge queue tests each queued PR on top of main and the PRs ahead of
   # it, and main requires the same checks on that candidate.
   merge_group:
@@ -503,9 +511,110 @@ jobs:
         with:
           job-status: ${{ job.status }}
 
+  # Every new or changed Go module is reviewable per change instead of on a
+  # calendar (issue #614). The module graph is compared with the PR base and
+  # each added, removed, or version-changed module is listed with its license.
+  # A clean graph passes. A changed graph needs an explicit acknowledgement:
+  # the `go-dependency-reviewed` label or an approving review. On push and
+  # merge_group events the command exits before comparing, so the required
+  # aggregate never sees a skip.
+  go-dependency-review:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'go-dependency-review') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Reads the PR's labels and reviews for the acknowledgement gate.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The base revision is read in a detached worktree.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: go-dependency-review
+
+      - name: Resolve the dispatch base and acknowledgement
+        id: dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.ref_name }}
+          BASE_INPUT: ${{ github.event.inputs.base }}
+          ACK_INPUT: ${{ github.event.inputs.acknowledged }}
+        run: |
+          set -euo pipefail
+          base="$BASE_INPUT"
+          acknowledged=""
+          if [ "$ACK_INPUT" = "true" ]; then
+            acknowledged=true
+          fi
+          if [ -z "$base" ] || [ -z "$acknowledged" ]; then
+            pr="$(gh pr view "$HEAD_REF" --repo "$GITHUB_REPOSITORY" \
+              --json baseRefOid,labels,reviews 2>/dev/null || true)"
+            if [ -z "$pr" ]; then
+              echo "No pull request is associated with $HEAD_REF; pass the base input." >&2
+              exit 1
+            fi
+            if [ -z "$base" ]; then
+              base="$(jq -r '.baseRefOid // empty' <<<"$pr")"
+            fi
+            if [ -z "$acknowledged" ]; then
+              acknowledged="$(jq -r 'if any(.labels[]; .name == "go-dependency-reviewed") or any(.reviews[]; .state == "APPROVED") then "true" else "false" end' <<<"$pr")"
+            fi
+          fi
+          if [ -z "$base" ]; then
+            echo "Could not resolve a base for $HEAD_REF; pass the base input." >&2
+            exit 1
+          fi
+          resolved="$(git rev-parse --verify "$base^{commit}" 2>/dev/null || git rev-parse --verify "origin/$base^{commit}" 2>/dev/null || true)"
+          if [ -z "$resolved" ]; then
+            echo "Base $base is not present in this checkout; fetch it or pass a reachable SHA." >&2
+            exit 1
+          fi
+          echo "base=$resolved" >> "$GITHUB_OUTPUT"
+          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
+
+      - name: Check for a reviewer acknowledgement
+        id: ack
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          labels="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')"
+          approved="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')"
+          acknowledged=false
+          if grep -qx 'go-dependency-reviewed' <<<"$labels" || [ "${approved:-0}" -gt 0 ]; then
+            acknowledged=true
+          fi
+          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
+
+      - name: Compare the Go module graph with the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch.outputs.base }}
+          ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged || steps.dispatch.outputs.acknowledged }}
+          ACK_INPUT: ${{ github.event.inputs.acknowledged }}
+        run: |
+          go run ./cmd/evener-go-deps \
+            --event "$EVENT_NAME" \
+            --base "$BASE_SHA" \
+            --acknowledged="${ACKNOWLEDGED:-${ACK_INPUT:-false}}" \
+            --download
+
+      - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
   static:
     if: always()
-    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
+    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, go-dependency-review, api-package, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
