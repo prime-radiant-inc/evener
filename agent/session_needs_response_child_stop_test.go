@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -47,8 +48,7 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 			if started := (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "work until stopped", 0); started.result.Err != nil {
 				t.Fatalf("start the child: %v", started.result.Err)
 			}
-			// TRIPWIRE: the child reaches its model call in milliseconds.
-			waitForCondition(t, 30*time.Second, "the child to be working", root.hasWorkingSubagent)
+			testwait.Until(t, "the child to be working", root.hasWorkingSubagent)
 			if _, err := root.ProcessInput(ctx, "hello", nil); err != nil {
 				t.Fatal(err)
 			}

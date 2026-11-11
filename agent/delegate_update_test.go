@@ -21,6 +21,7 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -589,7 +590,7 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("the idle coordinator was never woken by its worker's update")
 		}
-		if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
+		if generation := settledUpdateAttentionConsumedFor(t, coordinator); generation != 0 {
 			t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
 		}
 		// The scripted adapter answers a request past its script with a plain
@@ -602,7 +603,7 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 			t.Fatalf("the coordinator made %d model requests, want its 3 scripted steps", got)
 		}
 		releaseReport()
-		awaitRootReport(t, root)
+		requireSettledRootReport(t, root)
 	})
 }
 
@@ -668,7 +669,7 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 		case <-time.After(30 * time.Second):
 			t.Fatal("the coordinator's drain turn never relayed")
 		}
-		awaitRootReport(t, root)
+		requireSettledRootReport(t, root)
 		fold := rootAttentionFold(t, root)
 		updateAt := slices.IndexFunc(fold.order, isDelegateUpdateAttentionID)
 		reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
@@ -819,7 +820,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the draining coordinator was never woken by the update")
 	}
-	awaitRootReport(t, root)
+	requireSettledRootReport(t, root)
 	if failingWrites != nil {
 		// The coordinator's run was not failed by the bookkeeping error.
 		fold := rootAttentionFold(t, root)
@@ -918,7 +919,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 			t.Fatalf("the update turn's later request did not present both updates:\n%s", text)
 		}
 		releaseReport()
-		awaitRootReport(t, root)
+		requireSettledRootReport(t, root)
 	})
 }
 
@@ -997,30 +998,49 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	}
 }
 
-// updateAttentionConsumedFor waits until sess's transcript resolves the update
-// attention it received as consumed, and returns the generation that consumed
+// consumedUpdateGeneration reports whether sess's transcript resolves the
+// update attention it received as consumed, and the generation that consumed
 // it: zero when the generation that presented it consumed it at its turn's
 // end, an attention generation's number when one was started for it.
-func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
-	t.Helper()
+func consumedUpdateGeneration(sess *Session) (generation uint64, consumed bool) {
 	sess.mu.Lock()
 	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
 	sess.mu.Unlock()
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return 0, false
+	}
+	for attentionID, resolution := range fold.resolutions {
+		if isDelegateUpdateAttentionID(attentionID) && resolution == delegateAttentionConsumed {
+			return fold.resumeGenerations[attentionID], true
+		}
+	}
+	return 0, false
+}
+
+// updateAttentionConsumedFor waits until consumedUpdateGeneration holds and
+// returns the consuming generation, for a test outside a synctest bubble.
+func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
+	t.Helper()
 	var generation uint64
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the update's attention to be consumed", func() bool {
-		fold, err := readDelegateAttentionFold(path, sessionID)
-		if err != nil {
-			return false
-		}
-		for attentionID, resolution := range fold.resolutions {
-			if isDelegateUpdateAttentionID(attentionID) && resolution == delegateAttentionConsumed {
-				generation = fold.resumeGenerations[attentionID]
-				return true
-			}
-		}
-		return false
+	testwait.Until(t, "the update's attention to be consumed", func() bool {
+		var consumed bool
+		generation, consumed = consumedUpdateGeneration(sess)
+		return consumed
 	})
+	return generation
+}
+
+// settledUpdateAttentionConsumedFor returns the consuming generation once
+// every goroutine in the caller's synctest bubble has blocked, and fails when
+// the update's attention is not consumed by then.
+func settledUpdateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
+	t.Helper()
+	synctest.Wait()
+	generation, consumed := consumedUpdateGeneration(sess)
+	if !consumed {
+		t.Fatal("the update's attention was never consumed")
+	}
 	return generation
 }
 
@@ -1164,15 +1184,35 @@ func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	}
 }
 
-// awaitRootReport waits until the root's transcript holds attention for a
+// rootHoldsReport reports whether the root's transcript holds attention for a
 // delegate's report, which is any attention that is not an update.
+func rootHoldsReport(root *Session) bool {
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+	return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
+}
+
+// awaitRootReport waits until rootHoldsReport, for a test outside a synctest
+// bubble that drives a real subprocess.
 func awaitRootReport(t *testing.T, root *Session) {
 	t.Helper()
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator's report to reach the root", func() bool {
-		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
-		return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
-	})
+	testwait.Until(t, "the coordinator's report to reach the root", func() bool { return rootHoldsReport(root) })
+}
+
+// requireSettledRootReport fails unless the root holds a delegate's report
+// once the caller's synctest bubble has settled. The coordinator's
+// finalization drain can see its last worker finish only on its next
+// re-check, so a report still owed when the bubble first blocks lands one
+// drainRecheckInterval of fake time later.
+func requireSettledRootReport(t *testing.T, root *Session) {
+	t.Helper()
+	synctest.Wait()
+	if !rootHoldsReport(root) {
+		time.Sleep(drainRecheckInterval)
+		synctest.Wait()
+	}
+	if !rootHoldsReport(root) {
+		t.Fatal("the coordinator's report never reached the root")
+	}
 }
 
 // An update refused because the controller is retiring says the delegate is
@@ -1289,7 +1329,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 	// Counted while the generation is held, before a successor can start.
 	coordinatorRequests = len(adapter.requestsFor("COORD-BRIEF"))
 	release()
-	awaitRootReport(t, root)
+	requireSettledRootReport(t, root)
 	fold := rootAttentionFold(t, root)
 	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
 	if id := fold.order[reportAt]; !strings.HasSuffix(id, "/delivery/1") {

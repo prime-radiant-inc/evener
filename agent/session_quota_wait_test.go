@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -85,20 +86,6 @@ func adapterRequests(adapter *streamingAdapter) []llm.Request {
 	return append([]llm.Request(nil), adapter.requests...)
 }
 
-// waitUntil polls cond until it holds, failing once tripped is closed (the
-// test's tripwire).
-func waitUntil(t *testing.T, tripped <-chan struct{}, what string, cond func() bool) {
-	t.Helper()
-	for !cond() {
-		select {
-		case <-tripped:
-			t.Fatalf("never reached: %s", what)
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-}
-
 // inputRun is one ProcessInputKind call running in the background, the way
 // the serve loop runs an input while the session's clients keep talking to it.
 type inputRun struct {
@@ -127,9 +114,9 @@ func (r *inputRun) finished() bool {
 
 // awaitQuotaWait waits until the input's model call is waiting out the usage
 // limit, failing if the input ends first.
-func (r *inputRun) awaitQuotaWait(t *testing.T, s *Session, tripped <-chan struct{}) {
+func (r *inputRun) awaitQuotaWait(t *testing.T, s *Session) {
 	t.Helper()
-	waitUntil(t, tripped, "the model call waits for quota", func() bool {
+	testwait.Until(t, "the model call waits for quota", func() bool {
 		if r.finished() {
 			t.Fatalf("the input ended (out %q, err %v) instead of waiting for the usage limit to reset", r.out, r.err)
 		}
@@ -169,7 +156,7 @@ func TestUsageLimitWaitsInsideTheModelCall(t *testing.T) {
 	s.SetKickFunc(func(string) {})
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	enqueueCompletedJobNotification(t, s, "job_quota")
 	s.notify()
@@ -224,7 +211,7 @@ func TestWaitingForQuotaIsVisibleInSessionState(t *testing.T) {
 		t.Fatalf("precondition: failure before any turn = %+v", failure)
 	}
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	failure := s.RestingFailure()
 	if failure == nil || failure.ResumesAt != quotaResetAt.UnixMilli() {
@@ -250,7 +237,7 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	serveSession(t, s)
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	recoverProvider(adapter)
 	if err := s.SetModel("gpt-5.4"); err != nil {
@@ -326,11 +313,11 @@ func TestUserMessageWhileWaitingForQuotaRetriesOnce(t *testing.T) {
 			serveSessionWithMutationStore(t, s)
 			trip := tripwireCtx(t).Done()
 			run := startInput(context.Background(), s, "start the work", EntryUserInput)
-			run.awaitQuotaWait(t, s, trip)
+			run.awaitQuotaWait(t, s)
 
 			tc.send(t, s, "is the quota back yet")
-			waitUntil(t, trip, "the user's message retries the call", func() bool { return streamCalls(adapter) == 2 })
-			run.awaitQuotaWait(t, s, trip)
+			testwait.Until(t, "the user's message retries the call", func() bool { return streamCalls(adapter) == 2 })
+			run.awaitQuotaWait(t, s)
 			if tc.carried && !requestsContain(adapterRequests(adapter)[1:], "is the quota back yet") {
 				t.Fatal("the retry the steer woke did not carry the steer")
 			}
@@ -356,7 +343,7 @@ func TestUserMessageWhileWaitingForQuotaRetriesOnce(t *testing.T) {
 		serveSessionWithMutationStore(t, s)
 		trip := tripwireCtx(t).Done()
 		run := startInput(context.Background(), s, "start the work", EntryUserInput)
-		run.awaitQuotaWait(t, s, trip)
+		run.awaitQuotaWait(t, s)
 
 		recoverProvider(adapter)
 		steer(t, s, "try again now")
@@ -380,15 +367,15 @@ func TestQuotaWaitDoesNotSpendRounds(t *testing.T) {
 	roundsBefore := s.totalRounds
 	s.mu.Unlock()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-rounds",
 		Input:            []appwire.InputItem{{Type: "text", Text: "still there?"}},
 	}); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
-	waitUntil(t, trip, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
-	run.awaitQuotaWait(t, s, trip)
+	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	run.awaitQuotaWait(t, s)
 	recoverProvider(adapter)
 	reachReset(clk)
 	run.awaitEnd(t, trip, "the call resumes at the reset")
@@ -415,7 +402,7 @@ func TestStopWhileWaitingForQuotaIsAnOrdinaryInterrupt(t *testing.T) {
 	turnCtx, stop := context.WithCancel(context.Background())
 	defer stop()
 	run := startInput(WithQueuedInputDrainOnInterrupt(turnCtx, context.Background()), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	stop()
 	run.awaitEnd(t, trip, "the Stop ends the wait")
@@ -544,9 +531,8 @@ func subagentDone(sub *subagent) bool {
 func TestDelegateGenerationWaitsForQuota(t *testing.T) {
 	adapter := &streamingAdapter{name: "openai", streamErr: usageLimitError(t, "openai", quotaResetAt)}
 	root, clk := newQuotaDelegateRoot(t, adapter)
-	trip := tripwireCtx(t).Done()
 	sub, _ := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's call waits for quota", func() bool {
+	testwait.Until(t, "the delegate's call waits for quota", func() bool {
 		if subagentDone(sub) {
 			t.Fatalf("the delegate's run ended on the usage limit: status=%q err=%v", sub.status, sub.err)
 		}
@@ -561,7 +547,7 @@ func TestDelegateGenerationWaitsForQuota(t *testing.T) {
 
 	recoverProvider(adapter)
 	reachReset(clk)
-	waitUntil(t, trip, "the delegate's run finishes after the reset", func() bool { return subagentDone(sub) })
+	testwait.Until(t, "the delegate's run finishes after the reset", func() bool { return subagentDone(sub) })
 	sub.mu.Lock()
 	status, runErr, fatal := sub.status, sub.err, sub.fatalRunGated
 	sub.mu.Unlock()
@@ -579,9 +565,8 @@ func TestDelegateGenerationWaitsForQuota(t *testing.T) {
 func TestStoppingAQuotaWaitingDelegateIsAnOrdinaryStop(t *testing.T) {
 	adapter := &streamingAdapter{name: "openai", streamErr: usageLimitError(t, "openai", quotaResetAt)}
 	root, _ := newQuotaDelegateRoot(t, adapter)
-	trip := tripwireCtx(t).Done()
 	sub, delegateID := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's call waits for quota", func() bool {
+	testwait.Until(t, "the delegate's call waits for quota", func() bool {
 		if subagentDone(sub) {
 			t.Fatalf("the delegate's run ended on the usage limit: status=%q err=%v", sub.status, sub.err)
 		}
@@ -601,7 +586,7 @@ func TestStoppingAQuotaWaitingDelegateIsAnOrdinaryStop(t *testing.T) {
 	if _, err := jobStopTool(context.Background(), root, map[string]any{"target": delegateID}, jobToolResultDefaultMaxChar); err != nil {
 		t.Fatalf("job_stop: %v", err)
 	}
-	waitUntil(t, trip, "the stopped delegate's run ends", func() bool { return subagentDone(sub) })
+	testwait.Until(t, "the stopped delegate's run ends", func() bool { return subagentDone(sub) })
 	sub.mu.Lock()
 	runErr, fatal := sub.err, sub.fatalRunGated
 	sub.mu.Unlock()
@@ -648,7 +633,7 @@ func TestDelegateFinalizationTurnWaitsForQuota(t *testing.T) {
 		close(finished)
 	}()
 	trip := tripwireCtx(t).Done()
-	waitUntil(t, trip, "the delegate's finalization drain", func() bool {
+	testwait.Until(t, "the delegate's finalization drain", func() bool {
 		sub.mu.Lock()
 		defer sub.mu.Unlock()
 		return sub.finalizing
@@ -660,7 +645,7 @@ func TestDelegateFinalizationTurnWaitsForQuota(t *testing.T) {
 	jm.mu.Unlock()
 	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	s.notify()
-	waitUntil(t, trip, "the finalization turn waits for quota", func() bool {
+	testwait.Until(t, "the finalization turn waits for quota", func() bool {
 		select {
 		case <-finished:
 			t.Fatalf("the delegate's run ended (status=%q err=%v) when its finalization turn met the usage limit", sub.status, sub.err)
@@ -699,15 +684,14 @@ func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
 	adapter := &streamingAdapter{name: "openai"}
 	limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
 	root, clk := newQuotaDelegateRoot(t, adapter)
-	trip := tripwireCtx(t).Done()
 	sub, _ := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
+	testwait.Until(t, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
 	enqueueCompletedJobNotification(t, sub.sess, "job_idle_child")
 
 	if !root.driveSubagentNotificationTurn(sub) {
 		t.Fatal("the notification drive did not launch")
 	}
-	waitUntil(t, trip, "the drive turn waits for quota", sub.sess.waitingForQuota)
+	testwait.Until(t, "the drive turn waits for quota", sub.sess.waitingForQuota)
 	// Several hung-turn bounds pass on the session clock while the turn waits.
 	for range 3 {
 		clk.Advance(driveTurnTimeout)
@@ -723,7 +707,7 @@ func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
 
 	recoverProvider(adapter)
 	reachReset(clk)
-	waitUntil(t, trip, "the drive ends after the reset", func() bool { return !driving(sub) })
+	testwait.Until(t, "the drive ends after the reset", func() bool { return !driving(sub) })
 	sub.mu.Lock()
 	fatal := sub.fatalRunGated
 	sub.mu.Unlock()
@@ -744,7 +728,7 @@ func TestRootNotificationTurnWaitsForQuota(t *testing.T) {
 	trip := tripwireCtx(t).Done()
 	armOneRootAttention(t, s, "dlg_report", "delegate:dlg_report/delivery/1")
 	run := startInput(context.Background(), s, "", EntryNotification)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 	if !slices.ContainsFunc(s.retirementInputBlockers(), func(b RetirementBlocker) bool { return b.Category == "turn" }) {
 		t.Fatal("a notification turn waiting for quota does not hold the session from retiring")
 	}
@@ -795,30 +779,29 @@ func TestWaitingDriveGivesBackItsDriveSlot(t *testing.T) {
 	adapter.limited.Store(true)
 	root, clk := newQuotaDelegateRoot(t, adapter)
 	root.driveCounter.limit = 1
-	trip := tripwireCtx(t).Done()
 	limited, _ := startQuotaDelegate(t, root)
 	healthy, _ := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "both delegates finish their first runs", func() bool { return subagentDone(limited) && subagentDone(healthy) })
+	testwait.Until(t, "both delegates finish their first runs", func() bool { return subagentDone(limited) && subagentDone(healthy) })
 
 	enqueueCompletedJobNotification(t, limited.sess, "job_on_limited_account")
 	if !root.driveSubagentNotificationTurn(limited) {
 		t.Fatal("the limited child's drive did not launch")
 	}
-	waitUntil(t, trip, "the limited child's drive waits for quota", limited.sess.waitingForQuota)
+	testwait.Until(t, "the limited child's drive waits for quota", limited.sess.waitingForQuota)
 	enqueueCompletedJobNotification(t, healthy.sess, "job_on_healthy_account")
 	if !root.driveSubagentNotificationTurn(healthy) {
 		t.Fatal("a healthy child's drive could not launch: the waiting drive kept the only drive slot")
 	}
-	waitUntil(t, trip, "the healthy child's drive delivers", func() bool { return healthy.sess.jobNotificationsDelivered() == 1 })
-	waitUntil(t, trip, "the healthy drive ends", func() bool { return !driving(healthy) })
+	testwait.Until(t, "the healthy child's drive delivers", func() bool { return healthy.sess.jobNotificationsDelivered() == 1 })
+	testwait.Until(t, "the healthy drive ends", func() bool { return !driving(healthy) })
 	if !limited.sess.waitingForQuota() {
 		t.Fatal("the limited child stopped waiting while its limit holds")
 	}
 
 	adapter.limited.Store(false)
 	reachReset(clk)
-	waitUntil(t, trip, "the limited child's drive delivers after the reset", func() bool { return limited.sess.jobNotificationsDelivered() == 1 })
-	waitUntil(t, trip, "the limited drive ends", func() bool { return !driving(limited) })
+	testwait.Until(t, "the limited child's drive delivers after the reset", func() bool { return limited.sess.jobNotificationsDelivered() == 1 })
+	testwait.Until(t, "the limited drive ends", func() bool { return !driving(limited) })
 	if got := adapter.refused.Load(); got != 1 {
 		t.Fatalf("requests against the limit = %d, want only the one that began the wait", got)
 	}
@@ -836,7 +819,7 @@ func TestQuotaWaitDoesNotResumeAClearedGoal(t *testing.T) {
 	s.SetKickFunc(func(string) { kicks.Add(1) })
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	if err := s.ClearGoal(); err != nil {
 		t.Fatalf("ClearGoal: %v", err)
@@ -865,7 +848,7 @@ func TestNotificationArrivingDuringAWaitIsDeliveredOnce(t *testing.T) {
 	trip := tripwireCtx(t).Done()
 	enqueueCompletedJobNotification(t, s, "job_before_wait")
 	run := startInput(context.Background(), s, "", EntryNotification)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	enqueueCompletedJobNotification(t, s, "job_during_wait")
 	s.notify()
@@ -875,8 +858,8 @@ func TestNotificationArrivingDuringAWaitIsDeliveredOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
-	waitUntil(t, trip, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
-	run.awaitQuotaWait(t, s, trip)
+	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	run.awaitQuotaWait(t, s)
 	if !requestsContain(adapterRequests(adapter)[1:2], "job_during_wait") {
 		t.Fatal("the retry after the notification arrived did not carry it")
 	}
@@ -935,19 +918,19 @@ func TestSteeringQueuedMessagesWhileWaitingRetriesOnce(t *testing.T) {
 			serveSessionWithMutationStore(t, s)
 			trip := tripwireCtx(t).Done()
 			run := startInput(context.Background(), s, "start the work", EntryUserInput)
-			run.awaitQuotaWait(t, s, trip)
+			run.awaitQuotaWait(t, s)
 			if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 				ClientMutationID: "queued-during-wait",
 				Input:            []appwire.InputItem{{Type: "text", Text: "use the other branch"}},
 			}); err != nil {
 				t.Fatalf("queue: %v", err)
 			}
-			waitUntil(t, trip, "the queued message retries the call", func() bool { return streamCalls(adapter) == 2 })
-			run.awaitQuotaWait(t, s, trip)
+			testwait.Until(t, "the queued message retries the call", func() bool { return streamCalls(adapter) == 2 })
+			run.awaitQuotaWait(t, s)
 
 			tc.steer(t, s)
-			waitUntil(t, trip, "the steer retries the call", func() bool { return streamCalls(adapter) == 3 })
-			run.awaitQuotaWait(t, s, trip)
+			testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 3 })
+			run.awaitQuotaWait(t, s)
 			if !requestsContain(adapterRequests(adapter)[2:], "use the other branch") {
 				t.Fatal("the retry the steer woke did not carry it")
 			}
@@ -963,9 +946,8 @@ func TestSteeringQueuedMessagesWhileWaitingRetriesOnce(t *testing.T) {
 func waitingDrive(t *testing.T, adapter *streamingAdapter) (*Session, *agenttest.FakeClock, *subagent, string, *jobstore.JobRecord) {
 	t.Helper()
 	root, clk := newQuotaDelegateRoot(t, adapter)
-	trip := tripwireCtx(t).Done()
 	sub, delegateID := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
+	testwait.Until(t, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
 	jm := sub.sess.jobManager
 	owned := &jobstore.JobRecord{JobID: "job_owned_by_driven", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true, OwnerSessionID: sub.sess.ID()}
 	jm.mu.Lock()
@@ -980,7 +962,7 @@ func waitingDrive(t *testing.T, adapter *streamingAdapter) (*Session, *agenttest
 	if !root.driveSubagentNotificationTurn(sub) {
 		t.Fatal("the notification drive did not launch")
 	}
-	waitUntil(t, trip, "the drive turn waits for quota", sub.sess.waitingForQuota)
+	testwait.Until(t, "the drive turn waits for quota", sub.sess.waitingForQuota)
 	return root, clk, sub, delegateID, owned
 }
 
@@ -1017,10 +999,9 @@ func TestStoppingADelegateWhoseDriveWaitsForQuota(t *testing.T) {
 			adapter := &streamingAdapter{name: "openai"}
 			limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
 			root, _, sub, delegateID, owned := waitingDrive(t, adapter)
-			trip := tripwireCtx(t).Done()
 
 			tc.stop(t, root, delegateID)
-			waitUntil(t, trip, "the stopped drive ends", func() bool { return !driving(sub) && !sub.sess.waitingForQuota() })
+			testwait.Until(t, "the stopped drive ends", func() bool { return !driving(sub) && !sub.sess.waitingForQuota() })
 			sub.mu.Lock()
 			fatal := sub.fatalRunGated
 			sub.mu.Unlock()
@@ -1076,7 +1057,7 @@ func TestDriveHungTurnBoundStartsOverWhenAWaitEnds(t *testing.T) {
 	clk.Advance(2 * time.Minute)
 	clk.Drain()
 	close(answer)
-	waitUntil(t, trip, "the drive ends", func() bool { return !driving(sub) })
+	testwait.Until(t, "the drive ends", func() bool { return !driving(sub) })
 	sub.mu.Lock()
 	fatal := sub.fatalRunGated
 	sub.mu.Unlock()
@@ -1130,14 +1111,13 @@ func TestCapacityReclamationSparesADelegateWaitingForQuota(t *testing.T) {
 	adapter := &streamingAdapter{name: "openai"}
 	limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
 	root, _ := newQuotaDelegateRootWith(t, adapter, func(cfg *SessionConfig) { cfg.MaxRetainedTerminal = 1 })
-	trip := tripwireCtx(t).Done()
 	waiting, _ := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(waiting) })
+	testwait.Until(t, "the delegate's first run finishes", func() bool { return subagentDone(waiting) })
 	enqueueCompletedJobNotification(t, waiting.sess, "job_for_waiting_drive")
 	if !root.driveSubagentNotificationTurn(waiting) {
 		t.Fatal("the notification drive did not launch")
 	}
-	waitUntil(t, trip, "the drive turn waits for quota", waiting.sess.waitingForQuota)
+	testwait.Until(t, "the drive turn waits for quota", waiting.sess.waitingForQuota)
 
 	_ = root.createDelegate(context.Background(), delegateArgs{Task: "another piece of work"})
 	if waiting.sess.isClosingOrClosed() || !waiting.sess.waitingForQuota() || !driving(waiting) {
@@ -1188,7 +1168,7 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 	s.SetKickFunc(func(string) {})
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 	enqueueCompletedJobNotification(t, s, "job_during_switch")
 	s.notify()
 	if status, _, _ := s.GoalStatus(); status != string(goal.StatusActive) {
@@ -1246,7 +1226,7 @@ func TestStopDuringTheSwitchAfterAWaitLeavesSteeringQueued(t *testing.T) {
 	s.cfg.testOnly.beforeModelSwitchPublish = stop
 	trip := tripwireCtx(t).Done()
 	run := startInput(WithQueuedInputDrainOnInterrupt(turnCtx, context.Background()), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 	if err := s.Steer("steering for the next request"); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
@@ -1279,9 +1259,8 @@ func TestCapacityReclamationDoesNotRaceALaunchingDrive(t *testing.T) {
 	adapter := &streamingAdapter{name: "openai"}
 	recoverProvider(adapter)
 	root, _ := newQuotaDelegateRootWith(t, adapter, func(cfg *SessionConfig) { cfg.MaxRetainedTerminal = 1 })
-	trip := tripwireCtx(t).Done()
 	driven, _ := startQuotaDelegate(t, root)
-	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(driven) })
+	testwait.Until(t, "the delegate's first run finishes", func() bool { return subagentDone(driven) })
 	enqueueCompletedJobNotification(t, driven.sess, "job_for_racing_drive")
 	root.cfg.testOnly.driveLaunching = func() {
 		root.cfg.testOnly.driveLaunching = nil
@@ -1294,7 +1273,7 @@ func TestCapacityReclamationDoesNotRaceALaunchingDrive(t *testing.T) {
 	if driven.sess.isClosingOrClosed() {
 		t.Fatal("a reclamation tore down the runtime a launching drive was about to run its turn on")
 	}
-	waitUntil(t, trip, "the drive delivers", func() bool { return driven.sess.jobNotificationsDelivered() == 1 && !driving(driven) })
+	testwait.Until(t, "the drive delivers", func() bool { return driven.sess.jobNotificationsDelivered() == 1 && !driving(driven) })
 	driven.mu.Lock()
 	fatal := driven.fatalRunGated
 	driven.mu.Unlock()
@@ -1323,7 +1302,7 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	}
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	run.awaitQuotaWait(t, s, trip)
+	run.awaitQuotaWait(t, s)
 
 	// The retry's response does not come until the test lets it.
 	answer := make(chan struct{})
@@ -1341,8 +1320,8 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
-	waitUntil(t, trip, "the steer dispatches the retry", func() bool { return streamCalls(adapter) == 2 })
-	waitUntil(t, trip, "the retry is announced", func() bool {
+	testwait.Until(t, "the steer dispatches the retry", func() bool { return streamCalls(adapter) == 2 })
+	testwait.Until(t, "the retry is announced", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(retries) == 2

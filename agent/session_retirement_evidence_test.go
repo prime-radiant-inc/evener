@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -398,9 +399,7 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		}
 	}
 	close(resume[1])
-	// TRIPWIRE: hang guard only; the resumed callback is already unblocked,
-	// so settlement completes in microseconds absent a deadlock.
-	waitForCondition(t, 5*time.Second, "later attention callback settlement", func() bool {
+	testwait.Until(t, "later attention callback settlement", func() bool {
 		root.attentionMu.Lock()
 		defer root.attentionMu.Unlock()
 		return root.attentionCallbacks == 1
@@ -617,9 +616,9 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 		claim, state, err := c.TryClaim(true)
 		resultCh <- claimResult{claim, state, err}
 	}()
-	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
-	// parked on the owner lock held above, so preparing is a stable state.
-	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+	// The evidence pass is parked on the owner lock held above, so the real
+	// preparing phase is a stable state to wait for.
+	testwait.Until(t, "real TryClaim preparing window", func() bool {
 		return c.Snapshot().Phase == "preparing"
 	})
 	clk.Advance(jobNotificationRetryInitialDelay)
@@ -1191,9 +1190,9 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 		claim, state, err := c.TryClaim(true)
 		resultCh <- claimResult{claim, state, err}
 	}()
-	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
-	// parked on the owner lock held above, so preparing is a stable state.
-	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+	// The evidence pass is parked on the owner lock held above, so the real
+	// preparing phase is a stable state to wait for.
+	testwait.Until(t, "real TryClaim preparing window", func() bool {
 		return c.Snapshot().Phase == "preparing"
 	})
 	select {
@@ -2522,9 +2521,7 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 	}
 	// Settle the later (post-attach) callback first.
 	close(resume[1])
-	// TRIPWIRE: hang guard only; the resumed callback is already unblocked,
-	// so settlement completes in microseconds absent a deadlock.
-	waitForCondition(t, 5*time.Second, "later notification callback settlement", func() bool {
+	testwait.Until(t, "later notification callback settlement", func() bool {
 		root.pendingJobNotifsMu.Lock()
 		defer root.pendingJobNotifsMu.Unlock()
 		return root.jobNotifyCallbacks == 1
@@ -2596,9 +2593,9 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 		claim, state, err := c.TryClaim(true)
 		resultCh <- claimResult{claim, state, err}
 	}()
-	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
-	// parked on the owner lock held above, so preparing is a stable state.
-	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+	// The evidence pass is parked on the owner lock held above, so the real
+	// preparing phase is a stable state to wait for.
+	testwait.Until(t, "real TryClaim preparing window", func() bool {
 		return c.Snapshot().Phase == "preparing"
 	})
 	// The armed one-shot fires now and is refused for the whole window.
@@ -2669,9 +2666,7 @@ func TestRetirementAutonomousNamingOverlap(t *testing.T) {
 	close(secondResume) // later-started attempt settles before original attempt
 	// Observe the real owner transition, never fabricate its count or use a
 	// wall-clock delay as evidence that the later attempt finished.
-	// TRIPWIRE: hang guard only; the resumed attempt is already unblocked,
-	// so settlement completes in microseconds absent a deadlock.
-	waitForCondition(t, 5*time.Second, "second naming attempt settlement", func() bool {
+	testwait.Until(t, "second naming attempt settlement", func() bool {
 		root.mu.Lock()
 		defer root.mu.Unlock()
 		return root.naming.pending == 1
@@ -3225,8 +3220,7 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	settledRefusal := func(stage string) RetirementSnapshot {
 		t.Helper()
 		var state RetirementSnapshot
-		// TRIPWIRE: hang guard only; a refusal settles in milliseconds.
-		waitForCondition(t, 5*time.Second, stage+" refusal settles", func() bool {
+		testwait.Until(t, stage+" refusal settles", func() bool {
 			claim, got, err := c.TryClaim(true)
 			if claim != nil {
 				if abortErr := c.Abort(claim, ""); abortErr != nil {

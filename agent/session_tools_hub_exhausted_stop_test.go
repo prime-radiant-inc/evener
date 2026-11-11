@@ -13,12 +13,12 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -142,8 +142,7 @@ func TestManagerStopExhaustedDelegateWithRunningShell(t *testing.T) {
 	default:
 	}
 	var pid int
-	// TRIPWIRE: the real shell writes readiness once, with no timer-driven work.
-	waitForCondition(t, 30*time.Second, "owned shell PID readiness", func() bool {
+	testwait.Until(t, "owned shell PID readiness", func() bool {
 		data, err := os.ReadFile(pidPath)
 		if err != nil {
 			return false

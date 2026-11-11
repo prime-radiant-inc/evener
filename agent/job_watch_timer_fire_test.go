@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func newTimerTestJM(t *testing.T) (*jobManager, *agenttest.FakeClock, chan jobNotification) {
@@ -510,9 +511,9 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	teardownFails = false
 	mu.Unlock()
 	clk.Advance(60 * time.Second)
-	// TRIPWIRE: the retry runs on the tick this Advance just fired, so the
-	// watch leaves the live set in microseconds. 5s only fires on a genuine hang.
-	waitForCondition(t, 5*time.Second, "the retried one-shot teardown to end the watch", func() bool {
+	// The retry runs on the tick this Advance just fired, so no further
+	// fake time is needed for the watch to leave the live set.
+	testwait.Until(t, "the retried one-shot teardown to end the watch", func() bool {
 		jm.mu.Lock()
 		defer jm.mu.Unlock()
 		_, _, stillLive := jm.watchConfigByIDLocked(res.WatchID)
