@@ -49,19 +49,20 @@ func lintTargets(t *testing.T) []string {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":            "./evener-dev tomlcheck",
-	"lint-gofmt":             "/bin/gofmt\" -l",
-	"lint-evenerfuzz":        "-tags evenerfuzz",
-	"lint-eval":              "-tags eval ",
-	"lint-internal":          "./evener-dev internalcheck",
-	"lint-golangci":          "module-lint",
-	"lint-generated":         "docs/appwire-protocol.md",
-	"lint-fuzz-registry":     "scripts/fuzz/fuzz-registry-check.sh",
-	"lint-package-imports":   "scripts/sdk/package-import-paths-check.sh",
-	"lint-js-toolchain-pins": "scripts/sdk/js-toolchain-pins-check.mjs",
-	"lint-tracked-file-size": "scripts/ops/tracked-file-size-check.sh",
-	"lint-repo-audit":        "./evener-dev dev repo-audit",
-	"secret-scan":            "scripts/ops/gitleaks-scan.sh repo",
+	"lint-naming":             "./evener-dev tomlcheck",
+	"lint-gofmt":              "/bin/gofmt\" -l",
+	"lint-evenerfuzz":         "-tags evenerfuzz",
+	"lint-eval":               "-tags eval ",
+	"lint-internal":           "./evener-dev internalcheck",
+	"lint-golangci":           "module-lint",
+	"lint-generated":          "docs/appwire-protocol.md",
+	"lint-fuzz-registry":      "scripts/fuzz/fuzz-registry-check.sh",
+	"lint-package-imports":    "scripts/sdk/package-import-paths-check.sh",
+	"lint-go-module-consumer": "scripts/gate/go-module-consumer-check.sh",
+	"lint-js-toolchain-pins":  "scripts/sdk/js-toolchain-pins-check.mjs",
+	"lint-tracked-file-size":  "scripts/ops/tracked-file-size-check.sh",
+	"lint-repo-audit":         "./evener-dev dev repo-audit",
+	"secret-scan":             "scripts/ops/gitleaks-scan.sh repo",
 }
 
 // makeLintDryRun runs `make -n -k lint` from the repository root and returns

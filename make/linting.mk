@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -244,6 +244,27 @@ lint-fuzz-registry:
 lint-package-imports:
 	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
 
+# lint-go-module-consumer gives scripts/gate/go-module-consumer-check.sh the
+# caller it never had (#6081). A new third-party import that reaches a module
+# through a sibling module failed nothing until someone ran the script by
+# hand; #6075 was that case. The recipe downloads the workspace's build list
+# first because the consumer probe runs with GOPROXY=off and can only judge
+# versions in the module cache.
+## Prove each workspace module's go.mod is a complete statement of what its
+## own packages need, from a consumer outside the workspace.
+## proves: A scratch consumer whose go.mod requires just one workspace module
+##   (plus directory replaces for its siblings) resolves every import that
+##   module's own packages use with GOPROXY=off, so a missing requirement is
+##   reported instead of hidden by the workspace.
+## trigger: Required CI (via make lint and the lint-repository lane); local
+##   pre-merge. About 12s warm.
+## requires: The workspace's module cache; the recipe downloads its build list
+##   first.
+## fails-when: scripts/gate/go-module-consumer-check.sh exits nonzero: a module
+##   is missing a requirement, or the consumer probe cannot judge it.
+lint-go-module-consumer:
+	$(call run_quiet_lint,go mod download all && scripts/gate/go-module-consumer-check.sh)
+
 # lint-js-toolchain-pins keeps the shared JavaScript toolchain on one pin. The
 # frontend, mobile-native and the AppWire package compile, format and test the
 # same client sources, so a range or a different minor of Biome, Vitest
@@ -314,7 +335,7 @@ lint-repo-audit: build-dev
 # ignores its arguments and exits 0 (issue #1406: every root-scoped "biome both
 # scopes" invocation reported green while checking nothing).
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, repository
 ## source audits, and secrets. The frontend's Biome scopes run in `make
