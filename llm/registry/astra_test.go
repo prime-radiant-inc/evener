@@ -66,6 +66,30 @@ func TestCodexSolOneMillionAliasUsesBaseWireID(t *testing.T) {
 	}
 }
 
+// A window the alias row declares is the alias's own fact: the base model's
+// live row (taken from the shared wire id) must not replace it, while a live
+// row listed under the alias's own id still reports the truth.
+func TestAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
+	r.ApplyLive("subscription", []Model{{ID: "gpt-6.1-sol", Caps: Caps{ContextWindow: new(524288)}}})
+	res := mustResolve(t, r, "subscription/gpt-6.1-sol-1m")
+	if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 872000 {
+		t.Fatalf("the base model's live row replaced the alias's declared window: %v", res.Caps.ContextWindow)
+	}
+	base := mustResolve(t, r, "subscription/gpt-6.1-sol")
+	if *base.Caps.ContextWindow != 524288 || base.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("the base model keeps its own live window: %v %v", base.Caps.ContextWindow, base.Provenance["ContextWindow"])
+	}
+	r.ApplyLive("subscription", []Model{
+		{ID: "gpt-6.1-sol", Caps: Caps{ContextWindow: new(524288)}},
+		{ID: "gpt-6.1-sol-1m", Caps: Caps{ContextWindow: new(900000)}},
+	})
+	res = mustResolve(t, r, "subscription/gpt-6.1-sol-1m")
+	if *res.Caps.ContextWindow != 900000 || res.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("a live row under the alias's own id still wins: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+}
+
 // A narrowed instance keeps the shaping glob that applies to the rows it
 // kept: Astra still resolves with the Lite framing and its window.
 func TestCodexInheritModelsMatchingKeepsShapingGlobForKeptRows(t *testing.T) {
@@ -76,5 +100,14 @@ func TestCodexInheritModelsMatchingKeepsShapingGlobForKeptRows(t *testing.T) {
 	}
 	if narrowed, err := r.Resolve("subscription/gpt-6-luna"); err == nil {
 		t.Fatalf("gpt-6-luna must stay dropped by the narrowing: %+v", narrowed)
+	}
+}
+
+func TestConfigAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n[providers.subscription.models.\"sol-wide\"]\nalias_of = \"gpt-6.1-sol\"\nwire_id = \"gpt-6.1-sol\"\ncontext_window = 600000\n")
+	r.ApplyLive("subscription", []Model{{ID: "gpt-6.1-sol", Caps: Caps{ContextWindow: new(524288)}}})
+	res := mustResolve(t, r, "subscription/sol-wide")
+	if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 600000 || res.Provenance["ContextWindow"] != "config/row" {
+		t.Fatalf("config alias window lost to the base live row: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
 	}
 }

@@ -1141,13 +1141,22 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 // matched wire id) between the curated and user layers (spec §5).
 func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, prov map[string]string) {
 	lr := r.liveRow(rec.name, model)
+	byWireID := false
 	if lr == nil && hit.wireID != model {
 		lr = r.liveRow(rec.name, hit.wireID)
+		byWireID = true
 	}
 	if lr == nil {
 		return
 	}
-	mergeCaps(c, lr.Caps, LayerLive, prov)
+	caps := lr.Caps
+	// A window the curated alias row declares describes that alias (a 1M
+	// variant of a base model), while the wire id's live row describes the
+	// base model. Only a live row listed under the alias's own id outranks it.
+	if byWireID && prov["ContextWindow"] == LayerOverlay+"/row" {
+		caps.ContextWindow = nil
+	}
+	mergeCaps(c, caps, LayerLive, prov)
 }
 
 // transportShape assembles the unexpanded transport for rec resolving row on
