@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useReducer, useRef } from "react";
 import { animate, spatialTransition, useReducedMotion } from "../../motion";
 import { requireClass } from "../internal/requireClass";
 import styles from "./promptcard.module.css";
@@ -71,7 +71,9 @@ export function PromptCard({
   // interpolate between two real measurements rather than guess.
   const priorShape = useRef<{ folded: boolean; height: number | null }>({ folded, height: null });
   const shapeChanged = useRef(false);
+  const committedFolded = useRef(folded);
   const hiddenBefore = useRef(hidden);
+  const [, releaseHold] = useReducer((release: number) => release + 1, 0);
   const reducedMotion = useReducedMotion();
 
   if (priorShape.current.folded !== folded) {
@@ -84,9 +86,12 @@ export function PromptCard({
   // around the card keeps its size until the animation starts: a scroll port
   // above the composer that grew for one layout would clamp its offset and
   // keep the clamped offset when it shrank back, leaving its reader short of
-  // the end.
+  // the end. The hold follows the committed shape, so a render React discards
+  // never holds a later one, and React both writes and releases it.
   const heldHeight =
-    shapeChanged.current && !hidden && !hiddenBefore.current && !reducedMotion ? priorShape.current.height : null;
+    folded !== committedFolded.current && !hidden && !hiddenBefore.current && !reducedMotion
+      ? priorShape.current.height
+      : null;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the fold flag is the shape-change trigger; the measured heights live in refs.
   useLayoutEffect(() => {
@@ -96,7 +101,10 @@ export function PromptCard({
     hiddenBefore.current = hidden;
     const changed = shapeChanged.current;
     shapeChanged.current = false;
+    committedFolded.current = folded;
     if (!root || !card) return undefined;
+    // The release re-renders before paint, after the card holds its own height.
+    if (root.style.height !== "") releaseHold();
     // Height stays auto at rest: the field's own autogrow and any control
     // change reflow normally. Only the fold switch interpolates.
     card.style.removeProperty("height");
@@ -105,7 +113,6 @@ export function PromptCard({
     const animates = changed && !hidden && !reducedMotion && from !== null;
     // Measured while the root still holds the outgoing height.
     const to = animates ? card.offsetHeight : null;
-    root.style.removeProperty("height");
     if (from === null || to === null || Math.abs(to - from) < 1) return undefined;
     card.style.height = `${from}px`;
     card.dataset.animating = "true";

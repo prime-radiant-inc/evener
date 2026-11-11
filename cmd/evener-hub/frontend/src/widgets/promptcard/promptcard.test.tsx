@@ -293,6 +293,16 @@ test("folding keeps the outgoing height around the card until the animation star
   expect(motionMock.animate).toHaveBeenCalledTimes(1);
   expect(rootHeights.length).toBeGreaterThan(1);
   expect(new Set(rootHeights)).toEqual(new Set([90]));
+  // The card holds its own height once the animation owns it, and the root
+  // gives the space back.
+  expect(root?.style.height).toBe("");
+  // A quick unfold and fold again holds the second fold the same way.
+  rerender(<Footer folded={false} />);
+  rootHeights.length = 0;
+  rerender(<Footer folded />);
+  expect(rootHeights.length).toBeGreaterThan(1);
+  expect(new Set(rootHeights)).toEqual(new Set([90]));
+  expect(root?.style.height).toBe("");
 });
 
 test("the animating card carries the marker that anchors its controls", () => {
