@@ -959,14 +959,20 @@ func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 // auth/<instance>.json from there. The hub loads its registry at
 // userdirs.DefaultStateRoot() whatever hub_state_root says, so a record kept
 // under HubStateRoot would be a login the registry, the credential probe and
-// every spawned child never see. Before the first successful load, or with no
-// registry wired (a bare test config), the answer is empty and the auth
-// controller resolves that same default itself.
-func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
-	if reg != nil {
-		if r := reg.Get(); r != nil {
-			return r.StateRoot()
-		}
+// every spawned child never see. Before the first successful load the registry
+// cannot name its root; the answer stays empty and the auth controller
+// resolves that same default itself.
+//
+// With no registry wired at all (a bare test config), there is no registry
+// root to defer to: the config's own HubStateRoot owns the auth records and
+// the endpoint-fingerprint key. Without it, every such server in the process
+// would share the process-wide XDG key.
+func hubAuthStateRoot(cfg hubcore.WebConfig) string {
+	if cfg.Registry == nil {
+		return strings.TrimSpace(cfg.HubStateRoot)
+	}
+	if r := cfg.Registry.Get(); r != nil {
+		return r.StateRoot()
 	}
 	return ""
 }
@@ -1179,7 +1185,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// CredsStore — the embedder shape, and the one these constructors tolerate —
 	// serve evener/auth/apiKey/set while refusing the push with "credential push
 	// requires a local credentials store".
-	authStateRoot := hubAuthStateRoot(cfg.Registry)
+	authStateRoot := hubAuthStateRoot(cfg)
 	authController := newHubAuthControllerWithStore(authStateRoot, cfg.CredsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
