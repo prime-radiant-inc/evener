@@ -503,9 +503,67 @@ jobs:
         with:
           job-status: ${{ job.status }}
 
+  # Every new or changed Go module is reviewable per change instead of on a
+  # calendar (issue #614). The module graph is compared with the PR base and
+  # each added, removed, or version-changed module is listed with its license.
+  # A clean graph passes. A changed graph needs an explicit acknowledgement:
+  # the `go-dependency-reviewed` label or an approving review. On push and
+  # merge_group events the command exits before comparing, so the required
+  # aggregate never sees a skip.
+  go-dependency-review:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'go-dependency-review') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Reads the PR's labels and reviews for the acknowledgement gate.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The base revision is read in a detached worktree.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: go-dependency-review
+
+      - name: Check for a reviewer acknowledgement
+        id: ack
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          labels="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')"
+          approved="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')"
+          acknowledged=false
+          if grep -qx 'go-dependency-reviewed' <<<"$labels" || [ "${approved:-0}" -gt 0 ]; then
+            acknowledged=true
+          fi
+          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
+
+      - name: Compare the Go module graph with the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged }}
+        run: |
+          go run ./cmd/evener-go-deps \
+            --event "$EVENT_NAME" \
+            --base "$BASE_SHA" \
+            --acknowledged="${ACKNOWLEDGED:-false}"
+
+      - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
   static:
     if: always()
-    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
+    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, go-dependency-review, api-package, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
