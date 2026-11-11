@@ -21,6 +21,7 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1007,8 +1008,7 @@ func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
 	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
 	sess.mu.Unlock()
 	var generation uint64
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the update's attention to be consumed", func() bool {
+	testwait.Until(t, "the update's attention to be consumed", func() bool {
 		fold, err := readDelegateAttentionFold(path, sessionID)
 		if err != nil {
 			return false
@@ -1168,8 +1168,7 @@ func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 // delegate's report, which is any attention that is not an update.
 func awaitRootReport(t *testing.T, root *Session) {
 	t.Helper()
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator's report to reach the root", func() bool {
+	testwait.Until(t, "the coordinator's report to reach the root", func() bool {
 		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
 		return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
 	})

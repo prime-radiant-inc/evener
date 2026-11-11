@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -45,9 +46,7 @@ func TestDelegateSendParkedDelegateSteerIsConsumed(t *testing.T) {
 	}
 
 	// The owned shell is still held: only the steering itself can drive the run.
-	// TRIPWIRE: every step here is scripted and answered in-process; the steer
-	// is consumed within a drain re-check (250ms), so 5s only fires on a hang.
-	waitForCondition(t, 5*time.Second, "parked delegate consumes the steered message", func() bool {
+	testwait.Until(t, "parked delegate consumes the steered message", func() bool {
 		return requestsContain(fixture.adapter.Requests(), "follow-up while parked")
 	})
 

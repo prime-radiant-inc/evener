@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -269,9 +270,7 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 			BlockTimeoutMS: 60000,
 		})
 	}()
-	// TRIPWIRE: polls for the in-process executor's registration, which happens
-	// in microseconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "foreground shell to appear in the running map", func() bool {
+	testwait.Until(t, "foreground shell to appear in the running map", func() bool {
 		return sess.jobManager.hasRunningDrainJob()
 	})
 

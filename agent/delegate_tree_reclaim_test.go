@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -535,9 +536,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
-	// TRIPWIRE: the owed generations and the finalize tails settle in well
-	// under a second; 15s only bounds a deadlock.
-	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+	testwait.Until(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
@@ -646,7 +645,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		// batch the last child arrives within milliseconds, so the wait
 		// costs nothing; a capped or serial release burns parkDeadline per
 		// batch instead, and the callers read the observed concurrency off
-		// maxInFlight either way. waitForCondition cannot run here: the
+		// maxInFlight either way. testwait.Until cannot run here: the
 		// probe fires on a teardown goroutine, not the test's.
 		deadline := time.Now().Add(parkDeadline)
 		for {
@@ -1124,10 +1123,7 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: the retry re-arms with the same grace, so the release
-	// fires here in real time only as a goroutine handoff; 15s only bounds
-	// a genuine hang.
-	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after residue settled", func() bool {
+	testwait.Until(t, "re-armed retry to release the runtime after residue settled", func() bool {
 		tree.mu.Lock()
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 		tree.mu.Unlock()
@@ -1188,9 +1184,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 		t.Fatal("delegate runner did not finish")
 	}
 	// The finalize tail arms the grace timer after the done handshake.
-	// TRIPWIRE: the arm follows the handshake by a goroutine handoff; 15s only
-	// bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "finalize tail to arm the grace timer", func() bool {
+	testwait.Until(t, "finalize tail to arm the grace timer", func() bool {
 		return fake.PendingCallbacks()-callbacksBefore == 1
 	})
 	tree := sess.delegateController
@@ -1221,10 +1215,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: the surviving timer already fired during the advance, so the
-	// release lands here in real time only as a goroutine handoff; 15s only
-	// bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "surviving grace timer to release the runtime after residue settled", func() bool {
+	testwait.Until(t, "surviving grace timer to release the runtime after residue settled", func() bool {
 		tree.mu.Lock()
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 		tree.mu.Unlock()
@@ -1534,10 +1525,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	// single outstanding retry the re-arms converged on, and it releases the
 	// now-quiescent runtime.
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: every residue plant is cleared and the grace timers have all
-	// fired, so the release only needs a goroutine handoff; 15s bounds a
-	// genuine hang.
-	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after local retirement residue settled", func() bool {
+	testwait.Until(t, "re-armed retry to release the runtime after local retirement residue settled", func() bool {
 		tree.mu.Lock()
 		defer tree.mu.Unlock()
 		return tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil

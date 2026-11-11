@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -59,8 +60,7 @@ func startInFlightProcess(t *testing.T, env *execenv.LocalExecutionEnvironment) 
 	t.Cleanup(release)
 	// The shell writes its PID within milliseconds of the spawn and nothing in
 	// process signals that write, so this is a poll with a hang guard only.
-	// TRIPWIRE: 30s sits orders of magnitude above the spawn-to-write time.
-	waitForCondition(t, 30*time.Second, "the in-flight process to report its PID", func() bool {
+	testwait.Until(t, "the in-flight process to report its PID", func() bool {
 		data, err := os.ReadFile(pidPath)
 		if err != nil || len(data) == 0 {
 			return false
