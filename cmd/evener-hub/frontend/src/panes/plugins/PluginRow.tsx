@@ -11,7 +11,7 @@ import type {
   PluginLaunchCandidate,
 } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
-import type { ReactElement } from "react";
+import type { KeyboardEvent, ReactElement } from "react";
 import { Button, type CadenceState, Chip, ListRow, StatusDot, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { countsSummary, hookTotal } from "./pluginCounts";
@@ -144,11 +144,30 @@ export function LauncherPluginRow({
   onOpen: () => void;
 }): ReactElement {
   const source = launcherSource(candidate);
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    // Opening the details leaves focus on the row - the old nested sheet took
+    // focus on mount, so its Escape never had to reach from here. The row
+    // owns what it opened: while expanded, Escape on the row dismisses the
+    // details (preventDefault per OverlayPanel's contract) instead of bubbling
+    // to an ancestor overlay such as the mobile selection sheet.
+    if (expanded && event.key === "Escape" && !event.defaultPrevented) {
+      event.preventDefault();
+      onOpen();
+    }
+  }
+
   return (
     // data-plugin names the row to the focus rehome (pluginRowFocus.ts): the
     // row's switch survives the details collapsing, so the keyboard has a
     // control to come back to.
-    <div className={CLASS.row} data-kind="plugin-row" data-mode="launcher" data-plugin={candidate.name}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: Escape is the keyboard dismissal path for the details this row opened, the same contract PluginDetail and OverlayPanel give their own surfaces; the row's real controls keep their own roles
+    <div
+      className={CLASS.row}
+      data-kind="plugin-row"
+      data-mode="launcher"
+      data-plugin={candidate.name}
+      onKeyDown={handleKeyDown}
+    >
       <Switch
         checked={selected}
         label={candidate.name}

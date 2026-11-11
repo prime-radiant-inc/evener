@@ -266,6 +266,48 @@ test("plugin Details expand inline and preserve the mobile selection draft", asy
   expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
 });
 
+test("Escape right after opening details preserves the mobile selection draft", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  renderRows({
+    onPluginSelectionChange,
+    pluginPreview: {
+      status: "ready",
+      response: {
+        plugins: [
+          {
+            name: "alpha",
+            source: "directory",
+            path: "/tmp/alpha",
+            selected: true,
+            skillCount: 1,
+            agentCount: 0,
+            commandCount: 0,
+            hookCount: 0,
+            mcpCount: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Plugins: 1 of 1" }));
+  const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
+  // A draft change, then Details - the keyboard never leaves the row.
+  await user.click(within(parent).getByRole("switch", { name: "alpha" }));
+  await user.click(within(parent).getByRole("button", { name: "Details" }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+
+  await user.keyboard("{Escape}");
+
+  // Escape dismisses the details the row opened, not the sheet over the draft.
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
+  expect(within(parent).getByRole("switch", { name: "alpha" }).getAttribute("aria-checked")).toBe("false");
+  await user.click(within(parent).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
+});
+
 test("Escape inside the expanded details collapses them without closing the selection sheet", async () => {
   const user = userEvent.setup();
   const onPluginSelectionChange = vi.fn();

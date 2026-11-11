@@ -204,6 +204,22 @@ test("Escape inside the expanded details collapses them", async () => {
   expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
 });
 
+test("Escape on the expanded row right after opening its details collapses them", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const detailsAction = screen.getAllByRole("button", { name: "Details" })[0];
+  if (!(detailsAction instanceof HTMLElement)) throw new Error("no Details action renders");
+  await user.click(detailsAction);
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+  // The opener kept focus: no tab into the body, no click anywhere else.
+  expect(document.activeElement).toBe(detailsAction);
+
+  await user.keyboard("{Escape}");
+
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(detailsAction).toBeTruthy();
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();
