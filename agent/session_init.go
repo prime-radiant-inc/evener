@@ -1840,14 +1840,6 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.reg.Remove(name)
 		}
 	}
-	// Only the coordinator writes the session URL list (#6080). This gate runs
-	// after the allowed/denied policy and the frozen ceiling, so an all-tools
-	// role or a restored descriptor cannot reintroduce the tool.
-	if s.isSubagentSession() {
-		for _, name := range coordinatorOnlySubagentTools() {
-			s.reg.Remove(name)
-		}
-	}
 	if len(s.cfg.spawn.toolNameCeiling) > 0 {
 		ceiling := make(map[string]bool, len(s.cfg.spawn.toolNameCeiling))
 		for _, name := range s.cfg.spawn.toolNameCeiling {
@@ -1857,6 +1849,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Apply the final intersection after NewSession has added every intrinsic
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
+	}
+	// Only the coordinator writes the session URL list, and a subagent cannot
+	// ask the human (#6080, ask_user). This gate is the last removal, after the
+	// allowed/denied policy and the frozen ceiling, so an all-tools role or a
+	// restored descriptor cannot reintroduce a protected tool.
+	if s.isSubagentSession() {
+		for _, name := range protectedGrantTools() {
+			s.reg.Remove(name)
+		}
 	}
 	s.filterUnavailableMemoryTools()
 	// A role preload is prepared on the creating parent and a frozen descriptor

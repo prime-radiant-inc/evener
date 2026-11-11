@@ -87,6 +87,7 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 				"delegate",
 			}},
 			"explorer": {Name: "explorer", Description: "explore"},
+			"all":      {Name: "all", Description: "every tool", AllTools: true},
 		}
 		return sess
 	}
@@ -115,6 +116,17 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 		summary := sess.defaultToolSummaryForAgent(coordinator)
 		if !strings.Contains(summary, "delegate") {
 			t.Errorf("defaultToolSummaryForAgent: summary does not include %q at allowance=1; got %q", "delegate", summary)
+		}
+		// The all-tools role's printed capability set must not advertise tools
+		// every subagent loses at session init (#6080).
+		if sess.reg.Get("urls_add") == nil {
+			t.Fatal("session registry has no urls_add; the roster fixture cannot prove the strip")
+		}
+		allSummary := sess.defaultToolSummaryForAgent(sess.pluginAgents["all"])
+		for _, tool := range []string{"ask_user", "urls_add", "urls_remove"} {
+			if strings.Contains(allSummary, tool) {
+				t.Errorf("all-tools summary advertises %q; got %q", tool, allSummary)
+			}
 		}
 	})
 

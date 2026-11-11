@@ -223,15 +223,19 @@ func TestIsRootOnlySubagentTool(t *testing.T) {
 func TestProtectedGrantTools(t *testing.T) {
 	t.Parallel()
 	tools := protectedGrantTools()
-	if len(tools) != 1 || tools[0] != "ask_user" {
-		t.Fatalf("expected ['ask_user'], got %v", tools)
+	for _, want := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !hasString(tools, want) {
+			t.Fatalf("expected %q in protected grant tools, got %v", want, tools)
+		}
 	}
 }
 
 func TestIsProtectedGrantTool(t *testing.T) {
 	t.Parallel()
-	if !isProtectedGrantTool("ask_user") {
-		t.Fatalf("expected ask_user to be protected")
+	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !isProtectedGrantTool(name) {
+			t.Fatalf("expected %s to be protected", name)
+		}
 	}
 	if isProtectedGrantTool("read_file") {
 		t.Fatalf("expected read_file to not be protected")

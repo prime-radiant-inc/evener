@@ -885,8 +885,10 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 				}
 			}
 		}
-		if !slices.Contains(denied, "urls_add") {
-			t.Errorf("default child with canDelegate=true: urls_add must be denied (got %v)", denied)
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if !slices.Contains(denied, tool) {
+				t.Errorf("default child with canDelegate=true: %s must be denied (got %v)", tool, denied)
+			}
 		}
 	})
 
@@ -898,8 +900,10 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		if slices.Contains(denied, "job_watch") {
 			t.Errorf("default child with canDelegate=false: job_watch must NOT be denied — a session that can run jobs watches its own jobs (got %v)", denied)
 		}
-		if !slices.Contains(denied, "urls_add") {
-			t.Errorf("default child with canDelegate=false: urls_add must be denied (got %v)", denied)
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if !slices.Contains(denied, tool) {
+				t.Errorf("default child with canDelegate=false: %s must be denied (got %v)", tool, denied)
+			}
 		}
 	})
 
@@ -919,7 +923,7 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	})
 
 	t.Run("explicit-Tools agent: canDelegate=true does NOT inject delegate into allow-list", func(t *testing.T) {
-		ag := &plugin.Agent{Tools: []string{"read_file", "urls_add"}}
+		ag := &plugin.Agent{Tools: []string{"read_file", "urls_add", "urls_remove"}}
 		_, allowed, denied := baseSubagentToolPolicy(ag, true)
 		if len(denied) != 0 {
 			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
@@ -927,8 +931,10 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		if slices.Contains(allowed, "delegate") {
 			t.Errorf("canDelegate=true must NOT inject delegate into a typed agent's allow-list (got %v)", allowed)
 		}
-		if slices.Contains(allowed, "urls_add") {
-			t.Errorf("a typed role must not keep urls_add in its allow-list (got %v)", allowed)
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if slices.Contains(allowed, tool) {
+				t.Errorf("a typed role must not keep %s in its allow-list (got %v)", tool, allowed)
+			}
 		}
 		// The job-supervision tools are intrinsic, not injected for delegation:
 		// every allow-list carries them so a leaf can enumerate, await, inspect,
@@ -966,7 +972,7 @@ func TestSubagentRegistryHasNoCoordinatorOnlyTools(t *testing.T) {
 				t.Fatal("root session does not register urls_add; the fixture no longer proves the child gate")
 			}
 			prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: agentType})
-			for _, name := range coordinatorOnlySubagentTools() {
+			for _, name := range []string{"urls_add", "urls_remove"} {
 				if prepared.sub.sess.reg.Get(name) != nil {
 					t.Errorf("agent_type=%q: child registry has %q; only the coordinator writes session links", agentType, name)
 				}
@@ -998,9 +1004,18 @@ func TestInProcessAllToolsSubagentHasNoCoordinatorOnlyTools(t *testing.T) {
 		t.Fatalf("prepare a default subagent run: %v", err)
 	}
 	defer prepared.disposeUnadopted()
-	for _, name := range coordinatorOnlySubagentTools() {
+	for _, name := range []string{"urls_add", "urls_remove"} {
 		if prepared.sub.sess.reg.Get(name) != nil {
 			t.Errorf("in-process all-tools subagent has %q; only the coordinator writes session links", name)
+		}
+	}
+}
+
+func TestApplyChildToolPolicyRefusesProtectedGrants(t *testing.T) {
+	parent := newTestSession(t)
+	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if _, _, _, err := parent.applyChildToolPolicy(&SessionConfig{}, nil, nil, false, []string{name}); err == nil {
+			t.Errorf("%s was grantable to a subagent", name)
 		}
 	}
 }
