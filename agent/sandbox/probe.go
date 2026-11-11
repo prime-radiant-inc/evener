@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -205,6 +207,85 @@ type HostFacts struct {
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
+
+	// InconclusiveChecks names the host checks that reached no answer during
+	// the probe: a subprocess that hit probeCommandTimeout, or that the host
+	// could not start for lack of resources. The fact each one feeds holds its
+	// fail-closed value. Empty means every check answered (Complete).
+	InconclusiveChecks []string
+
+	// BwrapRecheck is non-nil when the bwrap user-namespace check stayed
+	// inconclusive after its retry. The resolver then selects bwrap with the
+	// policy unconfirmed (ResolvedPolicy.Unconfirmed), and every spawn reruns
+	// the check through it (Wrapper.Confirm) until one answers. A definitive
+	// "no" never sets it: that host refuses at resolve time.
+	BwrapRecheck *BackendRecheck
+}
+
+// Complete reports that every host check reached an answer.
+func (h HostFacts) Complete() bool { return len(h.InconclusiveChecks) == 0 }
+
+// CheckOutcome is what one host capability check established.
+type CheckOutcome uint8
+
+const (
+	// CheckInconclusive means the check reached no answer: it timed out or the
+	// host could not start it under load. Running it again may answer.
+	CheckInconclusive CheckOutcome = iota
+	// CheckPassed means the capability works.
+	CheckPassed
+	// CheckFailed means the host answered that the capability does not work.
+	CheckFailed
+)
+
+// checkOutcome classifies a check subprocess's result. Only an exhausted time
+// bound or a resource shortage at start is inconclusive; any other error is the
+// host's answer, so a broken install still refuses rather than asking for
+// retries that cannot help.
+func checkOutcome(ctx context.Context, err error) CheckOutcome {
+	switch {
+	case err == nil:
+		return CheckPassed
+	case ctx.Err() != nil, errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.ENOMEM):
+		return CheckInconclusive
+	default:
+		return CheckFailed
+	}
+}
+
+// BackendRecheck reruns a backend capability check that had not answered when
+// the host was probed. Copies of HostFacts, and every policy resolved from
+// them, share one recheck, so the first spawn that settles it settles it for
+// all of them.
+type BackendRecheck struct {
+	mu      sync.Mutex
+	check   func() CheckOutcome
+	outcome CheckOutcome
+}
+
+// NewBackendRecheck returns a recheck that runs check until it answers.
+func NewBackendRecheck(check func() CheckOutcome) *BackendRecheck {
+	return &BackendRecheck{check: check}
+}
+
+// Outcome runs the check while it has not answered and returns the answer once
+// it has; an answer is kept for the life of the recheck. Concurrent callers
+// wait for one run rather than each starting a check.
+func (r *BackendRecheck) Outcome() CheckOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.outcome == CheckInconclusive {
+		r.outcome = r.check()
+	}
+	return r.outcome
+}
+
+// answered returns the outcome so far without running the check.
+func (r *BackendRecheck) answered() CheckOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outcome
 }
 
 // SeatbeltAvailable reports whether the macOS Seatbelt backend is usable: it
@@ -354,6 +435,16 @@ func (p RealProber) Probe() HostFacts {
 }
 
 func probeHost(system probeSystem) HostFacts {
+	// The informational checks read through recorder, which notes each one that
+	// reached no answer. The user-namespace check reads the host directly: it
+	// is retried and recorded below, and it keeps running after the probe.
+	recorder := &checkRecorder{probeSystem: system}
+	facts := probeHostThrough(recorder, system)
+	facts.InconclusiveChecks = append(recorder.inconclusive, facts.InconclusiveChecks...)
+	return facts
+}
+
+func probeHostThrough(system, direct probeSystem) HostFacts {
 	facts := HostFacts{
 		OS:            system.goos(),
 		KernelVersion: probeKernelVersion(system),
@@ -382,10 +473,18 @@ func probeHost(system probeSystem) HostFacts {
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
-		facts.BwrapCapable = bwrapUsernsWorks(system, path)
+		outcome := bwrapUsernsCheck(direct, path)
+		if outcome == CheckInconclusive {
+			outcome = bwrapUsernsCheck(direct, path)
+		}
+		facts.BwrapCapable = outcome == CheckPassed
+		if outcome == CheckInconclusive {
+			facts.InconclusiveChecks = append(facts.InconclusiveChecks, bwrapUsernsCheckName)
+			facts.BwrapRecheck = NewBackendRecheck(func() CheckOutcome { return bwrapUsernsCheck(direct, path) })
+		}
 		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
 		if facts.OverlaySupported {
-			facts.OverlayLowerOK = memoizedOverlayLower(system, path)
+			facts.OverlayLowerOK = memoizedOverlayLower(direct, path)
 		}
 	}
 
@@ -1076,19 +1175,58 @@ func activeDeveloperDir(system probeSystem) string {
 	return strings.TrimSpace(string(trimTrailingNewline(out)))
 }
 
-// bwrapUsernsWorks reports whether the resolved bwrap binary can actually create
+// bwrapUsernsCheck reports whether the resolved bwrap binary can actually create
 // the namespaces our confinement needs on THIS host. Presence + `--version` is
 // not enough: a host with apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04)
 // ships a runnable bwrap that cannot create an unprivileged user namespace, so it
 // would `--version` fine yet fail every real sandbox. This runs a trivial fully
-// namespaced sandbox (`true`) and reports success only if it exits 0 — the exact
-// capability the kernel wrapper relies on. Fail-closed: any error is "not
-// capable" so the floor refuses rather than half-enforcing.
-func bwrapUsernsWorks(system probeSystem, path string) bool {
+// namespaced sandbox (`true`) and passes only if it exits 0 — the exact
+// capability the kernel wrapper relies on. Fail-closed: any answer other than
+// a pass is "not capable", and a run that reached no answer is inconclusive,
+// which never lets a command run until a later run passes (BwrapRecheck).
+func bwrapUsernsCheck(system probeSystem, path string) CheckOutcome {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
 	args := bwrapProbeArgs(path)
-	return system.run(ctx, args[0], args[1:]...) == nil
+	return checkOutcome(ctx, system.run(ctx, args[0], args[1:]...))
+}
+
+// bwrapUsernsCheckName names the user-namespace check in InconclusiveChecks.
+const bwrapUsernsCheckName = "bwrap user namespaces"
+
+// checkRecorder is a probeSystem that notes every subprocess check reaching no
+// answer (checkOutcome), named by its command line. Each command is noted once.
+type checkRecorder struct {
+	probeSystem
+	inconclusive []string
+}
+
+func (r *checkRecorder) note(ctx context.Context, err error, name string, args []string) {
+	if checkOutcome(ctx, err) != CheckInconclusive {
+		return
+	}
+	command := strings.Join(append([]string{filepath.Base(name)}, args...), " ")
+	if !slices.Contains(r.inconclusive, command) {
+		r.inconclusive = append(r.inconclusive, command)
+	}
+}
+
+func (r *checkRecorder) run(ctx context.Context, name string, args ...string) error {
+	err := r.probeSystem.run(ctx, name, args...)
+	r.note(ctx, err, name, args)
+	return err
+}
+
+func (r *checkRecorder) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := r.probeSystem.combinedOutput(ctx, name, args...)
+	r.note(ctx, err, name, args)
+	return out, err
+}
+
+func (r *checkRecorder) output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := r.probeSystem.output(ctx, name, args...)
+	r.note(ctx, err, name, args)
+	return out, err
 }
 
 // bwrapProbeArgs is the full argv (binary included) the capability probe runs. It

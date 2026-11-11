@@ -14,6 +14,9 @@ func EnforcementLine(rp ResolvedPolicy) string {
 	if !rp.Enforced() {
 		return ""
 	}
+	if rp.Unconfirmed() {
+		return "sandbox: bwrap unconfirmed (check timed out); will recheck on first use"
+	}
 	net := "off"
 	if rp.Network {
 		net = "on"

@@ -113,6 +113,10 @@ func runSystemCommandHookProcess(_ context.Context, _ commandHookInvocation, cmd
 }
 
 func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookInvocation) (hookResult, error) {
+	// A sandbox whose host check has not answered runs no hook (Confirm).
+	if err := invocation.SandboxWrapper.Confirm(); err != nil {
+		return hookResult{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, invocation.Timeout)
 	defer cancel()
 

@@ -366,6 +366,34 @@ blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
 sandboxed mode rather than half-enforcing it.
 
+That probe can also end without an answer: it hits its time bound on a loaded
+host, or the host cannot start it for lack of resources. Evener retries it once.
+If it still has no answer, the session (fresh or resumed) starts with its sandbox
+**unconfirmed**. The startup line reads
+`sandbox: bwrap unconfirmed (check timed out); will recheck on first use`, and
+nothing runs unconfirmed. Every spawn that needs the sandbox (the shell, `rg`,
+hooks, stdio MCP servers) reruns the check first:
+
+- **It passes.** The command runs confined, and every later command under the
+  same probe runs without rechecking. A delegate's box comes from its parent
+  session's own probe and settles that probe's check the same way.
+- **It still has no answer.** Only that command is refused, with a retryable
+  reason (`sandbox not yet confirmed: the host check timed out; retry the
+  command`), and the next command checks again. The session recovers on its own
+  once load drops; an MCP server refused this way is redialed by its lazy
+  reconnect.
+- **It answers no.** That command and every later one are refused, exactly as if
+  the host had answered no at startup.
+
+File tools are confined in process and keep working throughout. A delegate on
+such a host keeps the sandbox modes on offer, and a derived read-only delegate
+keeps its real read-only box, which waits for the same check. The weaker
+fallback, confined file tools with an unconfined shell, is reserved for a host
+that answered that it has no backend.
+
+On macOS the floor's check is whether `/usr/bin/sandbox-exec` exists, which
+always answers, so a Mac never starts unconfirmed.
+
 When the host cannot satisfy a requested mode, the refusal is a legible start-time
 error naming the mode and the reason — the session never silently runs unconfined.
 This holds on resume too: a session persisted with a sandbox mode re-resolves its

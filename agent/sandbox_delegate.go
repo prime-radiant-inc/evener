@@ -126,10 +126,14 @@ func (s *Session) delegateSandboxSchemaForEnv(env execenv.ExecutionEnvironment) 
 	return result
 }
 
+// delegateSandboxBackendAvailable reports that the host has an OS sandbox
+// backend for delegates. A bwrap check that has not answered counts: its boxes
+// wait for confirmation before any command runs (sandbox.Wrapper.Confirm), and
+// only a definitive "no" leaves the host without a backend.
 func delegateSandboxBackendAvailable(host sandbox.HostFacts) bool {
 	switch host.OS {
 	case "linux":
-		return host.BwrapCapable
+		return host.BwrapCapable || host.BwrapRecheck != nil
 	case "darwin":
 		return host.SeatbeltAvailable()
 	default:

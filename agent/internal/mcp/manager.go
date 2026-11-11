@@ -269,6 +269,11 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 		}
 		if wrapper != nil {
 			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
+				// A sandbox whose host check has not answered starts no server;
+				// the conn's lazy reconnect dials again and rechecks.
+				if err := wrapper.Confirm(); err != nil {
+					return nil, err
+				}
 				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper, environ)
 			}
 		}
