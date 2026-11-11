@@ -114,6 +114,9 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   // The transcript identity set, when the caller already computed it for the
   // same model. Avoids a second full transcript walk per projection.
   transcriptIds?: ReadonlySet<string>;
+  // The model's queue and pending mutations are current durable authority, not
+  // a saved or partial snapshot.
+  mutationStateAuthoritative?: boolean;
   submittedHere?: ReadonlyMap<string, number>;
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean;
 }
@@ -491,9 +494,10 @@ function deliveredSourceRow<A extends MutationAttachmentRef>(
   pendingEntryIds: ReadonlySet<string>,
   queueKnown: boolean,
   pendingKnown: boolean,
+  mutationStateAuthoritative: boolean,
   deliveredAny: boolean,
 ): boolean {
-  if (!deliveredAny || !queueKnown || !pendingKnown) return false;
+  if (!deliveredAny || !queueKnown || !pendingKnown || !mutationStateAuthoritative) return false;
   if (!row.optimistic || row.outbox || row.recovery) return false;
   if (row.queueEntryIds.length === 0) return false;
   return row.queueEntryIds.every((id) => !queuedEntryIds.has(id) && !pendingEntryIds.has(id));
@@ -513,6 +517,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   }
   const pendingKnown = model?.pendingMutations !== undefined;
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
+  const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
 
   const families = new Map<string, LocalFamily<A>>();
   const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
@@ -746,7 +751,18 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   }
 
   const all = mergeLineageRows([...queueRows, ...rows.values()])
-    .filter((row) => !deliveredSourceRow(row, queuedEntryIds, pendingEntryIds, queueKnown, pendingKnown, deliveredAny))
+    .filter(
+      (row) =>
+        !deliveredSourceRow(
+          row,
+          queuedEntryIds,
+          pendingEntryIds,
+          queueKnown,
+          pendingKnown,
+          mutationStateAuthoritative,
+          deliveredAny,
+        ),
+    )
     .map(drainFallback);
 
   return all.sort(compareRows);

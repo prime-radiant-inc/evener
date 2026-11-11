@@ -220,6 +220,7 @@ test("an accepted source retires when a complete snapshot shows its queue entry 
   const rows = project({
     optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
     model,
+    mutationStateAuthoritative: true,
   });
   expect(rows).toEqual([]);
 });
@@ -239,6 +240,7 @@ test("an accepted source stays while the daemon still projects its queue entry",
   const rows = project({
     optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
     model,
+    mutationStateAuthoritative: true,
   });
   expect(rows).toHaveLength(1);
   expect(rows[0]?.queueEntryIds).toContain("q1");

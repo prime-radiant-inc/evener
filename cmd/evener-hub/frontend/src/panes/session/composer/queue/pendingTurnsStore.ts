@@ -489,6 +489,7 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
 // update the row, never delete it.
 export function usePendingMessages(ref: string): PendingMessage[] {
   const model = useThreadsStore((state) => state.threads.get(ref));
+  const mutationStateAuthoritative = useThreadsStore((state) => state.mutationAuthorityRefs.has(ref));
   useEffect(() => {
     for (const id of transcriptIdsFor(model)) deliveredHere.add(id);
   }, [model]);
@@ -502,6 +503,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     submittedHere: ReturnType<typeof pendingTurnsStore.getState>["submittedHere"];
     model: ThreadsPortModel;
     ref: string;
+    mutationStateAuthoritative: boolean;
     rows: PendingMessage[];
   } | null>(null);
   const getSnapshot = useCallback((): PendingMessage[] => {
@@ -515,7 +517,8 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       cached.recovery === recovery &&
       cached.submittedHere === submittedHere &&
       cached.model === model &&
-      cached.ref === ref
+      cached.ref === ref &&
+      cached.mutationStateAuthoritative === mutationStateAuthoritative
     ) {
       return cached.rows;
     }
@@ -528,13 +531,23 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       model,
       deliveredHere,
       transcriptIds,
+      mutationStateAuthoritative,
       submittedHere,
       isOwnMutationRecord,
     });
     const result = rows.length > 0 ? rows : NO_PENDING_MESSAGES;
-    cacheRef.current = { outbox, optimistic, recovery, submittedHere, model, ref, rows: result };
+    cacheRef.current = {
+      outbox,
+      optimistic,
+      recovery,
+      submittedHere,
+      model,
+      ref,
+      mutationStateAuthoritative,
+      rows: result,
+    };
     return result;
-  }, [ref]);
+  }, [ref, mutationStateAuthoritative]);
 
   return useSyncExternalStore(subscribe, getSnapshot);
 }
