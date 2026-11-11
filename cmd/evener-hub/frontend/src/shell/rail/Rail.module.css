@@ -47,18 +47,34 @@
   }
 }
 
-/* The sidebar owns its own chrome: a header zone stacking the identity/
- * status/actions row and the secondary "+ New session" button - a column so none of it
- * steals a full-width top bar's worth of the workspace's vertical space. */
+/* The sidebar owns its own chrome: a header zone stacking the wordmark/actions
+ * row, the needs-you chip (only when there is one) and the secondary
+ * "+ New session" button - a column so none of it steals a full-width top
+ * bar's worth of the workspace's vertical space. */
 .header {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  /* Two groups: the identity block (wordmark row, plus the needs-you chip when
+   * one exists) and the New-session action, one run apart. The gap stays wider
+   * than .identity's own, so the chip reads as part of the row above it. */
+  gap: var(--rhythm-item);
   padding: var(--space-4);
   border-bottom: 1px solid var(--edge);
 }
 
+/* The wordmark row and its chip read as one identity block, so a chip hugs the
+ * row it belongs to instead of floating midway to the button. */
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rhythm-line);
+}
+
+/* One row: the wordmark leads and the three actions sit hard right, the way
+ * the body's organize-by control does. The wordmark's own auto margin pushes
+ * the actions over, so the row needs no spacer element, and align-items
+ * centers its text against the 32px icon squares. */
 .brand {
   display: flex;
   align-items: center;
@@ -66,7 +82,12 @@
 }
 
 .wordmark {
-  display: block;
+  /* The app's own name never truncates: at the 200px width floor the row's
+   * content (wordmark, three 32px actions, the gaps) fits exactly, and letting
+   * this one item shrink turned a sub-pixel rounding difference into "even…". */
+  flex: none;
+  margin-right: auto;
+  white-space: nowrap;
   color: var(--ink-hi);
   font-family: var(--font-prose);
   font-size: var(--font-size-body);
@@ -79,19 +100,6 @@
  * the widget's own computed className (Button owns its class list). */
 .newSession {
   display: grid;
-}
-
-.brandIdentity {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-ui);
 }
 
 .needsYou {

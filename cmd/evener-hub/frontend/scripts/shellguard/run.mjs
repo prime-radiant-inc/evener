@@ -91,8 +91,8 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       const settings = document.querySelector('[data-testid="rail-settings"]');
       const search = document.querySelector('[data-testid="rail-search"]');
       const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
-      const identity = [...(brand?.querySelectorAll('span') ?? [])].find(el => el.textContent === 'fake-evener-hub');
-      return [identity, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
+      const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+      return [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
         if (!el || !brand?.contains(el)) return null;
         const r = el.getBoundingClientRect();
         return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
@@ -104,7 +104,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       const box = header[i];
       if (!box || box.width <= 0 || box.height <= 0) {
         throw new Error(
-          `rail header at ${viewport.width}px: missing visible ${["identity", "Settings", "Search", "Hide sidebar"][i]}`,
+          `rail header at ${viewport.width}px: missing visible ${["wordmark", "Settings", "Search", "Hide sidebar"][i]}`,
         );
       }
       if (box.left < 0 || box.right > viewport.width)
@@ -116,7 +116,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
           Math.abs((previous.top + previous.bottom) / 2 - (box.top + box.bottom) / 2) > 1
         ) {
           throw new Error(
-            `rail header at ${viewport.width}px: identity, Settings, Search, Hide sidebar must align on one row in order`,
+            `rail header at ${viewport.width}px: wordmark, Settings, Search, Hide sidebar must align on one row in order`,
           );
         }
       }
