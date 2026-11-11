@@ -346,3 +346,46 @@ test("a plugin query filters the body's rows when the marketplace name does not 
   expect(screen.getByRole("button", { name: /linter/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /formatter/ })).toBeNull();
 });
+
+test("cancelling the editor keeps the keyboard inside the marketplace body", async () => {
+  const user = userEvent.setup();
+  const catalog = {
+    status: "loaded" as const,
+    plugins: [{ name: "linter", description: "Lints", category: undefined }],
+  } as unknown as MarketplaceDetailBodyProps["catalog"];
+  renderBody({ catalog });
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const cancel = screen.getByRole("button", { name: "Cancel" });
+  cancel.focus();
+  await user.click(cancel);
+
+  const body = document.querySelector('[data-kind="marketplace-detail"]');
+  expect(body).not.toBeNull();
+  expect(body?.contains(document.activeElement)).toBe(true);
+});
+
+test("closing one plugin's details returns focus to that row, not the first row", async () => {
+  const catalog = {
+    status: "loaded" as const,
+    plugins: [
+      { name: "alpha", description: "A", category: undefined },
+      { name: "formatter", description: "F", category: undefined },
+    ],
+  } as unknown as MarketplaceDetailBodyProps["catalog"];
+  const pair = { plugin: "formatter", marketplace: "acme" };
+  const { view, props } = renderBody({ catalog, expandedRow: pair });
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no plugin details");
+  within(details).getByRole("button", { name: "Hide details" }).focus();
+
+  // The page collapses the row it was browsing.
+  view.rerender(
+    <>
+      <Toast />
+      <MarketplaceDetailBody {...props} catalog={catalog} expandedRow={null} />
+    </>,
+  );
+
+  const formatterRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(formatterRow);
+});
