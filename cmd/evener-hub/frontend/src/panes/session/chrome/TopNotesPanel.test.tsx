@@ -665,7 +665,9 @@ test("Escape inside the expanded panel collapses it and returns focus to the tri
   await user.keyboard("{Escape}");
 
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
-  // A keyboard dismissal must not drop focus onto the document body.
+  // A keyboard dismissal must not drop focus onto the document body. The
+  // trigger takes it on the frame after the body unmounts.
+  await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   expect(document.activeElement).toBe(screen.getByTestId("top-notes-summary"));
 });
 
@@ -685,6 +687,28 @@ test("a collapsed panel leaves Escape for an enclosing overlay", async () => {
   // Collapsed, the panel must not preventDefault a key it has no use for.
   expect(escaped).toHaveBeenCalledTimes(1);
   expect(escaped.mock.calls[0]?.[0].defaultPrevented).toBe(false);
+});
+
+test("Escape does not save a dirty draft it collapses", async () => {
+  // Closing a panel without leaving the field does not save
+  // (docs/web-ui/shared-notes.md). Escape must therefore not blur the editor on
+  // the way out: a blur ARMS the 10s save, and that armed timer survives the
+  // unmount and can wake the agent. The armed timer is the defect, so assert on
+  // it directly rather than waiting it out.
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  const { result } = renderHook(() => useHumanNoteDraft(model.ref));
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  await user.click(screen.getByTestId("top-notes-summary"));
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await user.type(textarea, " plus edits");
+  expect(result.current?.dirty).toBe(true);
+
+  await user.keyboard("{Escape}");
+
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
+  expect(result.current?.dirty).toBe(true);
+  expect(result.current?.timer).toBeUndefined();
 });
 
 test("an unsaved draft survives an outside press and is not saved by it", async () => {

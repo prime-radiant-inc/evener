@@ -169,11 +169,17 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     // also close, without stopping the event from being seen (OverlayPanel's
     // rule).
     event.preventDefault();
-    // Collapsing unmounts whatever inside the body held focus, which would
-    // otherwise drop focus onto the document body and strand a keyboard user;
-    // the trigger is where the disclosure now lives.
-    triggerRef.current?.focus();
     collapseNotes(sessionRef);
+    // Hand focus to the trigger AFTER the body has unmounted, never before:
+    // focusing it while the editor still exists blurs the editor, and a blur
+    // arms the 10-second note save. Closing a panel without leaving the field
+    // must not save (docs/web-ui/shared-notes.md), and an armed save outlives
+    // this component and can wake the agent. Unmounting the focused editor
+    // moves focus away without a blur, and the frame below then puts it on the
+    // disclosure instead of leaving it on the document body.
+    requestAnimationFrame(() => {
+      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+    });
   };
 
   return (
