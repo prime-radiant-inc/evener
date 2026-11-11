@@ -1304,6 +1304,7 @@ Underlying Go kind: `string` (no struct fields).
 | `contextAssumed` | bool | yes |  |
 | `capabilities` | [appwire.ThreadCapabilities](#threadcapabilities) |  |  |
 | `diagnostics` | \*[appwire.EvenerDiagnostics](#evenerdiagnostics) | yes |  |
+| `contextWindowSource` | string | yes |  |
 | `queue` | [appwire.QueueState](#queuestate) |  |  |
 | `pendingMutations` | [][appwire.PendingMutation](#pendingmutation) | yes |  |
 | `mutationStateAuthoritative` | bool | yes |  |

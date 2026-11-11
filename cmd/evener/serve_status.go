@@ -161,7 +161,7 @@ type liveThreadEnvelopeSource struct {
 
 func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
 	metrics, pressure := l.session().ContextStatus()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}, pressure
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed, WindowSource: metrics.WindowSource}, pressure
 }
 
 func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {

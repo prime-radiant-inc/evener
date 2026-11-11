@@ -947,6 +947,11 @@ export interface EvenerThread {
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
   /**
+   * ContextWindowSource says where contextWindow came from: "live",
+   * "overlay", "config", "snapshot" or "assumed".
+   */
+  contextWindowSource?: string;
+  /**
    * Queue carries authoritative queue depth + preview for the per-session
    * input queue. Both UIs derive their queue-preview chrome
    * from this field rather than mirroring queue mutations locally, which

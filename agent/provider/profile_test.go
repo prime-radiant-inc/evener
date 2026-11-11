@@ -315,3 +315,25 @@ func TestStandardProfilesAdvertiseJobControlWithoutLegacyAgentControl(t *testing
 		})
 	}
 }
+
+// TestContextWindowSource pins where the window a profile budgets against came
+// from, as the registry layer that supplied it, or "assumed" when no layer did.
+func TestContextWindowSource(t *testing.T) {
+	size := 12345
+	r := fixtureRegistryWith(t, map[string]registry.Provider{
+		"pinned": {Base: "ollama", Models: map[string]registry.Model{"pinned-model": {Caps: registry.Caps{ContextWindow: &size}}}},
+	})
+	if got := mustResolve(t, r, "ollama/qwen3:8b").ContextWindowSource(); got != ContextWindowSourceAssumed {
+		t.Fatalf("a model nothing vouches for: source = %q, want %q", got, ContextWindowSourceAssumed)
+	}
+	if got := mustResolve(t, r, "pinned/pinned-model").ContextWindowSource(); got != registry.LayerConfig {
+		t.Fatalf("a window the user declared: source = %q, want %q", got, registry.LayerConfig)
+	}
+	if got := mustResolve(t, r, "anthropic/claude-opus-5").ContextWindowSource(); got != registry.LayerSnapshot && got != registry.LayerOverlay {
+		t.Fatalf("a catalog window: source = %q", got)
+	}
+	r.ApplyLive("ollama", []registry.Model{{ID: "qwen3:8b", Caps: registry.Caps{ContextWindow: new(8192)}}})
+	if got := mustResolve(t, r, "ollama/qwen3:8b").ContextWindowSource(); got != registry.LayerLive {
+		t.Fatalf("a window the live listing reported: source = %q, want %q", got, registry.LayerLive)
+	}
+}

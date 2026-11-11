@@ -1,6 +1,10 @@
 package agent
 
-import "primeradiant.com/evener/agent/schema"
+import (
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+)
 
 // ContextMetrics describes the estimated current context size, all in tokens.
 // It is an alias for schema.ContextMetrics so the type that callers (the hub
@@ -23,7 +27,22 @@ func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	s.mu.Lock()
 	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
-	return s.contextMgr.EstimateStatus(hist, 0)
+	metrics, pressure := s.contextMgr.EstimateStatus(hist, 0)
+	_, metrics.WindowSource = budgetingWindow(s.currentProfile())
+	return metrics, pressure
+}
+
+// budgetingWindow is the window a session on profile budgets against and where
+// it came from: the profile's own window, or the context manager's assumed one
+// when the model's is unknown.
+func budgetingWindow(profile *provider.Profile) (window int, source string) {
+	if profile == nil {
+		return 0, ""
+	}
+	if window = profile.ContextWindowSize(); window <= 0 {
+		window = contextmgr.AssumedContextWindow
+	}
+	return window, profile.ContextWindowSource()
 }
 
 // contextMetrics returns the estimated context use for this session. Each call

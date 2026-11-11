@@ -110,6 +110,10 @@ type EvenerThread struct {
 	ContextAssumed   bool               `json:"contextAssumed,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
+
+	// ContextWindowSource says where contextWindow came from: "live",
+	// "overlay", "config", "snapshot" or "assumed".
+	ContextWindowSource string `json:"contextWindowSource,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which

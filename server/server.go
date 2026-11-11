@@ -198,6 +198,8 @@ type ContextMetrics struct {
 	Window    int
 	Remaining int
 	Assumed   bool
+	// WindowSource says where Window came from (see schema.ContextMetrics).
+	WindowSource string
 }
 
 // ServerConfig holds configuration for the HTTP server.
