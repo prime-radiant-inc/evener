@@ -160,6 +160,9 @@ func (g *webGate) run() (int, bool) {
 	if g.now == nil {
 		g.now = time.Now
 	}
+	if g.killGrace <= 0 {
+		g.killGrace = checkKillGrace
+	}
 	specs := make([]guardSpec, len(g.checks))
 	for i, check := range g.checks {
 		specs[i] = g.spec(check, filepath.Join(g.scratch, check))
@@ -216,15 +219,9 @@ func (g *webGate) run() (int, bool) {
 	exits := make(chan guardExit, n)
 	timeouts := make(chan int, n)
 	timers := make([]*time.Timer, n)
-	killTimers := make([]*time.Timer, n)
 	timedOut := make([]bool, n)
 	defer func() {
 		for _, timer := range timers {
-			if timer != nil {
-				timer.Stop()
-			}
-		}
-		for _, timer := range killTimers {
 			if timer != nil {
 				timer.Stop()
 			}
@@ -270,8 +267,14 @@ func (g *webGate) run() (int, bool) {
 			running++
 			go func() { exits <- guardExit{index, proc.Wait()} }()
 			if g.checkTimeout > 0 {
-				checkIndex := index
-				timers[checkIndex] = time.AfterFunc(g.checkTimeout, func() { timeouts <- checkIndex })
+				// TERM and the grace KILL run from the timer, not the gate's
+				// select: an interrupt replaces that select with stop's wait,
+				// and a wedged check must still reach its deadline there.
+				timers[index] = time.AfterFunc(g.checkTimeout, func() {
+					proc.Terminate()
+					time.AfterFunc(g.killGrace, proc.Kill)
+					timeouts <- index
+				})
 			}
 		}
 		if done == n {
@@ -287,9 +290,6 @@ func (g *webGate) run() (int, bool) {
 			if timers[exit.index] != nil {
 				timers[exit.index].Stop()
 			}
-			if killTimers[exit.index] != nil {
-				killTimers[exit.index].Stop()
-			}
 			if timedOut[exit.index] {
 				statuses[exit.index] = webCheckTimedOutStatus
 			}
@@ -300,16 +300,6 @@ func (g *webGate) run() (int, bool) {
 				continue
 			}
 			timedOut[index] = true
-			proc := live[index]
-			proc.Terminate()
-			grace := g.killGrace
-			if grace <= 0 {
-				grace = checkKillGrace
-			}
-			// The KILL runs from the timer, not this select: an interrupt
-			// replaces the select with stop's wait, and a TERM the wedged
-			// check ignored must still be followed by the KILL there.
-			killTimers[index] = time.AfterFunc(grace, proc.Kill)
 		case sig := <-g.signals:
 			return g.stop(sig, specs, live, exits), true
 		}
@@ -317,6 +307,10 @@ func (g *webGate) run() (int, bool) {
 
 	status := 0
 	for i, guard := range g.checks {
+		wallTime := ""
+		if !started[i].IsZero() {
+			wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
+		}
 		switch {
 		case statuses[i] == 0:
 			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s (%.1fs)\n", guard, elapsed[i].Seconds())
@@ -325,17 +319,9 @@ func (g *webGate) run() (int, bool) {
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
 		case timedOut[i]:
-			wallTime := ""
-			if !started[i].IsZero() {
-				wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
-			}
-			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (timed out after %s%s, killed)\n", guard, g.checkTimeout, wallTime)
+			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (timed out after %s%s)\n", guard, g.checkTimeout, wallTime)
 			g.replay(filepath.Join(g.scratch, guard+".log"))
 		default:
-			wallTime := ""
-			if !started[i].IsZero() {
-				wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
-			}
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (exit %d%s)\n", guard, statuses[i], wallTime)
 			g.replay(filepath.Join(g.scratch, guard+".log"))
 		}
