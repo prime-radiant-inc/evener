@@ -604,6 +604,12 @@ run_module() {
 		if [ "$timing_enabled" -eq 1 ] && [ "$shardStatus" -eq 0 ]; then
 			capture_shard_rows agent || shardStatus=1
 		fi
+		# A split run (AGENT_SHARD_PART=k/m, one CI runner per part) runs the
+		# unsharded subpackages in part 1 alone, so the split runs them once.
+		case "${AGENT_SHARD_PART:-}" in
+		"" | 1/*) ;;
+		*) return "$shardStatus" ;;
+		esac
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
