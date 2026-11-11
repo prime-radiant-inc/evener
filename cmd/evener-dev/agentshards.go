@@ -493,6 +493,7 @@ func runShards(cfg shardsConfig) int {
 		return 1
 	}
 	buildArgs = append(buildArgs, "-o", build, buildTarget)
+	buildStart := time.Now()
 	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
@@ -504,6 +505,7 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	buildSeconds := time.Since(buildStart).Seconds()
 
 	if cfg.liveStack {
 		env, err := cfg.prepareLiveStack(in, logdir)
@@ -519,10 +521,13 @@ func runShards(cfg shardsConfig) int {
 
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
+	listStart := time.Now()
 	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	listSeconds := time.Since(listStart).Seconds()
+	planStart := time.Now()
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
@@ -650,6 +655,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		return filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
 	}
+	planSeconds := time.Since(planStart).Seconds()
 	phaseStart := time.Now()
 
 	// Launch shards, at most limit at a time. Slots are acquired before
@@ -749,12 +755,14 @@ func runShards(cfg shardsConfig) int {
 
 	var failed []int
 	shardCPU := 0.0
+	var shardTimes []string
 	for i, result := range results {
 		if result == nil {
 			continue
 		}
 		r := <-result
 		shardCPU += r.cpu
+		shardTimes = append(shardTimes, fmt.Sprintf("%d:%.2fs", i, r.seconds))
 		if r.err == nil {
 			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
@@ -766,6 +774,17 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	phase := time.Since(phaseStart).Seconds()
+	// The phase summary: a green CI run keeps only these lines of the module
+	// log, so they are the record of where a lane's time went. The plan phase
+	// is the survey, when one runs, and the packing.
+	for _, p := range []struct {
+		name    string
+		seconds float64
+	}{{"build", buildSeconds}, {"list", listSeconds}, {"plan", planSeconds}} {
+		_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:%s %.2fs\n", cfg.label, p.name, p.seconds)
+	}
+	_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:shards %.2fs %s\n", cfg.label, phase, strings.Join(shardTimes, " "))
 
 	// The package's own wall time under the sharded surface is the shard
 	// phase, not the sum of overlapping shards (issue #172's contention trap):
@@ -774,7 +793,6 @@ func runShards(cfg shardsConfig) int {
 	// package's work between them. A failed phase is no measurement, so it is
 	// not written.
 	if jsonShards && cfg.jsonPackage != "" && !fail {
-		phase := time.Since(phaseStart).Seconds()
 		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\nCPU\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase),
 			cfg.jsonPackage, formatSeconds(shardCPU))
 		if err := os.WriteFile(filepath.Join(cfg.jsonDir, cfg.label+".package.tsv"), []byte(row), 0o644); err != nil {

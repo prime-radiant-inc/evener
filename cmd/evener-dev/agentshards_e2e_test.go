@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -392,6 +394,78 @@ func TestAgentShardsReportsPerShardWallTime(t *testing.T) {
 	if fast >= 0.4 {
 		t.Fatalf("the fast shard reports the slow shard's clock (%v): per-shard wall time is not per-shard", seconds)
 	}
+}
+
+// shardPhases parses the runner's TIME lines: each phase's wall seconds, and
+// the shard phase's per-shard seconds by shard number.
+func shardPhases(t *testing.T, out string) (phases map[string]float64, perShard map[int]float64) {
+	t.Helper()
+	phases, perShard = map[string]float64{}, map[int]float64{}
+	for line := range strings.SplitSeq(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "TIME" {
+			continue
+		}
+		phase, ok := strings.CutPrefix(fields[1], "agent:")
+		if !ok {
+			t.Fatalf("TIME line names another label: %q", line)
+		}
+		var s float64
+		if _, err := fmt.Sscanf(fields[2], "%fs", &s); err != nil {
+			t.Fatalf("TIME line has no seconds: %q", line)
+		}
+		phases[phase] = s
+		for _, shard := range fields[3:] {
+			var i int
+			var secs float64
+			if _, err := fmt.Sscanf(shard, "%d:%fs", &i, &secs); err != nil {
+				t.Fatalf("TIME line has a malformed shard entry %q: %q", shard, line)
+			}
+			perShard[i] = secs
+		}
+	}
+	return phases, perShard
+}
+
+// TestAgentShardsReportsPhaseTimes pins the phase summary a green run prints:
+// the binary build, the test listing, the shard plan (survey or packing) and
+// the shard phase, whose line also carries each shard's wall time. A CI log
+// keeps only the gate's summary of a green run, so these lines are the record
+// of where a lane's time went.
+func TestAgentShardsReportsPhaseTimes(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	t.Setenv("SHARD_FIXTURE_SLOW", "1")
+
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	phases, perShard := shardPhases(t, stdout.String())
+	for _, phase := range []string{"build", "list", "plan", "shards"} {
+		if _, ok := phases[phase]; !ok {
+			t.Fatalf("no TIME line for the %s phase in:\n%s", phase, stdout)
+		}
+	}
+	// The survey runs the slow test once, so the plan phase holds it.
+	if phases["plan"] < 0.4 {
+		t.Fatalf("plan phase %.2fs does not hold the survey's slow test:\n%s", phases["plan"], stdout)
+	}
+	if want := passLineSeconds(t, stdout.String()); !maps.Equal(roundSeconds(perShard), roundSeconds(want)) {
+		t.Fatalf("shard phase per-shard times %v, want the PASS lines' %v:\n%s", perShard, want, stdout)
+	}
+	for i, s := range perShard {
+		if s > phases["shards"] {
+			t.Fatalf("shard %d took %.2fs, longer than the whole shard phase %.2fs:\n%s", i, s, phases["shards"], stdout)
+		}
+	}
+}
+
+// roundSeconds rounds to the hundredths both lines print.
+func roundSeconds(in map[int]float64) map[int]float64 {
+	out := make(map[int]float64, len(in))
+	for k, v := range in {
+		out[k] = math.Round(v*100) / 100
+	}
+	return out
 }
 
 func TestAgentShardsFailingShardRetainsEvidence(t *testing.T) {
