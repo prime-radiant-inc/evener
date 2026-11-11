@@ -270,9 +270,7 @@ func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.
 	worktreeBaseRepo(t)
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
-	cfg := worktreeTestSessionConfig()
-	cfg.testOnly.skipGitSnapshot = false
-	r := newWorktreeRepoWithConfig(t, cfg)
+	r := newWorktreeRepoWithConfig(t, worktreeTestSessionConfig(), withEnvironmentSnapshot())
 	launch := currentLocalEnv(t, r.s)
 	// The session's own snapshot at construction minted the launch scratch.
 	scratch := launch.SessionScratchDir()
@@ -976,9 +974,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	worktreeBaseRepo(t)
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
-	cfg := worktreeTestSessionConfig()
-	cfg.testOnly.skipGitSnapshot = false
-	r := newWorktreeRepoWithConfig(t, cfg)
+	r := newWorktreeRepoWithConfig(t, worktreeTestSessionConfig(), withEnvironmentSnapshot())
 	parent := r.s
 	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
 

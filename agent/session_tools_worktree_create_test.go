@@ -420,7 +420,7 @@ func newWorktreeRepo(t *testing.T) *wtRepo {
 	return newWorktreeRepoWithConfig(t, worktreeTestSessionConfig())
 }
 
-func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
+func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig, opts ...sessionOpt) *wtRepo {
 	t.Helper()
 	root := packageFixtureTempDir(t, "worktree-repo-*")
 	root, err := filepath.EvalSymlinks(root)
@@ -430,7 +430,7 @@ func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
 	copyWorktreeBaseRepo(t, root)
 	_, head := worktreeBaseRepo(t)
 
-	s := newSession(t, withDir(root), withConfig(cfg))
+	s := newSession(t, append([]sessionOpt{withDir(root), withConfig(cfg)}, opts...)...)
 	stateDir, err := filepath.EvalSymlinks(packageFixtureTempDir(t, "worktree-state-*"))
 	if err != nil {
 		t.Fatalf("EvalSymlinks state: %v", err)

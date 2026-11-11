@@ -129,7 +129,7 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 			minimalWorktreeToolRegistry: true,
 			noSyncJobStore:              true,
 		},
-	})
+	}, withEnvironmentSnapshot())
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)
