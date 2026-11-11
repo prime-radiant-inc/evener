@@ -215,7 +215,6 @@ func (g *webGate) run() (int, bool) {
 	live := make([]guardProcess, n)
 	exits := make(chan guardExit, n)
 	timeouts := make(chan int, n)
-	kills := make(chan int, n)
 	timers := make([]*time.Timer, n)
 	killTimers := make([]*time.Timer, n)
 	timedOut := make([]bool, n)
@@ -301,17 +300,16 @@ func (g *webGate) run() (int, bool) {
 				continue
 			}
 			timedOut[index] = true
-			live[index].Terminate()
+			proc := live[index]
+			proc.Terminate()
 			grace := g.killGrace
 			if grace <= 0 {
 				grace = checkKillGrace
 			}
-			killTimers[index] = time.AfterFunc(grace, func() { kills <- index })
-		case index := <-kills:
-			if live[index] == nil {
-				continue
-			}
-			live[index].Kill()
+			// The KILL runs from the timer, not this select: an interrupt
+			// replaces the select with stop's wait, and a TERM the wedged
+			// check ignored must still be followed by the KILL there.
+			killTimers[index] = time.AfterFunc(grace, proc.Kill)
 		case sig := <-g.signals:
 			return g.stop(sig, specs, live, exits), true
 		}
