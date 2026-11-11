@@ -200,6 +200,76 @@ test("keyboard: tab reaches the main button, then the control; Enter on the main
   expect(onSelect).toHaveBeenCalledOnce();
 });
 
+test("the split row's aria-label and aria-disabled name and refuse its main button", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(
+    <ListRow
+      label="superpowers"
+      onSelect={onSelect}
+      aria-label="Open superpowers"
+      aria-disabled="true"
+      aria-expanded={false}
+      aria-controls="plugin-body"
+      trailingAction={<button type="button">Install</button>}
+    />,
+  );
+  const main = screen.getByRole("button", { name: "Open superpowers" });
+  const container = main.parentElement as HTMLElement;
+  // The roleless container has nothing to announce; the control that owns
+  // the interaction carries the name, state and expansion relationship.
+  expect(container.tagName).toBe("DIV");
+  expect(container.getAttribute("aria-label")).toBeNull();
+  expect(container.getAttribute("aria-disabled")).toBeNull();
+  expect(container.getAttribute("aria-expanded")).toBeNull();
+  expect(container.getAttribute("aria-controls")).toBeNull();
+  expect(main.getAttribute("aria-disabled")).toBe("true");
+  expect(main.getAttribute("aria-expanded")).toBe("false");
+  expect(main.getAttribute("aria-controls")).toBe("plugin-body");
+  await user.click(main);
+  await user.keyboard("{Enter}");
+  expect(onSelect).not.toHaveBeenCalled();
+  expect((main as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a disabled split row marks its main button inert and leaves the trailing control usable", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  const onInstall = vi.fn();
+  render(
+    <ListRow
+      label="superpowers"
+      onSelect={onSelect}
+      disabled
+      trailingAction={
+        <button type="button" onClick={onInstall}>
+          Install
+        </button>
+      }
+    />,
+  );
+  const main = screen.getByRole("button", { name: /superpowers/ }) as HTMLButtonElement;
+  expect(main.disabled).toBe(true);
+  await user.click(main);
+  expect(onSelect).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  expect(onInstall).toHaveBeenCalledOnce();
+});
+
+test("forwards its ref to the split row's main button", () => {
+  const ref = createRef<HTMLElement>();
+  render(
+    <ListRow
+      ref={ref}
+      label="superpowers"
+      onSelect={() => {}}
+      trailingAction={<button type="button">Install</button>}
+    />,
+  );
+  expect(ref.current).toBe(screen.getByRole("button", { name: /superpowers/ }));
+  expect(ref.current?.tagName).toBe("BUTTON");
+});
+
 test("the collection row is a framed surface; the plain row is not", () => {
   const collection = rule(".collection");
   expect(collection).toContain("border: 1px solid var(--edge)");
@@ -217,7 +287,9 @@ test("an interactive row washes on hover and rings inset on keyboard focus", () 
 });
 
 test("the split shape's CSS: the container washes on focus-within, the main button is chromeless", () => {
-  expect(rule('.split:focus-within:not([aria-disabled="true"])')).toContain("background: var(--hover-1)");
+  expect(
+    rule('.split:is(:hover, :focus-within):not(:has(> .splitMain:is(:disabled, [aria-disabled="true"])))'),
+  ).toContain("background: var(--hover-1)");
   const main = rule(".splitMain");
   expect(main).toContain("padding: 0");
   expect(main).toContain("border: 0");
