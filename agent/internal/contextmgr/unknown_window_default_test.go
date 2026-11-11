@@ -110,7 +110,7 @@ func TestUnknownWindowTripwireFoldsOnMeasuredInput(t *testing.T) {
 // a fold the window's own thresholds did not ask for.
 func TestKnownWindowTripwireStaysDead(t *testing.T) {
 	t.Parallel()
-	profile := provider.WithContextWindow(unknownGatewayProfile(), 1_000_000)
+	profile := withContextWindow(unknownGatewayProfile(), 1_000_000)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 	cm.CheckpointThreshold = 100 // unreachable by design, as above
 
@@ -156,7 +156,7 @@ func TestCatalogWindowNeverAssumed(t *testing.T) {
 // default, and is not disclosed as assumed.
 func TestDeclaredWindowBeatsAssumption(t *testing.T) {
 	t.Parallel()
-	profile := provider.WithContextWindow(unknownGatewayProfile(), 27_500)
+	profile := withContextWindow(unknownGatewayProfile(), 27_500)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 
 	history := bulkHistory(8, 2_100) // ~25K tokens: ~92% of the declared 27.5K

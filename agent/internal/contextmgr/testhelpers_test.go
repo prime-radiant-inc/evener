@@ -34,9 +34,21 @@ func testProfile(instance, model string, contextWindow int) *provider.Profile {
 		p = provider.FromResolved(registry.Resolved{Instance: instance, ModelID: model, WireID: model}, nil)
 	}
 	if contextWindow > 0 {
-		p = provider.WithContextWindow(p, contextWindow)
+		p = withContextWindow(p, contextWindow)
 	}
 	return p
+}
+
+// withContextWindow returns a copy of p whose record names an n-token window,
+// by replacing the window in its record (provenance is left as it was).
+// n <= 0 returns p unchanged.
+func withContextWindow(p *provider.Profile, n int) *provider.Profile {
+	if n <= 0 {
+		return p
+	}
+	res := p.Resolved()
+	res.Caps.ContextWindow = &n
+	return p.WithResolved(res)
 }
 
 // testOpenAIProfileWithContextWindow builds an OpenAI-tagged profile with the

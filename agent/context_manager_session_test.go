@@ -122,7 +122,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 
 	// Use a window large enough for the base prompt but small enough for the
 	// tool result to cross the compaction threshold.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 32_000)
+	profile := withContextWindow(NewOpenAIProfile("gpt-5.2"), 32_000)
 
 	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
 
@@ -202,7 +202,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 32_000)
+	profile := withContextWindow(NewOpenAIProfile("gpt-5.2"), 32_000)
 
 	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
 

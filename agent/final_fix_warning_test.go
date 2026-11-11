@@ -61,7 +61,7 @@ func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, 
 	client := llm.NewClient()
 	client.Register(adapter)
 	registerTestSessionNamer(client)
-	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	sess, err := NewSession(client, withContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("probe NewSession: %v", err)
 	}

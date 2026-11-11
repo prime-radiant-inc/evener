@@ -473,7 +473,7 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	}
 
 	// Apply a 1M window override without changing the target identity.
-	bigProfile := provider.WithContextWindow(smallProfile, 1_000_000)
+	bigProfile := withContextWindow(smallProfile, 1_000_000)
 	cm.SetProfile(bigProfile)
 
 	// With 1M window: pressure ≈ 100K/1M = 0.10
