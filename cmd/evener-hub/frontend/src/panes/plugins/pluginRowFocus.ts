@@ -27,6 +27,16 @@ export function pluginDetailBodyId(plugin: string, marketplace?: string, instanc
   return parts.join("-");
 }
 
+/** The id an expanded marketplace row's detail body carries (aria-controls
+ * on its opener). Keyed by name, with an optional instance segment for a
+ * surface mounted more than once. */
+export function marketplaceDetailBodyId(name: string, instance?: string): string {
+  const parts = ["marketplace-detail"];
+  if (instance !== undefined) parts.push(instance);
+  parts.push(encodeURIComponent(name));
+  return parts.join("-");
+}
+
 /** The expanded row owns Escape for the details it opened: opening leaves
  * focus on the row, so Escape from the row must dismiss the details rather
  * than bubble to an ancestor overlay or pane. preventDefault is OverlayPanel's
@@ -81,4 +91,28 @@ export function usePluginRowFocusRehome(
     opened.current = null;
     focusPluginRow(root.current, target);
   }, [open, root]);
+}
+
+/** Focuses the marketplace row for `name`, if it is rendered under `root`. */
+export function focusMarketplaceRow(root: ParentNode | null, name: string): void {
+  if (root === null) return;
+  const row = [...root.querySelectorAll<HTMLElement>("[data-marketplace-row]")].find(
+    (el) => el.dataset.marketplaceRow === name,
+  );
+  rehomeFocus(row ?? null);
+}
+
+/** Rehomes focus to the marketplace row whose body just closed: the collapsed
+ * body unmounted the control that held the keyboard (its Hide details action,
+ * for instance), and the row is the stable handle to come back to. */
+export function useMarketplaceRowFocusRehome(expanded: ReadonlySet<string>, root: RefObject<HTMLElement | null>): void {
+  const previous = useRef<ReadonlySet<string> | null>(null);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = expanded;
+    if (before === null) return;
+    for (const name of before) {
+      if (!expanded.has(name)) focusMarketplaceRow(root.current, name);
+    }
+  }, [expanded, root]);
 }

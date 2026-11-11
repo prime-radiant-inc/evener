@@ -102,16 +102,18 @@ test.each(["add", "edit"] as const)("a replacement registration cannot inherit a
   setSettingsHost("beta");
   const user = userEvent.setup();
   render(<MarketplacesPluginsHostScope />);
-  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(await screen.findByRole("radio", { name: /^Marketplaces/ }));
   await user.click(screen.getByRole("button", { name: kind === "add" ? "+ Add marketplace" : /acme-plugins/ }));
+  if (kind !== "add") await user.click(await screen.findByRole("button", { name: "Edit" }));
   await user.type(screen.getByLabelText(kind === "add" ? "Git URL" : "Name"), "old-registration-draft");
   address = "replacement.example";
   await act(async () => {
     await hostsStore.getState().fetch();
   });
   expect(screen.queryByRole("dialog")).toBeNull();
-  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(await screen.findByRole("radio", { name: /^Marketplaces/ }));
   await user.click(screen.getByRole("button", { name: kind === "add" ? "+ Add marketplace" : /acme-plugins/ }));
+  if (kind !== "add") await user.click(await screen.findByRole("button", { name: "Edit" }));
   expect((screen.getByLabelText(kind === "add" ? "Git URL" : "Name") as HTMLInputElement).value).toBe(
     kind === "add" ? "" : MARKETPLACE.name,
   );
@@ -232,10 +234,12 @@ test("a marketplace draft does not carry across a host switch", async () => {
   render(<MarketplacesPluginsHostScope />);
   const user = userEvent.setup();
 
-  await user.click(await screen.findByRole("radio", { name: /Sources \(1\)/ }));
+  await user.click(await screen.findByRole("radio", { name: /^Marketplaces/ }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
-  const betaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
-  const betaName = within(betaDialog).getByLabelText("Name") as HTMLInputElement;
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  const betaBody = document.querySelector('[data-kind="marketplace-detail"]');
+  if (!(betaBody instanceof HTMLElement)) throw new Error("no beta editor");
+  const betaName = within(betaBody).getByLabelText("Name") as HTMLInputElement;
   await user.type(betaName, "-draft");
   expect(betaName.value).toBe("acme-plugins-draft");
 
@@ -245,11 +249,13 @@ test("a marketplace draft does not carry across a host switch", async () => {
   // Nothing of beta's editor survives the switch...
   expect(screen.queryByRole("dialog")).toBeNull();
   // ...and gamma's own editor seeds from GAMMA's entry, not from that draft.
-  await user.click(await screen.findByRole("radio", { name: /Sources \(1\)/ }));
+  await user.click(await screen.findByRole("radio", { name: /^Marketplaces/ }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
-  const gammaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
-  expect((within(gammaDialog).getByLabelText("Name") as HTMLInputElement).value).toBe("acme-plugins");
-  expect((within(gammaDialog).getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("gamma/plugins");
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  const gammaBody = document.querySelector('[data-kind="marketplace-detail"]');
+  if (!(gammaBody instanceof HTMLElement)) throw new Error("no gamma editor");
+  expect((within(gammaBody).getByLabelText("Name") as HTMLInputElement).value).toBe("acme-plugins");
+  expect((within(gammaBody).getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("gamma/plugins");
   expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
   expect(proxyEdits(fake)).toEqual([]);
 });
