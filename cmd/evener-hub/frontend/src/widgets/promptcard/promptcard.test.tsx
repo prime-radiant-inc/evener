@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { blockBody, readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
@@ -246,6 +246,53 @@ test("folding animates from the card's previous height", () => {
   rerender(<LiveCard folded />);
   expect(motionMock.animate).toHaveBeenCalledTimes(1);
   expect(motionMock.animate.mock.calls[0]?.[1]).toEqual({ height: "38px" });
+});
+
+// The page lays out around the card's root. A scroll port above the composer
+// that grows for even one layout clamps its offset and keeps it after it
+// shrinks back, so through the commit that swaps the shape, and the layout the
+// card forces to measure it, the root keeps the outgoing height. A layout read
+// earlier in the same commit (a transcript list above measuring its rows) sees
+// the same height.
+test("folding keeps the outgoing height around the card until the animation starts", () => {
+  const rootHeights: number[] = [];
+  let root: HTMLElement | null = null;
+  const natural = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const height = natural?.get?.call(this) as number;
+      const card = root?.firstElementChild;
+      if (card instanceof HTMLElement && (this === card || this === root)) {
+        const cardHeight = Number.parseFloat(card.style.height) || (natural?.get?.call(card) as number);
+        const rootHeight = Number.parseFloat(root?.style.height ?? "") || cardHeight;
+        rootHeights.push(rootHeight);
+        return this === card ? cardHeight : rootHeight;
+      }
+      return height;
+    },
+  });
+  function TranscriptAbove({ folded }: { folded: boolean }) {
+    useLayoutEffect(() => {
+      void root?.offsetHeight;
+    }, [folded]);
+    return null;
+  }
+  function Footer({ folded }: { folded: boolean }) {
+    return (
+      <>
+        <TranscriptAbove folded={folded} />
+        <LiveCard folded={folded} />
+      </>
+    );
+  }
+  const { rerender } = render(<Footer folded={false} />);
+  root = screen.getByTestId("card").parentElement;
+  rootHeights.length = 0;
+  rerender(<Footer folded />);
+  expect(motionMock.animate).toHaveBeenCalledTimes(1);
+  expect(rootHeights.length).toBeGreaterThan(1);
+  expect(new Set(rootHeights)).toEqual(new Set([90]));
 });
 
 test("the animating card carries the marker that anchors its controls", () => {

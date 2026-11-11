@@ -1867,6 +1867,27 @@ try {
         return result;
       }
     });
+    const nativeElementScroll = Element.prototype.scroll;
+    Element.prototype.scroll = function(...args) {
+      const source = this === ${sourcePortExpr};
+      if (source) window.__cascadeTraceStartup('scroll-call-before', { args, stack:new Error().stack });
+      const result = nativeElementScroll.apply(this, args);
+      if (source) window.__cascadeTraceStartup('scroll-call-after');
+      return result;
+    };
+    // One sample per rendering frame whose port geometry changed: a move with
+    // no traced writer shows here as the frame where it lands.
+    let lastFrame = '';
+    const sampleFrame = () => {
+      const port = ${sourcePortExpr};
+      if (port) {
+        const key = [port.scrollTop, port.scrollHeight, port.clientHeight, port.clientWidth,
+          port.firstElementChild?.getAttribute('style')].join('|');
+        if (key !== lastFrame) { lastFrame = key; window.__cascadeTraceStartup('frame'); }
+      }
+      requestAnimationFrame(sampleFrame);
+    };
+    requestAnimationFrame(sampleFrame);
     for (const type of ['scroll', 'scrollend']) document.addEventListener(type, event => {
       if (event.target === ${sourcePortExpr}) window.__cascadeTraceStartup(type);
     }, { capture:true, passive:true });
