@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // setupFullTestPlugin creates a temp directory with a complete plugin containing
@@ -18,11 +19,7 @@ import (
 // the plugin directory itself as the target for the "touch" marker file.
 func setupFullTestPlugin(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 
 	// .claude-plugin/plugin.json
 	metaDir := filepath.Join(dir, ".claude-plugin")

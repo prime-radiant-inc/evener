@@ -4,17 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // makePluginDir creates a temp dir holding a minimal .claude-plugin/plugin.json
 // for the named plugin and returns its resolved absolute path.
 func makePluginDir(t *testing.T, name string) string {
 	t.Helper()
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	metaDir := filepath.Join(dir, ".claude-plugin")
 	if err := os.MkdirAll(metaDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)

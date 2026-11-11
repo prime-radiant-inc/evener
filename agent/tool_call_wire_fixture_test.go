@@ -50,6 +50,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -135,10 +136,7 @@ func (c toolWireCall) arguments(earlier map[string]tool.ExecResult) map[string]a
 // macOS temp dir lives behind /private).
 func toolWireWorkspace(t *testing.T) (string, *Session) {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	files := map[string]string{
 		"agent/tree.go":       "package agent\n\nfunc settle() {}\n",
 		"agent/tree_test.go":  "package agent\n\nfunc settleForTest() {}\n",

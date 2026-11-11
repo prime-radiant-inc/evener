@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // runGit runs git with dir as its working directory, failing the test on a
@@ -49,18 +51,14 @@ func runGitRaw(dir string, args ...string) (string, error) {
 // callers can build expectations.
 func buildPorcelainFixture(t *testing.T) (porcelain, repoRoot string) {
 	t.Helper()
-	base := t.TempDir()
+	base := testfs.CanonicalTempDir(t)
 	repo := filepath.Join(base, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}
-	// git canonicalizes worktree paths when it registers them (macOS
-	// t.TempDir() lands under /var, a symlink to /private/var), so repo must
-	// already be resolved here for the porcelain entries parsed below to
-	// compare equal against it.
-	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
-		repo = resolved
-	}
+	// The base is canonical, so repo is already the spelling git registers
+	// (macOS t.TempDir() lands under /var, a symlink to /private/var) and the
+	// porcelain entries parsed below compare equal against it.
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")
