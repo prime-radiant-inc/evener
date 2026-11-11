@@ -7204,10 +7204,16 @@ async function handleReady(
     dispatchReadyEpoch = epoch;
     await runtime.outbox.connectionReady();
     if (options?.replayAcceptedCopies) {
-      for (const ref of replayRefs) void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
+      for (const ref of replayRefs) {
+        acceptedCopyReplayRefs.add(ref);
+        void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
+      }
     }
   } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (options?.suppressTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
+  }
+  if (targetedResync && targetRef && acceptedCopyReplayRefs.has(targetRef)) {
+    void runtime.dispatcher.reconcileAcceptedCopies(targetRef, new Set());
   }
 }
 
@@ -7361,6 +7367,7 @@ function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
 // Registered once, at module load, same lifetime as this module's other
 // singleton bookkeeping (the thread owners, wiredClient, ...).
 let replayAcceptedCopiesOnReady = false;
+const acceptedCopyReplayRefs = new Set<string>();
 connectionStore.subscribe((state) => {
   if (state.client?.state !== "ready") replayAcceptedCopiesOnReady = true;
   if (state.client?.state !== "ready" && threadsStore.getState().mutationAuthorityRefs.size > 0) {

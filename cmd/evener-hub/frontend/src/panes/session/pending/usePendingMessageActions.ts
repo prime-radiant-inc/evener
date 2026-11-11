@@ -42,7 +42,7 @@ type PendingRowKind = "recovery" | "queue" | "local";
 
 function rowKind(row: PendingMessage): PendingRowKind {
   if (row.recovery) return "recovery";
-  if (row.queueEntryId !== undefined) return "queue";
+  if (row.queueEntryId !== undefined && row.queueIndex !== undefined) return "queue";
   return "local";
 }
 

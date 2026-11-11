@@ -302,17 +302,19 @@ function rowFromBase<A extends MutationAttachmentRef>(
   pendingById: Map<string, PendingMutation>,
 ): PendingMessage<A> {
   const family = families.get(entry.id);
+  const baseFamily =
+    family?.recovery && (family.recovery.compositionRevision ?? 0) > 0 ? { ...family, recovery: undefined } : family;
   const pending = pendingById.get(entry.id);
-  const input = pending?.input && pending.input.length > 0 ? pending.input : familyInput(family);
+  const input = pending?.input && pending.input.length > 0 ? pending.input : familyInput(baseFamily);
   const content = input ? inputContent(input) : undefined;
   const text = content?.text ?? entry.text;
   const images = content?.images ?? [];
   const imageCount = content?.imageCount ?? entry.imageCount;
   const skillNames = content?.skillNames ?? entry.skillNames;
   const commandNames = content?.commandNames ?? entry.commandNames ?? [];
-  const familyEntry = familyRecord(family);
+  const familyEntry = familyRecord(baseFamily);
   const method = entry.method;
-  const state = durableState(family, pending, method) ?? entryState(entry.state, method);
+  const state = durableState(baseFamily, pending, method) ?? entryState(entry.state, method);
   const queueEntryIds = pending?.queueEntryIds ?? (entry.queueEntryId ? [entry.queueEntryId] : []);
   return {
     id: entry.id,
@@ -333,11 +335,11 @@ function rowFromBase<A extends MutationAttachmentRef>(
     ...(entry.queueEntryId ? { queueEntryId: entry.queueEntryId } : {}),
     queueEntryIds: [...queueEntryIds],
     ...(entry.queueRevision !== undefined ? { queueRevision: entry.queueRevision } : {}),
-    ...(family?.recovery
+    ...(baseFamily?.recovery
       ? {
-          recoveryKind: family.recovery.recoveryKind,
-          ...(family.recovery.recoveryReason !== undefined ? { reason: family.recovery.recoveryReason } : {}),
-          recovery: family.recovery,
+          recoveryKind: baseFamily.recovery.recoveryKind,
+          ...(baseFamily.recovery.recoveryReason !== undefined ? { reason: baseFamily.recovery.recoveryReason } : {}),
+          recovery: baseFamily.recovery,
         }
       : {}),
     ...(family?.outbox ? { outbox: family.outbox } : {}),

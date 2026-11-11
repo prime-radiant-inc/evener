@@ -479,6 +479,15 @@ test("an edited recovery survives delivery of the attempt it was edited from", (
   expect(rows[0]?.text).toBe("edited request");
 });
 
+test("an edited recovery does not attach itself to the original authoritative row", () => {
+  const original = local("m1", "turn/start", "original");
+  const edited = recovery("m1", "rejected", "turn/start", "edited", { compositionRevision: 1 });
+  const rows = project({ outbox: [original], recovery: [edited] });
+  expect(rows).toHaveLength(2);
+  expect(rows.find((row) => row.id === "m1")?.recovery).toBeUndefined();
+  expect(rows.find((row) => row.recovery !== undefined)?.id).not.toBe("m1");
+});
+
 test("a refused queue cancellation stays visible as a control failure", () => {
   const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
     recoveryReason: "the queue moved",
