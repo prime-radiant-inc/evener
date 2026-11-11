@@ -647,23 +647,26 @@ Under `-race` that made the agent shards two to three times slower. A skip that
 names a subtest level still reaches the binary and pays that cost.
 
 Every `scripts/gate/run-module-tests.sh` run (`make test`, `make test-race`)
-ends with a phase summary, green or red, because a green run deletes its module
-logs and CI keeps only this output. Each line is `TIME  <label>:<phase>
-<seconds>s`:
+that reaches its module waves ends with a phase summary, green or red, because
+a green run deletes its module logs and CI keeps only this output. Each line is
+`TIME  <label>:<phase> <seconds>s`:
 
 - `gate:check-flags`, `gate:wave1`, `gate:wave2`: the flag validation and each
   module wave's wall time.
 - `<label>:build`, `list`, `plan`, `shards`: a shard runner's (`agent`, `hub`,
   `cli`) test-binary compile, test listing, survey and packing, and shard
   phase. The `shards` line also lists each shard's own wall time as
-  `<shard>:<seconds>s`.
-- `agent:runner-build`, `agent:runner`: building the shard runner and its whole
-  run, so runner overhead outside the phases above shows as the difference.
-- `agent:list-flags`, `agent:enumeration`, `agent:subpkgs` (and `root:`
-  equivalents): the package enumeration and the agent module's unsharded
-  subpackages, compile included.
+  `<shard>:<seconds>s`. The hub runner adds `hub:live-stack`, its prebuild of
+  `./cmd/evener`.
+- `agent:runner-build`, `agent:runner`: building the agent shard runner and its
+  whole run, so runner overhead outside the phases above shows as the
+  difference.
+- `agent:list-flags`, `agent:enumeration`, `agent:subpkgs`: the agent module's
+  package enumeration and its unsharded subpackages, compile included.
+  `root:list-flags` and `root:enumeration` time the root module's enumeration.
 
-Seconds are fractional under bash 5 and whole under macOS's bash 3.2.
+Under bash 5 the gate's own phases are timed to the hundredth of a second; under
+macOS's bash 3.2 they are whole seconds, printed as `N.00s`.
 
 A sharded package runs under the same test timeout an unsharded one does. `go
 test` gives each package's test binary a ten-minute `-timeout` by default, but

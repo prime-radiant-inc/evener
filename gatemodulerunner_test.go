@@ -1164,7 +1164,7 @@ func TestSubpackage(t *testing.T) {
 			// A green run's output is all CI keeps, so it carries the phase
 			// summary: the runner's own phases and the gate's around them.
 			phases := runnerPhases(result.output)
-			for _, phase := range []string{"agent:runner-build", "agent:runner", "agent:build", "agent:shards"} {
+			for _, phase := range []string{"gate:check-flags", "gate:wave2", "agent:runner-build", "agent:runner", "agent:build", "agent:shards"} {
 				if !phases[phase] {
 					t.Fatalf("no %s phase in the summary:\n%s", phase, result.output)
 				}

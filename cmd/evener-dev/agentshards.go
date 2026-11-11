@@ -22,11 +22,13 @@ package dev
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
 //	AGENT_SHARD_CONCURRENCY  shards running at once (default 0 = all at once)
 //	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
-//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and to
-//	                       every shard's: a skipped test draws no cost line,
-//	                       so it lands in no shard, but a cached survey means
-//	                       no survey ran and the shards would otherwise run
-//	                       the test the operator asked to skip. Pinned by
+//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and
+//	                       applied to every shard: a top-level pattern drops
+//	                       the tests it names before packing (topLevelSkip),
+//	                       one with a subtest level is handed to each shard's
+//	                       -test.skip. A cached survey means no survey ran, so
+//	                       without that the shards would run the test the
+//	                       operator asked to skip. Pinned by
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_PART       k/m = run only every m-th shard, starting at shard
@@ -507,8 +509,11 @@ func runShards(cfg shardsConfig) int {
 	}
 	buildSeconds := time.Since(buildStart).Seconds()
 
+	phases := []phaseTime{{"build", buildSeconds}}
 	if cfg.liveStack {
+		liveStackStart := time.Now()
 		env, err := cfg.prepareLiveStack(in, logdir)
+		phases = append(phases, phaseTime{"live-stack", time.Since(liveStackStart).Seconds()})
 		if err != nil {
 			if code := in.exitCode(); code != 0 {
 				return code
@@ -526,7 +531,7 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
-	listSeconds := time.Since(listStart).Seconds()
+	phases = append(phases, phaseTime{"list", time.Since(listStart).Seconds()})
 	planStart := time.Now()
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
@@ -596,7 +601,7 @@ func runShards(cfg shardsConfig) int {
 	}
 	shardSkip := cfg.skip
 	if skip, ok := topLevelSkip(cfg.skip); ok {
-		costs = slices.DeleteFunc(costs, func(c testCost) bool { return skip.MatchString(c.name) })
+		costs = slices.DeleteFunc(costs, func(c testCost) bool { return skip(c.name) })
 		shardSkip = ""
 	}
 	if len(costs) == 0 {
@@ -660,7 +665,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		return filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
 	}
-	planSeconds := time.Since(planStart).Seconds()
+	phases = append(phases, phaseTime{"plan", time.Since(planStart).Seconds()})
 	phaseStart := time.Now()
 
 	// Launch shards, at most limit at a time. Slots are acquired before
@@ -785,10 +790,7 @@ func runShards(cfg shardsConfig) int {
 	// The phase summary: a green CI run keeps only these lines of the module
 	// log, so they are the record of where a lane's time went. The plan phase
 	// is the survey, when one runs, and the packing.
-	for _, p := range []struct {
-		name    string
-		seconds float64
-	}{{"build", buildSeconds}, {"list", listSeconds}, {"plan", planSeconds}} {
+	for _, p := range phases {
 		_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:%s %.2fs\n", cfg.label, p.name, p.seconds)
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:shards %.2fs %s\n", cfg.label, phase, strings.Join(shardTimes, " "))
@@ -857,28 +859,68 @@ func runShards(cfg shardsConfig) int {
 	return 0
 }
 
-// topLevelSkip compiles a skip pattern that names no subtest level, the only
-// kind the runner can apply to the test names it packs. Go splits a skip on
-// '/' into one pattern per level, and a pattern with a single level skips a
-// test exactly when it matches the test's top-level name, so dropping those
-// names before packing skips the same tests.
+// phaseTime is one phase of a shards run and its wall seconds, for the TIME
+// lines the run prints.
+type phaseTime struct {
+	name    string
+	seconds float64
+}
+
+// topLevelSkip returns the test-name predicate for a skip pattern that names no
+// subtest level, the only kind the runner can apply to the test names it packs.
+// It matches as Go's -skip does (testing's splitRegexp): the pattern splits on
+// '|' outside brackets and parentheses, each alternative compiles alone (so a
+// flag group like (?i) stays with its own alternative), and a single-level
+// pattern skips a test exactly when an alternative matches its top-level name.
+// Dropping those names before packing therefore skips the same tests.
 //
 // It is applied here rather than handed to the shards because a shard binary
 // matching both its -test.run and a -test.skip recompiles the run pattern for
 // every test and subtest: testing's MatchString caches one compiled pattern,
 // and a shard's run pattern names a thousand tests. That work runs under a
 // lock every parallel test shares, and under -race it stretched the agent
-// shards 2-3x. A pattern with a '/' anywhere, or one that does not compile,
-// is left for the binary to apply or reject.
-func topLevelSkip(skip string) (*regexp.Regexp, bool) {
+// shards 2-3x. A pattern with a '/' anywhere, or an alternative that does not
+// compile, is left for the binary to apply or reject.
+func topLevelSkip(skip string) (func(name string) bool, bool) {
 	if skip == "" || strings.Contains(skip, "/") {
 		return nil, false
 	}
-	re, err := regexp.Compile(skip)
-	if err != nil {
+	var alternatives []*regexp.Regexp
+	brackets, parens, start := 0, 0, 0
+	split := func(end int) bool {
+		re, err := regexp.Compile(skip[start:end])
+		alternatives = append(alternatives, re)
+		start = end + 1
+		return err == nil
+	}
+	for i := 0; i < len(skip); i++ {
+		switch skip[i] {
+		case '[':
+			brackets++
+		case ']':
+			brackets = max(brackets-1, 0) // an unmatched ']' is a literal
+		case '(':
+			if brackets == 0 {
+				parens++
+			}
+		case ')':
+			if brackets == 0 {
+				parens--
+			}
+		case '\\':
+			i++
+		case '|':
+			if brackets == 0 && parens == 0 && !split(i) {
+				return nil, false
+			}
+		}
+	}
+	if !split(len(skip)) {
 		return nil, false
 	}
-	return re, true
+	return func(name string) bool {
+		return slices.ContainsFunc(alternatives, func(re *regexp.Regexp) bool { return re.MatchString(name) })
+	}, true
 }
 
 // effectiveGoflags is what the toolchain will actually apply, which is the

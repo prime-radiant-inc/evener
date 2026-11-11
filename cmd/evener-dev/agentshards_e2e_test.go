@@ -396,9 +396,9 @@ func TestAgentShardsReportsPerShardWallTime(t *testing.T) {
 	}
 }
 
-// shardPhases parses the runner's TIME lines: each phase's wall seconds, and
-// the shard phase's per-shard seconds by shard number.
-func shardPhases(t *testing.T, out string) (phases map[string]float64, perShard map[int]float64) {
+// shardPhases parses a runner's TIME lines for label: each phase's wall
+// seconds, and the shard phase's per-shard seconds by shard number.
+func shardPhases(t *testing.T, label, out string) (phases map[string]float64, perShard map[int]float64) {
 	t.Helper()
 	phases, perShard = map[string]float64{}, map[int]float64{}
 	for line := range strings.SplitSeq(out, "\n") {
@@ -406,7 +406,7 @@ func shardPhases(t *testing.T, out string) (phases map[string]float64, perShard 
 		if len(fields) < 3 || fields[0] != "TIME" {
 			continue
 		}
-		phase, ok := strings.CutPrefix(fields[1], "agent:")
+		phase, ok := strings.CutPrefix(fields[1], label+":")
 		if !ok {
 			t.Fatalf("TIME line names another label: %q", line)
 		}
@@ -439,7 +439,7 @@ func TestAgentShardsReportsPhaseTimes(t *testing.T) {
 	if rc := runShards(cfg); rc != 0 {
 		t.Fatalf("run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
-	phases, perShard := shardPhases(t, stdout.String())
+	phases, perShard := shardPhases(t, "agent", stdout.String())
 	for _, phase := range []string{"build", "list", "plan", "shards"} {
 		if _, ok := phases[phase]; !ok {
 			t.Fatalf("no TIME line for the %s phase in:\n%s", phase, stdout)
@@ -654,10 +654,9 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 		t.Fatalf("surveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
 
-	// The path that used to run the skipped test: no survey, so nothing had
-	// filtered it out before the shards were packed. The shards are given the
-	// skip themselves now, which is what makes the knob mean the same thing on
-	// a cache hit as on a cold run.
+	// No survey, so no survey filtered the skipped test out: the runner's own
+	// application of the skip is what keeps it from running, and what makes
+	// the knob mean the same thing on a cache hit as on a cold run.
 	unsurveyed, stdout2, stderr2, _ := e2eConfig(t)
 	unsurveyed.skip = "^TestFixtureBeta$"
 	unsurveyed.noSurvey = true
@@ -1135,6 +1134,11 @@ func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
 	}
 	if builds := countBuilds(data, shardrun.PrebuiltBinTarget); builds != 1 {
 		t.Fatalf("go build ./cmd/evener ran %d times, want once for the run:\n%s", builds, data)
+	}
+	// That build is a phase of its own in the run's timing summary.
+	phases, _ := shardPhases(t, "hub", string(out))
+	if _, ok := phases["live-stack"]; !ok {
+		t.Fatalf("no live-stack phase in the timing summary:\n%s", out)
 	}
 	seen, err := filepath.Glob(filepath.Join(liveDir, "seen.*"))
 	if err != nil {
