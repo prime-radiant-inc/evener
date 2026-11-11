@@ -53,7 +53,6 @@ func newReloadSession(t *testing.T, root string, window int, main, cheap func(ll
 		withClient(client),
 		withProfile(profile),
 		withDir(root),
-		withoutGitSnapshot(),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
 	}, opts...)
 	s := newSession(t, o...)
@@ -2091,7 +2090,6 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
 	s := newSession(t,
 		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
 	)
 	drainSessionEvents(s)
 	plantPreloadRecord(t, s, "opaque", "fixture description")
@@ -2141,7 +2139,7 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 // away with it — they are retired on their own schedule.
 func TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.mu.Lock()
 	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
 		{Phase: skillCompactionReceiptCancelled, Operation: schema.SkillCompactionOperation{Generation: 1}},
@@ -2170,7 +2168,6 @@ func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
 	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
 	s := newSession(t,
 		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
 	)
 	drainSessionEvents(s)
 	// A selection naming only a preload-only skill is consumed with no outcome

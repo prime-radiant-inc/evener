@@ -73,7 +73,7 @@ func TestDelegateLegacyDormancy_NoDelegateJobRecordCanBeCreated(t *testing.T) {
 
 func TestDelegateLegacyDormancy_NoActivationAliasResolvesForLiveControl(t *testing.T) {
 	t.Parallel()
-	root := newSession(t, withoutGitSnapshot())
+	root := newSession(t)
 	const delegateID = "dlg_live_without_activation"
 	seedStableToolRunningDelegate(t, root, delegateID, "", time.Unix(10, 0).UTC())
 	var cancelled atomic.Int32

@@ -258,7 +258,6 @@ func TestLiveActivityTreeKeepsNestedDelegatesWhenFirstHistoricalChildMetaMissing
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir}),
-		withoutGitSnapshot(),
 	)
 	rootID := s.ID()
 	middleID := "childlivemiddle"

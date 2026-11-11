@@ -1063,17 +1063,17 @@ func assertCoOccupyingUnknownOwnerTracked(t *testing.T, r *wtRepo, sess *Session
 func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	t.Parallel()
 	r, path := newForeignBareLockedLane(t)
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	sess := newSession(t, withDir(path), withEnvironmentSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
-// snapshot reporting not-a-repo (withoutGitSnapshot) must not disable the
+// snapshot reporting not-a-repo (no withEnvironmentSnapshot) must not disable the
 // occupancy lock on a real, foreign-bare-locked managed lane.
 func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *testing.T) {
 	t.Parallel()
 	r, path := newForeignBareLockedLane(t)
-	sess := newSession(t, withDir(path), withoutGitSnapshot(),
+	sess := newSession(t, withDir(path),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }

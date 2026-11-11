@@ -498,7 +498,7 @@ func newQuotaDelegateRootWith(t *testing.T, adapter llm.ProviderAdapter, configu
 		clock:            clk,
 	}
 	configure(&cfg)
-	s := newSession(t, withClient(c), withDir(dir), withoutGitSnapshot(), withConfig(cfg))
+	s := newSession(t, withClient(c), withDir(dir), withConfig(cfg))
 	return s, clk
 }
 
@@ -1159,7 +1159,7 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 	dir := t.TempDir()
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	clk := agenttest.NewFakeClock()
-	s := newSession(t, withAdapter(adapter), withProfile(baseProviderProfile("anthropic", "claude-opus-4-6")), withDir(dir), withoutGitSnapshot(),
+	s := newSession(t, withAdapter(adapter), withProfile(baseProviderProfile("anthropic", "claude-opus-4-6")), withDir(dir),
 		withConfig(SessionConfig{StateDir: dir, LLMRetryPolicy: &policy, clock: clk}))
 	serveSession(t, s)
 	if _, err := s.SetGoal(context.Background(), "ship the release"); err != nil {

@@ -32,8 +32,8 @@ func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
 	if len(findings) > 0 {
 		t.Fatalf("test(s) set HOME or XDG_CONFIG_HOME (directly or through a helper) and construct a session whose launch snapshot forks `go env` into it:\n%s\n\n"+
 			"Fix: write the gate in the literal the constructor receives — SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} "+
-			"(RestoreSessionConfig likewise) — or pass withoutGitSnapshot() to newSession. A config held in a variable is "+
-			"refused here even when it is gated, so a later write cannot re-enable the snapshot unseen.",
+			"(RestoreSessionConfig likewise) — or build it with newSession and no withEnvironmentSnapshot(). A config held in "+
+			"a variable is refused here even when it is gated, so a later write cannot re-enable the snapshot unseen.",
 			strings.Join(findings, "\n"))
 	}
 }
@@ -51,8 +51,12 @@ var sessionConstructors = map[string]int{
 	"RestoreSessionFromMetaWithConfig": 4,
 }
 
-// snapshotGateOption is the newSession fixture option that sets the gate.
-const snapshotGateOption = "withoutGitSnapshot"
+// sessionFixture is the test session builder, which gates the snapshot unless
+// the call carries snapshotOptIn.
+const (
+	sessionFixture = "newSession"
+	snapshotOptIn  = "withEnvironmentSnapshot"
+)
 
 // auditFunc is one function or method declared in the test files, with the
 // bare names of everything its body calls.
@@ -185,9 +189,10 @@ func allConstructionsGated(body *ast.BlockStmt, reaches, gated map[string]bool) 
 }
 
 // callGated decides one constructor-reaching call. A constructor is gated only
-// by a literal in its config position; a helper by a withoutGitSnapshot() call
-// or a gated literal anywhere in its arguments, or by gating every
-// construction it reaches itself.
+// by a literal in its config position. A helper call carrying a
+// withEnvironmentSnapshot() option is never gated; otherwise the session
+// fixture is gated, and any other helper is gated by a gated literal anywhere
+// in its arguments or by gating every construction it reaches itself.
 func callGated(call *ast.CallExpr, name string, gated map[string]bool) bool {
 	if idx, ok := sessionConstructors[name]; ok {
 		if idx < 0 || len(call.Args) <= idx {
@@ -196,22 +201,22 @@ func callGated(call *ast.CallExpr, name string, gated map[string]bool) bool {
 		lit, ok := call.Args[idx].(*ast.CompositeLit)
 		return ok && literalGate(lit)
 	}
-	if gated[name] {
-		return true
-	}
-	carries := false
+	optIn, gatedLiteral := false, false
 	for _, arg := range call.Args {
 		ast.Inspect(arg, func(n ast.Node) bool {
 			switch e := n.(type) {
 			case *ast.CallExpr:
-				carries = carries || calleeName(e.Fun) == snapshotGateOption
+				optIn = optIn || calleeName(e.Fun) == snapshotOptIn
 			case *ast.CompositeLit:
-				carries = carries || literalGate(e)
+				gatedLiteral = gatedLiteral || literalGate(e)
 			}
-			return !carries
+			return !optIn
 		})
 	}
-	return carries
+	if optIn {
+		return false
+	}
+	return name == sessionFixture || gated[name] || gatedLiteral
 }
 
 // literalGate reads a SessionConfig, RestoreSessionConfig or testConfig

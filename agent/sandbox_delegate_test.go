@@ -128,7 +128,7 @@ func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -419,7 +419,7 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 
-	owned := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	owned := newSession(t, withClient(client), withDir(t.TempDir()))
 	ownedEnv, ok := owned.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("child env = %T, want a local environment", owned.currentEnv())
@@ -442,7 +442,7 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 		t.Errorf("unadopted child retained its scratch %s: stat err = %v", ownedScratch, err)
 	}
 
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -485,7 +485,7 @@ func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	owner := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	owner := newSession(t, withClient(client), withDir(t.TempDir()))
 	fresh := owner.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(t.TempDir())
 	if _, err := fresh.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
 		t.Fatalf("ExecCommand: %v", err)

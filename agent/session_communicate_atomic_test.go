@@ -56,7 +56,7 @@ func newCompetingCommunicateSession(t *testing.T, custom map[string]any) *Sessio
 	if custom != nil {
 		profile = provider.WithCommunicateOutputSchema(profile, custom)
 	}
-	return newSession(t, withProfile(profile), withoutGitSnapshot())
+	return newSession(t, withProfile(profile))
 }
 
 // execCommunicateCall drives one terminal communicate call through the real

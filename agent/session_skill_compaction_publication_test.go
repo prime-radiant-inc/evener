@@ -326,7 +326,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 				<-release
 			}
 			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
-		}, withoutGitSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 		id := s.Meta().ID
 		disableSessionNaming(s)
 		seedNumberedSessionHistory(t, s, 20)

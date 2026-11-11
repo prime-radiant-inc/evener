@@ -33,7 +33,7 @@ func editTool(t *testing.T) *tool.RegisteredTool {
 
 func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	for _, tc := range []struct {

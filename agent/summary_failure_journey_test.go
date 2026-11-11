@@ -49,7 +49,7 @@ func TestSummaryFailureJourney(t *testing.T) {
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withConfig(SessionConfig{
 		StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"), PluginDirs: []string{pluginDir},
 	}))
 	if err := sess.Rename("summary-journey"); err != nil {
@@ -171,7 +171,7 @@ func TestSummaryFailureJourneyRejectedReplyExhaustionKeepsHistory(t *testing.T) 
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withConfig(SessionConfig{
 		StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"),
 	}))
 	if err := sess.Rename("summary-exhaustion-journey"); err != nil {
@@ -258,7 +258,7 @@ func TestSummaryFailureChildWithUnreadEvents(t *testing.T) {
 				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 429, "private-child-body-f6e1", nil, nil)
 			}})
 			stateDir := t.TempDir()
-			sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+			sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withConfig(SessionConfig{
 				StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"),
 				spawn: spawnConfig{parentSessionID: "root-fixture", descendantEvent: func(ev events.SessionEvent) { forwarded = append(forwarded, ev) }},
 			}))
@@ -323,7 +323,7 @@ func TestSummaryFailurePublicationFilters(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	failure := &diagnostic.SummaryFailure{Terminal: diagnostic.SummaryAttempt{Kind: "unknown"}}
 	for _, warning := range []events.WarningData{
 		{Code: "another_warning", SummaryFailure: failure},

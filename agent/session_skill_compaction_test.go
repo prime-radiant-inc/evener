@@ -19,7 +19,7 @@ import (
 func TestSkillCompaction_AcceptanceSurvivesMetadataRoundTrip(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	generation, err := s.requestSkillCompaction(context.Background(), "", "",
 		schema.SkillReloadSelection{State: "valid", Names: []string{}})
 	if err != nil {
@@ -45,7 +45,7 @@ func TestSkillCompaction_AcceptanceSurvivesMetadataRoundTrip(t *testing.T) {
 func TestSkillCompaction_AcceptanceAutomaticSelectionOnlyBeforePublication(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 	accepted, err := s.acceptAutomaticSkillCompaction(context.Background(), capturedNoteGen, "",
 		schema.SkillReloadSelection{State: "valid", Names: []string{}})
@@ -285,7 +285,7 @@ func TestSkillCompaction_LatchFirstSelectionWins(t *testing.T) {
 func TestSkillCompaction_ClearNoteCancelsAutomaticOperation(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	id := s.Meta().ID
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 	accepted, err := s.acceptAutomaticSkillCompaction(context.Background(), capturedNoteGen, "automatic-note",
@@ -367,7 +367,7 @@ func TestSkillCompaction_ClearNoteLeavesForcedOperation(t *testing.T) {
 func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	gen, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
 		schema.SkillReloadSelection{State: "absent"})
 	if err != nil {
@@ -406,7 +406,7 @@ func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) 
 func TestSkillCompaction_CancellationReceiptsAreRetired(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	for i := range 3 {
 		generation, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
 			schema.SkillReloadSelection{State: "valid", Names: []string{}})
@@ -457,7 +457,7 @@ func breakSessionMetaPath(t *testing.T, s *Session) func() {
 func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
 	t.Run("forced", func(t *testing.T) {
 		stateDir := t.TempDir()
-		s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+		s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 		repair := breakSessionMetaPath(t, s)
 
 		generation, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
@@ -493,7 +493,7 @@ func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
 	})
 	t.Run("automatic", func(t *testing.T) {
 		stateDir := t.TempDir()
-		s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+		s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 		repair := breakSessionMetaPath(t, s)
 		_, capturedNoteGen := s.pinnedNoteSnapshot()
 

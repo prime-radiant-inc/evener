@@ -84,7 +84,6 @@ printf '%s\n' "$*" >> "$SWAP_TEST_LOG"
 func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	sess := newSession(t,
 		withConfig(SessionConfig{MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 
 	realGit, err := exec.LookPath("git")

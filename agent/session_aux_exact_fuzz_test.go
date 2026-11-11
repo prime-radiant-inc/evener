@@ -125,7 +125,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 		case 14:
 			fuzzAuxForkSuccess(t, true)
 		case 15:
-			s := newSession(t, withConfig(SessionConfig{}), withoutGitSnapshot())
+			s := newSession(t, withConfig(SessionConfig{}))
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 			next := base.WithWorkingDirectory(t.TempDir())
 			s.swapEnvAndRefresh(next, nil)
