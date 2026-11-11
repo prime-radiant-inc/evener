@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/remoteinstall"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // The SSH boundary executes the actual generated POSIX shell in an owned home.
@@ -23,7 +24,7 @@ type freshDeployEffects struct{ installers, pushes int }
 
 func freshTargetShell(t *testing.T) (string, string, *fakeRunner, *freshDeployEffects) {
 	t.Helper()
-	home := t.TempDir()
+	home := testfs.CanonicalTempDir(t)
 	tools := filepath.Join(home, "tools")
 	if err := os.Mkdir(tools, 0700); err != nil {
 		t.Fatal(err)

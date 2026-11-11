@@ -741,7 +741,6 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	shim := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +
 		"  -f) echo 'readlink: illegal option -- f' >&2; echo 'usage: readlink [-n] [file ...]' >&2; exit 1;;\n" +
-		"  -n) shift;;\n" +
 		"esac\n" +
 		"exec " + realReadlink + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "readlink"), []byte(shim), 0o755); err != nil {

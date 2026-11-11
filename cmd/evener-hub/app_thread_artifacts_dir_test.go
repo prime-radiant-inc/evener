@@ -34,9 +34,14 @@ func TestThreadReadAnnouncesTheArtifactsDirTheDocRouteServes(t *testing.T) {
 	if err := os.WriteFile(target, []byte("retained"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The doc route answers the symlink-resolved file it will open.
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	root, abs, ok := web.resolveArtifactsDocTarget(t.Context(), session, target)
-	if !ok || root != want || abs != target {
-		t.Fatalf("doc route resolved (%q, %q, %v), want (%q, %q, true)", root, abs, ok, want, target)
+	if !ok || root != want || abs != resolvedTarget {
+		t.Fatalf("doc route resolved (%q, %q, %v), want (%q, %q, true)", root, abs, ok, want, resolvedTarget)
 	}
 	thread, err := pastEntryThreadForList(t.Context(), web.cfg, entry)
 	if err != nil {

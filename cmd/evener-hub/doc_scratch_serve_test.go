@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // docScratchTestServer seeds a past session whose meta records a scratch temp
@@ -32,7 +33,9 @@ func docScratchTestServer(t *testing.T) (*WebServer, string, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	cwd := t.TempDir()
-	base := t.TempDir()
+	// The hub serves scratch from the symlink-resolved base, and a session
+	// names its scratch files by that path, so the fixture base is canonical.
+	base := testfs.CanonicalTempDir(t)
 	proj := filepath.Join(root, "projects", "project-docs-0000000000")
 	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
@@ -216,7 +219,9 @@ func TestDocFile_MissingScratchFileIsNotFound(t *testing.T) {
 func TestDocFile_PrefersTheRecordedScratchBaseOverHubDefaults(t *testing.T) {
 	// Not parallel: t.Setenv redirects TMPDIR, which names this process's own
 	// default scratch base, for the duration of the test.
-	recordedBase := t.TempDir()
+	// Scratch bases are recorded by canonical path, and the request names a
+	// file the way the session would: under that recorded base.
+	recordedBase := testfs.CanonicalTempDir(t)
 	defaultBase := t.TempDir()
 	t.Setenv("TMPDIR", defaultBase)
 	root := t.TempDir()
@@ -384,7 +389,9 @@ func TestDocFile_AbsentScratchDirIsNotServed(t *testing.T) {
 // through that record without serving anything from the root's scratch.
 func TestDocFile_DelegateScratchResolvesThroughTheTreeRoot(t *testing.T) {
 	t.Parallel()
-	base := t.TempDir()
+	// The hub serves scratch from the symlink-resolved base, and a session
+	// names its scratch files by that path, so the fixture base is canonical.
+	base := testfs.CanonicalTempDir(t)
 	delegate := hubtest.SessionID(t)
 	treeRoot := hubtest.SessionID(t)
 	web, delegateID, delegateScratch, rootScratch := delegateScratchTestServer(t, schema.SessionMeta{
@@ -422,7 +429,9 @@ func TestDocFile_DelegateScratchResolvesThroughTheTreeRoot(t *testing.T) {
 // owner's directory alone.
 func TestDocFile_SharedEnvDelegateServesTheEnvOwnerScratch(t *testing.T) {
 	t.Parallel()
-	base := t.TempDir()
+	// The hub serves scratch from the symlink-resolved base, and a session
+	// names its scratch files by that path, so the fixture base is canonical.
+	base := testfs.CanonicalTempDir(t)
 	delegate := hubtest.SessionID(t)
 	treeRoot := hubtest.SessionID(t)
 	envOwner := hubtest.SessionID(t)

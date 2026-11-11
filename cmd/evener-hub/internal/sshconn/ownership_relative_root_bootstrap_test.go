@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // TOML, cwd resolution and endpoint inspection execute on the real filesystem.
@@ -25,7 +26,7 @@ func TestBootstrapRelativeRootServiceContext(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin"} {
 		for _, live := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/live=%t", platform, live), func(t *testing.T) {
-				root := t.TempDir()
+				root := testfs.CanonicalTempDir(t)
 				login, service := filepath.Join(root, "login"), filepath.Join(root, "service")
 				for _, dir := range []string{login, service, filepath.Join(service, "hub-state")} {
 					if err := os.MkdirAll(dir, 0700); err != nil {

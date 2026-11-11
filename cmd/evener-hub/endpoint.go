@@ -156,17 +156,27 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	return report, nil
 }
 
-// endpointConfigPath is shared by publication and inspection. Resolve in the
-// owning process's cwd, before Abs can clean symlink/.. into a different file.
+// endpointConfigPath is shared by publication and inspection. An existing file
+// is named by its canonical path, resolved from the owning process's physical
+// cwd: the kernel resolves a relative path's .. from there, while Abs would
+// clean symlink/.. lexically, or against a symlinked $PWD, into a different file.
+// The cwd is joined without cleaning so EvalSymlinks sees every component.
 func endpointConfigPath(path string, exists bool) (string, error) {
-	if exists {
-		var err error
-		path, err = filepath.EvalSymlinks(path)
+	if !exists {
+		return filepath.Abs(path)
+	}
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
 		if err != nil {
 			return "", err
 		}
+		physical, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			return "", err
+		}
+		path = physical + string(filepath.Separator) + path
 	}
-	return filepath.Abs(path)
+	return filepath.EvalSymlinks(path)
 }
 
 func unavailableEndpoint(report hubendpoint.Report, reason string) (hubendpoint.Report, error) {
