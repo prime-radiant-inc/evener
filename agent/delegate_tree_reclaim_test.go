@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -46,6 +48,101 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 	}
 	if got := c.live["dlg_blocked"].runtime; got != blocked {
 		t.Fatalf("blocked subtree runtime changed during claim: got %p want %p", got, blocked)
+	}
+}
+
+func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 2
+	seedDelegateReclaimRuntime(t, c, "dlg_fenced", "", time.Unix(10, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_free", "", time.Unix(9, 0).UTC(), false, false)
+	if admission := c.beginSubtreeLaneHandoff("dlg_fenced"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired", admission)
+	}
+	defer c.endSubtreeLaneHandoff("dlg_fenced")
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("capacity reclamation claimed nothing with one free candidate")
+	}
+	defer func() { _ = c.AbortRuntimeReclamation(claim) }()
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, []string{"dlg_free"}) {
+		t.Fatalf("claimed runtimes = %v, want only the unfenced dlg_free", got)
+	}
+}
+
+// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: a
+// capacity reclamation keeps c.reclaiming set across its terminal teardowns,
+// and the evicted coordinator's own close-time lane cleanup must still acquire
+// the handoff for its child lanes. Independent handoffs are refused later by
+// the quiescence snapshot, which still sees the claim as active.
+func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	seedDelegateReclaimRuntime(t, c, "dlg_coordinator", "", time.Unix(10, 0).UTC(), false, false)
+	c.mu.Lock()
+	c.reclaiming["dlg_coordinator"] = 1
+	active := c.runtimeReclamationIntersectsProcessWorkLocked(c.subtreeMembersLocked("dlg_coordinator"))
+	c.mu.Unlock()
+	if !active {
+		t.Fatal("reclaiming subtree does not read as active")
+	}
+	if admission := c.beginSubtreeLaneHandoff("dlg_coordinator"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired for the reclaiming close", admission)
+	}
+	c.endSubtreeLaneHandoff("dlg_coordinator")
+	c.mu.Lock()
+	delete(c.reclaiming, "dlg_coordinator")
+	c.mu.Unlock()
+}
+
+// TestCapacityReclaimUnlocksKeptChildLane covers the full path the fence
+// exception exists for: capacity eviction tears down a coordinator whose
+// close-time lane cleanup must still unlock a dirty child lane while the
+// subtree is marked reclaiming.
+func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
+	r := newWorktreeRepo(t)
+	childID, lanePath, _ := r.seedIsolationLane(t)
+	const parentID = "dlg_parent_reclaim"
+	parentSess := newSession(t)
+	childSess := newSession(t)
+	c := r.s.delegateController
+	parentSess.delegateController = c
+	parentSess.owningDelegateID = parentID
+	childSess.delegateController = c
+
+	c.mu.Lock()
+	childAggregate := c.durable[childID]
+	if childAggregate == nil {
+		c.mu.Unlock()
+		t.Fatalf("child aggregate %s is missing", childID)
+	}
+	childAggregate.Descriptor.ParentDelegateID = parentID
+	childAggregate.Phase = delegatestore.PhaseIdle
+	if c.delegateChildren[parentID] == nil {
+		c.delegateChildren[parentID] = make(map[string]struct{})
+	}
+	c.delegateChildren[parentID][childID] = struct{}{}
+	childLive := c.live[childID]
+	childLive.binding = nil
+	childLive.runtime = childSess
+	c.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(lanePath, "keep-me.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty child lane: %v", err)
+	}
+	seedDelegateReclaimRuntimeSession(t, c, parentID, "", time.Unix(20, 0).UTC(), false, false, parentSess)
+	c.maxRetainedTerminal = 1
+
+	if err := r.s.reclaimDelegateRuntimeCapacity(1); err != nil {
+		t.Fatalf("reclaim capacity: %v", err)
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); locked {
+		t.Fatalf("kept child lane stayed locked with %q after the coordinator's close-time cleanup", reason)
+	}
+	if _, err := os.Stat(lanePath); err != nil {
+		t.Fatalf("dirty child lane was removed instead of kept: %v", err)
 	}
 }
 

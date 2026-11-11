@@ -201,9 +201,7 @@ func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRunti
 		if closed[entry.delegateID] != entry.runtime {
 			continue
 		}
-		if live := c.live[entry.delegateID]; live != nil && live.binding == nil && live.runtime == entry.runtime {
-			c.setResidentRuntimeLocked(live, nil)
-		}
+		c.clearResidentRuntimeIfExactLocked(entry.delegateID, entry.runtime)
 	}
 	c.releaseRuntimeReclamationLocked(claim)
 	return nil
@@ -268,6 +266,13 @@ func (c *delegateTreeController) isResidentTerminalRuntimeLocked(id string, aggr
 
 func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([]delegateRuntimeReclamationEntry, bool) {
 	members := c.subtreeMembersLocked(rootID)
+	for id := range members {
+		if c.laneHandoffCoversLocked(id) {
+			// A lane handoff owns this subtree; a terminal reclaim would tear
+			// down runtimes the handoff is about to hand over.
+			return nil, false
+		}
+	}
 	if c.runtimeReclamationIntersectsProcessWorkLocked(members) {
 		return nil, false
 	}
@@ -337,6 +342,13 @@ func (c *delegateTreeController) runtimeReclamationIntersectsProcessWorkLocked(m
 	}
 	for id := range members {
 		if _, ok := c.reclaiming[id]; ok {
+			return true
+		}
+	}
+	for id := range members {
+		if c.releasing[id] != nil {
+			// The idle release unhooks and clears pointers BEFORE teardown, so
+			// the claim maps alone cannot see it.
 			return true
 		}
 	}
@@ -660,6 +672,12 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			return false
 		}
 	}
+
+	// The unhook and pointer clear below happen BEFORE teardown, so record the
+	// in-flight window first: a lane handoff that starts during the teardown
+	// must see the subtree as busy rather than as a vacant lane.
+	s.delegateController.beginRuntimeReleaseInFlight(claim.entries)
+	defer s.delegateController.endRuntimeReleaseInFlight(claim.entries)
 
 	// Unhook first — record removal plus live-pointer clear — and only then run
 	// the teardowns, WITHOUT holding the reclamation fence across them. The

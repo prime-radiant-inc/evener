@@ -764,7 +764,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("operation enum = %T, want []string", opProp["enum"])
 	}
-	wantEnum := map[string]bool{"create": true, "list": true, "switch": true, "adopt": true, "exit": true, "remove": true, "prune": true, "dispose": true}
+	wantEnum := map[string]bool{"create": true, "list": true, "switch": true, "adopt": true, "exit": true, "remove": true, "prune": true, "unlock": true, "dispose": true}
 	if len(opEnum) != len(wantEnum) {
 		t.Errorf("operation enum = %v, want exactly %v", opEnum, wantEnum)
 	}

@@ -104,6 +104,12 @@ export function worktreeWords(item: WorktreeStep): StepWords {
       const words = id ? { verb: disposed, target: id } : { verb: `${disposed} a worktree` };
       return status === "already_disposed" ? words : withDetail(words, dirty);
     }
+    case "unlock": {
+      // The parent-only recovery path: the delegate keeps its work and stays
+      // resumable, so the row must never read like a disposal.
+      const id = str(args, "id");
+      return id ? { verb: "Released lane for", target: id } : { verb: "Released a delegate lane" };
+    }
     default:
       // A future operation this build has never heard of still says which one
       // it was, in words, never as the bare tool name.
@@ -144,6 +150,8 @@ export function worktreeProgress(item: Pick<WorktreeStep, "argumentsJSON">): str
       return `Adopting ${target}`;
     case "dispose":
       return `Disposing ${str(args, "id") || "a worktree"}`;
+    case "unlock":
+      return `Releasing lane for ${str(args, "id") || "a delegate"}`;
     default:
       return operation ? `Using manage worktree: ${operation}` : "Using manage worktree";
   }

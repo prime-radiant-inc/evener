@@ -286,6 +286,10 @@ type worktreeGuard struct {
 	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
 	// like remove).
 	disposeOp func(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error)
+	// unlockOp runs the unlock operation (issue #481): release a direct
+	// worktree-isolated delegate's evener:dlg: lane lock without retiring the
+	// delegate or touching its resumability, worktree, branch or work.
+	unlockOp func(ctx context.Context, id string) (WorktreeUnlockResult, error)
 	// disposeOnly reports whether this session is served the dispose-only
 	// manage_worktree surface (delegate-lane disposal spec §P1 "Availability"):
 	// a worktree-isolated coordinator that may only dispose its own delegates'
@@ -365,7 +369,7 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// worktrees would be able to force-remove sibling lanes the parent
 			// created; see rootOnlyWorktreeTools).
 			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
-				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, pruning, or unlocking worktrees could disturb the sibling lanes your parent created", operation)
 			}
 			// Admit the WHOLE operation on the close fence, here, at the one
 			// entry every operation passes through (worktreeGuard is wired only
@@ -586,6 +590,19 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				return map[string]any{
 					"status":  status,
+					"id":      res.DelegateID,
+					"path":    res.LanePath,
+					"branch":  res.Branch,
+					"message": res.Message,
+				}, nil
+			case "unlock":
+				id, _ := args["id"].(string)
+				res, err := deps.worktreeGuard.unlockOp(ctx, id)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"status":  "unlocked",
 					"id":      res.DelegateID,
 					"path":    res.LanePath,
 					"branch":  res.Branch,
