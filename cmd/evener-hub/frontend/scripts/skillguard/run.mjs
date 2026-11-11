@@ -872,19 +872,28 @@ export class Driver {
     return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
   }
 
-  queueStripExpr(ref = null) {
+  // The queue strip's own section, or null. One DOM anchor for the reader,
+  // the failure dump and the presses: the strip's heading is the only stable
+  // marker the component gives it.
+  queueStripRootExpr(ref = null) {
     return `(() => {
       const root = ${this.paneOrDocumentExpr(ref)};
       if (!root) return null;
       const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
-      if (!header) return null;
-      const strip = header.closest("section");
+      return header?.closest("section") ?? null;
+    })()`;
+  }
+
+  queueStripExpr(ref = null) {
+    return `(() => {
+      const strip = ${this.queueStripRootExpr(ref)};
+      if (!strip) return null;
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
         kind: li.dataset.kind ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
-      return { header: header.textContent, rows };
+      return { header: strip.querySelector("h3")?.textContent ?? "", rows };
     })()`;
   }
 
@@ -1672,19 +1681,13 @@ export class Driver {
     const result = await evaluate(
       this.send,
       `(() => {
-        const root = ${this.paneOrDocumentExpr(ref)};
-        if (!root) return "missing";
-        const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
-        const strip = header?.closest("section");
+        const strip = ${this.queueStripRootExpr(ref)};
         if (!strip) return "missing";
-        const row = [...strip.querySelectorAll("li")].find((li) =>
-          (li.textContent ?? "").includes(${JSON.stringify(rowText)}) && li.querySelector(${JSON.stringify(selector)}));
-        const button = row?.querySelector(${JSON.stringify(selector)});
+        const button = [...strip.querySelectorAll(${JSON.stringify(selector)})]
+          .find((candidate) => (candidate.closest("li")?.textContent ?? "").includes(${JSON.stringify(rowText)}));
         if (!button) return "missing";
         if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
-        button.scrollIntoView({ block: "center", inline: "center" });
-        const r = button.getBoundingClientRect();
-        if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
+        if ((${uncoveredCenter})(button, "center") === null) return "covered";
         button.click();
         return "clicked";
       })()`,
@@ -1694,6 +1697,18 @@ export class Driver {
     if (result === "disabled") throw new Error(`clickQueueRowControl: ${label} is disabled on ${where}`);
     if (result === "covered") throw new Error(`clickQueueRowControl: ${label} is covered at its center on ${where}`);
     if (result !== "clicked") throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
+  }
+
+  // True while the strip still holds a row carrying rowText. The queue edit
+  // restores the composer before its durable cancel removes the row; this
+  // predicate lets that removal be the awaited signal. Boolean, so each poll
+  // sends no row prose or button labels over CDP.
+  queueRowPresentExpr(rowText, ref = null) {
+    return `(() => {
+      const strip = ${this.queueStripRootExpr(ref)};
+      return strip !== null && [...strip.querySelectorAll("li")]
+        .some((li) => (li.textContent ?? "").includes(${JSON.stringify(rowText)}));
+    })()`;
   }
 
   // turnTextsExpr evaluates to one session's mounted transcript text per turn:
@@ -2156,8 +2171,7 @@ async function runScenarios(driver) {
     effectExpr: `(() => {
       const state = ${driver.composerStateExpr(driver.sessionA)};
       if (!state || !state.text.includes(${JSON.stringify(PROSE.queue1)})) return null;
-      const strip = ${driver.queueStripExpr(driver.sessionA)};
-      return strip === null || !strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? true : null;
+      return ${driver.queueRowPresentExpr(PROSE.queue1, driver.sessionA)} ? null : true;
     })()`,
     label: "Edit message",
   });
