@@ -134,7 +134,10 @@ var escalatableTools = map[string]bool{
 // while the model still gets a denial; those stay final. The reason is a TYPED kind
 // (denied.ReasonKind.Curable()), never a match on display text, and it fails closed
 // for an unclassified kind. Curable() excludes DenialMasked, so it subsumes the old
-// Sensitive check.
+// Sensitive check. A containment denial also needs a GrantTarget: the file-tool
+// layer leaves it empty when the grant would refuse at the resolved location (a
+// missing parent, a symlinked final component, a masked or git-protected
+// spelling), and that denial stays final too.
 //
 // callName is the tool the MODEL invoked (apply_patch's underlying writes carry
 // Tool=="write_file" on the denial, so the allowlist keys on the call, not the
@@ -147,7 +150,7 @@ func (s *Session) escalationAllowed(callName string, denied *sandbox.DeniedError
 	if !escalatableTools[callName] {
 		return false
 	}
-	if !denied.ReasonKind.Curable() {
+	if !denied.ReasonKind.Curable() || denied.GrantTarget == "" {
 		return false
 	}
 	if s.subscriberCount() == 0 {
@@ -228,7 +231,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 			return res
 		}
 		if d.Approve {
-			return rerun(withInvocationGrant(ctx, escalationGrant{path: denied.Path, target: denied.ApprovalTarget()}))
+			return rerun(withInvocationGrant(ctx, escalationGrant{path: denied.Path, target: denied.GrantTarget}))
 		}
 		return res
 	case <-ctx.Done():

@@ -196,14 +196,15 @@ type invocationGrant struct {
 
 // grantTarget returns where a granted operation on abs lands: abs with every
 // symlink in its parent directory resolved. The final component is kept as
-// spelled, because the file tools never follow a symlinked final component. A
-// parent that cannot be resolved (it does not exist) leaves abs unchanged.
-func grantTarget(abs string) string {
+// spelled, because the file tools never follow a symlinked final component. ok
+// is false when the parent cannot be resolved (it does not exist), since a
+// grant never creates directories.
+func grantTarget(abs string) (target string, ok bool) {
 	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
-		return abs
+		return "", false
 	}
-	return filepath.Join(parent, filepath.Base(abs))
+	return filepath.Join(parent, filepath.Base(abs)), true
 }
 
 // isGranted reports whether abs is exactly this fs's single per-invocation granted
@@ -218,32 +219,42 @@ func (s *sandboxFS) underMasked(abs string) bool {
 	return s.policy.Masks(abs)
 }
 
-// denyOutsideRoots builds a containment denial for abs that names, as
-// GrantTarget, the location an approval would reach. When no grant could
-// complete the operation there — the final component is a symlink, or a
-// symlinked parent leads into a masked or git-protected location — it returns
-// that final denial instead, so an approval card is never offered for an
-// operation the grant would refuse after Allow.
+// denyOutsideRoots builds a containment denial for abs. It names, as
+// GrantTarget, the location an approval would reach, and only when a grant
+// could complete the operation there, so an approval card is never offered for
+// an operation the grant would refuse after Allow (sandbox.DeniedError.
+// GrantTarget). The denial the model sees is the plain containment denial
+// either way: what the filesystem outside the roots looks like — a symlink, a
+// masked target, a missing directory — never reaches the model through it.
 func (s *sandboxFS) denyOutsideRoots(tool, abs, reason string, write bool) *sandbox.DeniedError {
-	target := grantTarget(abs)
-	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return s.deny(tool, abs, denyReasonSymlink)
-	}
-	if target != abs {
-		masked := s.underMasked
-		if write {
-			masked = s.underMaskedForWrite
-		}
-		if masked(target) {
-			return s.deny(tool, abs, denyReasonMasked)
-		}
-		if write && s.underProtected(target) {
-			return s.deny(tool, abs, denyReasonProtected)
-		}
-	}
 	d := s.deny(tool, abs, reason)
-	d.GrantTarget = target
+	d.GrantTarget = s.grantableTarget(abs, write)
 	return d
+}
+
+// grantableTarget returns where a grant for abs would land, or "" when the
+// grant would refuse there: the parent does not exist, the final component is
+// a symlink, either spelling is masked, or (for a write) either spelling is a
+// git-protected surface.
+func (s *sandboxFS) grantableTarget(abs string, write bool) string {
+	target, ok := grantTarget(abs)
+	if !ok {
+		return ""
+	}
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	masked := s.underMasked
+	if write {
+		masked = s.underMaskedForWrite
+	}
+	if masked(abs) || masked(target) {
+		return ""
+	}
+	if write && (s.underProtected(abs) || s.underProtected(target)) {
+		return ""
+	}
+	return target
 }
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial. Its Redacted

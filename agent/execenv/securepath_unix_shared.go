@@ -27,7 +27,7 @@ var (
 // in its parent was retargeted after approval — so the operation never reaches
 // a location the human did not see.
 func (s *sandboxFS) approvedTarget(tool, abs string) (string, error) {
-	if grantTarget(abs) != s.grant.target {
+	if target, ok := grantTarget(abs); !ok || target != s.grant.target {
 		return "", s.deny(tool, abs, denyReasonSymlink)
 	}
 	return s.grant.target, nil

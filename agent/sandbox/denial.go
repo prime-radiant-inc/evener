@@ -67,18 +67,11 @@ type DeniedError struct {
 
 	// GrantTarget is where an approved per-invocation grant for Path lands: Path
 	// with every symlink in its parent directory resolved. The file-tool layer
-	// sets it on a curable containment denial. It equals Path when no parent
-	// component is a symlink, and is empty on every other denial.
+	// sets it on a containment denial only when a grant could complete the
+	// operation there, so an empty GrantTarget means no approval can cure the
+	// denial. It equals Path when no parent component is a symlink. It is for the
+	// human's approval card only; Error and Redacted never include it.
 	GrantTarget string
-}
-
-// ApprovalTarget is the path an approval card shows and an approved grant
-// reaches: GrantTarget when the file-tool layer resolved one, else Path.
-func (e *DeniedError) ApprovalTarget() string {
-	if e.GrantTarget != "" {
-		return e.GrantTarget
-	}
-	return e.Path
 }
 
 // DenialReason classifies a sandbox denial by cause, independent of its display

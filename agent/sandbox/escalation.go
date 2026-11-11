@@ -73,7 +73,10 @@ func NewEscalationRequest(id string, d *DeniedError) EscalationRequest {
 		kind = EscalationShell
 		partial = true
 	}
-	deniedPath := d.ApprovalTarget()
+	deniedPath := d.GrantTarget
+	if deniedPath == "" {
+		deniedPath = d.Path
+	}
 	requestedPath := ""
 	if deniedPath != d.Path {
 		requestedPath = d.Path

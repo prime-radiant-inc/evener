@@ -19,11 +19,12 @@ import (
 // exactly as ExecuteCall would return one after a securepath refusal.
 func deniedResult(path string) (tool.ExecResult, *sandbox.DeniedError) {
 	d := &sandbox.DeniedError{
-		Mode:       sandbox.ModeReadOnly,
-		Tool:       "write_file",
-		Path:       path,
-		Reason:     "outside the sandbox's writable roots",
-		ReasonKind: sandbox.DenialOutsideWriteRoots, // a CURABLE containment denial
+		Mode:        sandbox.ModeReadOnly,
+		Tool:        "write_file",
+		Path:        path,
+		Reason:      "outside the sandbox's writable roots",
+		ReasonKind:  sandbox.DenialOutsideWriteRoots, // a CURABLE containment denial
+		GrantTarget: path,                            // whose grant could complete it
 	}
 	return tool.ExecResult{
 		ToolName:   "write_file",
@@ -133,7 +134,7 @@ func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
 	// tools (which walk a directory subtree) stay final, so one grant can never
 	// widen more than one leaf. Their underlying denials carry Tool=="write_file"
 	// or a read tool, but the allowlist keys on the invoking call name.
-	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode", ReasonKind: sandbox.DenialWritesDisabled}
+	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode", ReasonKind: sandbox.DenialWritesDisabled, GrantTarget: "/wt/f"}
 	res := tool.ExecResult{ToolName: "x", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 	for _, callName := range []string{"apply_patch", "glob", "grep", "list_dir", "shell", "read_file_all"} {
 		s := escalatableSession(t)
@@ -158,7 +159,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 	}
 	for _, rk := range final {
 		s := escalatableSession(t)
-		d := &sandbox.DeniedError{Tool: "write_file", Path: "/wt/f", ReasonKind: rk}
+		d := &sandbox.DeniedError{Tool: "write_file", Path: "/wt/f", ReasonKind: rk, GrantTarget: "/wt/f"}
 		res := tool.ExecResult{ToolName: "write_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 		got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 		if !errors.Is(got.Err, d) {
@@ -175,7 +176,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 	}
 	for _, rk := range curable {
 		s := escalatableSession(t)
-		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk}
+		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk, GrantTarget: "/etc/x"}
 		res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 		done := make(chan tool.ExecResult, 1)
 		go func() {
@@ -186,6 +187,19 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 			t.Fatalf("resolve: %v", err)
 		}
 		<-done
+	}
+
+	// A containment denial with no GrantTarget is one the grant would refuse at
+	// the resolved location (a missing parent, a symlinked leaf, a masked or
+	// protected spelling), so it stays final too.
+	for _, rk := range curable {
+		s := escalatableSession(t)
+		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk}
+		res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
+		got := s.escalateOnSandboxDenial(context.Background(), "read_file", res, noRerun(t))
+		if !errors.Is(got.Err, d) || len(pendingIDs(s)) != 0 {
+			t.Fatalf("reason %v without a grant target must stay final", rk)
+		}
 	}
 }
 

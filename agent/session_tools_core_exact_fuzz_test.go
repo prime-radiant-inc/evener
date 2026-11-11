@@ -413,7 +413,7 @@ func stceExecToolBranches(t *testing.T) {
 	s.env = grantEnv
 	call := stmCall(t, "grant", "probe", map[string]any{})
 	_ = s.rerunToolWithGrant(context.Background(), call)
-	_ = s.rerunToolWithGrant(withInvocationGrant(context.Background(), "/granted"), call)
+	_ = s.rerunToolWithGrant(withInvocationGrant(context.Background(), escalationGrant{path: "/granted", target: "/granted"}), call)
 	_ = (toolCallRerunner{session: s, call: call}).run(context.Background())
 	if len(grantEnv.grants) != 1 {
 		t.Fatalf("grant env calls = %#v", grantEnv.grants)

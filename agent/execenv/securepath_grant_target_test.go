@@ -5,6 +5,7 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
@@ -121,56 +122,79 @@ func TestGrant_RefusesWhenSymlinkRetargetedAfterApproval(t *testing.T) {
 	}
 }
 
-// A grant never follows a symlinked final component, so such a denial offers
-// nothing an approval could complete: it stays final.
-func TestDenial_SymlinkedLeafOutsideRootsStaysFinal(t *testing.T) {
-	t.Parallel()
-	outDir := realTempDir(t)
-	realFile := filepath.Join(outDir, "real.txt")
-	if err := os.WriteFile(realFile, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	leaf := filepath.Join(outDir, "leaf.txt")
-	if err := os.Symlink(realFile, leaf); err != nil {
-		t.Fatal(err)
-	}
-	for name, op := range map[string]func(*sandboxFS, string) error{"write": sbWrite, "read": sbRead} {
-		t.Run(name, func(t *testing.T) {
-			s, _, _ := newSB(t, sandbox.ModeRestricted)
-			var d *sandbox.DeniedError
-			if err := op(s, leaf); !asDenied(err, &d) || d.ReasonKind.Curable() {
-				t.Fatalf("symlinked leaf outside roots = %v, want a final denial", err)
-			}
-		})
-	}
-}
-
-// A symlinked parent that leads into a masked location is a masked denial,
-// final and redacted, never an approval card naming the secret location.
-func TestDenial_SymlinkIntoMaskedLocationStaysFinal(t *testing.T) {
+// A containment denial the grant could not complete at the resolved location
+// carries no grant target, so no approval card is offered for it. The model
+// sees the same plain containment denial either way: nothing it learns from the
+// denial describes the filesystem outside the roots.
+func TestDenial_UngrantableOutsideRootsHasNoGrantTarget(t *testing.T) {
 	t.Parallel()
 	outDir := realTempDir(t)
 	worktree := filepath.Join(outDir, "wt")
 	masked := filepath.Join(outDir, "creds")
-	for _, dir := range []string{worktree, masked} {
+	plain := filepath.Join(outDir, "plain")
+	for _, dir := range []string{worktree, masked, plain} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	link := filepath.Join(outDir, "link")
-	if err := os.Symlink(masked, link); err != nil {
-		t.Fatal(err)
+	protected := filepath.Join(plain, "config")
+	realFile := filepath.Join(plain, "real.txt")
+	for _, file := range []string{protected, realFile, filepath.Join(masked, "key")} {
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	symlinks := map[string]string{
+		filepath.Join(outDir, "toMasked"):  masked,
+		filepath.Join(plain, "leaf.txt"):   realFile,
+		filepath.Join(masked, "toPlain"):   plain,
+		filepath.Join(outDir, "toPlain"):   plain,
+		filepath.Join(masked, "maskedLnk"): realFile,
+	}
+	for link, target := range symlinks {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rp := &sandbox.ResolvedPolicy{
 		Mode:        sandbox.ModeRestricted,
 		FileTool:    sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}, WriteRoots: []string{worktree}},
 		MaskedPaths: []string{masked},
+		Git:         sandbox.GitLayout{ProtectedPaths: []string{protected}},
 	}
-	s := newSandboxFS(rp, "")
-	t.Cleanup(s.close)
-	var d *sandbox.DeniedError
-	if err := s.writeFile("write_file", filepath.Join(link, "key"), []byte("x"), 0o600); !asDenied(err, &d) || d.ReasonKind != sandbox.DenialMasked || !d.Sensitive {
-		t.Fatalf("write through a symlink into a masked location = %v, want a sensitive masked denial", err)
+	cases := []struct {
+		name   string
+		op     func(*sandboxFS, string) error
+		abs    string
+		secret string // what the model must not learn from the denial
+	}{
+		{"write through a symlinked leaf", sbWrite, filepath.Join(plain, "leaf.txt"), realFile},
+		{"read through a symlinked leaf", sbRead, filepath.Join(plain, "leaf.txt"), realFile},
+		{"write through a symlink into a masked location", sbWrite, filepath.Join(outDir, "toMasked", "key"), masked},
+		{"read through a symlink into a masked location", sbRead, filepath.Join(outDir, "toMasked", "key"), masked},
+		{"read of a masked spelling that resolves outside the mask", sbRead, filepath.Join(masked, "toPlain", "real.txt"), plain},
+		{"read of a masked symlinked leaf", sbRead, filepath.Join(masked, "maskedLnk"), realFile},
+		{"write through a symlink onto a git-protected file", sbWrite, filepath.Join(outDir, "toPlain", "config"), protected},
+		{"write under a missing parent", sbWrite, filepath.Join(outDir, "toPlain", "missing", "f.txt"), plain},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSandboxFS(rp, "")
+			t.Cleanup(s.close)
+			var d *sandbox.DeniedError
+			if err := tc.op(s, tc.abs); !asDenied(err, &d) {
+				t.Fatalf("expected a denial, got %v", err)
+			}
+			if d.GrantTarget != "" {
+				t.Fatalf("an ungrantable denial named grant target %q", d.GrantTarget)
+			}
+			if !d.ReasonKind.Curable() || d.Sensitive {
+				t.Fatalf("the model must see the plain containment denial, got kind %v sensitive %v", d.ReasonKind, d.Sensitive)
+			}
+			if strings.Contains(d.Error(), tc.secret) {
+				t.Fatalf("the denial disclosed %q to the model", tc.secret)
+			}
+		})
 	}
 }
 

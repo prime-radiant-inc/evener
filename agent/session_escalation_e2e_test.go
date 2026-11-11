@@ -198,6 +198,11 @@ func symlinkedOutsideDir(t *testing.T) (realDir, link string) {
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
+	// The card names the canonical location, whatever the temp dir crosses.
+	realDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return realDir, link
 }
 
