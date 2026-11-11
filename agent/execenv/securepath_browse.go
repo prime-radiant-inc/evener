@@ -137,7 +137,7 @@ func (a *grepAccum) resultName(relPath string) (name string, singleFile bool) {
 	if a.pathPrefix != "" {
 		relPath = filepath.Join(a.pathPrefix, relPath)
 	}
-	return OneLinePath(relPath), relPath == "."
+	return GrepPath(relPath), relPath == "."
 }
 
 // feed scans one file's lines and records matches per output mode; it returns true
@@ -149,7 +149,7 @@ func (a *grepAccum) resultName(relPath string) (name string, singleFile bool) {
 // not a file found under a directory. Ripgrep omits the filename entirely when
 // given a single explicit file argument, so content and count output do the
 // same here; otherwise the tool's output would differ between environments with
-// and without rg on PATH. A path is written as OneLinePath gives it. A
+// and without rg on PATH. A path is written as GrepPath gives it. A
 // binary file (one holding a NUL byte) is skipped.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	if bytes.IndexByte(data, 0) >= 0 {
