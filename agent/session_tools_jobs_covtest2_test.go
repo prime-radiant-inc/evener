@@ -33,36 +33,6 @@ func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 	}
 }
 
-// TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason: all branches.
-func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
-	t.Parallel()
-	const wantIgnored = "live steer returns on delivery; max_wait_ms applies only to started jobs"
-	// blockTimeoutMS=0 — not requested, empty result.
-	if got := liveSteerWaitIgnoredReason(0, jobstore.StatusRunning, "steered"); got != "" {
-		t.Fatalf("zero timeout should return empty, got %q", got)
-	}
-
-	// blockTimeoutMS>0, status=running, action=steered — should return message.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusRunning, "steered"); got != wantIgnored {
-		t.Fatalf("running+steered = %q, want %q", got, wantIgnored)
-	}
-
-	// blockTimeoutMS>0, action=delivered — should return message regardless of status.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusCompleted, "delivered"); got != wantIgnored {
-		t.Fatalf("delivered = %q, want %q", got, wantIgnored)
-	}
-
-	// blockTimeoutMS>0, status=completed, action=steered — NOT the condition.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusCompleted, "steered"); got != "" {
-		t.Fatalf("completed+steered should return empty, got %q", got)
-	}
-
-	// blockTimeoutMS>0, status=running, action=started — NOT the condition.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusRunning, "started"); got != "" {
-		t.Fatalf("running+started should return empty, got %q", got)
-	}
-}
-
 // TestCovWatchInspectFound covers watchInspectFound.
 func TestCovWatchInspectFound(t *testing.T) {
 	t.Parallel()

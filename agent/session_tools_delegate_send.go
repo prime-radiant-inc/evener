@@ -168,9 +168,6 @@ func formatDelegateSend(out delegateSendResult) string {
 	if out.RunningInBackground {
 		foot = append(foot, "running in background")
 	}
-	if out.WaitIgnoredReason != "" {
-		foot = append(foot, "wait ignored: "+out.WaitIgnoredReason)
-	}
 	b.WriteString("[")
 	b.WriteString(strings.Join(foot, " · "))
 	b.WriteString("]")
