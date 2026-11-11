@@ -294,8 +294,12 @@ func TestWithCheapModel(t *testing.T) {
 }
 
 // withContextWindow returns a copy of p whose record names an n-token window,
-// the way a live listing does.
+// by replacing the window in its record (provenance is left as it was).
+// n <= 0 returns p unchanged.
 func withContextWindow(p *Profile, n int) *Profile {
+	if n <= 0 {
+		return p
+	}
 	res := p.Resolved()
 	res.Caps.ContextWindow = &n
 	return p.WithResolved(res)

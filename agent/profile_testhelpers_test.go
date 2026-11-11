@@ -219,7 +219,8 @@ func withWebSearch(p *provider.Profile, on bool) *provider.Profile {
 }
 
 // withContextWindow returns a copy of p whose record names an n-token window,
-// the way a live listing does. n <= 0 returns p unchanged.
+// by replacing the window in its record (provenance is left as it was).
+// n <= 0 returns p unchanged.
 func withContextWindow(p *provider.Profile, n int) *provider.Profile {
 	if n <= 0 {
 		return p
