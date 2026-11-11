@@ -53,21 +53,6 @@ func readMakefileSources(a *audit, visit func(path string, raw []byte)) {
 	}
 }
 
-// makefileSourcesIncludeRootAndFamilies pins the shape every other
-// Makefile-reading check relies on: the root file first, then the family
-// files in sorted order, so a caller can always assume index 0 is "Makefile".
-func makefileSourcesIncludeRootAndFamilies(a *audit) {
-	paths := makefileSourcePaths(a)
-	if len(paths) == 0 || paths[0] != "Makefile" {
-		a.Fatalf("expected Makefile first, got %v", paths)
-	}
-	for _, p := range paths[1:] {
-		if !strings.HasPrefix(p, "make/") || !strings.HasSuffix(p, ".mk") {
-			a.Errorf("unexpected source path %q", p)
-		}
-	}
-}
-
 // makefilePhonyAndRuleNames returns the names declared across every .PHONY
 // line and the targets that actually carry a rule, accumulated across every
 // file in makefileSourcePaths. A rule line starts at column zero with
