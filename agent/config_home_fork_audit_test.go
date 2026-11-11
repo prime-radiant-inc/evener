@@ -33,7 +33,7 @@ func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
 		t.Fatalf("test(s) set HOME or XDG_CONFIG_HOME (directly or through a helper) and construct a session whose launch snapshot forks `go env` into it:\n%s\n\n"+
 			"Fix: write the gate in the literal the constructor receives — SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} "+
 			"(RestoreSessionConfig likewise) — or build it with newSession and no withEnvironmentSnapshot(). A config held in "+
-			"a variable is refused here even when it is gated, so a later write cannot re-enable the snapshot unseen.",
+			"a variable is refused at a constructor even when it is gated, so a later write cannot re-enable the snapshot unseen.",
 			strings.Join(findings, "\n"))
 	}
 }

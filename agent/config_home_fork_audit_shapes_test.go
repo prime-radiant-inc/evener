@@ -69,9 +69,10 @@ func TestLiteral(t *testing.T) {
 			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableDerivesAnotherOption", "TestGatedVariableFieldInsideUngatedLiteral"},
 		},
 		{
-			// Helpers: one gates unconditionally in its own body; the session
-			// fixture gates unless the call opts in, and a wrapper that
-			// forwards the opt-in is not gated either.
+			// Helpers: one gates unconditionally in its own body, one by the
+			// literal config it is passed; the session fixture gates unless
+			// the call opts in, and a wrapper that forwards the opt-in is not
+			// gated either.
 			name: "helpers gate by body or by default",
 			src: `
 func gatedSession(t *testing.T) *Session {
@@ -87,6 +88,10 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 }
 func wrappedSession(t *testing.T, opts ...sessionOpt) *Session {
 	return newSession(t, opts...)
+}
+func configuredSession(t *testing.T, cfg SessionConfig) *Session {
+	s, _ := NewSession(nil, nil, nil, cfg)
+	return s
 }
 func TestGatedHelper(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -111,8 +116,16 @@ func TestWrapperBare(t *testing.T) {
 func TestWrapperWithSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	_ = wrappedSession(t, withEnvironmentSnapshot())
+}
+func TestConfigHelperWithGatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
+}
+func TestConfigHelperWithUngatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{MaxSubagentDepth: 1})
 }`,
-			flagged: []string{"TestFixtureWithSnapshot", "TestWrapperWithSnapshot"},
+			flagged: []string{"TestConfigHelperWithUngatedConfig", "TestFixtureWithSnapshot", "TestWrapperWithSnapshot"},
 		},
 		{
 			// The restore entry points: the config-bearing one is gated by

@@ -107,11 +107,12 @@ func withConfig(cfg SessionConfig) sessionOpt {
 // config it otherwise has, as delegate creation requires.
 func withStateDir(dir string) sessionOpt { return func(o *sessionOpts) { o.stateDir = dir } }
 
-// withEnvironmentSnapshot gives the session its launch-time environment
-// snapshot: the workspace's git state (branch, dirtiness, recent commits,
-// origin), the per-turn git branch probe, and the measured toolchain
+// withEnvironmentSnapshot gives the session the environment snapshot it takes
+// at launch and on each working-directory swap: the workspace's git state
+// (branch, dirtiness, recent commits, origin), the per-turn git branch probe
+// unless testOnly.envProbes replaces it, and the measured toolchain
 // capabilities. Without it the session sees the workspace as not a repo and
-// forks no git or toolchain probe.
+// runs none of the snapshot's git or toolchain probes.
 func withEnvironmentSnapshot() sessionOpt {
 	return func(o *sessionOpts) { o.environmentSnapshot = true }
 }
@@ -119,9 +120,8 @@ func withEnvironmentSnapshot() sessionOpt {
 // newSession builds a *Session for tests. The zero-option form yields the
 // canonical default: scripted "openai" and dedicated session-namer adapters, a
 // gpt-5.2 profile explicitly routed to the latter for fast-cheap calls, a fresh
-// temp workspace, SessionConfig{MaxSubagentDepth: 1}, and no launch-time
-// environment snapshot (see withEnvironmentSnapshot), whatever config is
-// supplied. Close is registered with t.Cleanup.
+// temp workspace, SessionConfig{MaxSubagentDepth: 1}, and no environment
+// snapshot (see withEnvironmentSnapshot), whatever config is supplied. Close is registered with t.Cleanup.
 func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	t.Helper()
 	var o sessionOpts
