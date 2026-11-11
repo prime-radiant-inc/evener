@@ -161,10 +161,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     await Promise.all(
       accepted
         .filter(
-          (record) =>
-            record.displayOnly === true &&
-            !authoritativeIds.has(record.clientMutationId) &&
-            PENDING_TURN_METHODS.includes(record.method),
+          (record) => !authoritativeIds.has(record.clientMutationId) && PENDING_TURN_METHODS.includes(record.method),
         )
         .map(async (record) => {
           const client = this.#getClient(targetRef, record.method);

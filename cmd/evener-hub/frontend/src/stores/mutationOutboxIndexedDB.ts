@@ -1006,7 +1006,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const retainDisplay = options?.retainDisplayCopy === true && carriesOptimisticInput(subject);
         const settleOptimisticCopy = async (key: string, deleteWhenMissing: boolean): Promise<void> => {
           if (retainDisplay) {
-            await requestResult(optimistic.put(acceptedRecord(subject, true)));
+            await requestResult(optimistic.put(acceptedRecord(subject)));
           } else if (deleteWhenMissing) {
             await requestResult(optimistic.delete(key));
           }

@@ -7174,9 +7174,7 @@ async function handleReady(
     client.state !== "ready"
   )
     return;
-  if (runtime && !targetedResync && options?.replayAcceptedCopies) {
-    for (const ref of refs) void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
-  }
+  const replayRefs = new Set(refs);
   if (!targetedResync) {
     const alreadyHydrated = new Set(refs);
     const discovered = await discoveredPinnedRefs;
@@ -7186,6 +7184,7 @@ async function handleReady(
     // mutating the shared pin set or putting reads on the wire.
     if (!isCurrentMutationRuntime(runtime)) return;
     for (const ref of discovered) pinMutationRef(ref);
+    for (const ref of discovered) replayRefs.add(ref);
     if (getWiredClient() !== client || getReadyEpoch() !== epoch || client.state !== "ready") return;
     await Promise.all(
       discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
@@ -7202,6 +7201,9 @@ async function handleReady(
     dispatchReadyClient = client;
     dispatchReadyEpoch = epoch;
     await runtime.outbox.connectionReady();
+    if (options?.replayAcceptedCopies) {
+      for (const ref of replayRefs) void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
+    }
   } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (options?.suppressTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
   }

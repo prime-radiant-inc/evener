@@ -176,10 +176,6 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
   extends MutationRecord<A> {
   state: "accepted";
-  // The record outlived its outbox row only to keep the pending row visible
-  // until the transcript proves delivery. It is display-only: a reconnect may
-  // replay its original mutation to learn whether another client cancelled it.
-  displayOnly?: boolean;
 }
 
 export interface MutationRecoveryRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
@@ -213,7 +209,6 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
 // optimistic table and its readers expect.
 export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachmentRef>(
   source: MutationRecord<A>,
-  displayOnly = false,
 ): MutationOptimisticRecord<A> {
   return {
     version: source.version,
@@ -237,7 +232,6 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     optimisticDisplay: source.optimisticDisplay,
     draftCaptureToken: source.draftCaptureToken,
     state: "accepted",
-    ...(displayOnly ? { displayOnly: true } : {}),
   };
 }
 
