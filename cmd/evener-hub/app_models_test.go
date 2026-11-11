@@ -750,20 +750,13 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 		t.Fatalf("a generation bump served %q, want the stale gen-1 immediately", stale.Data[0].Model)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilSeen(t, "the cache to serve gen-2 after a generation bump", func() (bool, string) {
 		resp, err := web.fetchLaunchModels(context.Background(), "", false)
 		if err != nil {
 			t.Fatalf("fetchLaunchModels: %v", err)
 		}
-		if resp.Data[0].Model == "gen-2" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never refreshed after a generation bump: last=%q calls=%d", resp.Data[0].Model, spawner.callCount())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return resp.Data[0].Model == "gen-2", fmt.Sprintf("model=%q calls=%d", resp.Data[0].Model, spawner.callCount())
+	})
 	if got := spawner.callCount(); got != 2 {
 		t.Fatalf("launch contract called %d times, want 2 (one load, one refresh)", got)
 	}
@@ -800,13 +793,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	ctx := t.Context()
 	go startLaunchModelsPrefetch(ctx, web, func(fn func()) { fn() })
 
-	deadline := time.Now().Add(5 * time.Second)
-	for spawner.callCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the startup warm never ran the launch check")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the startup warm to run the launch check", func() bool { return spawner.callCount() > 0 })
 
 	resp, err := web.fetchLaunchModels(ctx, "", false)
 	if err != nil {
@@ -960,13 +947,7 @@ func TestRefreshLaunchModelsUsesTheServerLifetime(t *testing.T) {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for spawner.callCount() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("the stale read never refreshed")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the stale read to refresh", func() bool { return spawner.callCount() >= 2 })
 	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
 		t.Fatalf("the refresh's context does not descend from the server lifetime: marker=%q, ctx=%v", got, spawner.contextOf())
 	}
