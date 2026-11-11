@@ -156,7 +156,8 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   // one was offline". Replaying the original mutation asks the daemon's
   // journal which one it is; only a terminal projection retires the copy.
   async reconcileAcceptedCopies(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
-    const accepted = await this.#storage.listOptimistic(targetRef);
+    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
+    if (!accepted) return;
     await Promise.all(
       accepted
         .filter(
