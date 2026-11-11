@@ -28,20 +28,20 @@ type intsFold struct {
 func countingLineExtend(t *testing.T, calls *[]int64) Extend[intsFold] {
 	t.Helper()
 	var mu sync.Mutex
-	return func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	return func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		mu.Lock()
 		*calls = append(*calls, fromOffset)
 		mu.Unlock()
 		f, err := os.Open(path)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return intsFold{}, 0, nil
+				return intsFold{}, 0, false, nil
 			}
-			return intsFold{}, 0, err
+			return intsFold{}, 0, false, err
 		}
 		defer f.Close()
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
-			return intsFold{}, 0, err
+			return intsFold{}, 0, false, err
 		}
 		value := prior
 		offset := fromOffset
@@ -49,7 +49,7 @@ func countingLineExtend(t *testing.T, calls *[]int64) Extend[intsFold] {
 		var pending []byte
 		for {
 			if err := ctx.Err(); err != nil {
-				return intsFold{}, 0, err
+				return intsFold{}, 0, false, err
 			}
 			n, readErr := f.Read(buf)
 			pending = append(pending, buf[:n]...)
@@ -72,7 +72,7 @@ func countingLineExtend(t *testing.T, calls *[]int64) Extend[intsFold] {
 				break
 			}
 		}
-		return value, offset, nil
+		return value, offset, false, nil
 	}
 }
 
@@ -345,10 +345,10 @@ func TestCache_ConcurrentGetsCoalesceToOneExtendCall(t *testing.T) {
 	path := newIntsFile(t, "nums.txt", []int{1, 2, 3})
 	var extendCalls atomic.Int64
 	release := make(chan struct{})
-	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		extendCalls.Add(1)
 		<-release
-		return intsFold{sum: 6, lines: 3}, 4 /* arbitrary */, nil
+		return intsFold{sum: 6, lines: 3}, 4 /* arbitrary */, false, nil
 	}
 	c := New[intsFold](8)
 	const n = 16
@@ -403,6 +403,77 @@ func TestCache_ConcurrentGetsCoalesceToOneExtendCall(t *testing.T) {
 	}
 }
 
+// TestCache_WaiterThatObservedNewerBytesRereadsTheJoinedFlight pins the other
+// half of coalescing: joining an in-flight Extend must not hand a caller a
+// snapshot older than its own stat. The owner's Extend starts before the
+// append and holds the pre-append fold; the waiter stats after the append,
+// joins that flight, and must read again rather than accept it.
+func TestCache_WaiterThatObservedNewerBytesRereadsTheJoinedFlight(t *testing.T) {
+	path := newIntsFile(t, "nums.txt", []int{1, 2})
+	c := New[intsFold](8)
+	ctx := context.Background()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
+		if calls.Add(1) == 1 {
+			// The owner already stat'd the file. Report the fold it could
+			// have read then, not what a read after the append would see.
+			close(entered)
+			<-release
+			return intsFold{sum: 3, lines: 2}, 4, false, nil
+		}
+		var ignored []int64
+		return countingLineExtend(t, &ignored)(ctx, path, fromOffset, prior)
+	}
+
+	type getResult struct {
+		result Result[intsFold]
+		err    error
+	}
+	owner := make(chan getResult, 1)
+	go func() {
+		result, err := c.Get(ctx, path, extend)
+		owner <- getResult{result: result, err: err}
+	}()
+	<-entered
+
+	appendLines(t, path, []int{3})
+
+	waiter := make(chan getResult, 1)
+	go func() {
+		result, err := c.Get(ctx, path, extend)
+		waiter <- getResult{result: result, err: err}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for c.Stats().Coalesced == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not join the in-flight fold")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+
+	ownerResult := <-owner
+	if ownerResult.err != nil {
+		t.Fatalf("owner Get: %v", ownerResult.err)
+	}
+	if ownerResult.result.Value.sum != 3 {
+		t.Fatalf("owner value = %+v, want the pre-append fold (sum 3)", ownerResult.result.Value)
+	}
+	waiterResult := <-waiter
+	if waiterResult.err != nil {
+		t.Fatalf("waiter Get: %v", waiterResult.err)
+	}
+	if waiterResult.result.Value.sum != 6 {
+		t.Fatalf("waiter value = %+v, want sum 6 -- it joined a fold older than its own stat", waiterResult.result.Value)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("extend calls = %d, want 2 (the owner's fold and the waiter's re-read)", got)
+	}
+}
+
 // TestCache_ExtendErrorIsNotCached ensures a failed extend does not poison
 // the cache: a later, successful Get for the same path must retry from
 // scratch rather than replaying the error or a partial result forever.
@@ -410,12 +481,12 @@ func TestCache_ExtendErrorIsNotCached(t *testing.T) {
 	path := newIntsFile(t, "nums.txt", []int{1, 2})
 	sentinel := errors.New("boom")
 	attempt := 0
-	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		attempt++
 		if attempt == 1 {
-			return intsFold{}, 0, sentinel
+			return intsFold{}, 0, false, sentinel
 		}
-		return intsFold{sum: 3, lines: 2}, 4, nil
+		return intsFold{sum: 3, lines: 2}, 4, false, nil
 	}
 	c := New[intsFold](8)
 	ctx := context.Background()
@@ -429,6 +500,46 @@ func TestCache_ExtendErrorIsNotCached(t *testing.T) {
 	}
 	if result.Value.sum != 3 {
 		t.Fatalf("second Get value = %+v, want sum=3", result.Value)
+	}
+}
+
+// TestCache_ExtendRestartAdvancesTheGeneration pins that a fold which rebuilt
+// its order reports the restart and that the cache moves the generation for
+// it: a continuation counted over the replaced value cannot be applied to the
+// new one.
+func TestCache_ExtendRestartAdvancesTheGeneration(t *testing.T) {
+	path := newIntsFile(t, "nums.txt", []int{1})
+	c := New[intsFold](8)
+	ctx := context.Background()
+	var calls []int64
+	first, err := c.Get(ctx, path, countingLineExtend(t, &calls))
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	appendLines(t, path, []int{2})
+	restart := func(context.Context, string, int64, intsFold) (intsFold, int64, bool, error) {
+		return intsFold{sum: 1, lines: 1}, 2, true, nil
+	}
+	second, err := c.Get(ctx, path, restart)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if second.Epoch != first.Epoch+1 {
+		t.Fatalf("epoch after a restarted fold = %d, want %d", second.Epoch, first.Epoch+1)
+	}
+
+	// The advanced generation is recorded state, not a one-call response: an
+	// unchanged file still hits the cached fold and reports the same epoch.
+	third, err := c.Get(ctx, path, func(context.Context, string, int64, intsFold) (intsFold, int64, bool, error) {
+		t.Fatal("unchanged file called extend after a restarted fold")
+		return intsFold{}, 0, false, nil
+	})
+	if err != nil {
+		t.Fatalf("third Get: %v", err)
+	}
+	if third.Epoch != second.Epoch {
+		t.Fatalf("epoch on an unchanged file = %d, want %d", third.Epoch, second.Epoch)
 	}
 }
 
@@ -473,9 +584,9 @@ func TestCache_EvictsLeastRecentlyUsedBeyondBound(t *testing.T) {
 func TestCache_MissingFileReadsAsZeroValueWithoutError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.txt")
 	c := New[intsFold](8)
-	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		t.Fatalf("extend called for a nonexistent file")
-		return intsFold{}, 0, nil
+		return intsFold{}, 0, false, nil
 	}
 	result, err := c.Get(context.Background(), path, extend)
 	if err != nil {
@@ -539,13 +650,13 @@ func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
 	ownerCtx, cancelOwner := context.WithCancel(context.Background())
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		close(entered)
 		<-release
 		if err := ctx.Err(); err != nil {
-			return intsFold{}, 0, err
+			return intsFold{}, 0, false, err
 		}
-		return intsFold{sum: 6, lines: 3}, 4, nil
+		return intsFold{sum: 6, lines: 3}, 4, false, nil
 	}
 	c := New[intsFold](8)
 
@@ -1045,12 +1156,12 @@ func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
 	base := countingLineExtend(t, &calls)
 	stamp := time.Unix(2_000_000, 0)
 	appended := false
-	extend := func(ctx context.Context, p string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+	extend := func(ctx context.Context, p string, fromOffset int64, prior intsFold) (intsFold, int64, bool, error) {
 		if !appended {
 			appended = true
 			appendLines(t, p, []int{3})
 			if err := os.Chtimes(p, stamp, stamp); err != nil {
-				return intsFold{}, 0, err
+				return intsFold{}, 0, false, err
 			}
 		}
 		return base(ctx, p, fromOffset, prior)

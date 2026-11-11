@@ -281,6 +281,68 @@ func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *t
 	}
 }
 
+// TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation pins the
+// order contract the incremental fold's ResumeIndex depends on. An append
+// whose seq is older than one already folded reorders records the earlier
+// page counted, so the path's generation must move and a continuation minted
+// over the old order must be refused rather than applied to a shifted list.
+// Production writers assign seq sequentially; this writes the anomaly
+// directly because no writer path produces it.
+func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "outoforderroot"
+	started := time.Unix(900, 0).UTC()
+	events := make([]jobstore.Event, 0, activityMaxWorkUnits+1)
+	for i := 0; i <= activityMaxWorkUnits; i++ {
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: fmt.Sprintf("job_%03d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+	}
+	path := s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Root.Branch.Continuation == "" {
+		t.Fatal("first page minted no continuation")
+	}
+	cont, err := decodeActivityContinuation(first.Root.Branch.Continuation, rootID)
+	if err != nil {
+		t.Fatalf("decodeActivityContinuation: %v", err)
+	}
+	if cont.ResumeIndex != activityMaxWorkUnits {
+		t.Fatalf("continuation ResumeIndex = %d, want %d", cont.ResumeIndex, activityMaxWorkUnits)
+	}
+
+	older := jobstore.Event{
+		Kind: jobstore.EventJobStarted, Seq: 1, TS: started, JobID: "job_out_of_order",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	}
+	line, err := json.Marshal(older)
+	if err != nil {
+		t.Fatalf("marshal out-of-order event: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open jobs journal: %v", err)
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		_ = f.Close()
+		t.Fatalf("append out-of-order event: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close jobs journal: %v", err)
+	}
+
+	_, err = LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation})
+	if err == nil || !strings.Contains(err.Error(), "activity continuation is stale") {
+		t.Fatalf("resume after an out-of-order append error = %v, want a stale continuation refusal", err)
+	}
+}
+
 // TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted
 // covers the load-phase traversal-breadth bound: a root with more direct
 // delegate children than activityMaxWorkUnits must stop VISITING them

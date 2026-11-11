@@ -102,21 +102,25 @@ var historicalJobFoldCache = foldcache.New[historicalJobFold](historicalJobFoldC
 // foldcache.Cache may still be handing prior to other callers. A delta holding an event older than one already folded
 // belongs earlier in a full fold, so that delta refolds the journal from
 // byte zero instead.
-func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, error) {
+func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, bool, error) {
 	delta, toOffset, err := scanJobJournal(ctx, path, fromOffset, jobstore.ScanLimits{})
 	if err != nil {
-		return historicalJobFold{}, 0, err
+		return historicalJobFold{}, 0, false, err
 	}
 	sortJobEventsBySeq(delta)
 	if len(delta) > 0 && delta[0].Seq < prior.lastSeq {
 		all, toOffset, err := scanJobJournal(ctx, path, 0, jobstore.ScanLimits{})
 		if err != nil {
-			return historicalJobFold{}, 0, err
+			return historicalJobFold{}, 0, false, err
 		}
 		sortJobEventsBySeq(all)
-		return historicalJobFold{}.extend(all), toOffset, nil
+		// The older event belongs ahead of records already folded, so the
+		// rebuilt list reorders what an earlier page rendered. Report the
+		// restart so foldcache advances the generation and refuses a
+		// continuation whose ResumeIndex was counted over the old order.
+		return historicalJobFold{}.extend(all), toOffset, true, nil
 	}
-	return prior.extend(delta), toOffset, nil
+	return prior.extend(delta), toOffset, false, nil
 }
 
 func sortJobEventsBySeq(events []jobstore.Event) {
@@ -204,10 +208,10 @@ var historicalDelegateFoldCache = foldcache.New[historicalDelegateFold](historic
 // SHALLOW maps.Clone here (copying the map's pointers, not each Aggregate)
 // is sufficient: the clone becomes Apply's write target, the original
 // prior.state and its aggregates are never touched.
-func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, error) {
+func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, bool, error) {
 	delta, toOffset, readDiagnostics, err := scanDelegateJournal(ctx, path, fromOffset, delegatestore.ScanLimits{})
 	if err != nil {
-		return historicalDelegateFold{}, 0, err
+		return historicalDelegateFold{}, 0, false, err
 	}
 	state := maps.Clone(prior.state)
 	if state == nil {
@@ -217,13 +221,13 @@ func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset i
 	for _, event := range delta {
 		count++
 		if event.Seq != uint64(count) {
-			return historicalDelegateFold{}, 0, fmt.Errorf("delegatestore: delegate event sequence %d, want %d", event.Seq, count)
+			return historicalDelegateFold{}, 0, false, fmt.Errorf("delegatestore: delegate event sequence %d, want %d", event.Seq, count)
 		}
 		if err := delegatestore.Apply(state, event); err != nil {
-			return historicalDelegateFold{}, 0, fmt.Errorf("delegate event %d: %w", event.Seq, err)
+			return historicalDelegateFold{}, 0, false, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
-	return historicalDelegateFold{state: state, eventCount: count, tornTail: readDiagnostics.TornTail}, toOffset, nil
+	return historicalDelegateFold{state: state, eventCount: count, tornTail: readDiagnostics.TornTail}, toOffset, false, nil
 }
 
 // rootDelegateIndex is one root's delegates.jsonl folded via the shared
