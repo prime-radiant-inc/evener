@@ -29,6 +29,9 @@ export interface LauncherPluginDetailsProps {
   candidate: PluginLaunchCandidate;
   selected: boolean;
   selectionDisabled?: boolean;
+  /** The panel instance's id segment; two mounted panels (desktop form and
+   * mobile sheet) must not collide on their bodies' ids. */
+  detailBodyInstance?: string;
   onCollapse: () => void;
   onToggleSelected: (next: boolean) => void;
   /** The client the components read goes through: the spawn form's own. */
@@ -51,6 +54,7 @@ export function LauncherPluginDetails({
   candidate,
   selected,
   selectionDisabled = false,
+  detailBodyInstance,
   onCollapse,
   onToggleSelected,
   client,
@@ -85,7 +89,7 @@ export function LauncherPluginDetails({
   return (
     <div ref={focusRoot} className={CLASS.detailBody}>
       <PluginDetail
-        id={pluginDetailBodyId(candidate.name)}
+        id={pluginDetailBodyId(candidate.name, undefined, detailBodyInstance)}
         mode="launcher"
         description={candidate.description}
         contents={contentsBlock}

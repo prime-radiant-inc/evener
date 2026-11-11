@@ -16,12 +16,15 @@ import { rehomeFocus } from "../../widgets";
 
 /** The id an expanded row's detail body carries, so its opener can point at
  * it with aria-controls. One function for opener and body, so the two cannot
- * disagree. The launcher addresses a row by name alone. */
-export function pluginDetailBodyId(plugin: string, marketplace?: string): string {
-  const name = encodeURIComponent(plugin);
-  return marketplace === undefined
-    ? `plugin-details-${name}`
-    : `plugin-details-${name}-${encodeURIComponent(marketplace)}`;
+ * disagree. The launcher addresses a row by name alone, and a surface mounted
+ * twice (the launcher's desktop panel and mobile sheet, one of them only CSS
+ * hidden) passes its own `instance` so the copies keep distinct ids. */
+export function pluginDetailBodyId(plugin: string, marketplace?: string, instance?: string): string {
+  const parts = ["plugin-details"];
+  if (instance !== undefined) parts.push(instance);
+  parts.push(encodeURIComponent(plugin));
+  if (marketplace !== undefined) parts.push(encodeURIComponent(marketplace));
+  return parts.join("-");
 }
 
 /** The expanded row owns Escape for the details it opened: opening leaves
