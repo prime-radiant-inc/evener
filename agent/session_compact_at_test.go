@@ -33,7 +33,6 @@ func compactAtSession(t *testing.T, percent int) *Session {
 	s := newSession(t,
 		withProfile(millionWindowProfile()),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), CompactAtPercent: percent}),
-		withoutGitSnapshot(),
 	)
 	muteNoteElicitation(s)
 	seedNumberedSessionHistory(t, s, 12)
