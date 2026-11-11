@@ -115,6 +115,20 @@
   overflow: clip;
 }
 
+/* The body's bottom padding is end-of-scroll clearance for the pane's own
+ * bottom EDGE. A pane that docks a footer puts that edge on the footer's top
+ * hairline instead, so the clearance there is a dead band between the last
+ * content row and the footer - exactly what the session pane showed above its
+ * composer. Zero it so the scrolling surface ends on the hairline the footer
+ * draws. The side and top insets stay: they are the pane's page margin, not
+ * edge clearance. Footer-less panes (welcome, settings, spawn, doc) keep the
+ * inset and still clear a phone's home-indicator band. Specificity (0,3,0)
+ * beats the base .body rule and, like .bodyNoScroll, the mobile .body rule
+ * that would otherwise restore it on the phone. */
+.pane:has(> .footer) > .body {
+  padding-bottom: 0;
+}
+
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-5);

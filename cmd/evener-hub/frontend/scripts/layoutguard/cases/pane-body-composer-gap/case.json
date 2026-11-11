@@ -1,0 +1,25 @@
+{
+  "name": "pane-body-composer-gap",
+  "description": "A pane that docks a footer (the session pane's composer) closes its scrolling body on that footer's own top hairline, with no dead band below the last content row, while a footer-less pane keeps the body's end-of-scroll inset.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "viewport": {
+    "width": 1440,
+    "height": 1000,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    { "width": 1440 },
+    { "width": 1024 }
+  ],
+  "mutation": {
+    "declaration": "panescaffold.module.css: remove the rule that zeroes the bottom padding of a body whose pane docks a footer",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Measured 2026-11-11: without the rule the case fails at both widths with a 24.0px empty band above the docked footer (body padding-bottom 24px), and the live hub showed the same 24px between the transcript's scroll port and the composer's hairline at 1500x1000."
+  }
+}

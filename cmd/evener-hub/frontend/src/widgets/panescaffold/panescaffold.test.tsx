@@ -291,6 +291,18 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   );
 });
 
+// That inset belongs to the pane's bottom EDGE. A pane that docks a footer
+// (the session pane's composer row) hands that edge to the footer's own top
+// hairline, so the inset would sit there as a dead band between the last
+// transcript row and the composer - the gap this rule removes. jsdom computes
+// no cascade, so the geometry is pinned by layoutguard's
+// pane-body-composer-gap case; this pins which declarations the rule makes.
+test("a body whose pane docks a footer closes on the footer instead of the pane edge", () => {
+  const css = readModuleCss(import.meta.url, "panescaffold.module.css");
+  const dockedBodyRule = css.match(/\.pane:has\(> \.footer\) > \.body \{([^}]*)\}/)?.[1] ?? "";
+  expect(dockedBodyRule).toContain("padding-bottom: 0");
+});
+
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
 // decision 2): PaneScaffold always publishes its title, host-agnostically -
 // StackHost renders it in the mobile top bar, DockHost never reads it.

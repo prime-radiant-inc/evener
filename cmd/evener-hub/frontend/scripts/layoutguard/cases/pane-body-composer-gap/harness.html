@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>pane-body-composer-gap layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  /* overflow: hidden keeps the document itself unscrollable: a page scrollbar
+     would narrow the realized viewport and trip the runner's viewport check. */
+  html, body { margin: 0; overflow: hidden; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 6px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+
+  /* A real PaneScaffold column: fixed header, flexing .body, docked .footer -
+     the same three-sibling shape PaneScaffold.tsx renders, with the card
+     surface the pane draws. Height is fixed so the body gets a real
+     remaining allocation instead of collapsing to its content. */
+  .pane {
+    display: flex;
+    flex-direction: column;
+    height: 260px;
+    overflow: hidden;
+    background: var(--surface-0);
+  }
+
+  /* The scrolling surface inside the body, the way a transcript fills one:
+     it takes the body's whole content box and scrolls its own rows. Anything
+     this box adds or loses below its last row shows up as a band between that
+     row and whatever docks under the body. */
+  .contentColumn { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .scrollport { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+  .row { height: 40px; border-bottom: 1px solid var(--edge); }
+  .lastRow {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    color: var(--ink-mid);
+    font-size: var(--font-size-caption);
+  }
+
+  /* Stand-in for the docked composer; its own height is irrelevant, its top
+     edge is the reference the transcript's last row is measured against. */
+  .composerStandIn { height: 64px; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces PaneScaffold's rendered column against the REAL scaffold
+     stylesheet: .pane > .header + .body[data-pane-scaffold] + .footer. The
+     transcript is represented by its essential contract - a scroll port that
+     fills the body's content box and scrolls its rows - because the geometry
+     under test belongs to the scaffold, not to the transcript's internals.
+     One fixture docks a footer below the body (the session pane: composer +
+     status row); the other has none (welcome, settings, spawn, doc), which is
+     the case the body's end-of-scroll padding exists for. -->
+<main class="fixtures"></main>
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+function paneHtml(id, docked) {
+  const footer = docked
+    ? `<div class="footer" data-footer><div class="composerStandIn"></div></div>`
+    : "";
+  return `
+    <div class="pane" data-pane="${docked ? "docked" : "footerless"}">
+      <div class="header"><h2 class="title">Session</h2></div>
+      <div class="body" data-pane-scaffold="session:local:frame">
+        <div class="contentColumn">
+          <div class="scrollport" data-scrollport>
+            <div data-rows></div>
+            <div class="lastRow" data-lastrow>Done in 27s</div>
+          </div>
+        </div>
+      </div>
+      ${footer}
+    </div>`;
+}
+
+const root = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const section = document.createElement("section");
+  section.className = "fixture";
+  section.style.width = `${spec.width}px`;
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${spec.width}px`;
+  section.append(label);
+  section.insertAdjacentHTML("beforeend", paneHtml(`docked-${spec.width}`, true));
+  section.insertAdjacentHTML("beforeend", paneHtml(`footerless-${spec.width}`, false));
+  root.append(section);
+}
+
+// Enough rows that every scroll port overflows several times over, so each
+// one settles at a true bottom rather than trivially at a 0px gap.
+for (const rows of document.querySelectorAll("[data-rows]")) {
+  rows.innerHTML = '<div class="row"></div>'.repeat(40);
+}
+for (const port of document.querySelectorAll("[data-scrollport]")) {
+  port.scrollTop = port.scrollHeight;
+}
+
+window.measure = () =>
+  [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const width = Number(fixture.style.width.replace("px", ""));
+    const docked = fixture.querySelector('[data-pane="docked"]');
+    const footerless = fixture.querySelector('[data-pane="footerless"]');
+
+    function read(pane) {
+      const port = pane.querySelector("[data-scrollport]");
+      const body = pane.querySelector("[data-pane-scaffold]");
+      const footer = pane.querySelector("[data-footer]");
+      const portBox = port.getBoundingClientRect();
+      const bodyBox = body.getBoundingClientRect();
+      const lastBox = pane.querySelector("[data-lastrow]").getBoundingClientRect();
+      return {
+        // The band the reader sees: empty space below the last row, up to the
+        // surface that follows the body.
+        gapToFollowing: (footer ? footer.getBoundingClientRect().top : bodyBox.bottom) - lastBox.bottom,
+        bodyPaddingBottom: parseFloat(getComputedStyle(body).paddingBottom),
+        bodyBottom: bodyBox.bottom,
+        portBottom: portBox.bottom,
+        footerTop: footer ? footer.getBoundingClientRect().top : null,
+        atBottom: Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) < 2,
+      };
+    }
+
+    return { width, docked: read(docked), footerless: read(footerless) };
+  });
+</script>
+</body>
+</html>
