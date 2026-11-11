@@ -480,12 +480,39 @@ function mergeLineageRows<A extends MutationAttachmentRef>(rows: PendingMessage<
   return out;
 }
 
+// A retained accepted copy whose confirmed queue entry is gone from both the
+// queue and the daemon's pending projection has been delivered or discarded by
+// another client. Require a known-complete queue/pending snapshot and a recorded
+// user item before hiding it, so an older daemon that omits consumed ids still
+// clears the source row without ever blinking the message out mid-transition.
+function deliveredSourceRow<A extends MutationAttachmentRef>(
+  row: PendingMessage<A>,
+  queuedEntryIds: ReadonlySet<string>,
+  pendingEntryIds: ReadonlySet<string>,
+  queueKnown: boolean,
+  pendingKnown: boolean,
+  deliveredAny: boolean,
+): boolean {
+  if (!deliveredAny || !queueKnown || !pendingKnown) return false;
+  if (!row.optimistic || row.outbox || row.recovery) return false;
+  if (row.queueEntryIds.length === 0) return false;
+  return row.queueEntryIds.every((id) => !queuedEntryIds.has(id) && !pendingEntryIds.has(id));
+}
+
 export function projectPendingMessages<A extends MutationAttachmentRef = MutationAttachmentRef>(
   input: PendingMessagesInput<A>,
 ): PendingMessage<A>[] {
   const { ref, model } = input;
   const transcriptIds = input.transcriptIds ?? transcriptMutationIds(model);
   const isDelivered = (id: string): boolean => transcriptIds.has(id) || input.deliveredHere?.has(id) === true;
+  const queuedEntryIds = new Set(model?.queue?.ids ?? []);
+  const queueKnown = model?.queue != null && (model.queue.ids !== undefined || (model.queue.depth ?? 0) === 0);
+  const pendingEntryIds = new Set<string>();
+  for (const mutation of model?.pendingMutations ?? []) {
+    for (const id of mutation.queueEntryIds ?? []) pendingEntryIds.add(id);
+  }
+  const pendingKnown = model?.pendingMutations !== undefined;
+  const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
 
   const families = new Map<string, LocalFamily<A>>();
   const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
@@ -718,7 +745,9 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     rows.delete(match.id);
   }
 
-  const all = mergeLineageRows([...queueRows, ...rows.values()]).map(drainFallback);
+  const all = mergeLineageRows([...queueRows, ...rows.values()])
+    .filter((row) => !deliveredSourceRow(row, queuedEntryIds, pendingEntryIds, queueKnown, pendingKnown, deliveredAny))
+    .map(drainFallback);
 
   return all.sort(compareRows);
 }

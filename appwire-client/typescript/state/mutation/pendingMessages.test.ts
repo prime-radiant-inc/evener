@@ -205,6 +205,45 @@ test("a multi-entry drain merges every retained original into one row", () => {
   expect(rows[0]?.queueEntryIds).toEqual(["q1", "q2"]);
 });
 
+test("an accepted source retires when a complete snapshot shows its queue entry delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 5, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued", clientMutationId: "m2" }],
+      },
+    ],
+  });
+  const rows = project({
+    optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
+    model,
+  });
+  expect(rows).toEqual([]);
+});
+
+test("an accepted source stays while the daemon still projects its queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 5, ids: [] },
+    pendingMutations: [pending("m2", "turn/promoteQueuedAsSteer", "queued", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "m3" }],
+      },
+    ],
+  });
+  const rows = project({
+    optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
+    model,
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.queueEntryIds).toContain("q1");
+});
+
 test("a promote row suppresses its queue entry", () => {
   const model = threadModel({
     queue: {
