@@ -1039,6 +1039,11 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 		facts.ThinkingShape = target.Caps.ThinkingShape
 	}
 	mergeCaps(c, facts, provAlias, prov)
+	// A window the alias imports keeps the source of the target's figure, so
+	// provenance never reports "alias" for a number the alias did not state.
+	if facts.ContextWindow != nil && target.Provenance["ContextWindow"] != "" {
+		prov["ContextWindow"] = target.Provenance["ContextWindow"]
+	}
 	if target.Surface != "" {
 		row.Surface = target.Surface
 		prov["Surface"] = provAlias
@@ -1141,13 +1146,37 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 // matched wire id) between the curated and user layers (spec §5).
 func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, prov map[string]string) {
 	lr := r.liveRow(rec.name, model)
+	byWireID := false
 	if lr == nil && hit.wireID != model {
 		lr = r.liveRow(rec.name, hit.wireID)
+		byWireID = true
 	}
 	if lr == nil {
 		return
 	}
-	mergeCaps(c, lr.Caps, LayerLive, prov)
+	caps := lr.Caps
+	// A window the curated alias row declares describes that alias (a 1M
+	// variant of a base model), while the wire id's live row describes the
+	// base model. Only a live row listed under the alias's own id outranks it.
+	if byWireID && r.overlayRowDeclaresWindow(rec, hit.rowID) {
+		caps.ContextWindow = nil
+	}
+	mergeCaps(c, caps, LayerLive, prov)
+}
+
+// overlayRowDeclaresWindow reports whether the curated overlay's row rowID
+// states a context window itself, as opposed to inheriting one from an alias
+// target or a glob.
+func (r *Registry) overlayRowDeclaresWindow(rec *record, rowID string) bool {
+	for _, layer := range rec.layers {
+		if layer.tag != LayerOverlay {
+			continue
+		}
+		if row, ok := layer.rows[rowID]; ok && row.Caps.ContextWindow != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // transportShape assembles the unexpanded transport for rec resolving row on

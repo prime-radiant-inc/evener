@@ -403,6 +403,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
+	contextWindow, contextWindowSource := budgetingWindow(s.profile)
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -419,6 +420,8 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		AcceptedInputTurns:       s.turns,
 		TurnBudgetWarningEmitted: s.turnBudgetWarningEmitted,
 		LastInputTokens:          s.contextMgr.LastInputTokens(),
+		ContextWindow:            contextWindow,
+		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,
 		NameSource:               s.naming.source,
 		NameUpdatedAt:            s.naming.updated,

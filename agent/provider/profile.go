@@ -268,6 +268,21 @@ func (p *Profile) ContextWindowSize() int {
 	return 0
 }
 
+// ContextWindowSourceAssumed names the source of a window nothing supplied:
+// the session budgets against the context manager's assumed window instead.
+const ContextWindowSourceAssumed = "assumed"
+
+// ContextWindowSource says where ContextWindowSize came from: "live",
+// "overlay", "config" or "snapshot" (registry.ContextWindowSource),
+// ContextWindowSourceAssumed when the window is unknown, or "" for a profile
+// carrying a window without provenance.
+func (p *Profile) ContextWindowSource() string {
+	if p.ContextWindowSize() <= 0 {
+		return ContextWindowSourceAssumed
+	}
+	return registry.ContextWindowSource(p.res.Provenance["ContextWindow"])
+}
+
 // CheapContextWindowSize is the configured cheap model's window, or 0 when no
 // cheap model is configured or its row names no window.
 func (p *Profile) CheapContextWindowSize() int {

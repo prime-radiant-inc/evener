@@ -23,7 +23,9 @@ func modelsTestEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("EVENER_OFFLINE", "1")
-	for _, v := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENAI_BASE_URL", "OLLAMA_HOST", "OLLAMA_BASE_URL"} {
+	// No provider credential or endpoint variable of the developer's shell may
+	// reach a fixture: a configured instance would make list/inspect dial it.
+	for _, v := range curatedProviderEnvVars(t) {
 		t.Setenv(v, "")
 		os.Unsetenv(v)
 	}
@@ -186,7 +188,7 @@ func TestModelsInspectMasksLiteralAuthHeaders(t *testing.T) {
 	modelsTestEnv(t)
 	modelsFixture(t)
 	path := filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"https://gw.example/v1\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
+	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"" + gatewayModelsServer(t, 0) + "\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

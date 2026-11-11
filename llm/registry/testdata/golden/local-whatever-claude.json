@@ -23,7 +23,6 @@
     "caps": {}
   },
   "caps": {
-    "context_window": 131072,
     "reasoning_controls": [
       "effort"
     ],
@@ -50,7 +49,6 @@
     "web_search": false
   },
   "provenance": {
-    "ContextWindow": "overlay/provider",
     "ReasoningControls": "derived",
     "Surface": "derived",
     "model": "synthesized"

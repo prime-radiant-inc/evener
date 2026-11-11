@@ -2201,6 +2201,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		OldProvider: commitPrev.ID(), OldModel: commitPrev.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
+	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
 		OldProvider:           commitPrev.ID(),

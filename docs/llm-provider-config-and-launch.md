@@ -454,10 +454,10 @@ control at all" on every other model.
 
 **Ollama and local-model context windows.** The bundled per-model catalog
 (8192 for `llama3.1`, tag-stripping) is gone; every live-only model on
-`ollama` or a pseudo-provider now budgets against the provider-level
-`131072` default. Pin the real window with
+`ollama` or a pseudo-provider whose listing reports no window now has an
+unknown window and budgets against the assumed window. Pin the real window with
 `[providers.ollama.models."llama3.1*"] context_window = 8192` or compaction
-fires late (see [`ollama.md`](ollama.md#context-length) for the full
+runs against the assumed window (see [`ollama.md`](ollama.md#context-length) for the full
 explanation — this is the same fact, not restated differently there).
 
 **`EVENER_PROVIDERS_CONFIG` tri-state.** `export EVENER_PROVIDERS_CONFIG=`

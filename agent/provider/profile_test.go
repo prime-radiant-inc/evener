@@ -3,9 +3,13 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
@@ -313,5 +317,65 @@ func TestStandardProfilesAdvertiseJobControlWithoutLegacyAgentControl(t *testing
 				}
 			}
 		})
+	}
+}
+
+// TestContextWindowSource pins where the window a profile budgets against came
+// from, as one value of the documented set, one exact value per case.
+func TestContextWindowSource(t *testing.T) {
+	size := 12345
+	r := fixtureRegistryWith(t, map[string]registry.Provider{
+		"pinned": {Base: "ollama", Models: map[string]registry.Model{"pinned-model": {Caps: registry.Caps{ContextWindow: &size}}}},
+	})
+	for _, tc := range []struct{ ref, want string }{
+		{"ollama/qwen3:8b", "assumed"},
+		{"pinned/pinned-model", "config"},
+		{"anthropic/claude-opus-5", "snapshot"},
+		// A cross-provider alias reports the source of its target's figure.
+		{"anthropic/claude-mythos-5", "snapshot"},
+	} {
+		if got := mustResolve(t, r, tc.ref).ContextWindowSource(); got != tc.want {
+			t.Errorf("%s: source = %q, want %q", tc.ref, got, tc.want)
+		}
+	}
+	r.ApplyLive("ollama", []registry.Model{{ID: "qwen3:8b", Caps: registry.Caps{ContextWindow: new(8192)}}})
+	if got := mustResolve(t, r, "ollama/qwen3:8b").ContextWindowSource(); got != "live" {
+		t.Errorf("a window the live listing reported: source = %q, want live", got)
+	}
+}
+
+// A window from the refreshed models.dev cache is catalog data like the
+// embedded snapshot's.
+func TestContextWindowSourceOfRefreshedCatalog(t *testing.T) {
+	data, err := os.ReadFile("../../llm/registry/testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, "catalog")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf("{\"fetched_at\":%q,\"etag\":\"fixture\",\"source\":\"test\"}\n", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(dir, "models.dev.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "models.dev.meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithNoUserLayer(), registry.WithStateRoot(root),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"anthropic": {APIKey: "k"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := mustResolve(t, r, "anthropic/claude-opus-5")
+	if got := p.Resolved().Provenance["ContextWindow"]; !strings.HasPrefix(got, registry.LayerCache) {
+		t.Fatalf("fixture must resolve its window from the cache layer, got %q", got)
+	}
+	if got := p.ContextWindowSource(); got != "snapshot" {
+		t.Fatalf("source = %q, want snapshot", got)
 	}
 }

@@ -23,6 +23,22 @@ const (
 	LayerConfig   = "config"
 )
 
+// ContextWindowSource maps a ContextWindow provenance value ("<layer>" or
+// "<layer>/<detail>") to the documented source set: "live", "overlay",
+// "config" or "snapshot". The refreshed models.dev cache is catalog data like
+// the embedded snapshot, so it reports "snapshot". A tag outside the layers
+// (or no provenance) maps to "".
+func ContextWindowSource(provenance string) string {
+	layer, _, _ := strings.Cut(provenance, "/")
+	switch layer {
+	case LayerLive, LayerOverlay, LayerConfig, LayerSnapshot:
+		return layer
+	case LayerCache:
+		return LayerSnapshot
+	}
+	return ""
+}
+
 // Host rules (spec §9.1): the only host-aware code in the system.
 const (
 	HostRuleVertexLocation = "vertex-location"

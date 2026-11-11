@@ -862,14 +862,13 @@ the merge order of §4.1 applies to them.
   `vars = { OLLAMA_HOST = "localhost" }` as the curated default, `HostRule =
   ollama-host` (§9.1, which also honors `OLLAMA_BASE_URL` first, as today's
   `ResolveOllamaBaseURL` does), `Auth = optional-bearer`, `api_key_env =
-  [OLLAMA_API_KEY]`, no models (live only), no `DefaultModel`, and a
-  provider-level `context_window = 131072` (today's 128K compat default,
-  `profile.go:1256-1257`) so compaction still fires for a live-only model
-  whose listing reports no window; the LiteLLM `ollama/*` rows (8192 for
+  [OLLAMA_API_KEY]`, no models (live only), no `DefaultModel`, and no
+  provider-level window: a live-only model whose listing reports no window has
+  an unknown window and takes the session's assumed-window path (one disclosure
+  plus the unknown-window tripwire); the LiteLLM `ollama/*` rows (8192 for
   `llama3.1`, …) are gone, so a user who wants the real window sets it on
   a row (`[providers.ollama.models."llama3.1*"] context_window = 8192`,
-  disclosed in §14.1). The pseudo-providers carry the same provider-level
-  default.
+  disclosed in §14.1). The pseudo-providers carry no window either.
 - **Pseudo-providers** `openai-compatible`, `anthropic-compatible`,
   `google-compatible`: protocol only, `generic` surface, no models. Each
   has `base_url = {BASE_URL}` with no default and `vars_env = { BASE_URL =
@@ -2452,10 +2451,10 @@ the release notes and the load-error pointer say so:
   their provider's dynamic default to `medium`.
 - **Context windows for Ollama and local models**: the LiteLLM `ollama/*`
   rows (8192 for `llama3.1`, `:tag` stripping) are gone; every live-only
-  model on `ollama` or a pseudo-provider now budgets against the
-  provider-level 131072 default (§6.2). Set the real window on a row
-  (`[providers.ollama.models."llama3.1*"] context_window = 8192`) or
-  compaction fires late.
+  model on `ollama` or a pseudo-provider whose listing reports no window has
+  an unknown window and budgets against the assumed window (§6.2). Set the
+  real window on a row
+  (`[providers.ollama.models."llama3.1*"] context_window = 8192`).
 - **Tri-state `EVENER_PROVIDERS_CONFIG`**: `export EVENER_PROVIDERS_CONFIG=`
   (present, empty) now means "no user layer" (§10); today it meant the
   default path. `evener providers list` and the hub diagnostics print

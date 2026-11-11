@@ -153,7 +153,12 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 		if entry.Turn.ModelSwitch == nil {
 			t.Fatal("persisted model switch has no structured identity")
 		}
-		got = append(got, *entry.Turn.ModelSwitch)
+		if entry.Turn.ModelSwitch.ContextWindow <= 0 || entry.Turn.ModelSwitch.ContextWindowSource == "" {
+			t.Fatalf("persisted model switch records no budgeting window: %+v", *entry.Turn.ModelSwitch)
+		}
+		identity := *entry.Turn.ModelSwitch
+		identity.ContextWindow, identity.ContextWindowSource = 0, ""
+		got = append(got, identity)
 	}
 	want := []schema.ModelSwitchInfo{
 		{OldProvider: "openai", OldModel: "gpt-5.4", NewProvider: "openai", NewModel: "gpt-5.2"},
@@ -162,7 +167,7 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("persisted transitions = %+v, want %+v", got, want)
 	}
-	if marker := lastMarkerTurn(t, sess); marker.ModelSwitch == nil || *marker.ModelSwitch != want[1] {
+	if marker := lastMarkerTurn(t, sess); marker.ModelSwitch == nil || marker.ModelSwitch.OldModel != want[1].OldModel || marker.ModelSwitch.NewModel != want[1].NewModel {
 		t.Fatalf("live history transition = %+v, want %+v", marker.ModelSwitch, want[1])
 	}
 }
@@ -328,7 +333,16 @@ func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 		OldProvider: "openai", OldModel: "gpt-5.4",
 		NewProvider: "openai", NewModel: "gpt-5.5",
 	}
-	if marker.ModelSwitch == nil || *marker.ModelSwitch != wantIdentity {
+	if marker.ModelSwitch == nil {
+		t.Fatal("marker carries no structured identity")
+	}
+	// The switch also records the declared window it budgets against.
+	if marker.ModelSwitch.ContextWindow != 4096 {
+		t.Fatalf("marker window = %d, want the declared 4096", marker.ModelSwitch.ContextWindow)
+	}
+	identity := *marker.ModelSwitch
+	identity.ContextWindow, identity.ContextWindowSource = 0, ""
+	if identity != wantIdentity {
 		t.Fatalf("marker identity = %v, want %+v", marker.ModelSwitch, wantIdentity)
 	}
 	sess.mu.Lock()

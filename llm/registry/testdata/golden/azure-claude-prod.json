@@ -75,7 +75,7 @@
     "web_search": false
   },
   "provenance": {
-    "ContextWindow": "alias",
+    "ContextWindow": "snapshot/row",
     "Cost": "alias",
     "EffortValues": "alias",
     "Family": "alias",

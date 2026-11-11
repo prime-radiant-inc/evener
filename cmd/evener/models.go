@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -95,8 +96,14 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 			names = append(names, inst.Name)
 		}
 	}
+	if *provider != "" {
+		// One named instance is one request; listing every instance would be
+		// a request each, so the unscoped list stays registry-only and says
+		// so per row.
+		applyLiveListing(r, *provider)
+	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "REF\tPROTOCOL\tSURFACE\tCONTEXT\tOUTPUT\tCOST $/M\tEFFORT\tNOTES")
+	_, _ = fmt.Fprintln(tw, "REF\tPROTOCOL\tSURFACE\tCONTEXT\tCONTEXT SRC\tVERIFIED\tOUTPUT\tCOST $/M\tEFFORT\tNOTES")
 	for _, name := range names {
 		// An instance carries its own hidden flag: its vars may resolve a base
 		// URL the curated record of the same name cannot. Names that are not
@@ -112,7 +119,7 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 		}
 		if hidden {
 			if *all {
-				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\tneeds base_url (hidden)\n", name, protocol)
+				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\t\t\tneeds base_url (hidden)\n", name, protocol)
 			}
 			continue
 		}
@@ -126,11 +133,11 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 			if err != nil {
 				if errors.Is(err, registry.ErrModelDisabled) {
 					if *all {
-						_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\tdisabled\n", name, id)
+						_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\t\t\tdisabled\n", name, id)
 					}
 					continue
 				}
-				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\terror: %v\n", name, id, err)
+				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\t\t\terror: %v\n", name, id, err)
 				continue
 			}
 			if !*all && (res.Model.Hidden || (res.Caps.Tools != nil && !*res.Caps.Tools)) {
@@ -140,12 +147,62 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 			if res.Caps.Cost != nil {
 				cost = fmt.Sprintf("%g/%g", res.Caps.Cost.Input, res.Caps.Cost.Output)
 			}
-			_, _ = fmt.Fprintf(tw, "%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, id, res.Protocol, res.Surface,
-				intOrDash(res.Caps.ContextWindow), intOrDash(res.Caps.MaxOutputTokens), cost,
+			_, _ = fmt.Fprintf(tw, "%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, id, res.Protocol, res.Surface,
+				intOrDash(res.Caps.ContextWindow), orDash(windowSource(res)), yesNo(windowVerified(res)), intOrDash(res.Caps.MaxOutputTokens), cost,
 				strings.Join(res.Caps.EffortValues, ","), strings.Join(res.Warnings, "; "))
 		}
 	}
 	return tw.Flush()
+}
+
+// applyLiveListing asks the instance for its live model listing and applies it
+// to r, so a resolve afterwards sees the windows and rows a session on the
+// instance would see. It reports whether a usable listing was applied; an
+// instance that is not configured, lacks a required credential, or does not
+// answer leaves r unchanged.
+func applyLiveListing(r *registry.Registry, instance string) bool {
+	if !r.HasInstance(instance) {
+		return false
+	}
+	if probe, err := r.ResolveInstanceListing(instance); err != nil || probe.Credential.MissingReason != "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), providerNetworkTimeout)
+	defer cancel()
+	listing, err := cmdutil.NewRegistryClient(r, "").Models(ctx, instance)
+	return err == nil && listing.Live && listing.Usable
+}
+
+// windowSource is the registry layer that supplied a resolved window, or ""
+// when no layer did.
+func windowSource(res registry.Resolved) string {
+	if res.Caps.ContextWindow == nil {
+		return ""
+	}
+	return registry.ContextWindowSource(res.Provenance["ContextWindow"])
+}
+
+// windowVerified reports whether something the user or the instance stated
+// supplies the window: a live listing, or a window declared in providers.toml.
+// A catalog figure is a guess about a gateway's model and an absent window is
+// unknown.
+func windowVerified(res registry.Resolved) bool {
+	source := windowSource(res)
+	return source == registry.LayerLive || source == registry.LayerConfig
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 func intOrDash(v *int) string {
@@ -157,12 +214,18 @@ func intOrDash(v *int) string {
 
 // inspectView is what `evener models inspect` prints: the Resolved record
 // plus the credential source, the pruned-field list, and the request
-// skeleton (spec §11.1). Secrets never appear.
+// skeleton (spec §11.1). Secrets never appear. LiveListing is "applied" when
+// the instance's live listing was applied to the record and "unavailable"
+// otherwise; ContextWindowVerified is true only when that listing or
+// providers.toml supplied the window, so a catalog figure or an absent window
+// reads as unverified.
 type inspectView struct {
 	registry.Resolved
-	CredentialSource string         `json:"credential_source"`
-	PrunedFields     []string       `json:"pruned_fields"`
-	Request          inspectRequest `json:"request"`
+	CredentialSource      string         `json:"credential_source"`
+	LiveListing           string         `json:"live_listing"`
+	ContextWindowVerified bool           `json:"context_window_verified"`
+	PrunedFields          []string       `json:"pruned_fields"`
+	Request               inspectRequest `json:"request"`
 }
 
 // maskedHeaders are the plain `headers` entries inspect masks: a literal
@@ -188,6 +251,18 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
+	}
+	// A bare model id resolves on the default instance, so that is the
+	// instance whose listing applies.
+	instance := registry.ParseRef(fs.Arg(0)).Instance
+	if instance == "" {
+		if def, _, err := r.DefaultInstance(); err == nil {
+			instance = def
+		}
+	}
+	liveListing := "unavailable"
+	if applyLiveListing(r, instance) {
+		liveListing = "applied"
 	}
 	res, err := r.Resolve(fs.Arg(0))
 	if err != nil {
@@ -220,6 +295,7 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	}
 	view := inspectView{
 		Resolved: res, CredentialSource: res.Credential.Source, PrunedFields: pruned,
+		LiveListing: liveListing, ContextWindowVerified: windowVerified(res),
 		Request: inspectRequest{
 			Method:  "POST",
 			URL:     res.Transport.BaseURL + strings.ReplaceAll(res.Transport.Endpoint, "{model}", res.WireID),
