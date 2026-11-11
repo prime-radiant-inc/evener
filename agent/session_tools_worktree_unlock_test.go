@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -147,7 +146,7 @@ func TestManageWorktreeUnlock_RefusesWhenCallerIsNotTheParent(t *testing.T) {
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
 	other := newSession(t)
 
-	if _, err := other.worktreeUnlock(context.Background(), delegateID); err == nil || !strings.Contains(err.Error(), "not a direct worktree-isolated delegate of this session") {
+	if _, err := other.worktreeUnlock(context.Background(), delegateID); !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("unlock from a non-parent error = %v, want the ownership refusal", err)
 	}
 	assertUnlockLaneStillLocked(t, r, lanePath, delegateID)
@@ -161,7 +160,7 @@ func TestManageWorktreeUnlock_RefusesADelegateMarkerOwnedByAnotherParent(t *test
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreign, lanePath)
 
 	_, err := r.unlockThroughTool(t, delegateID)
-	if err == nil || !strings.Contains(err.Error(), "recorded owner is not this parent") {
+	if !errors.Is(err, errWorktreeLaneLockNotOwned) {
 		t.Fatalf("unlock on a foreign lock error = %v, want the parent-marker refusal", err)
 	}
 	_, locked, reason := r.laneLocked(t, lanePath)
@@ -177,7 +176,7 @@ func TestManageWorktreeUnlock_RefusesASessionMarker(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "evener:some-other-session", lanePath)
 
 	_, err := r.unlockThroughTool(t, delegateID)
-	if err == nil || !strings.Contains(err.Error(), "not locked with its own evener:dlg: marker") {
+	if !errors.Is(err, errWorktreeLaneLockNotOwned) {
 		t.Fatalf("unlock on a session marker error = %v, want the state-machine refusal", err)
 	}
 	_, locked, reason := r.laneLocked(t, lanePath)
@@ -201,7 +200,7 @@ func TestManageWorktreeUnlock_RefusesARunningResidentChild(t *testing.T) {
 	})
 
 	_, err := r.unlockThroughTool(t, delegateID)
-	if err == nil || !strings.Contains(err.Error(), "became active while unlocking") {
+	if !errors.Is(err, errWorktreeLaneBusy) {
 		t.Fatalf("unlock with a running resident child error = %v, want the gate refusal", err)
 	}
 	assertUnlockLaneStillLocked(t, r, lanePath, delegateID)
@@ -229,7 +228,7 @@ func TestManageWorktreeUnlock_RefusesAnUntrackedResidentRuntime(t *testing.T) {
 	})
 
 	_, err := r.unlockThroughTool(t, delegateID)
-	if err == nil || !strings.Contains(err.Error(), "not tracked in the subagent registry") {
+	if !errors.Is(err, errWorktreeLaneRuntimeUntracked) {
 		t.Fatalf("unlock with an untracked resident runtime error = %v, want the fail-closed refusal", err)
 	}
 	assertUnlockLaneStillLocked(t, r, lanePath, delegateID)
@@ -245,7 +244,7 @@ func TestManageWorktreeUnlock_RefusesWhileRuntimeReleaseIsInFlight(t *testing.T)
 	t.Cleanup(func() { c.endRuntimeReleaseInFlight(entries) })
 
 	_, err := r.unlockThroughTool(t, delegateID)
-	if err == nil || !strings.Contains(err.Error(), "became active while unlocking") {
+	if !errors.Is(err, errWorktreeLaneBusy) {
 		t.Fatalf("unlock while a runtime release is in flight error = %v, want the handoff refusal", err)
 	}
 	assertUnlockLaneStillLocked(t, r, lanePath, delegateID)
@@ -292,7 +291,7 @@ func TestManageWorktreeUnlock_EvictsBeforeUnlockAndRetriesAfterSpentRelease(t *t
 	})
 	_, err := r.unlockThroughTool(t, delegateID)
 	restoreFault()
-	if err == nil || !strings.Contains(err.Error(), "resident runtime failed") {
+	if !errors.Is(err, errWorktreeRuntimeRelease) {
 		t.Fatalf("unlock with a failing resident release error = %v, want the release failure", err)
 	}
 	if !lockedAtReleaseFailure {

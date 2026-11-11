@@ -10,6 +10,15 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
+// Sentinels for the unlock operation's refusals, so callers (and tests) can
+// classify a refusal without matching production copy.
+var (
+	errWorktreeLaneBusy             = errors.New("delegate lane is busy")
+	errWorktreeLaneLockNotOwned     = errors.New("delegate lane lock is not this parent's")
+	errWorktreeLaneRuntimeUntracked = errors.New("delegate lane has an untracked resident runtime")
+	errWorktreeRuntimeRelease       = errors.New("resident runtime release failed")
+)
+
 // WorktreeUnlockResult is the structured outcome of a successful unlock
 // operation (issue #481): the released delegate lane's id, path, and branch.
 type WorktreeUnlockResult struct {
@@ -74,7 +83,7 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 		if ownerErr := s.delegateController.stableWorktreeOwnerError(s, id); ownerErr != nil {
 			return WorktreeUnlockResult{}, worktreeDelegateOwnerError("unlock", id, ownerErr)
 		}
-		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s became active while unlocking; retry once it is idle", id)
+		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s became active while unlocking; retry once it is idle: %w", id, errWorktreeLaneBusy)
 	}
 	defer s.delegateController.endSubtreeLaneHandoff(id)
 	state, err := s.delegateController.stableWorktreeSnapshotForOwner(s, id)
@@ -126,7 +135,7 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 		// armed, the gate freezes new drives/resumes; re-verify quiescence under
 		// it before touching the lock.
 		if !sub.trySetDisposeGate() {
-			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s became active while unlocking; retry once it is idle", id)
+			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s became active while unlocking; retry once it is idle: %w", id, errWorktreeLaneBusy)
 		}
 		defer sub.clearDisposeGate()
 		state, err = s.delegateController.stableWorktreeSnapshotForOwner(s, id)
@@ -146,16 +155,16 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lock state could not be verified: %w", id, lockErr)
 	}
 	if !locked {
-		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is not locked with its own evener:dlg: marker (unlocked); refusing", id, lanePath)
+		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is not locked with its own evener:dlg: marker (unlocked); refusing: %w", id, lanePath, errWorktreeLaneLockNotOwned)
 	}
 	if worktree.Decide(worktree.EvUnlockDelegate, worktree.ClassifyReason(reason, s.id, id)) != worktree.ActUnlock {
-		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is not locked with its own evener:dlg: marker (%s); refusing", id, lanePath, reason)
+		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is not locked with its own evener:dlg: marker (%s); refusing: %w", id, lanePath, reason, errWorktreeLaneLockNotOwned)
 	}
 	// Decide established that the lock is this delegate's own marker. The
 	// marker also names the parent that owns the lane; only that parent may
 	// release it.
 	if marker, markerOK := worktree.ParseMarker(reason); !markerOK || marker.SessionID != s.id {
-		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is locked with %s, whose recorded owner is not this parent; refusing", id, lanePath, reason)
+		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s lane at %s is locked with %s, whose recorded owner is not this parent; refusing: %w", id, lanePath, reason, errWorktreeLaneLockNotOwned)
 	}
 
 	// Refresh the sidecar mtime BEFORE the lock is released, matching the
@@ -177,7 +186,7 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 	if sub != nil && sub.sess != nil {
 		released := sub.sess
 		if relErr := released.releaseChildRuntimeForRetirement(ctx); relErr != nil && !errors.Is(relErr, errRetirementTeardownSpent) {
-			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing delegate %s's resident runtime failed; the lane lock is still held and the child retained: %w", id, relErr)
+			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing delegate %s's resident runtime failed; the lane lock is still held and the child retained: %w", id, errors.Join(errWorktreeRuntimeRelease, relErr))
 		}
 		s.subagents.removeSession(state.descriptor.ChildSessionID, released)
 		s.delegateController.detachReleasedLaneRuntime(id, released)

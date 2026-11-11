@@ -69,7 +69,7 @@ func disposeOwnerError(id string, err error) error {
 // model-facing invalid_request form for a delegate-lane operation.
 func worktreeDelegateOwnerError(op, id string, err error) error {
 	if errors.Is(err, errDelegateNotControllable) {
-		return fmt.Errorf("invalid_request: manage_worktree %s: %s is not a direct worktree-isolated delegate of this session", op, id)
+		return fmt.Errorf("invalid_request: manage_worktree %s: %s is not a direct worktree-isolated delegate of this session: %w", op, id, err)
 	}
 	return fmt.Errorf("invalid_request: manage_worktree %s: %w", op, err)
 }
@@ -442,7 +442,7 @@ func (s *Session) delegateLaneLiveWork(op, action, id string, state delegateWork
 		// The controller still names a resident runtime that is not in the
 		// subagent registry: the operation cannot verify or release it, so no
 		// lane handoff may proceed under it.
-		return nil, fmt.Errorf("manage_worktree %s: %s has a resident runtime that is not tracked in the subagent registry; refusing", op, id)
+		return nil, fmt.Errorf("manage_worktree %s: %s has a resident runtime that is not tracked in the subagent registry; refusing: %w", op, id, errWorktreeLaneRuntimeUntracked)
 	}
 	if sub != nil && sub.sess != nil {
 		if !(allowSpentTeardown && sub.sess.retirementTeardownSpent()) {
