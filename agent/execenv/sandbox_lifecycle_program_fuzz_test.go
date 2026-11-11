@@ -89,7 +89,8 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		}
 		fs.release()
 
-		grant := env.WithSandboxInvocationGrant(filepath.Join(worktree, "granted.txt"))
+		granted := filepath.Join(worktree, "granted.txt")
+		grant := env.WithSandboxInvocationGrant(granted, granted)
 		grantEnv, ok := grant.(*LocalExecutionEnvironment)
 		if !ok || grantEnv == env || grantEnv.sandboxTmpBase != tmpBase {
 			t.Fatalf("sandbox invocation grant did not create an isolated fixture clone for %s", mode)

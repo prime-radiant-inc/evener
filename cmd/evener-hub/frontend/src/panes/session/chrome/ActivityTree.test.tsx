@@ -20,6 +20,7 @@ import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 import { detailLineByText } from "./detailLine.testFixture";
@@ -504,7 +505,7 @@ describe("ActivityTree", () => {
   });
 
   test("renders one dense row per live entry with its leading mark and meta", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
@@ -523,7 +524,7 @@ describe("ActivityTree", () => {
   // #1388: a live row with no usage opens its meta on its status, and both row
   // kinds read the same - see liveMetaSegments in ActivityTree.tsx.
   test("a live row with no usage opens its meta on status, matching across row kinds", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const noUsageTree: ActivityTreeData = {
       revision: 1,
@@ -574,7 +575,7 @@ describe("ActivityTree", () => {
   });
 
   test("all terminal entries fold; clicking the fold only toggles it", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     const onToggleFold = vi.fn();
@@ -592,7 +593,7 @@ describe("ActivityTree", () => {
   });
 
   test("expanded fold reveals terminal rows with duration meta; the kind glyph carries the failure", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
@@ -717,7 +718,7 @@ describe("ActivityTree", () => {
   });
 
   test("a legacy terminal failed row states the display word by its reason", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const tree: ActivityTreeData = {
       revision: 1,
@@ -753,7 +754,7 @@ describe("ActivityTree", () => {
   });
 
   test("the kind glyph carries the row's status hue and accessible name", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
@@ -844,7 +845,7 @@ describe("ActivityTree", () => {
   });
 
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<Host initialExpanded={[FOLD_ID]} />);
@@ -864,7 +865,7 @@ describe("ActivityTree", () => {
   });
 
   test("rows with a transcript ref carry an icon-only open button between the title and the meta", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
@@ -895,7 +896,7 @@ describe("ActivityTree", () => {
     // wrapper span, so the wrapper's previous element sibling must be the
     // name span itself - no growing flex element may sit between them.
     vi.mocked(openTranscriptModule.OpenTranscriptButton).mockImplementation(RealOpenTranscriptButton);
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
@@ -932,7 +933,7 @@ describe("ActivityTree", () => {
   });
 
   test("clicking a row's title toggles its disclosure, never opens the transcript", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -953,7 +954,7 @@ describe("ActivityTree", () => {
   });
 
   test("top-level rows render their detail strips expanded by default", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
@@ -971,7 +972,7 @@ describe("ActivityTree", () => {
   });
 
   test("nested rows stay collapsed by default", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const nestedTree: ActivityTreeData = {
       revision: 1,
@@ -1039,7 +1040,7 @@ describe("ActivityTree", () => {
   });
 
   test("chevrons toggle each row's detail strip independently without opening transcripts", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -1058,7 +1059,7 @@ describe("ActivityTree", () => {
   });
 
   test("keyboard: arrows move focus, Enter activates, Right/Left toggles detail", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     const onToggleFold = vi.fn();
@@ -1110,7 +1111,7 @@ describe("ActivityTree", () => {
   });
 
   test("keyboard: Alt/Ctrl/Meta arrows fall through to the global chords - no move, no preventDefault", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -1134,7 +1135,7 @@ describe("ActivityTree", () => {
   });
 
   test("keyboard: arrows still navigate rows when focus sits on a row chevron button", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -1158,7 +1159,7 @@ describe("ActivityTree", () => {
   });
 
   test("host-driven fold toggle reveals and hides every settled outcome", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<Host />);
@@ -1208,7 +1209,7 @@ describe("ActivityTree", () => {
   }
 
   test("a delegate with no usage or quiet evidence omits inferred quiet age", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={soleDelegateTree({})} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
@@ -1226,7 +1227,7 @@ describe("ActivityTree", () => {
   // the quiet anchor and its own ticking clock, or "quiet 12s" sticks forever
   // while the real silence grows.
   test("a quiet delegate's age keeps ticking between snapshots", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
@@ -1243,7 +1244,7 @@ describe("ActivityTree", () => {
   // A resumed run keeps the previous run's latestActivityAt until the child
   // reports again: the quiet anchor is the newer of it and runStartedAt.
   test("a live delegate's quiet age anchors at the run start when latestActivityAt predates it", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(
       <ActivityTree
@@ -1262,7 +1263,7 @@ describe("ActivityTree", () => {
   });
 
   test("a live delegate's quiet age ticks from the run start when latestActivityAt does not parse", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(
       <ActivityTree
@@ -1281,7 +1282,7 @@ describe("ActivityTree", () => {
   });
 
   test("a terminal delegate's duration is its run window, not a disagreeing snapshot", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useTestDrivenFakeTimers();
     vi.setSystemTime(NOW);
     render(
       <ActivityTree

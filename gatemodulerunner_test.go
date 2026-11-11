@@ -1090,3 +1090,88 @@ func TestTimed(t *testing.T) {
 		t.Fatalf("the run published no timing rows at %s (err = %v):\n%s", dest, err, runnerOutput())
 	}
 }
+
+// runnerPhases returns the phases the gate's summary timed: each `TIME  <label>
+// <seconds>s` line whose seconds parse.
+func runnerPhases(output string) map[string]bool {
+	phases := map[string]bool{}
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "TIME" {
+			continue
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSuffix(fields[2], "s"), 64); err == nil {
+			phases[fields[1]] = true
+		}
+	}
+	return phases
+}
+
+// TestModuleRunnerRunsAgentSubpackagesInOnePartOnly pins the split agent race
+// lane: each runner runs one AGENT_SHARD_PART of the agent package's shards,
+// and the module's subpackages, which are not sharded, run in the last part
+// alone so the split runs them once. A whole run still runs them.
+func TestModuleRunnerRunsAgentSubpackagesInOnePartOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, part  string
+		wantSubpkgs bool
+	}{
+		{"whole", "", true},
+		{"first part", "1/2", false},
+		{"last part", "2/2", true},
+		// The shard runner reads k and m as numbers, so the gate must too.
+		{"last part zero-padded", "02/2", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, modules, ctrl := newRunnerFixture(t)
+			agent := filepath.Join(modules, "agent")
+			writeRunnerFixtureFile(t, filepath.Join(agent, "go.mod"), "module example.com/agent\n\ngo 1.21\n")
+			writeRunnerFixtureFile(t, filepath.Join(agent, "agent_test.go"), `package agent
+
+import "testing"
+
+func TestOne(t *testing.T) {}
+func TestTwo(t *testing.T) {}
+`)
+			writeRunnerFixtureFile(t, filepath.Join(agent, "sub", "sub_test.go"), `package sub
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestSubpackage(t *testing.T) {
+	if err := os.WriteFile(filepath.Join(os.Getenv("EVENER_RUNNER_TEST_OBSERVE"), "sub.ran"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+`)
+			observe := t.TempDir()
+			env := append(controlledScratchEnv(ctrl), "MODULES=agent", "AGENT_SHARDS=1",
+				"AGENT_SHARD_COUNT=2", "AGENT_SHARD_NO_SURVEY=1", "AGENT_SHARD_PART="+tc.part,
+				"AGENT_SHARD_CACHE_DIR="+t.TempDir(), "EVENER_RUNNER_TEST_OBSERVE="+observe)
+			result := runModuleRunner(t, modules, env...)
+			if result.exitCode != 0 {
+				t.Fatalf("runner exit = %d:\n%s", result.exitCode, result.output)
+			}
+			_, err := os.Stat(filepath.Join(observe, "sub.ran"))
+			if ran := err == nil; ran != tc.wantSubpkgs {
+				t.Fatalf("subpackage ran = %v, want %v:\n%s", ran, tc.wantSubpkgs, result.output)
+			}
+			// A green run's output is all CI keeps, so it carries the phase
+			// summary: the runner's own phases and the gate's around them.
+			phases := runnerPhases(result.output)
+			for _, phase := range []string{"gate:check-flags", "gate:wave2", "agent:runner-build", "agent:runner", "agent:build", "agent:shards"} {
+				if !phases[phase] {
+					t.Fatalf("no %s phase in the summary:\n%s", phase, result.output)
+				}
+			}
+			if phases["agent:subpkgs"] != tc.wantSubpkgs {
+				t.Fatalf("subpackage phase reported = %v, want %v:\n%s", phases["agent:subpkgs"], tc.wantSubpkgs, result.output)
+			}
+		})
+	}
+}

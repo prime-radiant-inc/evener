@@ -1,10 +1,10 @@
-import { attentionNeedsYou, attentionState, normalizeWireState } from "@evener/appwire-client";
+import { type AttentionFacts, attentionNeedsYou, attentionState, normalizeWireState } from "@evener/appwire-client";
 import type { CadenceState } from "../widgets";
 
 // Cadence's family for a wire state: the raw ThreadStatus.type or a navigation
 // summary's NormalizeState value (attentionState reads both).
-export function cadenceStateFor(wireState: string): CadenceState {
-  const attention = attentionState(wireState);
+export function cadenceStateFor(wireState: string, facts: AttentionFacts = {}): CadenceState {
+  const attention = attentionState(wireState, facts);
   if (attentionNeedsYou(attention)) return "needs-you";
   switch (attention) {
     case "failed":

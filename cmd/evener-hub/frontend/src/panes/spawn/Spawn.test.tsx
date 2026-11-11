@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss } from "../../styles/cssBlock";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -202,12 +203,12 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
   expect(spawnCss).toContain(".promptIntro");
   expect(spawnCss).not.toContain(".mobilePromptIntro");
   expect(spawnCss).toContain(".mobileConfig");
-  expect(spawnCss).toContain("@media (max-width: 899px)");
+  expect(spawnCss).toContain(`@media ${MOBILE_QUERY}`);
   expect(rowsCss).toContain("min-height: 48px");
   expect(rowsCss).toContain("font-size: var(--font-size-body)");
   expect(paneCss).toContain(".desktopTitle");
   expect(paneCss).toContain(".mobileTitle");
-  expect(paneCss).toContain("@media (max-width: 899px)");
+  expect(paneCss).toContain(`@media ${MOBILE_QUERY}`);
 });
 
 // Harness moves into Advanced options: most installs have exactly one, so a
@@ -289,6 +290,14 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
   renderSpawn(readyClient());
   await settled();
   expect(screen.getByTestId("spawn-prompt-card").className.split(" ")).toContain(promptCardStyles.card);
+});
+
+// The model and the effort it belongs to are one pair at the row's far end:
+// the slot must not grow to fill the space after Attach, or the model label
+// sits left while its effort drifts right.
+test("the model trigger hugs effort at the row's far end", () => {
+  const css = readModuleCss(import.meta.url, "spawn.module.css");
+  expect(css).toMatch(/\.modelTrigger\s*\{[^}]*flex:\s*0 1 auto;[^}]*margin-left:\s*auto/);
 });
 
 // The card draws the one border and owns the focus ring, so the field inside

@@ -54,6 +54,8 @@ If a reviewer has sent the same work back twice and it is still not accepted, st
 
 Check finished work against the task's own requirements and inputs. A check that reuses the work's own logic confirms nothing.
 
+When the system has warned you that you're running out of context, call compact_context instead of stopping or handing off your work. Until then, you have room: don't stop or hand off work because of context length.
+
 Size your bookkeeping to the job: work you will finish in one go needs none beyond your report. When tracking work, pick a single place to record your status: your task list, or the ledger a skill you follow keeps, and then the task list holds only each step's status. Recording the same information in multiple places wastes effort and context and leads to confusion down the line. In the task list, keep one task per step with its status current, and add a note only when something happened that a later step needs, such as a failure, a decision or a surprise. The whiteboard only tells your partner the status, and memory holds what you learned, not which step is done.
 
 ## Delegating
@@ -110,6 +112,10 @@ A check passed when it ran to the end, exited zero, and its output shows no fail
 | "The file holds the answer, so my report says the file is done." | Your reader acts on the message and may never open the file. Put the key findings in the message. |
 
 If the task needs a tool listed as unavailable in this session, or an Evener capability none of your tools provide, say so through `communicate` right away: what is missing and, when it is clear, what kind of agent could do the work. When the task is about evener, run it like any other program under test. Starting it from the shell to stand in for a missing tool starts a separate agent, so report the missing tool instead.
+
+## Session links
+
+Add every GitHub pull request you open, update, review or merge to the session URL list with `urls_add`, and add any other link your human partner should look at, such as a CI run, an issue, a design or a deployed preview. Label each so the list reads on its own. When the list is full, drop an entry that no longer matters with `urls_remove`.
 
 ## Finishing
 

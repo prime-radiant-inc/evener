@@ -110,6 +110,10 @@ type EvenerThread struct {
 	ContextAssumed   bool               `json:"contextAssumed,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
+
+	// ContextWindowSource says where contextWindow came from: "live",
+	// "overlay", "config", "snapshot" or "assumed".
+	ContextWindowSource string `json:"contextWindowSource,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
@@ -521,10 +525,13 @@ type UrlsUpdatedParams struct {
 // SandboxEscalationRequested is the payload of a
 // evener/sandbox/escalation/requested notification (M7): a harness-raised approval
 // card for a single sandbox denial. It carries only what the human needs to decide
-// — never file contents. DeniedPath is the FULL literal path for informed consent
-// (only non-sensitive containment denials escalate, so the full path is safe; a
+// — never file contents. DeniedPath is the FULL location an approval reaches, every
+// symlink in its parent directory resolved, for informed consent (only
+// non-sensitive containment denials escalate, so the full path is safe; a
 // sensitive path, which never escalates, degrades to "<denied>" as a defensive
-// floor). Kind selects the card shape; the shell fields (Command/OutputSoFar/
+// floor). RequestedPath is the path as the tool call spelled it, present only
+// when that spelling crosses a symlink and so differs from DeniedPath. Kind
+// selects the card shape; the shell fields (Command/OutputSoFar/
 // PartiallyRan) are reserved and empty in v1 (file-tool escalation only — see the
 // M7 spec on why bwrap masking makes shell escalation unbuildable). It is never
 // appended to the model's transcript.
@@ -533,16 +540,17 @@ type SandboxEscalationRequested struct {
 	// route it by session (enqueue for a non-viewed session, answer the right one)
 	// rather than assuming the currently-viewed session — like every other
 	// thread-scoped notification.
-	ThreadID     string `json:"threadId"`
-	Ref          string `json:"ref"`
-	EscalationID string `json:"escalationId"`
-	Mode         string `json:"mode"`
-	Tool         string `json:"tool"`
-	Kind         string `json:"kind"`
-	DeniedPath   string `json:"deniedPath"`
-	Command      string `json:"command,omitempty"`
-	OutputSoFar  string `json:"outputSoFar,omitempty"`
-	PartiallyRan bool   `json:"partiallyRan,omitempty"`
+	ThreadID      string `json:"threadId"`
+	Ref           string `json:"ref"`
+	EscalationID  string `json:"escalationId"`
+	Mode          string `json:"mode"`
+	Tool          string `json:"tool"`
+	Kind          string `json:"kind"`
+	DeniedPath    string `json:"deniedPath"`
+	RequestedPath string `json:"requestedPath,omitempty"`
+	Command       string `json:"command,omitempty"`
+	OutputSoFar   string `json:"outputSoFar,omitempty"`
+	PartiallyRan  bool   `json:"partiallyRan,omitempty"`
 }
 
 // SandboxEscalationResolved is the payload of a evener/sandbox/escalation/resolved
@@ -666,6 +674,11 @@ type ThreadCapabilities struct {
 	// stamps it; a client talking to a hub without that feature keeps the
 	// earlier behavior.
 	VoiceArm bool `json:"voiceArm,omitempty"`
+	// WindowRead advertises that thread/read accepts bounded transcript turn
+	// windows and their item filters. Older daemons omit it, allowing the hub to
+	// choose its narrow legacy compatibility projection without sending fields
+	// their strict decoder rejects.
+	WindowRead bool `json:"windowRead,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

@@ -45,6 +45,25 @@ func TestRunChecksPassesWhenNoCheckFindsAnything(t *testing.T) {
 	}
 }
 
+// TestRunChecksReportsNotesWithoutFailing pins the note channel: a ratchet
+// that has slack says so on a NOTE line, and the run still passes.
+func TestRunChecksReportsNotesWithoutFailing(t *testing.T) {
+	var out strings.Builder
+	status := runChecks([]check{{"ratchet", func(a *audit) { a.Notef("slack-%d", 3) }}}, &out)
+	if status != 0 {
+		t.Fatalf("status = %d, want 0: a note is not a finding", status)
+	}
+	var notes []string
+	for line := range strings.Lines(out.String()) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "NOTE "); ok {
+			notes = append(notes, rest)
+		}
+	}
+	if want := []string{"ratchet: slack-3"}; strings.Join(notes, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("notes %q, want %q", notes, want)
+	}
+}
+
 // TestRunCheckPropagatesAPanicThatIsNotAStop keeps a crashing check from
 // reading as a passing one.
 func TestRunCheckPropagatesAPanicThatIsNotAStop(t *testing.T) {

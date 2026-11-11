@@ -1268,9 +1268,9 @@ delegates cannot escalate to the parent through it. Repeated approved file work
 can require repeated decisions. A batch patch applies operations sequentially,
 so a permission error on a later operation can follow successful earlier edits.
 
-**Evidence.** [Invocation grant](../../agent/session_escalation.go#L58),
-[eligibility/tool gates](../../agent/session_escalation.go#L103), and
-[rerun](../../agent/session_escalation.go#L206) define the limit.
+**Evidence.** [Invocation grant](../../agent/session_escalation.go#L60),
+[eligibility/tool gates](../../agent/session_escalation.go#L107), and
+[rerun](../../agent/session_escalation.go#L231) define the limit.
 The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L18) applies each
 operation before checking the next and returns on the first error.
 This is a scoped mechanism, not a claim that every Evener permission flow has

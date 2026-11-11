@@ -9,70 +9,14 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
 // The unknown-window contract of issue #4564 at the session layer: a custom
 // gateway serving a model nothing vouches for still gets context management.
-// maybeWarnContextUsage warns against the same conservative window the context
-// manager budgets compaction against, and a real session folds and discloses
-// the assumption through its own event wiring.
-
-// TestMaybeWarnContextUsage_UnknownWindowWarnsAgainstAssumption pins the
-// warning half of issue #4564: a request that has filled the assumed window
-// warns even though nothing vouches for the model's real window, and the
-// warning's structured fields carry the assumption.
-func TestMaybeWarnContextUsage_UnknownWindowWarnsAgainstAssumption(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
-	col := newChanCollector()
-	go col.drain(sess)
-
-	profile := newOpenAICompatProfile("gw", "deepseek-4.1-flash", 0)
-	if profile.ContextWindowSize() != 0 {
-		t.Fatalf("fixture window = %d, want 0 (unknown)", profile.ContextWindowSize())
-	}
-	// ~120K tokens by the char/4 estimate: ~94% of the assumed 128K window.
-	bigReq := llm.Request{Messages: []llm.Message{llm.User(strings.Repeat("token ", 80_000))}}
-	if !sess.maybeWarnContextUsage(profile, bigReq) {
-		t.Fatal("expected a context-usage warning against the assumed window")
-	}
-
-	sess.Close()
-	<-col.done
-	var warned *events.WarningData
-	for _, w := range col.warnings() {
-		if w.Code == events.WarningCodeContextBudget {
-			warned = &w
-			break
-		}
-	}
-	if warned == nil {
-		t.Fatal("no context-budget warning emitted")
-	}
-	if warned.ContextWindowSize != contextmgr.AssumedContextWindow {
-		t.Fatalf("warned against window %d, want the assumed %d", warned.ContextWindowSize, contextmgr.AssumedContextWindow)
-	}
-	if warned.Percent < 80 {
-		t.Fatalf("warned at %d%%, want at least 80%% of the assumption", warned.Percent)
-	}
-}
-
-// TestMaybeWarnContextUsage_UnknownWindowUnderAssumptionStaysQuiet guards the
-// other direction: the assumption restores the warning's ordinary threshold
-// behavior, it does not make every request on an unknown-window model warn.
-func TestMaybeWarnContextUsage_UnknownWindowUnderAssumptionStaysQuiet(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
-	defer sess.Close()
-
-	profile := newOpenAICompatProfile("gw", "deepseek-4.1-flash", 0)
-	if sess.maybeWarnContextUsage(profile, llm.Request{Messages: []llm.Message{llm.User("hi")}}) {
-		t.Fatal("a request far under the assumed window must not warn")
-	}
-}
+// a real session folds and discloses the assumption through its own event
+// wiring.
 
 // TestUnknownWindowSessionCompactsAndDiscloses drives the real per-request
 // path: a session on the unknown-window gateway model folds once its exact API

@@ -2610,7 +2610,12 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
 
 test('"evener/sandbox/escalation/requested" appends a new card with full field mapping and stamps lastFrameAt', () => {
   let model = testHydrate();
-  const escalation = testEscalation({ command: "rm -rf /tmp/x", outputSoFar: "partial output", partiallyRan: true });
+  const escalation = testEscalation({
+    requestedPath: "/tmp/link/x",
+    command: "rm -rf /tmp/x",
+    outputSoFar: "partial output",
+    partiallyRan: true,
+  });
 
   model = applyNotification(model, { method: "evener/sandbox/escalation/requested", params: escalation }, 2000);
 

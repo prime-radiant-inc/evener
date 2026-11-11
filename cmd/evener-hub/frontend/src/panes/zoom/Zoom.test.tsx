@@ -13,6 +13,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import {
   consumePaneFocus,
   type OpenPaneRecord,
@@ -88,6 +89,7 @@ function CommittedZoom() {
 function fixture(ancestryKnown = true, leafRef = "child") {
   const fake = new FakeClient("ready");
   const statuses = new Map<string, string>();
+  const askPending = new Map<string, boolean>();
   const identities = new Map([
     ["root", "old-root"],
     ["child", "child-id"],
@@ -136,6 +138,10 @@ function fixture(ancestryKnown = true, leafRef = "child") {
         sessionId: identity,
         name: ref,
         status: { type: statuses.get(ref) ?? "idle" },
+        evener: {
+          ...read.thread.evener,
+          ...(askPending.get(ref) === true ? { askPending: true } : {}),
+        },
         turns: [
           {
             id: `${identity}-turn`,
@@ -182,6 +188,7 @@ function fixture(ancestryKnown = true, leafRef = "child") {
   return {
     fake,
     statuses,
+    askPending,
     identities,
     response,
     context,
@@ -1069,7 +1076,8 @@ test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: n
 
 test.each([
   ["active", "Active", "working"],
-  ["awaiting", "Awaiting", "needs-you"],
+  // A finished turn is Idle: no family glyph on the compact spine (#2629).
+  ["awaiting", "Awaiting", null],
   ["warning", "Warning", "needs-you"],
   ["restartRequired", "RestartRequired", "needs-you"],
   ["systemError", "SystemError", "failed"],
@@ -1137,7 +1145,7 @@ test("a paused ancestor updates its signal through runtime changes without repla
   expect(active.querySelector("[data-state]")?.getAttribute("data-state")).toBe("working");
   expect(within(active).queryByRole("img")).toBeNull();
   for (const [state, text, glyphState] of [
-    ["awaiting", "Awaiting", "needs-you"],
+    ["awaiting", "Awaiting", null],
     ["systemError", "SystemError", "failed"],
     ["idle", "Idle", null],
   ] as const) {
@@ -1155,6 +1163,20 @@ test("a paused ancestor updates its signal through runtime changes without repla
     expect(currentPane()).toBe(branch);
     expect(columnRefs()).toEqual(["child", "grandchild"]);
   }
+});
+
+test("a compact ancestor's pending question keeps its attention glyph without a navigation row", async () => {
+  const { fake, statuses, askPending } = fixture();
+  statuses.set("root", "awaiting");
+  askPending.set("root", true);
+  mount(fake);
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  const runtime = within(screen.getByTestId("cascade-spine")).getByTitle("Awaiting");
+  expect(runtime.querySelector("[data-state]")?.getAttribute("data-state")).toBe("needs-you");
 });
 
 test("an ancestor with pending runtime metadata stays explicitly unknown until its existing read recovers", async () => {
@@ -1293,7 +1315,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

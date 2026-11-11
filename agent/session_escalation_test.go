@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -10,17 +12,19 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // deniedResult builds a tool.ExecResult carrying a typed file-tool sandbox denial,
 // exactly as ExecuteCall would return one after a securepath refusal.
 func deniedResult(path string) (tool.ExecResult, *sandbox.DeniedError) {
 	d := &sandbox.DeniedError{
-		Mode:       sandbox.ModeReadOnly,
-		Tool:       "write_file",
-		Path:       path,
-		Reason:     "outside the sandbox's writable roots",
-		ReasonKind: sandbox.DenialOutsideWriteRoots, // a CURABLE containment denial
+		Mode:        sandbox.ModeReadOnly,
+		Tool:        "write_file",
+		Path:        path,
+		Reason:      "outside the sandbox's writable roots",
+		ReasonKind:  sandbox.DenialOutsideWriteRoots, // a CURABLE containment denial
+		GrantTarget: path,                            // whose grant could complete it
 	}
 	return tool.ExecResult{
 		ToolName:   "write_file",
@@ -60,15 +64,12 @@ func pendingIDs(s *Session) []string {
 // awaitPending blocks until exactly want escalations are pending (or fails).
 func awaitPending(t *testing.T, s *Session, want int) []string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ids := pendingIDs(s); len(ids) == want {
-			return ids
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("wanted %d pending escalations, saw %d", want, len(pendingIDs(s)))
-	return nil
+	var ids []string
+	testwait.UntilSeen(t, fmt.Sprintf("%d pending escalations", want), func() (bool, string) {
+		ids = pendingIDs(s)
+		return len(ids) == want, strconv.Itoa(len(ids))
+	})
+	return ids
 }
 
 // noRerun fails the test if the re-run path is ever taken.
@@ -133,7 +134,7 @@ func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
 	// tools (which walk a directory subtree) stay final, so one grant can never
 	// widen more than one leaf. Their underlying denials carry Tool=="write_file"
 	// or a read tool, but the allowlist keys on the invoking call name.
-	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode", ReasonKind: sandbox.DenialWritesDisabled}
+	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "write_file", Path: "/wt/f", Reason: "writes are denied in this sandbox mode", ReasonKind: sandbox.DenialWritesDisabled, GrantTarget: "/wt/f"}
 	res := tool.ExecResult{ToolName: "x", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 	for _, callName := range []string{"apply_patch", "glob", "grep", "list_dir", "shell", "read_file_all"} {
 		s := escalatableSession(t)
@@ -158,7 +159,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 	}
 	for _, rk := range final {
 		s := escalatableSession(t)
-		d := &sandbox.DeniedError{Tool: "write_file", Path: "/wt/f", ReasonKind: rk}
+		d := &sandbox.DeniedError{Tool: "write_file", Path: "/wt/f", ReasonKind: rk, GrantTarget: "/wt/f"}
 		res := tool.ExecResult{ToolName: "write_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 		got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
 		if !errors.Is(got.Err, d) {
@@ -175,7 +176,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 	}
 	for _, rk := range curable {
 		s := escalatableSession(t)
-		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk}
+		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk, GrantTarget: "/etc/x"}
 		res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
 		done := make(chan tool.ExecResult, 1)
 		go func() {
@@ -186,6 +187,19 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 			t.Fatalf("resolve: %v", err)
 		}
 		<-done
+	}
+
+	// A containment denial with no GrantTarget is one the grant would refuse at
+	// the resolved location (a missing parent, a symlinked leaf, a masked or
+	// protected spelling), so it stays final too.
+	for _, rk := range curable {
+		s := escalatableSession(t)
+		d := &sandbox.DeniedError{Tool: "read_file", Path: "/etc/x", ReasonKind: rk}
+		res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
+		got := s.escalateOnSandboxDenial(context.Background(), "read_file", res, noRerun(t))
+		if !errors.Is(got.Err, d) || len(pendingIDs(s)) != 0 {
+			t.Fatalf("reason %v without a grant target must stay final", rk)
+		}
 	}
 }
 
@@ -270,7 +284,7 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	s := escalatableSession(t)
 	res, denied := deniedResult("/etc/hosts")
 
-	var gotGrant string
+	var gotGrant escalationGrant
 	var grantOK bool
 	rerun := func(ctx context.Context) tool.ExecResult {
 		gotGrant, grantOK = invocationGrant(ctx)
@@ -286,8 +300,8 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	}
 	got := <-done
 
-	if !grantOK || gotGrant != denied.Path {
-		t.Fatalf("re-run ctx must carry the granted path %q, got %q (ok=%v)", denied.Path, gotGrant, grantOK)
+	if want := (escalationGrant{path: denied.Path, target: denied.Path}); !grantOK || gotGrant != want {
+		t.Fatalf("re-run ctx must carry the granted path %+v, got %+v (ok=%v)", want, gotGrant, grantOK)
 	}
 	if got.IsError || got.FullOutput != "wrote /etc/hosts" {
 		t.Fatalf("approve must return the successful re-run output, got %+v", got)
@@ -295,6 +309,37 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	// The grant must not have leaked onto the session or its policy.
 	if len(pendingIDs(s)) != 0 {
 		t.Fatalf("escalation should be removed after resolve, saw %v", pendingIDs(s))
+	}
+}
+
+// A denial whose path crosses a symlink shows the resolved target on the card,
+// notes the path as requested, and grants exactly that target.
+func TestEscalation_ApprovalTargetsResolvedLocation(t *testing.T) {
+	t.Parallel()
+	s := escalatableSession(t)
+	res, denied := deniedResult("/tmp/link/out.txt")
+	denied.GrantTarget = "/private/tmp/real/out.txt"
+
+	grants := make(chan escalationGrant, 1)
+	rerun := func(ctx context.Context) tool.ExecResult {
+		grant, _ := invocationGrant(ctx)
+		grants <- grant
+		return succeededResult()
+	}
+	done := make(chan tool.ExecResult, 1)
+	go func() { done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, rerun) }()
+
+	ids := awaitPending(t, s, 1)
+	card := s.PendingEscalations()[0]
+	if card.DeniedPath != denied.GrantTarget || card.RequestedPath != denied.Path {
+		t.Fatalf("card shows target %q requested as %q; want target %q requested as %q", card.DeniedPath, card.RequestedPath, denied.GrantTarget, denied.Path)
+	}
+	if err := s.ResolveSandboxEscalation(ids[0], true); err != nil {
+		t.Fatalf("resolve approve: %v", err)
+	}
+	<-done
+	if got, want := <-grants, (escalationGrant{path: denied.Path, target: denied.GrantTarget}); got != want {
+		t.Fatalf("re-run grant = %+v, want %+v", got, want)
 	}
 }
 

@@ -1503,7 +1503,8 @@ func testContentFilterRecoveryAdjustsBaseline(t *testing.T, withGoalSteering boo
 		nil,
 	)
 	retried := false
-	retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+	documentRejectRetried := false
+	retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, &documentRejectRetried, false)
 	if err != nil {
 		t.Fatalf("handleModelError: %v", err)
 	}
@@ -1569,7 +1570,7 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold, and ForceCompact always attempts Layer 2 given a real client
 
 	contentFilterErr := llm.ErrorFromHTTPStatus(
@@ -1578,13 +1579,14 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 		nil,
 	)
 	retried := false
+	documentRejectRetried := false
 	type result struct {
 		retry bool
 		err   error
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+		retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, &documentRejectRetried, false)
 		resultCh <- result{retry, err}
 	}()
 
@@ -1635,7 +1637,7 @@ func testManageContextShrinksBaselineOnFold(t *testing.T, withGoalSteering bool)
 	if withGoalSteering {
 		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
 	}
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90), < SummarizeThreshold(0.95): checkpoint layer only
 
 	preHistory := currentHistory(t, s)
 	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
@@ -1966,7 +1968,7 @@ func TestPrepareModelRequestWithError_DoesNotClobberConcurrentPublish(t *testing
 		return "", nil
 	}
 
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): maybeElicitNoteBeforeCompaction's pressure guard passes, so it reaches (and blocks in) the seam above
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): maybeElicitNoteBeforeCompaction's pressure guard passes, so it reaches (and blocks in) the seam above
 
 	var timings events.RoundTimings
 	prepErr := make(chan error, 1)

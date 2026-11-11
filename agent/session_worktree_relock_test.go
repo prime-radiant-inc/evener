@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // These cover the resume re-lock post-init step (auto-delegate-lane-disposal
@@ -144,10 +145,7 @@ func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	// Close(), which only joins sweepWG after taking the same mutex the
 	// callback Adds under). Polling the actual side effect is the only
 	// race-free signal available from a test in this package.
-	// TRIPWIRE: the retry pass runs over an in-memory scripted git boundary
-	// with no real I/O, so it normally finishes in well under a second; 30s
-	// only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "open-timer retry re-locks the lane", func() bool {
+	testwait.Until(t, "open-timer retry re-locks the lane", func() bool {
 		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
@@ -194,10 +192,7 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 	// sweepWG after taking the same mutex the callback Adds under). Polling
 	// the actual side effect is the only race-free signal available from a
 	// test in this package.
-	// TRIPWIRE: the retry runs over an in-memory scripted git boundary with
-	// no real I/O, so it normally finishes in well under a second; 30s only
-	// fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "dedicated retry timer re-locks the lane", func() bool {
+	testwait.Until(t, "dedicated retry timer re-locks the lane", func() bool {
 		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})

@@ -104,8 +104,9 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("active", { activeTurnStartedAt: ago(38 * 60_000) }), "working", "Working · 38m"],
 		[session("active"), "working", "Working"],
 		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Idle · 1h ago"],
-		// Awaiting without a question: the turn ended on needs_response (#4093).
-		[session("awaiting", { turns: [done(ago(120_000))] }), "needsYou", "Needs you"],
+		// Awaiting without a question: the turn merely finished and rests Idle
+		// (#2629).
+		[session("awaiting", { turns: [done(ago(120_000))] }), "idle", "Idle · 2m ago"],
 		[session("idle", { turns: [done(ago(10_000))] }), "idle", "Idle · just now"],
 		// A hub clock ahead of the phone's puts the finish in the future.
 		[session("idle", { turns: [done(ago(-5_000))] }), "idle", "Idle · just now"],

@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -417,10 +418,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 	}
 
 	// The rollback's re-drive is now the only thing that can drain the queue.
-	// TRIPWIRE: the rollback re-drive and the drive turn it launches are served
-	// by the scripted in-process adapter, so the notification drains in
-	// milliseconds; this bound only fires on the regression this test pins.
-	waitForCondition(t, 10*time.Second, "dropped notification redriven after the rollback", func() bool {
+	testwait.Until(t, "dropped notification redriven after the rollback", func() bool {
 		return supervisionRequestCount(fixture.adapter) > warmRequests
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -502,11 +500,8 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 	}
 
 	// The rollback's attention re-drive is now the only thing that can drive the
-	// armed attention. TRIPWIRE: the rollback re-drive and the drive turn it
-	// launches are served by the scripted in-process adapter, so the attention
-	// drains in milliseconds; this bound only fires on the regression this test
-	// pins.
-	waitForCondition(t, 10*time.Second, "dropped attention redriven after the rollback", func() bool {
+	// armed attention.
+	testwait.Until(t, "dropped attention redriven after the rollback", func() bool {
 		return supervisionRequestCount(fixture.adapter) > warmRequests
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -600,10 +595,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 	// With the fix the attention is driven first and its run drains the
 	// notification, so both queues empty. With the pre-fix notification-first
 	// order the attention stays pending and this bounds out.
-	// TRIPWIRE: the rollback re-drive and the drive turn it launches are served
-	// by the scripted in-process adapter, so both queues empty in milliseconds;
-	// this bound only fires on the regression this test pins.
-	waitForCondition(t, 10*time.Second, "attention and notification both redriven after the rollback", func() bool {
+	testwait.Until(t, "attention and notification both redriven after the rollback", func() bool {
 		pending, err := sub.sess.pendingDelegateAttentionIDs()
 		if err != nil {
 			return false
@@ -3521,10 +3513,7 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 			t.Logf("last refusal: %s; state: %s", why, stableSupervisionState(root, sub))
 		}
 	}()
-	// TRIPWIRE: every supervision run in these tests is served by a scripted
-	// in-process adapter, so quiescence is reached in milliseconds; this bound
-	// only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, desc, func() bool {
+	testwait.Until(t, desc, func() bool {
 		why = stableSupervisionRefusal(sub)
 		return why == ""
 	})
@@ -3569,7 +3558,7 @@ func stableSupervisionEntryRefusal(sub *subagent, childID string) string {
 //
 // Every source is read with TryLock: a source production holds is, by
 // definition, not quiesced, so a busy lock REFUSES (keeps the wait waiting)
-// rather than blocking. waitForCondition calls this inline, so a blocking read
+// rather than blocking. testwait.Until calls this inline, so a blocking read
 // would keep the wait's bound from ever being reached; a busy read always
 // returns before the deadline check is skipped again. The predicate returns ""
 // only after positively observing every stage under its own lock, so a busy
@@ -4104,9 +4093,9 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	}
 	close(endTurn)
 
-	// TRIPWIRE: the re-drive starts the generation as the turn ends; without
-	// it nothing does.
-	waitForCondition(t, 10*time.Second, "the attention refused on the notification turn's guard to start", func() bool {
+	// The re-drive starts the generation as the turn ends; without it nothing
+	// does.
+	testwait.Until(t, "the attention refused on the notification turn's guard to start", func() bool {
 		return starts.Load() == 1
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4503,9 +4492,7 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 	// With every earlier stage quiet, the blocked namer alone must still hold
 	// the child; only then is it released.
 	const namerPending = "1 session namer runs pending"
-	// TRIPWIRE: the scripted warm run settles in milliseconds; 30s only fires
-	// if the namer never becomes the one refusal left.
-	waitForCondition(t, 30*time.Second, "the blocked namer to be the only refusal left", func() bool {
+	testwait.Until(t, "the blocked namer to be the only refusal left", func() bool {
 		return stableSupervisionRefusal(sub) == namerPending
 	})
 	releaseNamer()

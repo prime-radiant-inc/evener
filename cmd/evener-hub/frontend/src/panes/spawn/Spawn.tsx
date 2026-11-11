@@ -2799,12 +2799,12 @@ function SpawnForm({
               }
               leading={
                 /* The composer's own leading cluster (Composer.tsx's .leading):
-                   attach, then the model trigger, then effort. All stay INSIDE
-                   the card's control row at every width - choosing a model and
-                   an effort is the same act wherever it happens, so it is the
-                   same component (ModelSwitchTrigger) and the same StatusRow
-                   quiet-effort recipe rather than a bespoke boxed variant below
-                   the card. */
+                   attach at the start, then the model trigger hugged to effort
+                   at the far end. All stay INSIDE the card's control row at
+                   every width - choosing a model and an effort is the same act
+                   wherever it happens, so it is the same component
+                   (ModelSwitchTrigger) and the same StatusRow quiet-effort
+                   recipe rather than a bespoke boxed variant below the card. */
                 <div className={CLASS.leading}>
                   <IconButton
                     label="Attach image"

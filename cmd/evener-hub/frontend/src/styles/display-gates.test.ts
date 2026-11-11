@@ -3,6 +3,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { MOBILE_QUERY } from "../shell/useIsMobile";
+import { escapeRegExp } from "./cssBlock";
 
 // The font-size and phone-density preference gates (Settings -> Theme) live in
 // tokens.css: prefs.ts mirrors the choices onto <body data-font-size> and
@@ -74,19 +76,19 @@ test("the type ramp no longer sits as raw px in :root (single source of truth is
 test("phone density is gated behind the <=899px phone media query", () => {
   // Desktop must never inherit a density override: the whole gate lives inside
   // the phone media query. Assert the comfortable multiplier is inside a
-  // max-width:899px block, not at top level.
-  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
+  // mobile block, not at top level.
+  const media = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(CSS);
+  expect(media, "tokens.css must have a mobile media block").not.toBeNull();
   expect(media![1]).toMatch(/body\[data-phone-density="comfortable"\]\s*\{[^}]*--density-scale:\s*1\.25/);
 });
 
 test("phone density opens vertical rhythm by scaling line-height through --density-scale", () => {
-  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(CSS);
   expect(media![1]).toMatch(/--line-height-body:\s*calc\([^;]*var\(--density-scale\)/);
 });
 
 test("the compact density default leaves the base grid unscaled (multiplier 1)", () => {
-  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(CSS);
   // The base body rule inside the media query seeds --density-scale: 1 so
   // "compact" (and any unset value) holds the base line-height. Reads the
   // bare body rule's own value (baseDensityScale above) rather than
@@ -102,7 +104,7 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
 // The tap floor reaches every coarse pointer (touch laptops, iPad landscape),
 // not only the phone width (Jesse 2026-10-11); the font-size and density
 // rules above stay phone-only.
-const TAP_FLOOR_QUERY = "(max-width: 899px), (any-pointer: coarse)";
+const TAP_FLOOR_QUERY = `${MOBILE_QUERY}, (any-pointer: coarse)`;
 
 // Each top-level @media block's prelude and body, comments stripped.
 function mediaBlocks(source: string): { prelude: string; body: string }[] {
@@ -177,7 +179,7 @@ function walkCss(dir: string): string[] {
 
 test("--font-size-control is the ui step on desktop and the body (16px) step on phones", () => {
   expect(CSS).toMatch(/\n\s*--font-size-control: var\(--font-size-ui\);/);
-  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(CSS);
   expect(media).not.toBeNull();
   // max(16px, …), not the body size alone: the S font-size preference scales
   // the phone body to 14.4px, and iOS zooms into a 14.4px field just the same
@@ -206,35 +208,38 @@ test("every rule that sizes an editable control uses --font-size-control or --fo
 test("the folded-run summary meets the phone tap floor", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "panes/session/transcript/toolrungroup.module.css"), "utf8");
-  const phone = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  expect(phone, "toolrungroup.module.css must have a max-width:899px block").not.toBeNull();
+  const phone = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(css);
+  expect(phone, "toolrungroup.module.css must have a mobile block").not.toBeNull();
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
 
-// A phone mounts no status bar: the session's activity counts ride the
-// composer's engaged control row instead, sharing that row's width with the
-// status chrome and Send. The wrap contract is what keeps every control
-// tappable there: the chip strip yields before the chrome compresses
-// (shrink 999 beside the chrome's 1) and wraps to a second line rather than
-// scrolling sideways or crushing a target below the tap floor.
-test("the phone composer's activity chips yield to the row and wrap at the tap floor", () => {
+// A phone mounts no status bar: the session's activity counts sit on their
+// own line below the composer card, where the desktop strip puts them, and
+// the writing row carries only its controls. The line stays a flex strip at
+// the phone tap floor and drops the category names rather than scrolling
+// sideways: four named chips do not fit a card line, so each chip keeps its
+// glyph and count and its accessible name carries the label.
+test("the phone's activity line keeps every chip a tappable glyph", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
   const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
   expect(tapFloor, `statusbar.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
   expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
-  const phone = blocks.find((block) => block.prelude === "(max-width: 899px)");
-  expect(phone, "statusbar.module.css must have a max-width:899px block").toBeDefined();
-  // The phone's chips are the composer's wrapped row, and the narrow-pane
-  // grid below (two max-content columns, ~130px) overflows a leading slot
-  // the open Overview can squeeze under that; the phone must stay a
-  // wrapping flex row. mediaBlocks strips comments, so this reads rules only.
+  const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
+  expect(phone, "statusbar.module.css must have a mobile block").toBeDefined();
+  // The narrow-pane grid below (two max-content columns) belongs to the
+  // desktop strip; the phone's own line stays a flex row. mediaBlocks strips
+  // comments, so this reads rules only.
   expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
-  const chipsWrap = /\.chipsWrap\s*\{[^}]*margin-left:\s*0[^}]*flex:\s*0 999 auto[^}]*flex-wrap:\s*wrap/.exec(
-    css.replace(/\/\*[\s\S]*?\*\//g, " "),
+  expect(phone!.body).toMatch(/\.chipName\s*\{[^}]*display:\s*none/);
+  expect(phone!.body).toMatch(/\.chipGlyph\s*\{[^}]*display:\s*inline-flex/);
+  const composerCss = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
   );
-  expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
+  const activityRow = /\.activityRow\s*\{[^}]*display:\s*flex[^}]*min-height:\s*var\(--tap-min\)/.exec(composerCss);
+  expect(activityRow, "composer.module.css must give the phone's activity line the tap floor").not.toBeNull();
   // The line break itself is decided by honest bases, not a threshold query:
   // the chrome's .body container containment hides its status content from
   // the flex algorithm, so the composer placement's .inline must carry its

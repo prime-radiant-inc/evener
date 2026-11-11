@@ -237,6 +237,11 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// The same holds for provenance: a resumed session owns the persisted
 		// mode, and clear replaces the session without re-reading launch config.
 		clearCfg.CommitProvenance = oldMeta.Config.CommitProvenance
+		// The disable-subagents choice is launch-only, so a resumed daemon's
+		// launch config never carries it. The current session's persisted
+		// metadata does, and the replacement must not re-enable delegation.
+		clearCfg.DisableSubagents = oldMeta.Config.DisableSubagents
+		clearCfg.MaxSubagentDepth = oldMeta.Config.MaxSubagentDepth
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""

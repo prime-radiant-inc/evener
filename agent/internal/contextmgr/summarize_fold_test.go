@@ -521,41 +521,6 @@ func TestAttentionResolutionDoesNotConsumeContextBudgetOrRecentSlots(t *testing.
 	}
 }
 
-func TestAttentionResolutionDoesNotConsumeCompactionLayerRecentSlots(t *testing.T) {
-	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
-	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
-	const resultContent = "opaque tool output that must remain available in the recent provider-visible window"
-	toolHistory := func() []schema.Turn {
-		return []schema.Turn{
-			{Kind: schema.TurnAssistant, Message: assistantWithToolCall("call_recent", "probe", `{}`)},
-			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_recent", "probe", resultContent, false)),
-			marker,
-			schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
-		}
-	}
-
-	t.Run("readable observation mask", func(t *testing.T) {
-		history := toolHistory()
-		maskObservations(history, 2, "communicate")
-		if got := toolResultContent(history[1]); got != resultContent {
-			t.Fatalf("private marker displaced recent tool result: got %q", got)
-		}
-	})
-
-	t.Run("thinking clear", func(t *testing.T) {
-		const thinking = "provider-visible recent reasoning"
-		history := []schema.Turn{
-			{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thinking}}}}},
-			marker,
-			schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
-		}
-		clearThinking(history, 2)
-		if got := history[0].Message.Content[0].Thinking.Text; got != thinking {
-			t.Fatalf("private marker displaced recent thinking: got %q", got)
-		}
-	})
-}
-
 func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",

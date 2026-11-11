@@ -42,8 +42,13 @@ turn. Its `message` is display text; `turn.model_switch` carries the resolved
 configuration identities for readers that need model history:
 
 ```json
-{"old_provider":"openai","old_model":"gpt-5.4","new_provider":"anthropic","new_model":"claude-opus-4-6"}
+{"old_provider":"openai","old_model":"gpt-5.4","new_provider":"anthropic","new_model":"claude-opus-4-6","context_window":1000000,"context_window_source":"snapshot"}
 ```
+
+`context_window` is the window the session budgets against after the switch (the
+assumed window when the new model's is unknown) and `context_window_source` is where
+it came from: `live`, `overlay`, `config`, `snapshot` (catalog data, including the refreshed models.dev cache; an alias reports the source of its target's figure) or `assumed`. Both are omitted
+on switches recorded before they existed.
 
 Provider fields identify configured provider instances, and model fields identify
 selected model IDs. These describe the configured transition, not a provider's

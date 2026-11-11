@@ -9,6 +9,7 @@ import { act, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
 import { LauncherPluginDetails } from "./LauncherPluginDetails";
 
 // A directory-source candidate: no marketplace, so the preview resolved it
@@ -71,7 +72,7 @@ afterEach(() => {
 });
 
 test("a directory-source candidate reads by its path and renders the answer as Contents", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   const fake = new FakeClient();
   fake.on("evener/plugin/components", (params) => {
@@ -104,7 +105,7 @@ test("a directory-source candidate reads by its path and renders the answer as C
 });
 
 test("an installed winner reads its resolved path when its manifest name differs from its catalog name", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const path = "/plugins/cache/m/zzz-enabled/1.0.0";
   const fake = new FakeClient();
   fake.on("evener/plugin/components", (params) => ({
@@ -126,7 +127,7 @@ test("an installed winner reads its resolved path when its manifest name differs
 });
 
 test("an erroring read degrades with the quiet notice where Contents would be, and retry re-reads", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   const fake = new FakeClient();
   fake.on("evener/plugin/components", () => {
@@ -153,7 +154,7 @@ test("an erroring read degrades with the quiet notice where Contents would be, a
 });
 
 test("keyboard Retry keeps focus inside the details body while loading", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   const fake = new FakeClient();
   fake.on("evener/plugin/components", () => {
@@ -184,7 +185,7 @@ test("keyboard Retry keeps focus inside the details body while loading", async (
 });
 
 test("a remove-only inclusion toggle rehomes focus when its own activation disables it", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   const fake = componentsClient();
   function Harness() {

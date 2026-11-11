@@ -761,7 +761,9 @@ func TestProvidersDispatchesFromTopLevel(t *testing.T) {
 // bug report, so neither the record nor the request skeleton may echo it.
 func TestProvidersListAndModelsInspectRedactBaseURLUserinfo(t *testing.T) {
 	root := providersTestEnv(t, nil)
-	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"https://user:hunter2@gw.example.com/v1\"\nauth = \"none\"\n")
+	// The endpoint is a local server: inspect lists the instance's models.
+	host := strings.TrimSuffix(strings.TrimPrefix(gatewayModelsServer(t, 0), "http://"), "/v1")
+	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://user:hunter2@"+host+"/v1\"\nauth = \"none\"\n")
 
 	var stdout, stderr bytes.Buffer
 	if err := runProviders([]string{"list"}, nil, &stdout, &stderr); err != nil {
@@ -770,7 +772,7 @@ func TestProvidersListAndModelsInspectRedactBaseURLUserinfo(t *testing.T) {
 	if strings.Contains(stdout.String(), "hunter2") {
 		t.Fatalf("providers list echoed base_url userinfo:\n%s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "gw.example.com") {
+	if !strings.Contains(stdout.String(), host) {
 		t.Fatalf("providers list dropped the endpoint host entirely:\n%s", stdout.String())
 	}
 
@@ -782,7 +784,7 @@ func TestProvidersListAndModelsInspectRedactBaseURLUserinfo(t *testing.T) {
 	if strings.Contains(stdout.String(), "hunter2") {
 		t.Fatalf("models inspect echoed base_url userinfo:\n%s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "gw.example.com") {
+	if !strings.Contains(stdout.String(), host) {
 		t.Fatalf("models inspect dropped the endpoint host entirely:\n%s", stdout.String())
 	}
 }

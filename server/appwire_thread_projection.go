@@ -127,6 +127,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ContextWindow:          metrics.Window,
 			ContextRemaining:       metrics.Remaining,
 			ContextAssumed:         metrics.Assumed,
+			ContextWindowSource:    metrics.WindowSource,
 			Capabilities:           s.appCapabilitiesLocked(status.State, processing),
 			Diagnostics:            threadDiagnostics,
 			Queue:                  queue,
@@ -523,6 +524,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// advertised true means every endpoint really consumes selections.
 		SkillInput:   s.skillInputSupportedLocked(),
 		CommandInput: s.skillInputSupportedLocked(),
+		WindowRead:   true,
 	}
 }
 

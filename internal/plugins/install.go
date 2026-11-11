@@ -446,8 +446,8 @@ type ListItem struct {
 }
 
 func splitKey(key string) (plugin, marketplace string) {
-	if i := strings.LastIndex(key, "@"); i >= 0 {
-		return key[:i], key[i+1:]
+	if plugin, marketplace, ok := strings.CutLast(key, "@"); ok {
+		return plugin, marketplace
 	}
 	return key, ""
 }

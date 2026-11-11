@@ -142,6 +142,53 @@ func TestResumeThenClearKeepsCommitProvenanceOff(t *testing.T) {
 	}
 }
 
+// A launch with --max-subagent-depth 0 records the disable choice in the
+// session's metadata, and a later resume has no such flag to re-read. Clear
+// replaces the session from the daemon's launch config, so it must take the
+// disable choice (and its resolved zero depth) from the current session's
+// metadata or the cleared thread silently regains delegation.
+func TestResumeThenClearKeepsSubagentsDisabled(t *testing.T) {
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedResumableSession(t, stateDir, sessionID, sessionID)
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		t.Fatalf("load seeded session: %v", err)
+	}
+	meta.Config.DisableSubagents = true
+	meta.Config.MaxSubagentDepth = 0
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save seeded session: %v", err)
+	}
+
+	deps, state, baseArgs := newClearServeDeps(t)
+	baseArgs[7] = stateDir
+	args := append(append([]string(nil), baseArgs...), "--resume", sessionID)
+	var clearErr error
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		read := clearThreadRead(t, state.srv)
+		clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                read.Thread.Evener.Ref,
+			ClientMutationID:   "resume-clear-subagents",
+			ExpectedInstanceID: sessionID,
+		})
+		if clearErr == nil {
+			cleared := state.session(0)
+			if got := cleared.Meta().Config; !got.DisableSubagents || got.MaxSubagentDepth != 0 {
+				t.Errorf("cleared session config = disabled %v depth %d, want disabled with depth 0", got.DisableSubagents, got.MaxSubagentDepth)
+			}
+		}
+		state.srv.shutdown()
+		return http.ErrServerClosed
+	}
+	if err := runServeWithDeps(args, deps); err != nil {
+		t.Fatalf("resume and clear: %v", err)
+	}
+	if clearErr != nil {
+		t.Fatalf("clear: %v", clearErr)
+	}
+}
+
 func TestLegacyMetadataResumePreparesCurrentSessionReference(t *testing.T) {
 	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
 	stateDir := t.TempDir()

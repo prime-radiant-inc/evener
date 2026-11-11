@@ -98,8 +98,21 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 2.
+	// sub-agents (root session is depth 0). Zero defaults to 2; a positive
+	// value is the nesting depth. A launch that explicitly disables subagents
+	// sets DisableSubagents, which resolves this to zero in applyDefaults.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
+
+	// CompactAtPercent is the share of the context window, in percent, at which
+	// automatic compaction triggers. Zero selects the default; see
+	// ValidateCompactAtPercent for the accepted range.
+	CompactAtPercent int `json:"compact_at_percent,omitempty"`
+
+	// DisableSubagents records a launch that chose no subagents at all (the
+	// hub's max_subagent_depth=0 and the CLI's --max-subagent-depth 0). It is
+	// separate from MaxSubagentDepth's zero value, which keeps its historical
+	// "use the default" meaning for programmatic constructors.
+	DisableSubagents bool `json:"disable_subagents,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
 	// across the whole session tree (the tree-counter cap). Zero defaults to
@@ -490,6 +503,10 @@ type spawnConfig struct {
 	isolation string
 }
 
+// defaultMaxSubagentDepth is the nesting depth a launch gets when it does not
+// set one.
+const defaultMaxSubagentDepth = 2
+
 func (c *SessionConfig) applyDefaults() {
 	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
 		c.ProviderIdleTimeout = "10m"
@@ -513,10 +530,10 @@ func (c *SessionConfig) applyDefaults() {
 	if c.MaxCommandTimeoutMS <= 0 {
 		c.MaxCommandTimeoutMS = 600_000
 	}
-	if c.MaxSubagentDepth <= 0 {
-		// Default 2: a root session's delegation allowance derives from this, so 2
-		// lets a delegate itself delegate one level (grant allowance 1) by default.
-		c.MaxSubagentDepth = 2
+	if c.DisableSubagents {
+		c.MaxSubagentDepth = 0
+	} else if c.MaxSubagentDepth <= 0 {
+		c.MaxSubagentDepth = defaultMaxSubagentDepth
 	}
 	if c.MaxConcurrentDelegateTurns <= 0 {
 		c.MaxConcurrentDelegateTurns = defaultMaxConcurrentDelegateTurns
@@ -555,6 +572,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         c.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            c.MaxSubagentDepth,
+		DisableSubagents:            c.DisableSubagents,
 		MaxConcurrentDelegateTurns:  c.MaxConcurrentDelegateTurns,
 		MaxRetainedTerminal:         c.MaxRetainedTerminal,
 		ToolOutputLimits:            c.ToolOutputLimits,
@@ -572,6 +590,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		Manager:                     c.Manager,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
+		CompactAtPercent:            c.CompactAtPercent,
 		ShareTasksWithChildren:      c.ShareTasksWithChildren,
 		ResultToolName:              c.ResultToolName,
 		EnableLoopDetection:         c.EnableLoopDetection,
@@ -601,6 +620,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         s.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            s.MaxSubagentDepth,
+		DisableSubagents:            s.DisableSubagents,
 		MaxConcurrentDelegateTurns:  s.MaxConcurrentDelegateTurns,
 		MaxRetainedTerminal:         s.MaxRetainedTerminal,
 		ToolOutputLimits:            s.ToolOutputLimits,
@@ -618,6 +638,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,
+		CompactAtPercent:            s.CompactAtPercent,
 		ShareTasksWithChildren:      s.ShareTasksWithChildren,
 		ResultToolName:              s.ResultToolName,
 		EnableLoopDetection:         s.EnableLoopDetection,
@@ -643,4 +664,20 @@ func ParseProviderIdleTimeout(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("provider_idle_timeout must be a positive duration (for example 10m): %q", value)
 	}
 	return d, nil
+}
+
+// Accepted compact_at_percent range. The floor keeps a typo from compacting
+// on nearly every request.
+const (
+	MinCompactAtPercent = 20
+	MaxCompactAtPercent = 100
+)
+
+// ValidateCompactAtPercent checks a compact_at_percent setting: zero selects
+// the default, otherwise the percent must lie in [20, 100].
+func ValidateCompactAtPercent(percent int) error {
+	if percent == 0 || (percent >= MinCompactAtPercent && percent <= MaxCompactAtPercent) {
+		return nil
+	}
+	return fmt.Errorf("compact_at_percent must be between %d and %d: %d", MinCompactAtPercent, MaxCompactAtPercent, percent)
 }

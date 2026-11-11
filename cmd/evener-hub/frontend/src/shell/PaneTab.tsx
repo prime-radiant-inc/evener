@@ -38,7 +38,11 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
   // anywhere else in this file's neighbours (DockHost.tsx's own
   // threadName lookups).
   const statusType = useThreadsStore((s) => (ref === undefined ? undefined : s.threads.get(ref)?.status.type));
-  const state = statusType === undefined ? undefined : cadenceStateFor(statusType);
+  const askPending = useThreadsStore((s) => (ref === undefined ? false : s.threads.get(ref)?.askPending === true));
+  const approvalPending = useThreadsStore((s) =>
+    ref === undefined ? false : (s.threads.get(ref)?.pendingEscalations.length ?? 0) > 0,
+  );
+  const state = statusType === undefined ? undefined : cadenceStateFor(statusType, { askPending, approvalPending });
   return (
     // data-session-tab is the hold-hints overlay's anchor (shell/holdhints):
     // the session-cycling chip positions itself over the first session tab.

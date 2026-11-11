@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -132,13 +134,20 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 // set, adjusts the root's config first, for test-only hooks.
 func newMessagingRoot(t *testing.T, adapter *messagingAdapter, configure func(*SessionConfig)) *Session {
 	t.Helper()
+	return newMessagingRootIn(t, adapter, execenv.NewLocalExecutionEnvironment(t.TempDir()), configure)
+}
+
+// newMessagingRootIn is newMessagingRoot running in env, for a test that
+// stands in for the process launcher.
+func newMessagingRootIn(t *testing.T, adapter *messagingAdapter, env execenv.ExecutionEnvironment, configure func(*SessionConfig)) *Session {
+	t.Helper()
 	client := llm.NewClient()
 	client.Register(adapter)
 	cfg := SessionConfig{StateDir: t.TempDir()}
 	if configure != nil {
 		configure(&cfg)
 	}
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -218,21 +227,20 @@ func jobListResponse(id string) llm.Response {
 	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 }
 
-// waitForSoleChildIdle waits until root has exactly one child session and it
-// is idle, and returns it.
-func waitForSoleChildIdle(t *testing.T, root *Session) *Session {
+// requireSoleChildIdle waits until every other goroutine in the test's
+// synctest bubble is blocked, then asserts root has exactly one child session
+// and it is idle, and returns it.
+func requireSoleChildIdle(t *testing.T, root *Session) *Session {
 	t.Helper()
-	var child *Session
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the child to go idle", func() bool {
-		children := root.subagents.sessions()
-		if len(children) != 1 || children[0].State() != SessionIdle {
-			return false
-		}
-		child = children[0]
-		return true
-	})
-	return child
+	synctest.Wait()
+	children := root.subagents.sessions()
+	if len(children) != 1 {
+		t.Fatalf("root has %d child sessions once quiet, want 1", len(children))
+	}
+	if state := children[0].State(); state != SessionIdle {
+		t.Fatalf("the quiet child is %v, want idle", state)
+	}
+	return children[0]
 }
 
 // awaitSignal waits for ch to close. Scripted steps call it on provider
@@ -252,8 +260,7 @@ func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 	t.Helper()
 	var pending []string
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, fmt.Sprintf("root to hold %d unresolved attention items", n), func() bool {
+	testwait.Until(t, fmt.Sprintf("root to hold %d unresolved attention items", n), func() bool {
 		pending = rootPendingAttention(root)
 		return len(pending) >= n
 	})

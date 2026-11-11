@@ -122,7 +122,7 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 		return agenttest.FinalResponse("done")
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+		withProfile(newAnthropicProfile("claude-test")),
 		withConfig(preloadTestConfig(t)))
 	if !s.memorySaveInstructionsEnabled() {
 		t.Fatal("fixture parent must be able to save memory, or the role preload never passes the parent gate")
@@ -304,7 +304,7 @@ func TestRolePreloadKeepsFollowableSkillForSaveCapableSession(t *testing.T) {
 	t.Parallel()
 	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
 	followableMetadata := preloadMetadataFixture(followablePreloadName)
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
+	s := newSession(t, withConfig(SessionConfig{
 		StateDir:        t.TempDir(),
 		MemoryStateRoot: t.TempDir(),
 		MemoryProjectID: "fixture-project",

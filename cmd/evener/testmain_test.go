@@ -103,7 +103,20 @@ func TestMain(m *testing.M) {
 	os.Setenv("XDG_CONFIG_HOME", envRoot+"/config")
 	os.Setenv("XDG_STATE_HOME", envRoot+"/state")
 	os.Setenv("XDG_CACHE_HOME", envRoot+"/cache")
+	// A default test must not reach a real provider whatever credentials the
+	// environment holds; only the explicit live run (-live-config) may.
+	var guard *loopbackGuard
+	if guardsLoopbackOnly(*liveConfig, os.Getenv) {
+		guard = &loopbackGuard{}
+		guard.install()
+	}
 	code := m.Run()
+	if guard != nil {
+		if refused := guard.attempts(); len(refused) > 0 {
+			fmt.Fprintf(os.Stderr, "evener TestMain: tests dialed non-loopback hosts: %v\n", refused)
+			code = 1
+		}
+	}
 	os.RemoveAll(stateDir)
 	os.RemoveAll(envRoot)
 	if err := hostTemp.Discard(); err != nil {

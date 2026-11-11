@@ -112,11 +112,6 @@ func FuzzModelCallExactCoverage(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, selector byte) {
 		s := modelCallTailSession(t)
-		s.cfg.testOnly.modelCallContextWindowFunc = func(*provider.Profile) int { return 0 }
-		if s.maybeWarnContextUsage(s.currentProfile(), llm.Request{}) {
-			t.Fatal("zero context window warned")
-		}
-
 		store := s.getOrCreateTaskStore().SetClock(s.sclock().Now)
 		if _, err := store.Append([]task.TaskInput{{Type: task.TaskTypeImplement, Description: "tail", Prompt: "tail", ReasoningEffort: "high"}}); err != nil {
 			t.Fatal(err)

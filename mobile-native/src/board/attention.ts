@@ -49,7 +49,6 @@ export interface LiveBands {
 const WORDS: Record<BoardState, string> = {
 	failed: "Failed",
 	question: "Question",
-	needsYou: "Needs you",
 	approval: "Approval",
 	warning: "Warning",
 	restartNeeded: "Restart needed",
@@ -122,7 +121,6 @@ function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boole
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
-	needsYou: "needsYou",
 	approval: "needsYou",
 	warning: "needsYou",
 	restartNeeded: "needsYou",
@@ -179,8 +177,7 @@ function needsYouRank(item: ClassifiedRow): number {
 	if (
 		item.row.ask_pending ||
 		approvalWaiting(item.row.state, item.row.approval_pending === true) ||
-		item.state === "approval" ||
-		item.state === "needsYou"
+		item.state === "approval"
 	)
 		return 1;
 	return 2;
@@ -284,7 +281,6 @@ export interface WhyLine {
 const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	failed: { hue: "danger", text: "open the session to see what went wrong" },
 	question: { hue: "attention", text: "waiting for your answer" },
-	needsYou: { hue: "attention", text: "waiting for your reply" },
 	approval: { hue: "attention", text: "waiting for your permission" },
 	warning: { hue: "attention", text: "open the session to see it" },
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },

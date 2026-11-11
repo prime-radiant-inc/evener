@@ -118,26 +118,29 @@ losing the conversation that made the evidence relevant.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
   Phones keep one bottom surface: the pane renders no separate footer strip below the
-  composer, so the composer's own control row carries the session's activity: Attach,
-  the model and reasoning chrome line, the activity chips, and Send or Stop. The
+  composer, so the composer's own control row carries Attach, the model and reasoning
+  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
+  where the desktop status bar puts them. The
   composer dock owns the home-indicator band; the inset yields when the on-screen
   keyboard covers that area. The working-directory strip stays desktop-only: a phone
   reads the session's working directory and branch through the session menu's Overview
   (About) and never stacks a second strip below the composer. A phone chip shows its
-  glyph, its name when the width can carry it, and a single active count (settled for
-  Tasks); the full active/total fraction stays in its accessible name, tooltip and the
-  Overview. While the card rests, an empty unfocused editor with no send in flight,
-  the row sheds Attach and the chips and keeps the session menu and Send, so session
-  actions stay reachable without focusing first; focus, a draft or a send brings the
-  full row back, and a running turn keeps its Stop through the actions that never
-  shed. The exited follow-up keeps its full row at rest: it is the one place on a
-  phone the model picker is directly reachable without engaging the editor. At the
-  466px Duo cover width, the same control row uses tighter framing, and the existing
-  composer shrinks only its empty, unfocused field to one line; focus, drafts,
-  attachments, and question/approval docks keep their ordinary writing and response
-  space. The four activity counters stay in the app with their existing Overview
-  links. The OS-owned Duo system rail is not a public customization surface, so no
-  counters move there.
+  glyph and a single active count (settled for Tasks); its category name and the full
+  active/total fraction stay in its accessible name and tooltip. While the card rests —
+  empty, unfocused, no send in flight — a composer
+  with room folds to one row: the placeholder beside the model and effort, with the
+  session menu and Send at the right. The paperclip returns with the expanded card,
+  and focusing or typing grows it back through the spatial-motion budget. A phone's
+  resting composer is one line too, but it keeps only the session menu and Send
+  there; engaging the editor restores the full row, including Attach and the model
+  picker. A desktop card under 620px keeps the stacked control row and the folded
+  one-line field. The phone's resting card sheds Attach and the model chrome; the
+  activity line below the card stays. At the 466px Duo cover width the control row
+  tightens; focus, drafts, attachments, and question/approval docks keep their writing
+  and response space. The
+  four activity counters stay in the
+  app with their existing Overview links. The OS-owned Duo system rail is not a public
+  customization surface, so no counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -482,6 +485,12 @@ outlines in any order/unit, the outline longhands, or the retired inset-ring `bo
 contract-banned; see §4. Dropzone's dashed drag-target outline is signage, not a focus ring, and
 holds the second (and last) contract exception.
 
+Every `:focus-visible` element also carries `--focus-ring-scroll-margin` (6px: the ring width plus
+the largest positive outline-offset, with a sub-pixel scroll-rounding allowance). A keyboard
+scroll-into-view aligns the focused box with the scrollport edge; this margin keeps the ring, which
+paints outside that box, from clipping. `global.css` owns the one rule, and token-contract checks
+every positive outline-offset in the tree against it.
+
 **Stacking order** — The app's own z-index values are tokenized to keep stacking context
 predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane),
 `--z-sticky-bar` (20, pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim),
@@ -546,7 +555,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
 | **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the passive page-ground section: `--space-4` padding, no outside border (its ring is `--shadow-card`). `variant="outlined"` is a bordered box for a block inside a denser flow (an `ask_user` question in the transcript, the spawn form's plugin and advanced-options panels, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--space-3` padding. `tone="attention"` is the "a human is needed right now" envelope (the pending AskDock batch, a parked sandbox approval): the outlined geometry in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
-| **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `hidden` also makes the card `inert`. |
+| **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; folded?: boolean; foldedCompact?: boolean; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `folded` puts the field and control row on one line when the card is at least 620px wide and animates the height between the folded and stacked shapes; a narrower card keeps the stacked shape. `foldedCompact` lets a caller that knows its control row is compact use the one-line shape below that threshold (the phone's menu-only resting row). `hidden` also makes the card `inert`. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; required?; autoComplete?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?; "aria-label"?; "aria-describedby"?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. `aria-label` names a field with no visible label (the settings filter, an env-add row) in place of a hand-made visually-hidden `<label>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; minLines?; id?; name?; onKeyDown?; onFocus?; onBlur?; onPaste?; "aria-label"?; seamless?: boolean; monospace?: boolean}` | `forwardRef<HTMLTextAreaElement>`. `autoGrow` measures the rendered `scrollHeight` after each value change (so wrapped lines grow it too), clamped to half the viewport height. `minLines` sets the resting height in lines. `seamless` drops the field's own box and focus ring for a card that draws one (PromptCard), which must then own the focus affordance. `monospace` sets the mono face for text edited as code or config (the AGENTS.md editor, a credential's JSON); only the face changes, so the field keeps its control-size floor on phones. |
 | **Select** | `{value: string; onChange; options: {value; label; disabled?: boolean}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (the richer pickers, PathField and ModelCatalog, own their own combobox panels). A `disabled` option is listed but cannot be picked (an offline host in Spawn's host picker); say why in its `label`, since a native option has room for nothing else. |

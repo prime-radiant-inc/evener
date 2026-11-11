@@ -86,11 +86,11 @@ func resolvePDFCrossReferences(data []byte) (map[int]int, error) {
 	if !bytes.HasSuffix(bytes.TrimRight(data, "\r\n"), []byte("%%EOF")) {
 		return nil, errors.New("no %%EOF trailer")
 	}
-	marker := bytes.LastIndex(data, []byte("startxref"))
-	if marker < 0 {
+	_, operand, ok := bytes.CutLast(data, []byte("startxref"))
+	if !ok {
 		return nil, errors.New("no startxref")
 	}
-	fields := strings.Fields(string(data[marker+len("startxref"):]))
+	fields := strings.Fields(string(operand))
 	if len(fields) == 0 {
 		return nil, errors.New("startxref has no operand")
 	}

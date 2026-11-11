@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { OpenButton, OpenIcon } from ".";
 
 // The repo's CSS-source test idiom (difftable.test.tsx, select.test.tsx):
@@ -53,8 +54,10 @@ test("the button form rides in a 1em layout shell: the hit size never reaches th
   // earns a positive margin.
   expect(css).toMatch(/\.inline\s*\{[^}]*height:\s*28px/);
   expect(css).toMatch(/\.inline\s*\{[^}]*margin-block:\s*min\(0px,\s*calc\(\(1em - 28px\) \/ 2\)\)/);
-  const media = /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  expect(media, "openbutton.module.css must have a max-width:899px block").not.toBeNull();
+  const media = new RegExp(
+    `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{([\\s\\S]*?)\\n\\}`,
+  ).exec(css);
+  expect(media, "openbutton.module.css must have a mobile block").not.toBeNull();
   expect(media![1]).toMatch(/\.inline\s*\{[^}]*height:\s*var\(--tap-min\)/);
   expect(media![1]).toMatch(/margin-block:\s*min\(0px,\s*calc\(\(1em - var\(--tap-min\)\) \/ 2\)\)/);
 });

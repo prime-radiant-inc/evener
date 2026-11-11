@@ -38,13 +38,14 @@ type runConfig struct {
 	systemPrompt              string   // --system-prompt file path
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
-	maxSubagentDepth          int      // --max-subagent-depth (-1=default)
+	maxSubagentDepth          int      // --max-subagent-depth (-1=default, 0=disabled)
 	maxConcurrentDelegates    int      // --max-concurrent-delegates (-1=default)
 	maxRetainedTerminal       int      // --max-retained-terminal (-1=default)
 	shareTaskStore            bool     // --share-task-store
 	resultToolName            string   // --result-tool-name override
 	reasoningEffort           string   // --reasoning-effort override (or EVENER_REASONING_EFFORT)
 	contextStrategy           string   // --context-strategy
+	compactAtPercent          int      // --compact-at-percent (0=default)
 	exportATIF                string   // --export-atif path
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
@@ -193,7 +194,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
-	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation)
+	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation, cfg.compactAtPercent)
 	if err != nil {
 		return err
 	}
@@ -387,6 +388,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		MCPInline:                   cfg.mcpServers,
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
+		CompactAtPercent:            cfg.compactAtPercent,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		VisionModel:                 visionModel,
@@ -407,9 +409,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.askResponder != "" {
 		baseSessionCfg.AskResponderAttached = true
 	}
-	if cfg.maxSubagentDepth >= 0 {
-		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
-	}
+	applyMaxSubagentDepth(&baseSessionCfg, cfg.maxSubagentDepth)
 	if cfg.maxConcurrentDelegates >= 0 {
 		baseSessionCfg.MaxConcurrentDelegateTurns = cfg.maxConcurrentDelegates
 	}
@@ -450,6 +450,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
+			CompactAtPercent:            cfg.compactAtPercent,
 			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on

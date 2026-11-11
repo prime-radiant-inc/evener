@@ -3,7 +3,7 @@ export default function assert(measurements) {
   const tolerance = 1;
 
   for (const m of measurements) {
-    const fixtureLabel = `${m.width}px/${m.statusBody.width}px-actual-status${m.expectedStatusWidth === null ? "" : `/${m.expectedStatusWidth}px-expected-status`}${m.shortModel ? " short-model" : ""}`;
+    const fixtureLabel = `${m.width}px${m.folded ? "-folded" : ""}/${m.statusBody.width}px-actual-status${m.expectedStatusWidth === null ? "" : `/${m.expectedStatusWidth}px-expected-status`}${m.shortModel ? " short-model" : ""}`;
     const fail = (message) => failures.push(`${fixtureLabel}: ${message}`);
     const expectDisplay = (display, visible, label) => {
       const shown = display !== "none";
@@ -45,7 +45,16 @@ export default function assert(measurements) {
     }
 
     expectContained(m.controls, m.card, "composer control row");
-    expectContained(m.attachment, m.controls, "attachment control");
+    if (m.folded) {
+      expectContained(m.field, m.card, "folded field");
+      expectBefore(m.field, m.controls, "field → controls");
+      expectSameRow(m.field, "folded field");
+      if (m.card.height > m.controls.height + tolerance + 12) {
+        fail("folded card is taller than one control row plus its framing");
+      }
+    } else {
+      expectContained(m.attachment, m.controls, "attachment control");
+    }
     expectContained(m.modelTrigger, m.controls, "model control");
     expectContained(m.effort, m.controls, "effort control");
     expectContained(m.context, m.controls, "context control");
@@ -56,7 +65,6 @@ export default function assert(measurements) {
     expectContained(m.queue, m.status, "queue");
 
     for (const [label, box] of [
-      ["attachment control", m.attachment],
       ["model control", m.modelTrigger],
       ["effort control", m.effort],
       ["context control", m.context],
@@ -65,8 +73,9 @@ export default function assert(measurements) {
     ]) {
       expectSameRow(box, label);
     }
+    if (!m.folded) expectSameRow(m.attachment, "attachment control");
 
-    expectBefore(m.attachment, m.modelTrigger, "attachment → model");
+    if (!m.folded) expectBefore(m.attachment, m.modelTrigger, "attachment → model");
     expectBefore(m.modelTrigger, m.effort, "model → effort");
     expectBefore(m.effort, m.context, "effort → context");
     expectBefore(m.context, m.sessionActions, "context → session actions");
@@ -135,7 +144,7 @@ export default function assert(measurements) {
     // remaining far below the hundreds of px a grow-to-fill trigger adds in the
     // wide short-label fixture.
     const modelChromeSlack = 40;
-    if (m.model.triggerWidth > m.model.clientWidth + modelChromeSlack) {
+    if (!m.folded && m.model.triggerWidth > m.model.clientWidth + modelChromeSlack) {
       fail("model trigger reserves space beyond its label (not shrink-to-fit)");
     }
   }

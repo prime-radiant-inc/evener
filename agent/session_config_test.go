@@ -852,29 +852,6 @@ func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *tes
 	}
 }
 
-func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "session-log"})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	sess.contextMgr.ObservationMaskThreshold = 0
-	sess.contextMgr.CheckpointThreshold = 2
-	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("observation-only operation"))}
-	compactionCtx, emitFn, flush, _ := sess.compactionEmitFunc(context.Background(), &history)
-	if err := sess.strategy.ManageContext(compactionCtx, &history, 0, emitFn); err != nil {
-		t.Fatalf("ManageContext: %v", err)
-	}
-	flush()
-	if got := compactionReminders(sess); len(got) != 0 {
-		t.Fatalf("compaction transcript reminders = %q, want none", got)
-	}
-}
-
 func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1331,7 +1308,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\nmore\n"), 0o644) // modified tracked file
 	_ = os.WriteFile(filepath.Join(dir, "UNTRACKED.txt"), []byte("u\n"), 0o644)    // untracked file
 
-	sess := newSession(t, withDir(dir))
+	sess := newSession(t, withDir(dir), withEnvironmentSnapshot())
 
 	data, _ := sess.buildPromptData(sess.env)
 	if !data.IsGitRepo || data.GitBranch == "" {
@@ -2032,6 +2009,74 @@ func TestSessionConfigDefaultSubagentDepth(t *testing.T) {
 	explicit.applyDefaults()
 	if explicit.MaxSubagentDepth != 5 {
 		t.Fatalf("explicit MaxSubagentDepth = %d, want 5 preserved", explicit.MaxSubagentDepth)
+	}
+}
+
+// TestSessionConfigDisableSubagents pins the explicit disable: the launch-level
+// choice resolves the depth to zero, while a zero-value SessionConfig keeps the
+// historical default of 2 for programmatic constructors.
+func TestSessionConfigDisableSubagents(t *testing.T) {
+	t.Parallel()
+	disabled := SessionConfig{DisableSubagents: true}
+	disabled.applyDefaults()
+	if disabled.MaxSubagentDepth != 0 {
+		t.Fatalf("disabled MaxSubagentDepth = %d, want 0", disabled.MaxSubagentDepth)
+	}
+
+	var zero SessionConfig
+	zero.applyDefaults()
+	if zero.MaxSubagentDepth != 2 {
+		t.Fatalf("zero-value MaxSubagentDepth = %d, want the default 2", zero.MaxSubagentDepth)
+	}
+}
+
+// TestSessionConfigDisableSubagentsSnapshotRoundTrip pins that a disabled
+// session persists the choice and restores disabled, including through the
+// snapshot's zero depth.
+func TestSessionConfigDisableSubagentsSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	in := SessionConfig{DisableSubagents: true}
+	in.applyDefaults()
+	out := configFromSnapshot(in.toSnapshot())
+	out.applyDefaults()
+	if !out.DisableSubagents || out.MaxSubagentDepth != 0 {
+		t.Fatalf("round trip = disabled %v depth %d, want disabled depth 0", out.DisableSubagents, out.MaxSubagentDepth)
+	}
+}
+
+// TestSessionConfigDisableSubagentsRemovesDelegation is the behavioral half of
+// the disable rule: a root session launched with the disable choice keeps a
+// zero delegation allowance and does not register the root-only delegate tool.
+// manage_worktree stays with the root: it is the session's own worktree
+// lifecycle, independent of delegation. The default keeps both.
+func TestSessionConfigDisableSubagentsRemovesDelegation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		cfg          SessionConfig
+		wantAllow    int
+		wantRootOnly bool
+	}{
+		{"default keeps delegation", SessionConfig{}, 2, true},
+		{"disable removes delegation", SessionConfig{DisableSubagents: true}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t, withConfig(tc.cfg))
+			if sess.delegationAllowance != tc.wantAllow {
+				t.Fatalf("delegation allowance = %d, want %d", sess.delegationAllowance, tc.wantAllow)
+			}
+			wantTools := map[string]bool{}
+			for _, name := range rootOnlySubagentTools() {
+				wantTools[name] = tc.wantRootOnly
+			}
+			wantTools["manage_worktree"] = true
+			for name, want := range wantTools {
+				if got := sess.reg.Get(name) != nil; got != want {
+					t.Errorf("root-only tool %q registered = %v, want %v", name, got, want)
+				}
+			}
+		})
 	}
 }
 

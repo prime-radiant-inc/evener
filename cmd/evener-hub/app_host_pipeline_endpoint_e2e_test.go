@@ -99,11 +99,11 @@ func hostPipelineEndpointRead(t *testing.T, host *hostSSH, want hostPipelineEndp
 		t.Fatalf("%s selected executable=%q, want owned %q", phase, exe, want.binary)
 	}
 	stat := host.output("cat " + proc + "/stat")
-	end := strings.LastIndex(stat, ") ")
-	if end < 0 || len(strings.Fields(stat[end+2:])) < 20 {
+	_, statFields, ok := strings.CutLast(stat, ") ")
+	if !ok || len(strings.Fields(statFields)) < 20 {
 		t.Fatalf("%s invalid owned process stat: %q", phase, stat)
 	}
-	birth := host.output("cat /proc/sys/kernel/random/boot_id") + ":" + strings.Fields(stat[end+2:])[19]
+	birth := host.output("cat /proc/sys/kernel/random/boot_id") + ":" + strings.Fields(statFields)[19]
 	_, port, err := net.SplitHostPort(record.Bound)
 	if err != nil || port == "0" || port == "" {
 		t.Fatalf("%s actual bound listener=%q: %v", phase, record.Bound, err)

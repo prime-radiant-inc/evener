@@ -16,7 +16,7 @@ test("active reads as working", () => {
 
 test("awaiting splits on askPending: a pending question vs a turn that ended on needs_response", () => {
   expect(humanizeState("awaiting", true)).toBe("question waiting");
-  expect(humanizeState("awaiting", false)).toBe("needs you");
+  expect(humanizeState("awaiting", false)).toBe("idle");
 });
 
 test("restartRequired, warning, errored and ended each get their own word", () => {

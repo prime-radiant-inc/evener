@@ -44,11 +44,13 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 // standingRequestTokens measures one input's standing request -- the system
 // prompt, the tool schemas, and that input -- by running it through a throwaway
 // session whose context window is wide enough that no warning or compaction
-// interferes, then estimating the captured request's input tokens the way
-// maybeWarnContextUsage does. Warning tests size their window or their history
+// interferes, then estimating the captured request's input tokens. Warning tests size their window or their history
 // from this measurement, so a prompt rewrite cannot move the request across a
-// threshold a hardcoded constant pinned.
-func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, input string) int {
+// threshold a hardcoded constant pinned. cfg is the measured session's
+// configuration, since settings such as StateDir add prompt sections. The probe
+// client also answers the test session namer, so a profile built with
+// withTestSessionNamer does not spend the probe's single scripted step.
+func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, cfg SessionConfig, input string) int {
 	t.Helper()
 	adapter := &fakeAdapter{
 		name: profile.ID(),
@@ -58,7 +60,8 @@ func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, 
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	registerTestSessionNamer(client)
+	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("probe NewSession: %v", err)
 	}
@@ -623,77 +626,5 @@ func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 			strings.Contains(warning.Message, "Provider context disagreement") {
 			t.Fatalf("unrelated error emitted token-budget recovery warning: %+v", warning)
 		}
-	}
-}
-
-// A fallback that answers owns the round's context warning: the window must
-// describe the model that handled the request, not the primary the round
-// started on. The primary's window here is wide enough that nothing warns; the
-// fallback's is small enough that the same round must warn, so the reported
-// window proves which model the warning was computed against.
-func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	client := llm.NewClient()
-	permErr := llm.ErrorFromHTTPStatus("ctxwarn-primary", 403, "primary rejected", nil, nil)
-	client.Register(&agenttest.ModelTrackingAdapter{
-		Provider: "ctxwarn-primary",
-		Respond: func(req llm.Request) (llm.Response, error) {
-			return llm.Response{}, permErr
-		},
-	})
-	client.Register(&agenttest.ModelTrackingAdapter{
-		Provider: "ctxwarn-fallback",
-		Respond: func(req llm.Request) (llm.Response, error) {
-			return agenttest.CommunicateResponse(true, "fallback"), nil
-		},
-	})
-
-	policy := llm.RetryPolicy{MaxRetries: 0}
-	primary := WithContextWindow(testOpenAICompatProfile("ctxwarn-primary", "primary-model", 0), 2_000_000)
-	fallbackWindow := 120_000
-	fallback := WithContextWindow(testOpenAICompatProfile("ctxwarn-fallback", "fallback-model", 0), fallbackWindow)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:       dir,
-		LLMRetryPolicy: &policy,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	eventsDone := captureSessionEvents(sess)
-	// The synthetic fallback row is wired after construction, as the other
-	// fallback tests do: NewSession's own validation resolves through the real
-	// registry, which has no row for it.
-	sess.cfg.ModelFallbacks = []string{"ctxwarn-fallback/fallback-model"}
-	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	// Size the history from this test's own standing request so the round lands
-	// between the fallback's 80% threshold and its window: a hardcoded history
-	// length drops under the threshold when the prompt shrinks. The midpoint of
-	// the band leaves margin on both sides.
-	standing := standingRequestTokens(t, dir, primary, "task")
-	threshold := fallbackWindow * 8 / 10
-	target := (threshold + fallbackWindow) / 2
-	historyChars := (target - standing) * 4
-	if historyChars <= 0 {
-		t.Fatalf("standing request %d tokens leaves no room under the %d-token target for fallback window %d", standing, target, fallbackWindow)
-	}
-	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", historyChars)))}
-	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	sess.Close()
-	warnings := warningEvents(<-eventsDone)
-	var ctxWarn *events.WarningData
-	for i := range warnings {
-		if strings.Contains(warnings[i].Message, "Context usage at") {
-			ctxWarn = &warnings[i]
-			break
-		}
-	}
-	if ctxWarn == nil {
-		t.Fatalf("no context-usage warning: the fallback's window is near, not the primary's: %+v", warnings)
-	}
-	if ctxWarn.ContextWindowSize != fallbackWindow {
-		t.Fatalf("warning window = %d, want the fallback's %d: %+v", ctxWarn.ContextWindowSize, fallbackWindow, *ctxWarn)
 	}
 }

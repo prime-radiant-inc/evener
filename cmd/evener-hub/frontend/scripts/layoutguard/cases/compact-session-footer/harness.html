@@ -32,27 +32,33 @@
 <template id="fixture-template">
   <section class="fixture">
     <div class="fixtureLabel"></div>
-    <div class="card" data-card>
-      <textarea class="fieldStandIn" rows="1" aria-label="Message">Message the agent</textarea>
-      <div class="controls" data-controls>
-        <div class="leading" data-leading>
-          <span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span>
-          <div class="inline" data-session-chrome-inline>
-            <div class="body" data-status-body>
-              <div class="row" data-status>
-                <span class="identity">
-                  <span class="model"><button class="trigger focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span>
-                  <span class="effortTrigger focusEffort" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-                </span>
-                <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill fillNeutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-                <span class="item mono workTime" data-work>12m 34s</span>
-                <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
+    <div class="root" data-prompt-root>
+      <div class="card" data-card>
+        <div class="field" data-field>
+          <textarea class="fieldStandIn" rows="1" aria-label="Message">Message the agent</textarea>
+        </div>
+        <div class="controls" data-controls>
+          <div class="leading" data-leading>
+            <span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span>
+            <div class="chromeSlot" data-chrome-slot>
+              <div class="inline inlineRung" data-session-chrome-inline>
+                <div class="body" data-status-body>
+                  <div class="row" data-status>
+                    <span class="identity">
+                      <span class="model"><button class="trigger focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span>
+                      <span class="effortTrigger focusEffort" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
+                    </span>
+                    <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill fillNeutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
+                    <span class="item mono workTime" data-work>12m 34s</span>
+                    <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
+                  </div>
+                </div>
+                <div class="right"><button class="sessionActionControl focusActions" data-session-actions type="button" aria-label="Session actions">⋯</button></div>
               </div>
             </div>
-            <div class="right"><button class="sessionActionControl focusActions" data-session-actions type="button" aria-label="Session actions">⋯</button></div>
           </div>
+          <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
         </div>
-        <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
       </div>
     </div>
   </section>
@@ -81,8 +87,15 @@ for (const spec of fixtures) {
   fixture.dataset.width = String(spec.width);
   if (spec.expectedStatusWidth !== undefined) fixture.dataset.expectedStatusWidth = String(spec.expectedStatusWidth);
   if (spec.shortModel) fixture.dataset.shortModel = "true";
-  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
+  if (spec.folded) {
+    fixture.dataset.folded = "true";
+    fixture.querySelector("[data-card]").dataset.folded = "true";
+    fixture.querySelector("[data-leading]").dataset.folded = "true";
+    fixture.querySelector("[data-attachment]").remove();
+  }
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.folded ? ", folded" : ""}${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
   fixture.querySelector("[data-card]").style.width = `${spec.width}px`;
+  fixture.querySelector("[data-prompt-root]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-model-value]").textContent = spec.shortModel
     ? "gpt-5.2"
     : "openrouter/anthropic/claude-sonnet-4.5-extended-thinking";
@@ -120,6 +133,7 @@ window.measure = function () {
   const focusedSendStyle = getComputedStyle(document.querySelector(".focusSend"));
   return [...document.querySelectorAll(".fixture")].map((fixture) => {
     const card = fixture.querySelector("[data-card]");
+    const field = fixture.querySelector("[data-field]");
     const controls = fixture.querySelector("[data-controls]");
     const leading = fixture.querySelector("[data-leading]");
     const inlineChrome = fixture.querySelector("[data-session-chrome-inline]");
@@ -143,16 +157,18 @@ window.measure = function () {
     const modelTrigger = fixture.querySelector(".trigger");
     return {
       width: Number(fixture.dataset.width),
+      folded: fixture.dataset.folded === "true",
       expectedStatusWidth:
         fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
       shortModel: fixture.dataset.shortModel === "true",
       card: box(card),
+      field: box(field),
       controls: box(controls),
       leading: box(leading),
       inlineChrome: box(inlineChrome),
       statusBody: box(statusBody),
       status: box(status),
-      attachment: box(attachment),
+      attachment: attachment === null ? null : box(attachment),
       modelTrigger: box(modelTrigger),
       identity: box(fixture.querySelector(".identity")),
       effort: visibleBox(effort),

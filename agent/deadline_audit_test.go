@@ -18,7 +18,7 @@ import (
 // by construction) for wall-clock bounds fed straight into a timeout- or
 // deadline-establishing call: context.WithTimeout, context.WithDeadline,
 // time.After, time.NewTimer, time.NewTicker, time.AfterFunc, and this
-// package's own waitForCondition/awaitWithin helpers.
+// package's own awaitWithin helper.
 //
 // A BARE bound -- an inline numeric literal times a time.Duration unit
 // (5*time.Second), or a lone time.<Unit> constant, written straight into one
@@ -172,7 +172,7 @@ func TestSomething(t *testing.T) {
 	assertDeadlineFindingContains(t, findings, "sample_test.go", "context.WithTimeout")
 }
 
-func TestDeadlineAuditCatchesWaitForConditionAndAwaitWithin(t *testing.T) {
+func TestDeadlineAuditCatchesAwaitWithin(t *testing.T) {
 	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
@@ -182,7 +182,6 @@ import (
 )
 
 func TestSomething(t *testing.T) {
-	waitForCondition(t, 5*time.Second, "thing happened", func() bool { return true })
 	awaitWithin(t, 5*time.Second, "thing finished", func() {})
 }
 `)
@@ -190,7 +189,6 @@ func TestSomething(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertDeadlineFindingContains(t, findings, "sample_test.go", "waitForCondition")
 	assertDeadlineFindingContains(t, findings, "sample_test.go", "awaitWithin")
 }
 
@@ -337,7 +335,6 @@ var deadlineAuditBoundCalls = map[string]bool{
 	"time.NewTimer":        true,
 	"time.NewTicker":       true,
 	"time.AfterFunc":       true,
-	"waitForCondition":     true,
 	"awaitWithin":          true,
 }
 

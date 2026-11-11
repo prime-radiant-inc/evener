@@ -222,26 +222,47 @@ func TestRetrySafeHandlersRefuseWhileThreadClearHoldsTheGate(t *testing.T) {
 	}
 }
 
-// TestWithMutationReadWaitsForThreadClear pins the input-loop side of the same
-// gate: an automatic turn admitted while clear owns the write side waits until
-// clear releases it, then runs against whatever session clear installed.
+// TestWithMutationReadWaitsForThreadClear pins the input-loop side of clear:
+// an automatic turn admitted while clear prepares the replacement waits until
+// clear has published it, then runs against whatever session clear installed.
 func TestWithMutationReadWaitsForThreadClear(t *testing.T) {
 	srv := newRetrySafeTestServer()
-	srv.appMutationGate.Lock()
-	ran := make(chan struct{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		close(entered)
+		<-release
+		prepared, err := PrepareAppIdentityForRef("local", "th_2", params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+		return nil
+	})
+	clearResult := make(chan error, 1)
 	go func() {
-		srv.WithMutationRead(func() { close(ran) })
+		_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+			Ref: "local:th_1", ClientMutationID: "clear-1", ExpectedInstanceID: "th_1",
+		})
+		clearResult <- err
+	}()
+	<-entered
+
+	ranAgainst := make(chan string, 1)
+	go func() {
+		srv.WithMutationRead(func() { ranAgainst <- srv.appThread().ID })
 	}()
 	select {
-	case <-ran:
-		t.Fatal("automatic input ran while thread/clear held the mutation gate")
+	case id := <-ranAgainst:
+		t.Fatalf("automatic input ran against %q while thread/clear was preparing the replacement", id)
 	case <-time.After(50 * time.Millisecond):
 	}
-	srv.appMutationGate.Unlock()
-	select {
-	case <-ran:
-	case <-time.After(time.Second):
-		t.Fatal("automatic input did not run after thread/clear released the mutation gate")
+	close(release)
+	if err := <-clearResult; err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if id := <-ranAgainst; id != "th_2" {
+		t.Fatalf("automatic input ran against %q, want the replacement", id)
 	}
 }
 

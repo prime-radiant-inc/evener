@@ -1,3 +1,10 @@
+/* The card itself is the bordered surface; this root only supplies the width
+ * container the folded layout queries. It carries no box of its own, so
+ * callers keep addressing the card they always did. */
+.root {
+  container-type: inline-size;
+}
+
 /* One tight field over one control row. The seamless textarea inside carries
  * no inset of its own, so this padding is the whole thing, and the gap to the
  * control row is the smallest step that still separates them. */
@@ -9,6 +16,22 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-1);
+}
+
+/* While the card's height interpolates, its content is laid out at the new
+ * shape but the box is still short. Bottom-align and clip it so the controls
+ * stay at the footer edge instead of dropping below it. */
+.card[data-animating] {
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+/* The field's own box is the caller's; this slot only gives it a shrinkable
+ * column in the stacked shape and the room left over in the folded one. */
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 /* The card is the prompt surface's one visible box, so it carries the focus
@@ -62,6 +85,38 @@
   align-items: center;
   gap: var(--space-1);
   margin-left: auto;
+}
+
+/* Below this width the controls leave too little for a readable placeholder,
+ * so the card falls back to the stacked shape it has always had. */
+@container (min-width: 620px) {
+  .card[data-folded="true"] {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  /* Folded: the field and the control row become one line. The control row
+   * keeps its natural width and the field yields, so a resting composer
+   * shows its placeholder beside the model, effort, menu and verbs instead
+   * of above them. */
+  .card[data-folded="true"] .field {
+    flex: 1 1 10ch;
+  }
+}
+
+.card[data-folded="true"] .controls {
+  min-width: 0;
+}
+
+/* A caller that knows its control row is compact can use the same one-line
+ * shape below the normal width threshold (the phone's menu-only resting row). */
+.card[data-folded="true"][data-folded-compact="true"] {
+  flex-direction: row;
+  align-items: center;
+}
+
+.card[data-folded="true"][data-folded-compact="true"] .field {
+  flex: 1 1 10ch;
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

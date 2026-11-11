@@ -124,6 +124,19 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		response.AnswerContinuation, response.Snapshot = &verdict, &snapshot
 		return response, nil
 	}
+	if params.FetchCursor != "" {
+		cut := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !cut.found || cut.history == nil {
+			return appwire.ThreadReadResponse{}, s.readError(appwire.SessionUnavailable("thread fetch is unavailable"), s.appThreadIDForRead(params))
+		}
+		fetch, err := cut.history.fetch(params.Ref, params.FetchCursor)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), cut.response.BootGeneration, cut.response.Epoch)
+		}
+		response := cut.response
+		response.Fetch = &fetch
+		return response, nil
+	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}
@@ -235,7 +248,19 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 	}
 	response := cut.response
 	if params.IncludeTurns && cut.history != nil {
-		turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		var turns []appwire.Turn
+		var olderCursor string
+		var snapshot appwire.SnapshotIdentity
+		var latestExecutionTurnID string
+		var overlay []appwire.OverlayItem
+		var err error
+		if params.TurnWindow != nil {
+			var transfer *appwire.ThreadWindowResult
+			turns, snapshot, latestExecutionTurnID, transfer, overlay, err = cut.history.turnWindow(cut.capture, cut.history.ref, *params.TurnWindow, params.WindowTransfer)
+			response.Window = transfer
+		} else {
+			turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err = cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		}
 		if err != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
 		}

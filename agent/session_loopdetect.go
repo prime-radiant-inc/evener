@@ -79,8 +79,8 @@ func windowToolNames(signatures []string, windowSize int) []string {
 	names := make([]string, 0, windowSize)
 	for _, sig := range signatures[len(signatures)-windowSize:] {
 		name := sig
-		if i := strings.LastIndex(sig, ":"); i >= 0 {
-			name = sig[:i]
+		if before, _, ok := strings.CutLast(sig, ":"); ok {
+			name = before
 		}
 		if !seen[name] {
 			seen[name] = true

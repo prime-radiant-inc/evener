@@ -23,7 +23,7 @@ import (
 
 func TestSessionActivityRejectsInvalidInputs(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	for _, ref := range []string{"", ":::bad", "local:unrelated", "remote:host:session"} {
 		_, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: ref})
 		var wire appwire.WireError
@@ -42,7 +42,7 @@ func TestSessionActivityRejectsInvalidInputs(t *testing.T) {
 
 func TestSessionActivityDelegateIdentityWithoutRuntime(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolRunningDelegate(t, s, "dlg_retained", "", time.Unix(100, 0).UTC())
 	response, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())})
 	if err != nil {
@@ -644,7 +644,7 @@ func TestSessionActivityMultiJournalRawInputBudget(t *testing.T) {
 
 func TestSessionActivitySummaryUsesDelegateTerminalClassifier(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	c := s.delegateController
 	at := time.Unix(100, 0).UTC()
 	finish := delegateRunFinishedEvent(delegateLease{delegateID: "dlg_exhausted", generation: 1}, delegatestore.OutcomeExhausted, delegatestore.DispositionTerminalError, "turn_budget_exhausted", at, delegateDeliveryID("dlg_exhausted", 1), &delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"exhausted"`)})
@@ -867,7 +867,7 @@ func TestSessionActivityDurableWatchClearInvalidatesReceiver(t *testing.T) {
 
 func TestSessionActivityDeepContextCannotExceedResponseBudget(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	c := s.delegateController
 	batch := make([]delegatestore.Event, 400)
 	parentID := ""
@@ -949,7 +949,7 @@ func TestSessionActivityLiveDelegateAdmissionMembership(t *testing.T) {
 	for _, scope := range []appwire.SessionActivityScope{appwire.SessionActivityScopeSession, appwire.SessionActivityScopeSubtree} {
 		for _, laterAt := range []int64{150, 200} {
 			t.Run(fmt.Sprintf("%s/%d", scope, laterAt), func(t *testing.T) {
-				s := newSession(t, withoutGitSnapshot())
+				s := newSession(t)
 				c := s.delegateController
 				create := func(id, parent string, at int64) {
 					t.Helper()

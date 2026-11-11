@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp } from "../../styles/cssBlock";
 import { CloseIcon as FromBarrel } from "..";
 import { CloseIcon } from "./CloseIcon";
 import { Dialog } from "./index";
@@ -325,7 +327,9 @@ test("the footer is a chrome band on the inset surface", () => {
 test("the close button reaches the 44px tap floor on a coarse (touch) pointer", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const coarseBlock = /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  const coarseBlock = new RegExp(
+    `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{([\\s\\S]*?)\\n\\}`,
+  ).exec(css);
   expect(coarseBlock).toBeTruthy();
   const closeButtonRule = /\.closeButton\s*\{([^}]*)\}/.exec(coarseBlock?.[1] ?? "")?.[1] ?? "";
   expect(closeButtonRule).toContain("min-width: var(--tap-min)");

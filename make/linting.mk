@@ -279,7 +279,8 @@ lint-tracked-file-size:
 # does, so they gate in lint instead of red-ing an unrelated package's tests.
 ## Run the repository source audits in internal/devtool/repoaudit: no new
 ## copy-only or error-text test, one source for shared constants and configs,
-## and safe scratch and recursive deletes in scripts and Makefile recipes.
+## safe scratch and recursive deletes in scripts and Makefile recipes, no
+## new fixed sleep in Go tests, and the repository's layout rules.
 ## proves: No Go test checks only wording or adds an error-text assertion
 ##   beyond its allowlist; the quiet threshold, custom content seed, effort
 ##   vocabulary, canonical temp-dir helper and e2e providers.toml writer each
@@ -287,13 +288,22 @@ lint-tracked-file-size:
 ##   coverage scripts count through covstmt; the e2e and UI runners isolate
 ##   through the shared helpers; and no script or recipe mints scratch outside
 ##   TMPDIR, before its trap, or deletes recursively from a variable beyond
-##   the reviewed allowlists; and mobile-native/.gitignore keeps the
-##   mobile-native/build derived-data tree untracked.
+##   the reviewed allowlists; mobile-native/.gitignore keeps the
+##   mobile-native/build derived-data tree untracked; no TypeScript test or
+##   Vitest config lets a fake clock follow wall time (shouldAdvanceTime); Go
+##   tests call time.Sleep no more often than the checked-in baseline allows,
+##   with a NOTE to lower the baseline when they call it less; only
+##   agent/internal/mcphttp builds an MCP http or sse transport; every
+##   registered knob has a consumer; the execsupport packages stay library
+##   packages covered by the revive exported rule; scenario cards cite source
+##   paths, symbols and lines that exist; runbooks isolate HOME through
+##   e2e_isolate_home; and every Makefile rule is .PHONY with a recipe, in a
+##   family file, with LINT_TARGETS defined once and naming every lint rule.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.
 lint-repo-audit: build-dev
-	$(call run_quiet_lint,./evener-dev dev repo-audit)
+	$(call run_quiet_lint,./evener-dev dev repo-audit,preserve-notes)
 
 # The frontend's Biome check runs from `make test-web` (cmd/evener-dev's
 # web-checks calls the frontend's own `npm run lint`), not from `make lint`:

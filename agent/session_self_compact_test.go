@@ -465,7 +465,7 @@ func TestApplyPendingForceCompact_PreservesConcurrentAppendDuringSlowFold(t *tes
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold, and ForceCompact always attempts Layer 2 given a real client
 
 	if err := s.requestForceCompact("drop the file dumps"); err != nil {
@@ -568,7 +568,7 @@ func TestSessionCompact_PreservesConcurrentAppendDuringSlowFold(t *testing.T) {
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold, and ForceCompact always attempts Layer 2 given a real client
 
 	compactErr := make(chan error, 1)
@@ -634,7 +634,7 @@ func TestSessionCompact_DoesNotClobberConcurrentCompaction(t *testing.T) {
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
 
 	errA := make(chan error, 1)
@@ -725,7 +725,7 @@ func TestSessionCompact_DoesNotResurrectConcurrentlyRemovedAttentionTurn(t *test
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold; the removed turn below (appended last) survives the fold as a distinct, preserved turn
 
 	unverified := schema.NewTurn(schema.TurnSteering, llm.User("unverified delegate attention turn"))
@@ -799,7 +799,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold for the first (losing) attempt
 
 	s.setPinnedNote("REMEMBER: the API signature")

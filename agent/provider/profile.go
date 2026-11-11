@@ -268,6 +268,21 @@ func (p *Profile) ContextWindowSize() int {
 	return 0
 }
 
+// ContextWindowSourceAssumed names the source of a window nothing supplied:
+// the session budgets against the context manager's assumed window instead.
+const ContextWindowSourceAssumed = "assumed"
+
+// ContextWindowSource says where ContextWindowSize came from: "live",
+// "overlay", "config" or "snapshot" (registry.ContextWindowSource),
+// ContextWindowSourceAssumed when the window is unknown, or "" for a profile
+// carrying a window without provenance.
+func (p *Profile) ContextWindowSource() string {
+	if p.ContextWindowSize() <= 0 {
+		return ContextWindowSourceAssumed
+	}
+	return registry.ContextWindowSource(p.res.Provenance["ContextWindow"])
+}
+
 // CheapContextWindowSize is the configured cheap model's window, or 0 when no
 // cheap model is configured or its row names no window.
 func (p *Profile) CheapContextWindowSize() int {
@@ -381,14 +396,16 @@ func (p *Profile) AcceptsDocumentInput(doc *llm.DocumentData) bool {
 // bytes of this media type inline on the wire: the row declares image input
 // and its adapter delivers tool-result media of this type. This is the fact
 // that makes inline bytes the vision support — when it holds, a describing
-// side-channel would only duplicate what the model already sees. Only raster
-// image media qualifies (llm.DeliversToolResultMedia), so a document always
-// takes the side-channel; a chat-protocol row that strips tool-result images,
-// or a Google row without the multimodal-tool-results cap, never sees images
-// natively even though it accepts image input. A profile whose model id was
-// applied without a catalog row of its own inherits its source row's facts;
-// inherited image input is not evidence the named model sees media, so the
-// skip requires the model's own row.
+// side-channel would only duplicate what the model already sees. Raster image
+// media qualifies on any delivering protocol; a document qualifies on a row
+// that declares pdf input and a protocol whose tool-result shape carries one
+// (llm.DeliversToolResultMedia: Anthropic only, #4465). A chat-protocol row
+// that strips tool-result images, or a Google row without the
+// multimodal-tool-results cap, never sees images natively even though it
+// accepts image input. A profile whose model id was applied without a catalog
+// row of its own inherits its source row's facts; inherited image input is not
+// evidence the named model sees media, so the skip requires the model's own
+// row.
 func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 	return !p.rowFactsInherited && llm.RowSeesToolResultMedia(p.res, mediaType)
 }

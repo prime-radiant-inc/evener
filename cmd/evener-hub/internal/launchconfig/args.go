@@ -33,6 +33,9 @@ func ToArgs(r Resolved) []string {
 	if e.ContextStrategy != "" {
 		add("--context-strategy", e.ContextStrategy)
 	}
+	if e.CompactAtPercent != nil {
+		add("--compact-at-percent", strconv.Itoa(*e.CompactAtPercent))
+	}
 	if e.ProviderIdleTimeout != "" {
 		add("--provider-idle-timeout", e.ProviderIdleTimeout)
 	}

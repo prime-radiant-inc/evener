@@ -127,6 +127,9 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 					style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 				>
 					{card.target ? `${card.tool}  ${wrapAfterSlashes(card.target)}` : card.tool}
+					{card.requestedAs ? (
+						<Text testID="approval-requested-as">{`\nrequested as ${wrapAfterSlashes(card.requestedAs)}`}</Text>
+					) : null}
 				</Text>
 				<Text testID="approval-scope" {...body}>
 					{card.scope}

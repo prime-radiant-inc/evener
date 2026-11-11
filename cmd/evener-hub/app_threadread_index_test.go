@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -200,6 +202,345 @@ func TestDaemonlessThreadReadIsTheIndexLatestWindow(t *testing.T) {
 	}
 	if items := flattenTestItems(older.Data); len(items) != 1 || items[0].Text != "first question" {
 		t.Fatalf("daemonless backfill items = %+v, want the one item before the window", items)
+	}
+}
+
+func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("first question"))),
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("first answer"))),
+		completedExecution("turn_m1"),
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("second question"))),
+		execution("turn_m2", schema.NewTurn(schema.TurnAssistant, llm.Assistant("second answer"))),
+		completedExecution("turn_m2"),
+		execution("turn_m3", schema.NewTurn(schema.TurnUserInput, llm.User("third question"))),
+		execution("turn_m3", schema.NewTurn(schema.TurnAssistant, llm.Assistant("third answer"))),
+		completedExecution("turn_m3"),
+	)
+	for _, tc := range []struct {
+		name   string
+		window appwire.ThreadTurnWindow
+		want   []string
+	}{
+		{name: "latest", window: appwire.ThreadTurnWindow{Latest: 2}, want: []string{"turn_m2", "turn_m3"}},
+		{name: "exact", window: appwire.ThreadTurnWindow{Turn: "turn_m2"}, want: []string{"turn_m2"}},
+		{name: "since", window: appwire.ThreadTurnWindow{Since: "turn_m1", Limit: 1}, want: []string{"turn_m2"}},
+		{name: "before", window: appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m3", Limit: 1}}, want: []string{"turn_m2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+				Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
+				TurnWindow: &tc.window, ItemTypes: []string{"messages"},
+			})
+			if err != nil {
+				t.Fatalf("daemonless windowed read: %v", err)
+			}
+			got := make([]string, 0, len(response.Thread.Turns))
+			for _, turn := range response.Thread.Turns {
+				got = append(got, turn.ID)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("turn ids = %v, want %v", got, tc.want)
+			}
+			for _, turn := range response.Thread.Turns {
+				for _, item := range turn.Items {
+					if item.Type != "agentMessage" && item.Type != "userMessage" && (item.Type != "steering" || item.Source != "user") {
+						t.Fatalf("windowed message read returned %q item", item.Type)
+					}
+				}
+			}
+			if response.Window == nil || response.Window.AppliedBy != "saved-index" {
+				t.Fatalf("window result = %+v, want saved-index", response.Window)
+			}
+		})
+	}
+
+	_, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "missing"},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("missing saved turn error = %v, want typed invalid params", err)
+	}
+	data, ok := wireErr.Data.(appwire.TranscriptTurnNotFoundErrorData)
+	if !ok || data.TurnID != "missing" || data.OldestTurnID != "turn_m1" || data.NewestTurnID != "turn_m3" || data.TurnCount != 3 {
+		t.Fatalf("missing saved turn data = %#v", wireErr.Data)
+	}
+}
+
+func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
+	text := strings.Repeat("界", 100_000)
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))),
+		completedExecution("turn_m1"),
+	)
+	ref := "local:" + entry.Meta.ID
+	operations := &sessionOperations{cfg: cfg, sources: appsource.NewRegistry()}
+	window, found, err := pastThreadItemReadResponseOwned(t.Context(), cfg, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true,
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_m1"},
+		ItemTypes:    []string{"agentMessage"},
+		MessageBytes: 64,
+	}, func(options *transcriptWindowPackOptions) {
+		operations.retainCanonicalWindowOptions(options)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("saved session was not found")
+	}
+	items := flattenTestItems(window.Thread.Turns)
+	if len(items) != 1 || items[0].FetchCursor == "" {
+		t.Fatalf("bounded item = %+v, want one fetchable item", items)
+	}
+
+	completeRead, err := operations.read(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeItems := flattenTestItems(completeRead.Thread.Turns)
+	if len(completeItems) != 1 {
+		t.Fatalf("complete saved items = %d, want 1", len(completeItems))
+	}
+	want, err := json.Marshal(completeItems[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := items[0].FetchCursor
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+			Fetch: &appwire.SessionFetchRequest{Ref: ref, FetchCursor: cursor},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Fetch == nil {
+			t.Fatal("FETCH response omitted fetch payload")
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > managerReadMaxJSONBytes {
+			t.Fatalf("encoded FETCH response = %d bytes, cap %d", len(encoded), managerReadMaxJSONBytes)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Fetch.Offset != uint64(len(got)) {
+			t.Fatalf("range offset = %d, want %d", response.Fetch.Offset, len(got))
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
+	entries := make([]schema.Turn, 0, 26)
+	for i := range 25 {
+		entries = append(entries, execution("turn_many", schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("answer-%02d%s", i, strings.Repeat("x", 100))))))
+	}
+	entries = append(entries, completedExecution("turn_many"))
+	cfg, entry, _ := seedIndexedPastSession(t, entries...)
+	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
+	ref := "local:" + entry.Meta.ID
+	window := appwire.ThreadWindowParams{
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_many"},
+		ItemTypes:    []string{"messages"},
+		MessageBytes: len("answer-00"),
+	}
+	initial, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ThreadWindowParams: window,
+	})
+	if err != nil {
+		t.Fatalf("initial daemonless window: %v", err)
+	}
+
+	got := make([]string, 0, 25)
+	pageSizes := make([]int, 0, 3)
+	assertRetained := func(items []appwire.ThreadItem) {
+		t.Helper()
+		for _, item := range items {
+			cursor, _, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
+			if err != nil {
+				t.Fatalf("decode saved fetch cursor: %v", err)
+			}
+			if _, ok := operations.canonicalItemStore().get(cursor.Token); !ok {
+				t.Fatalf("saved fetch cursor for %q has no retained canonical bytes", item.Text)
+			}
+		}
+	}
+	initialItems := flattenTestItems(initial.Data)
+	pageSizes = append(pageSizes, len(initialItems))
+	assertRetained(initialItems)
+	for _, item := range initialItems {
+		got = append(got, item.Text)
+	}
+	if len(initial.Data) != 1 || initial.Data[0].Elision == nil {
+		t.Fatalf("initial daemonless window = %+v, want one elided turn", initial.Data)
+	}
+	cursor := initial.Data[0].Elision.ContinuationCursor
+	for cursor != "" {
+		page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+			Ref: ref, Cursor: cursor, ThreadWindowParams: window,
+		})
+		if err != nil {
+			t.Fatalf("daemonless continuation after %d items: %v", len(got), err)
+		}
+		items := flattenTestItems(page.Data)
+		pageSizes = append(pageSizes, len(items))
+		assertRetained(items)
+		for _, item := range items {
+			got = append(got, item.Text)
+		}
+		cursor = ""
+		if len(page.Data) == 1 && page.Data[0].Elision != nil {
+			cursor = page.Data[0].Elision.ContinuationCursor
+		}
+	}
+	want := make([]string, 25)
+	for i := range want {
+		want[i] = fmt.Sprintf("answer-%02d", i)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("continued saved item IDs = %v, want every item once in transcript order", got)
+	}
+	if wantSizes := []int{10, 10, 5}; !slices.Equal(pageSizes, wantSizes) {
+		t.Fatalf("saved window page sizes = %v, want omitted-limit default %v", pageSizes, wantSizes)
+	}
+}
+
+func TestDaemonlessThreadTurnsServesThreadIDOnlyWindowRequest(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_id_only", schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))),
+		completedExecution("turn_id_only"),
+	)
+	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
+	page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		ThreadID:   entry.Meta.ID,
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_id_only"},
+	})
+	if err != nil {
+		t.Fatalf("thread id only windowed turns list: %v", err)
+	}
+	items := flattenTestItems(page.Data)
+	if len(items) != 1 || items[0].Text != "answer" {
+		t.Fatalf("thread id only window items = %+v, want the requested turn's item", items)
+	}
+	if page.Window == nil {
+		t.Fatal("thread id only window request served no window metadata")
+	}
+}
+
+func TestDaemonlessLatestContinuationIgnoresLaterAppend(t *testing.T) {
+	entries := make([]schema.Turn, 0, 6)
+	for _, turnID := range []string{"turn-a", "turn-b", "turn-c"} {
+		entries = append(entries,
+			execution(turnID, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat(turnID, 2_500)))),
+			completedExecution(turnID),
+		)
+	}
+	cfg, entry, path := seedIndexedPastSession(t, entries...)
+	sources := newExitedLocalRegistry()
+	server := appserver.NewServer(appserver.ServerConfig{})
+	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	ref := "local:" + entry.Meta.ID
+	params := appwire.ThreadTurnsListParams{
+		Ref:               ref,
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
+	}
+
+	initial, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial saved latest window = %+v, want a continuation", initial)
+	}
+	appendTranscriptEntries(t, path,
+		execution("turn-d", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("turn-d", 2_500)))),
+		completedExecution("turn-d"),
+	)
+
+	got := turnIDsFromTurns(initial.Data)
+	cursor := initial.Window.ContinuationCursor
+	for range 10 {
+		if cursor == "" {
+			break
+		}
+		continuedParams := params
+		continuedParams.Cursor = cursor
+		page, err := operations.turns(t.Context(), continuedParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, turnIDsFromTurns(page.Data)...)
+		cursor = ""
+		if page.Window != nil {
+			cursor = page.Window.ContinuationCursor
+		}
+	}
+	if cursor != "" {
+		t.Fatal("saved latest continuation did not terminate")
+	}
+	if want := []string{"turn-c", "turn-b", "turn-a"}; !slices.Equal(got, want) {
+		t.Fatalf("saved latest continuation turns = %v, want original selection %v", got, want)
+	}
+}
+
+func TestSessionOperationsContinuesAcrossEmptyBoundarySaved(t *testing.T) {
+	checkpoint := schema.Turn{
+		Format: schema.TurnFormatIdentity, TurnID: "turn-b", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnCheckpoint,
+	}
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn-a", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("a", 9_000)))),
+		completedExecution("turn-a"),
+		checkpoint,
+		execution("turn-c", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("c", 9_000)))),
+		completedExecution("turn-c"),
+	)
+	sources := newExitedLocalRegistry()
+	server := appserver.NewServer(appserver.ServerConfig{})
+	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	params := appwire.ThreadTurnsListParams{
+		Ref:               "local:" + entry.Meta.ID,
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
+	}
+	initial, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial saved empty-boundary window = %+v, want a continuation", initial)
+	}
+	if got := turnIDsFromTurns(initial.Data); !slices.Equal(got, []string{"turn-b", "turn-c"}) {
+		t.Fatalf("initial saved empty-boundary turns = %v, want [turn-b turn-c]", got)
+	}
+	cursor, _, direction, err := appitempaging.DecodeWindowCursorForRef(initial.Window.ContinuationCursor, params.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direction != appitempaging.WindowCursorDirectionBackward || cursor.ResumeWindow == nil || cursor.ResumeWindow.Before == nil || cursor.ResumeWindow.Before.TurnID != "turn-b" || cursor.AnchorTurnID != "turn-c" {
+		t.Fatalf("saved empty-boundary cursor = direction %q proof %+v, want backward before turn-b anchored in turn-c", direction, cursor)
+	}
+
+	params.Cursor = initial.Window.ContinuationCursor
+	continued, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := turnIDsFromTurns(continued.Data); !slices.Equal(got, []string{"turn-a"}) {
+		t.Fatalf("continued saved empty-boundary turns = %v, want [turn-a]", got)
 	}
 }
 

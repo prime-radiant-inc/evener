@@ -434,6 +434,12 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 		// launch-layer override replaces it.
 		resumeResolved.Effective.CommitProvenance = ""
 	}
+	if resumeResolved.Provenance["compact_at_percent"] != launchconfig.LayerLaunch {
+		// A resume keeps the trigger saved with the session; the builtin
+		// default must not overwrite it. Only an explicit launch-layer
+		// override replaces it.
+		resumeResolved.Effective.CompactAtPercent = nil
+	}
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }

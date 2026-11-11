@@ -13,7 +13,7 @@ Keep those references current when changing the behavior they describe.
   gates.
 - **[testing.md](testing.md)** — the test reliability policy, the
   post-merge gate, the test-family targets, the gates that are not make
-  targets, and the CI cache budget.
+  targets, the lanes a pull request skips, and the CI cache budget.
 - **[linting.md](linting.md)** — the static checks that gate merges without
   running tests: formatting, generated-output freshness, compile floors, and
   the repo secret scan.
@@ -89,9 +89,10 @@ page can cite an implementation file without making it public.
 
 ## First contribution
 
-Install the Go version in `go.mod`, Node 22 or newer, npm, Git, and Python 3
-(`python3` on PATH). Start in an isolated checkout so builds and installs do not
-disturb another contributor's worktree. For example, from an existing clone:
+Install the Go release named by the `toolchain` line in `go.work`, Node 22 or
+newer, npm, Git, and Python 3 (`python3` on PATH). Start in an isolated checkout
+so builds and installs do not disturb another contributor's worktree. For
+example, from an existing clone:
 
 ```sh
 git worktree add -b docs/my-first-change ../evener-docs main

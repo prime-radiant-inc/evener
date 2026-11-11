@@ -363,7 +363,12 @@ func anthropicDocumentBlock(p llm.ContentPart) map[string]any {
 	return nil
 }
 
-func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[string]any, _ error) {
+// toAnthropicMessages converts the request messages to the Messages wire
+// shape. seesToolResultDocuments gates the document block inside tool_result:
+// the protocol accepts it, but a row that does not declare pdf input cannot
+// see it, and the agent's side-channel describes the document instead — so
+// sending it here too would deliver the same bytes twice.
+func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (system string, messages []map[string]any, _ error) {
 	var sysParts []string
 	appendMessage := func(role string, content []map[string]any) {
 		if len(content) == 0 {
@@ -516,27 +521,34 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					b, _ := json.Marshal(v)
 					outStr = string(b)
 				}
-				// Tool-result bytes ride inline as an image block for image
-				// media only, normalized to a media type Anthropic's image
-				// block accepts (a BMP or TIFF result would otherwise 400 the
-				// whole turn, #4464, as a document media type does, #4209).
-				// The design keeps documents on the side-channel
-				// (llm.DeliversToolResultMedia is image-only), so a non-image
-				// result contributes its text alone.
+				// Tool-result bytes ride inline: image media as an image block
+				// normalized to a type Anthropic accepts (a BMP or TIFF result
+				// would otherwise 400 the whole turn, #4464), and a PDF as a
+				// document block, which tool_result content accepts (#4465).
+				// Any other media type contributes its text alone.
 				resultContent := any(outStr)
 				if len(p.ToolResult.ImageData) > 0 {
 					mediaType := strings.TrimSpace(p.ToolResult.ImageMediaType)
 					if mediaType == "" {
 						mediaType = "image/png"
 					}
-					if strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+					var mediaBlock map[string]any
+					switch lower := strings.ToLower(mediaType); {
+					case strings.HasPrefix(lower, "image/"):
 						data, normalizedType, normErr := anthropicImageBytes(p.ToolResult.ImageData, mediaType)
 						if normErr != nil {
 							return "", nil, normErr
 						}
+						mediaBlock = map[string]any{"type": "image", "source": anthropicBase64Source(normalizedType, data)}
+					case llm.IsDocumentMediaType(lower) && seesToolResultDocuments:
+						mediaBlock = anthropicDocumentBlock(llm.ContentPart{Kind: llm.ContentDocument, Document: &llm.DocumentData{
+							Data: p.ToolResult.ImageData, MediaType: lower,
+						}})
+					}
+					if mediaBlock != nil {
 						resultContent = []map[string]any{
 							{"type": "text", "text": outStr},
-							{"type": "image", "source": anthropicBase64Source(normalizedType, data)},
+							mediaBlock,
 						}
 					}
 				}

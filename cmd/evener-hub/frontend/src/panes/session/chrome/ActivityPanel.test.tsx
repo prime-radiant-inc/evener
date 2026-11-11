@@ -17,6 +17,7 @@ import {
   activityThread,
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../liveness";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
@@ -360,7 +361,7 @@ test("recursive Activity body rebuilds typed rows on remount while retaining ref
 });
 
 test("recursive Activity body preserves typed watch countdown through the tree clock", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const start = Date.parse("2026-08-05T15:00:12Z");
   vi.setSystemTime(start);
   const fake = activityClient();
@@ -383,7 +384,7 @@ test("recursive Activity body preserves typed watch countdown through the tree c
   await act(async () => {
     render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   });
-  const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
+  const row = screen.getByRole("treeitem", { name: "Watch: clock" });
   const meta = () => row.querySelector("[class*='denseMeta']")?.textContent;
   expect(meta()).toBe(watchMeta(clock(ref), start));
   await act(async () => vi.advanceTimersByTimeAsync(60000));

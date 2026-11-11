@@ -84,7 +84,7 @@ func TestPrepareToolCall_CommunicateOutputEnvelopeHealed(t *testing.T) {
 // report with structured data — no longer fails four times in a row.
 func TestExecTool_CommunicateIssue627ShapeSucceeds(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	res := s.execTool(context.Background(), llm.ToolCallData{

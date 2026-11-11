@@ -2654,19 +2654,60 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
   withheldWindowReads = misses;
   // The acquisition's own openings miss at the pinned 40ms backstop; a
   // recovery attempt races the stalled-open window instead, pinned to 250
-  // so each withheld attempt also misses quickly.
+  // so each withheld attempt also misses quickly. Both windows are far under
+  // a healthy IndexedDB read on a loaded host (a measured recovery attempt's
+  // own 200-row read settled at 686ms), so on wall time the healthy read
+  // loses the 250ms race, openLocal discards its rows behind the disposed
+  // reader, and the chain exhausts without ever promoting the recorded
+  // display. Freeze the deadline clock instead: timers expire only when this
+  // test advances the clock, while each fake millisecond is spent beside one
+  // real storage round trip, so fake-indexeddb's real macrotasks keep running
+  // and the withheld reads still miss exactly at their bounds.
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opened = threadsStore.getState().ensureThread(ref);
+    const expected = Array.from({ length: 200 }, (_, index) => `row-${index + 26}`);
+    // A withheld read never answers, so the 40ms backstops and the 250ms
+    // stalled windows fire exactly when the pump's clock reaches them; a
+    // healthy read faces no wall-clock race at all. The pump stops as soon as
+    // the display presents the expected window.
+    const converged = await pumpIndexedDBUntil({
+      turns: 800,
+      until: () => {
+        const seen = bodies();
+        return (
+          seen !== undefined && seen.length === expected.length && seen.every((text, index) => text === expected[index])
+        );
+      },
+      onTurn: async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      },
+    });
+    // On the failing path the open may still be parked on a clock that never
+    // reached its deadline; the convergence assertion below is the failure
+    // this test reports, so mark the open handled rather than awaiting a
+    // state the clock never reached.
+    if (!converged) opened.catch(() => undefined);
+    expect(
+      converged,
+      `pane did not converge within 800 fake milliseconds: ${JSON.stringify({
+        openStatus: productionEntryTranscriptForTests(ref).lastLocalOpenStatus ?? "unset",
+        bodies: bodies()?.length ?? 0,
+        withheldWindowReads,
+      })}`,
+    ).toBe(true);
+    await opened;
+    await settleEntryTranscriptForTests(ref);
     // The foreground acquisition returns with the display still body-suppressed;
     // its bounded recovery must then converge the recorded window, no matter
     // how many times the deadline missed while the pane stayed held, exposing
     // local demand exactly as an ordinary 200-row local opening does.
-    await settleEntryTranscriptForTests(ref);
-    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    expect(bodies()).toEqual(expected);
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    vi.useRealTimers();
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);

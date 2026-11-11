@@ -61,18 +61,22 @@
 }
 
 /* The card's own model slot: the session composer's ModelSwitchTrigger at
- * every width. The slot is a flex item that must shrink (flex + min-width: 0
- * + overflow: hidden); the trigger's own nested spans - the Popover wrapper
- * or the mobile triggerWrapper, then the button, then the value - each keep
- * their min-content width by default, so they are pierced here with :global
- * (the same piercing statusrow.module.css uses for the status row's own
- * trigger) and given the same shrink contract, down to the value span whose
- * own ellipsis turns a ~100-char qualified id into "…" instead of pushing
- * effort and Start out of the card. */
+ * every width. It hugs the effort control at the row's far end - the auto
+ * margin spends the space after the attach button - so the model and the
+ * effort that belongs to it read as one pair instead of splitting the row.
+ * The slot must still shrink (min-width: 0 + overflow: hidden); the
+ * trigger's own nested spans - the Popover wrapper or the mobile
+ * triggerWrapper, then the button, then the value - each keep their
+ * min-content width by default, so they are pierced here with :global (the
+ * same piercing statusrow.module.css uses for the status row's own trigger)
+ * and given the same shrink contract, down to the value span whose own
+ * ellipsis turns a ~100-char qualified id into "…" instead of pushing effort
+ * and Start out of the card. */
 .modelTrigger {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  margin-left: auto;
   overflow: hidden;
 }
 
@@ -96,10 +100,6 @@
 @container (max-width: 399px) {
   .leading {
     gap: 0;
-  }
-
-  .modelTrigger {
-    flex: 0 1 auto;
   }
 
   .effortValue {

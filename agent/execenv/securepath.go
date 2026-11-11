@@ -48,16 +48,17 @@ var (
 type sandboxFS struct {
 	policy *sandbox.ResolvedPolicy
 
-	// grant, when non-empty, is a single per-invocation granted absolute path (M7
-	// escalation approve). It widens ONLY root-containment for EXACTLY this one
-	// path: a read/write of grant resolves as if grant's parent were an allowed
-	// root, through a "/"-anchored open that refuses EVERY symlink in the path
-	// (parent and leaf), so the grant widens containment only — never symlink
-	// resolution, and never anchors on an unvetted parent directory. It never
-	// overrides masking or git-protection, and never widens a sibling or a subtree.
-	// It is set only on a short-lived clone (WithSandboxInvocationGrant) used for one
-	// tool re-dispatch, never on a durable env, so it cannot outlive the invocation.
-	grant string
+	// grant, when its path is non-empty, is a single per-invocation grant (M7
+	// escalation approve). It widens ONLY root-containment for EXACTLY one
+	// operation: a read/write of grant.path lands at grant.target, the location
+	// the human approved, opened through a "/"-anchored open that refuses EVERY
+	// symlink (parent and leaf). The operation is refused when grant.path no
+	// longer resolves to grant.target, so a symlink retargeted after approval
+	// cannot redirect it. It never overrides masking or git-protection, and never
+	// widens a sibling or a subtree. It is set only on a short-lived clone
+	// (WithSandboxInvocationGrant) used for one tool re-dispatch, never on a
+	// durable env, so it cannot outlive the invocation.
+	grant invocationGrant
 
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
@@ -185,6 +186,76 @@ const (
 	denyReasonEscape       = "path resolves outside the sandbox root"
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
 )
+
+// invocationGrant is one approved per-invocation grant: path is the spelling the
+// tool call names, and target is where the human approved the operation
+// landing (grantTarget of path when the approval card was raised).
+type invocationGrant struct {
+	path, target string
+}
+
+// grantTarget returns where a granted operation on abs lands: abs with every
+// symlink in its parent directory resolved. The final component is kept as
+// spelled, because the file tools never follow a symlinked final component. ok
+// is false when the parent cannot be resolved (it does not exist), since a
+// grant never creates directories.
+func grantTarget(abs string) (target string, ok bool) {
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(parent, filepath.Base(abs)), true
+}
+
+// isGranted reports whether abs is exactly this fs's single per-invocation granted
+// path (never a sibling, never a subtree — precisely one leaf).
+func (s *sandboxFS) isGranted(abs string) bool {
+	return s.grant.path != "" && abs == s.grant.path
+}
+
+// underMasked reports whether the resolved policy masks abs (a secrets/pseudo-fs
+// path not inside a root carved out of the mask; see ResolvedPolicy.Masks).
+func (s *sandboxFS) underMasked(abs string) bool {
+	return s.policy.Masks(abs)
+}
+
+// denyOutsideRoots builds a containment denial for abs. It names, as
+// GrantTarget, the location an approval would reach, and only when a grant
+// could complete the operation there, so an approval card is never offered for
+// an operation the grant would refuse after Allow (sandbox.DeniedError.
+// GrantTarget). The denial the model sees is the plain containment denial
+// either way: what the filesystem outside the roots looks like — a symlink, a
+// masked target, a missing directory — never reaches the model through it.
+func (s *sandboxFS) denyOutsideRoots(tool, abs, reason string, write bool) *sandbox.DeniedError {
+	d := s.deny(tool, abs, reason)
+	d.GrantTarget = s.grantableTarget(abs, write)
+	return d
+}
+
+// grantableTarget returns where a grant for abs would land, or "" when the
+// grant would refuse there: the parent does not exist, the final component is
+// a symlink, either spelling is masked, or (for a write) either spelling is a
+// git-protected surface.
+func (s *sandboxFS) grantableTarget(abs string, write bool) string {
+	target, ok := grantTarget(abs)
+	if !ok {
+		return ""
+	}
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	masked := s.underMasked
+	if write {
+		masked = s.underMaskedForWrite
+	}
+	if masked(abs) || masked(target) {
+		return ""
+	}
+	if write && (s.underProtected(abs) || s.underProtected(target)) {
+		return ""
+	}
+	return target
+}
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial. Its Redacted
 // method is the ONE rule that turns the path into an audit-safe form.

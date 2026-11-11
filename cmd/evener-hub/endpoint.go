@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -44,7 +45,7 @@ func runEndpoint(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 	opts.addrPresent = set["addr"]
 	report, err := resolveHubEndpoint(context.Background(), opts, deps)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)
+		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("endpoint: %v", err))
 		return err
 	}
 	return json.NewEncoder(stdout).Encode(report)
@@ -155,17 +156,24 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	return report, nil
 }
 
-// endpointConfigPath is shared by publication and inspection. Resolve in the
-// owning process's cwd, before Abs can clean symlink/.. into a different file.
+// endpointConfigPath is shared by publication and inspection. An existing file
+// is named by its canonical path, resolved as the kernel opens it: a relative
+// path's .. follows the physical parent of the owning process's cwd, while Abs
+// would clean symlink/.. lexically, or against a symlinked $PWD, into a
+// different file. Joining without cleaning lets EvalSymlinks resolve each
+// component, the cwd's symlinks included, before any .. after it.
 func endpointConfigPath(path string, exists bool) (string, error) {
-	if exists {
-		var err error
-		path, err = filepath.EvalSymlinks(path)
+	if !exists {
+		return filepath.Abs(path)
+	}
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
 		if err != nil {
 			return "", err
 		}
+		path = cwd + string(os.PathSeparator) + path
 	}
-	return filepath.Abs(path)
+	return filepath.EvalSymlinks(path)
 }
 
 func unavailableEndpoint(report hubendpoint.Report, reason string) (hubendpoint.Report, error) {

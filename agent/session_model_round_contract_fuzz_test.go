@@ -125,7 +125,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "read_file", Content: text}},
 			}}),
 		}
-		if len(responsesContinuationDeltaMessages(base, turns)) < 2 || len(responsesContinuationTurnKinds(turns)) != len(turns) || len(expandHistory(turns, replayScope{})) != 3 {
+		if len(responsesContinuationDeltaMessages(base, turns, nil)) < 2 || len(responsesContinuationTurnKinds(turns)) != len(turns) || len(expandHistory(turns, replayScope{})) != 3 {
 			t.Fatal("history expansion lost deterministic turns")
 		}
 
@@ -138,9 +138,6 @@ func FuzzModelRoundContracts(f *testing.F) {
 		}
 		if responseHasServerWebSearch([]llm.ContentPart{{Kind: llm.ContentText}}) || !responseHasServerWebSearch([]llm.ContentPart{{Kind: llm.ContentWebSearch}}) {
 			t.Fatal("web-search content detection mismatch")
-		}
-		for _, tc := range []struct{ window, tokens int }{{0, 100}, {100, 80}, {100, 81}} {
-			_, _, _ = contextUsageWarning(tc.window, tc.tokens)
 		}
 		zero := 0
 		one := 1

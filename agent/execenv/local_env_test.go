@@ -246,7 +246,8 @@ func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
 		LoginPATH:    "/opt/homebrew/bin:/usr/bin:/bin",
 		Sandbox:      &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Backend: sandbox.BackendBwrap},
 	}
-	clone, ok := env.WithSandboxInvocationGrant(filepath.Join(worktree, "granted")).(*LocalExecutionEnvironment)
+	granted := filepath.Join(worktree, "granted")
+	clone, ok := env.WithSandboxInvocationGrant(granted, granted).(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatal("WithSandboxInvocationGrant did not return a clone for an enforced policy")
 	}

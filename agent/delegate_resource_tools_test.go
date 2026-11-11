@@ -19,7 +19,7 @@ import (
 
 func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	for _, tc := range []struct {
 		name      string
 		parameter string
@@ -72,7 +72,7 @@ func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 
 func TestDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	id := "dlg_status_metadata"
 	seedStableToolDelegate(t, s, id, "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	s.delegateController.mu.Lock()
@@ -121,7 +121,7 @@ func TestDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
 
 func TestDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	settlingID := "dlg_public_settling"
 	seedStableToolRunningDelegate(t, s, settlingID, "", time.Unix(10, 0).UTC())
 	lease := delegateLease{delegateID: settlingID, generation: 1}
@@ -209,7 +209,7 @@ func TestDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 
 func TestDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	started := time.Unix(10, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
 		Kind: jobstore.EventJobStarted, JobID: "job_legacy_activation", Type: jobstore.JobType(delegateResourceType),
@@ -224,7 +224,7 @@ func TestDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 
 func TestDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	c := s.delegateController
 	seedStableToolRunningDelegate(t, s, "dlg_stop_parent", "", time.Unix(10, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_stop_child", "dlg_stop_parent", time.Unix(11, 0).UTC())
@@ -284,7 +284,7 @@ func TestDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 }
 
 func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	delegateID := "dlg_live_wait"
 	seedStableToolRunningDelegate(t, s, delegateID, "", time.Unix(10, 0).UTC())
 	runtime := attachDelegateSteerRuntime(t, s.delegateController, delegateID, afero.NewMemMapFs())
@@ -309,7 +309,7 @@ func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 
 func TestDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_list", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_shell", time.Unix(30, 0).UTC(), jobstore.StatusRunning)
 
@@ -324,7 +324,7 @@ func TestDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
 
 func TestDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_direct_idle", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_direct_running", "", time.Unix(30, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_descendant", "dlg_direct_idle", time.Unix(40, 0).UTC(), time.Unix(50, 0).UTC())
@@ -368,7 +368,7 @@ func TestDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T) {
 
 func TestDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_page_1", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_page_2", "", time.Unix(30, 0).UTC(), time.Unix(40, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_page_1", time.Unix(50, 0).UTC(), jobstore.StatusRunning)
@@ -385,7 +385,7 @@ func TestDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 
 func TestDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.treeCounter = newTreeCounter(7)
 	s.driveCounter = newTreeCounter(3)
 	if !s.treeCounter.reserve(slotKindJob) || !s.driveCounter.reserve(slotKindDrive) {

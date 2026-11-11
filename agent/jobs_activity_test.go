@@ -17,11 +17,11 @@ func TestProjectActivitySession_ProjectsDelegateAndShell(t *testing.T) {
 	t.Parallel()
 	child := &activitySessionSnapshot{
 		SessionID: "child", Ref: "local:child", Label: "Child",
-		Jobs: []*jobstore.JobRecord{{JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusCompleted}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusCompleted}}),
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root", RootID: "root",
-		Jobs: []*jobstore.JobRecord{{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning}}),
 		Delegates: map[string]delegateSnapshot{
 			"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect child"),
 		},

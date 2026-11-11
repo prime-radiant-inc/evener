@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -385,9 +386,7 @@ func TestPostCompact_HonorsTheFoldsCancellation(t *testing.T) {
 	// Cancel once the hook is actually running, which is the interruption the
 	// test is about: the fold's own work is done and only the hook is left.
 	go func() {
-		// TRIPWIRE: a local shell hook and a scripted model, so only a genuine
-		// hang reaches 30s.
-		waitForCondition(t, 30*time.Second, "the PostCompact hook to start", func() bool {
+		testwait.Until(t, "the PostCompact hook to start", func() bool {
 			_, statErr := os.Stat(started)
 			return statErr == nil
 		})

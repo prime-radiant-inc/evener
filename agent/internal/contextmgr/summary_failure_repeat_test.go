@@ -17,7 +17,7 @@ import (
 func summaryRepeatManager(respFn func(llm.Request) (llm.Response, error)) *Manager {
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: respFn})
-	return newCompactionManager(client, minSummarizingWindow, 2, 2, 2, 0.0001)
+	return newCompactionManager(client, minSummarizingWindow, 2, 0.0001)
 }
 
 // emptyThenValidReply scripts a model that answers empty while empty is set

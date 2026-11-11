@@ -175,12 +175,19 @@ not necessarily the value the session uses. For a new one-shot session:
 - `--max-rounds`: omitted `-1` resolves to **unlimited**, as does explicit `0`.
   A positive value sets a cap. The [conversion](../cmdutil/cmdutil.go) and
   [session defaults](../agent/session_config.go) define the current behavior.
-- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**.
+- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**;
+  explicit `0` disables subagents entirely, and a positive value caps nesting.
+  A resumed session keeps the depth persisted in its metadata; the flag selects
+  the depth for a new session.
 - `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.
-  For these two delegation limits, explicit `0` also selects the default; it
-  does not mean unlimited or disabled.
+  Explicit `0` also selects the default; it does not mean unlimited or disabled.
 - `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
   retained terminal delegate records per session.
+- `--compact-at-percent`: omitted `0` selects **90**. Values below 20 or above
+  100 are refused before the session starts. A resumed session keeps the
+  percent persisted in its metadata unless the flag is given again. The
+  self-compact nudge fires at 75% of the window, or 5 points below a lower
+  trigger; the LLM-summary backstop sits at 95%, or at a higher trigger.
 - `--vision-model`: omitted `""` uses the **active session model** for image
   descriptions. It does not disable vision; use `off` to disable that side channel.
 
@@ -201,7 +208,7 @@ runtime meaning across flags.
 | `--resume-last` | `false` | resume the most recent session |
 | `--list-sessions` | `false` | list saved sessions and exit |
 | `--max-rounds` | `-1` | max tool rounds per input (0=unlimited, effective default: unlimited) |
-| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2) |
+| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2, 0 disables) |
 | `--max-concurrent-delegates` | `-1` | max concurrently running delegate turns per session tree (default: 50) |
 | `--max-retained-terminal` | `-1` | max retained terminal delegate records per session (default: 2048) |
 | `--share-task-store` | `false` | share task list between parent and child sessions |
@@ -210,6 +217,7 @@ runtime meaning across flags.
 | `--export-atif` | `""` | export ATIF v1.7 trajectory to this path on session close |
 | `--export-atif-provider-handles` | `""` | ATIF provider handle export mode: redacted\|raw-local (default: redacted) |
 | `--context-strategy` | `""` | context management strategy: compact\|session-log\|ooda (default: compact) |
+| `--compact-at-percent` | `0` | context-window percent at which automatic compaction triggers, 20-100 (default: 90) |
 | `--output-schema` | `""` | inline JSON Schema document applied to the communicate tool's output field (replaces the default schema) |
 | `--verbose` | `false` | emit NDJSON events to stderr |
 | `--agent` | `""` | agent persona name: default (default), explorer, or another available agent name |

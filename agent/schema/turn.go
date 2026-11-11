@@ -404,6 +404,11 @@ type ModelSwitchInfo struct {
 	OldModel    string `json:"old_model"`
 	NewProvider string `json:"new_provider"`
 	NewModel    string `json:"new_model"`
+	// ContextWindow is the window the session budgets against after the
+	// switch (the assumed window when the new model's is unknown), and
+	// ContextWindowSource says where it came from.
+	ContextWindow       int    `json:"context_window,omitempty"`
+	ContextWindowSource string `json:"context_window_source,omitempty"`
 }
 
 // GoalContinuationInfo keeps the human-facing notice separate from the full

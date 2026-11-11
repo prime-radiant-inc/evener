@@ -21,7 +21,7 @@ import (
 // that merges the frame sees exactly what a collection read would have served.
 func TestSessionActivityReportPreviewMatchesProjectedFrame(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(300, 0).UTC()
 	id := "dlg_preview_parity"
 	message := json.RawMessage(`"` + strings.Repeat("界", activityMaxDelegateProseRunes*2) + `"`)
@@ -140,7 +140,7 @@ func TestSessionActivityReportPreviewEncodedBoundaries(t *testing.T) {
 
 func TestSessionActivityReportPreviewHugeRetainedReport(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	id := "dlg_huge_report"
 	message := json.RawMessage(`"` + strings.Repeat(`\ud83d\ude00`, 100000) + `"`)

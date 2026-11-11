@@ -485,7 +485,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation)
+	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation, *lf.compactAtPercent)
 	if err != nil {
 		return err
 	}
@@ -696,6 +696,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		MCPInline:                   []string(lf.mcpServers),
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             *lf.contextStrategy,
+		CompactAtPercent:            *lf.compactAtPercent,
 		ExportATIFPath:              *lf.exportATIF,
 		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
@@ -709,9 +710,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
-	if *lf.maxSubagentDepth >= 0 {
-		sessionCfg.MaxSubagentDepth = *lf.maxSubagentDepth
-	}
+	applyMaxSubagentDepth(&sessionCfg, *lf.maxSubagentDepth)
 	if *lf.maxConcurrentDelegates >= 0 {
 		sessionCfg.MaxConcurrentDelegateTurns = *lf.maxConcurrentDelegates
 	}
@@ -760,6 +759,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
+			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.
@@ -1194,7 +1194,7 @@ func processNextServeInput(
 }
 
 // processWithMutationRead admits one process-local input turn only while no
-// thread/clear owns the mutation gate. The gate is held for clear's whole
+// thread/clear owns the automatic input gate. The gate is held for clear's whole
 // preparation and publication; after it releases, the live session sampled
 // inside the callback is the replacement, not the closed predecessor.
 func processWithMutationRead(srv serveServer, fn func() bool) bool {
@@ -1219,7 +1219,7 @@ func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []
 	for _, d := range data {
 		out = append(out, appwire.SandboxEscalationRequested{
 			EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
-			DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+			DeniedPath: d.DeniedPath, RequestedPath: d.RequestedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
 		})
 	}
 	return out

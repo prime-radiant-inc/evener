@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func newTestManager(t *testing.T, reg *hostreg.Registry, fr *fakeRunner, opts Options) *Manager {
@@ -1487,7 +1488,7 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 				// keeps that interleaving deterministic; Close itself blocks on the
 				// lock Ensure is holding until Ensure releases it.
 				go func() { closed <- m.Close() }()
-				waitUntil(t, "Close to publish its closed flag", m.isClosed)
+				testwait.Until(t, "Close to publish its closed flag", m.isClosed)
 			}
 		},
 	})
@@ -2264,7 +2265,7 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 	mismatch = true
 	mu.Unlock()
 	ch2.markLost()
-	waitUntil(t, "the replacement's terminal failure", func() bool {
+	testwait.Until(t, "the replacement's terminal failure", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return failures == 1
@@ -2918,18 +2919,6 @@ func waitForEvent(t *testing.T, ch <-chan Event, kind EventKind) Event {
 	}
 }
 
-// waitUntil polls cond until it holds, failing the test at the deadline.
-func waitUntil(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func assertNoHubStart(t *testing.T, runs, starts [][]string) {
 	t.Helper()
 	all := append(append([][]string(nil), runs...), starts...)
@@ -3108,7 +3097,7 @@ func TestSecondCloseWaitsForTheFirst(t *testing.T) {
 	go func() { first <- m.Close() }()
 	// Once closed is set the first caller is committed to its waits, so a second
 	// caller necessarily takes the concurrent branch.
-	waitUntil(t, "the first Close to commit", m.isClosed)
+	testwait.Until(t, "the first Close to commit", m.isClosed)
 
 	second := make(chan error, 1)
 	go func() { second <- m.Close() }()

@@ -59,8 +59,6 @@ export function sessionStateLine(
 			return { state: attention, text: "Asks a question" };
 		case "approval":
 			return { state: attention, text: "Asks for approval" };
-		case "needsYou":
-			return { state: attention, text: "Needs you" };
 	}
 	if (attention === "working") {
 		const started = hubTime(session.activeTurnStartedAt);

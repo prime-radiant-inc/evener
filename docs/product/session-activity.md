@@ -110,9 +110,10 @@ The existing live compact navigation summary supplies running-subagent work.
 The web rail shows its Running spinner; the phone Board classifies the parent
 as Working, using its existing pulse meter in Live and static mark elsewhere.
 This applies to quiet parents and nonblocking warnings, including mixed running
-and failed children. Questions and approvals keep their attention presentation,
-and so does an awaiting rest after a turn that ended on `needs_response`, on the
-web rail and the phone Board alike, since it waits on a person the same way.
+and failed children. Questions and approvals keep their attention presentation.
+An awaiting rest after a turn that ended on `needs_response` is a finished turn:
+it shows Idle, not Needs you, on the web rail and the phone Board alike, while
+running children still make the parent Working.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
 Background attention paused by a permanent provider failure is not live work
@@ -137,8 +138,8 @@ The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
 Board bands. A new nonblocking Warning waits while live children run. A warning
 that remains alerts when the last child settles; one that clears first never
 alerts. Warnings carrying a pending question or approval remain immediately
-eligible. A `needs_response` rest alerts like a question, under the same In-app
-alerts switch as questions and approvals. First-read and offline rules still apply. Combined banners, Needs you
+eligible. A `needs_response` rest is Idle and does not alert, unlike a question
+or approval under the same In-app alerts switch. First-read and offline rules still apply. Combined banners, Needs you
 counts and Next navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
@@ -151,8 +152,9 @@ collection demand. Hub aggregation and domain activity authority stay independen
 
 The attention class itself comes from one precedence order, `attentionState` in
 the [shared client](../../appwire-client/typescript/sessionAttention.ts): offline
-or ended, failed, restart needed, a blocking warning, a question, an approval,
-awaiting, working, a nonblocking warning, then idle. The phone Board marks and
+or ended, failed, restart needed, a blocking warning, a question (an awaiting
+turn with a pending question), an approval, working, a nonblocking warning, then
+idle. The phone Board marks and
 state line, Board search marks, the browser's Cadence family and the
 notification level all read it. A pending approval never masks a failure, a
 restart need, an ended or not-loaded session; the hub states the same rule in
@@ -877,8 +879,8 @@ shares a store by actual client object, requested ref and scope. A committed vie
 acquires its holder; an abandoned render starts no read. Every visible ordinary
 session pane observes that pane's
 summary and its subtree summary (for the Agents count) by explicit ref on both
-viewports, through its flush status footer on desktop and through the activity
-chips in the composer's control row on the phone, which renders no footer
+viewports, through its flush status footer on desktop and through the persistent
+activity line below the composer card on the phone, which renders no footer
 strip, so side-by-side panes retain independent counts while duplicate consumers of one
 ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own

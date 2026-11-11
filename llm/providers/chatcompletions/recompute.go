@@ -37,7 +37,7 @@ func ExtractRecordedResponse(body []byte, requestedModel string) (llm.Response, 
 		if err := dec.Decode(&raw); err != nil {
 			return llm.Response{}, fmt.Errorf("chatcompletions: decode recorded chat completions body: %w", err)
 		}
-		resp, err := fromChatCompletionResponse(raw, nil)
+		resp, err := fromChatCompletionResponse(raw, nil, trimmed)
 		if err != nil {
 			return llm.Response{}, err
 		}

@@ -19,6 +19,9 @@ define run_quiet_lint
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
 			grep -F 'warning: gitleaks not installed; skipping repo secret scan' "$$log" >&2 || :; \
 		fi; \
+		if [ "$(2)" = preserve-notes ]; then \
+			grep '^NOTE ' "$$log" >&2 || :; \
+		fi; \
 		elapsed="$$(($$(date +%s) - $$start))"; printf 'PASS %s (%ss)\n' "$@" "$$elapsed"; \
 	else \
 		cat "$$log"; elapsed="$$(($$(date +%s) - $$start))"; printf 'FAIL %s (%ss)\n' "$@" "$$elapsed" >&2; exit $$status; \
