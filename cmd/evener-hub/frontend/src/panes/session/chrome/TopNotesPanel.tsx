@@ -72,6 +72,10 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   useDismissOnOutsidePress({
     ownerDocument,
     enabled: expanded,
+    // The panel is IN FLOW, so collapsing it on mousedown would reflow the
+    // pane before the mouseup and a control below it (a sandbox approval, the
+    // composer) would move out from under the pointer, losing its click.
+    when: "click",
     isInside: (target) =>
       // Read nodeType rather than `instanceof Element`: a Dockview popout has
       // its own constructors, and its nodes fail an opener-realm instanceof.

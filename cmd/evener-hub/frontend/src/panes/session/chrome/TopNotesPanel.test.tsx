@@ -603,6 +603,25 @@ test("pressing outside the expanded panel collapses it", async () => {
   outside.remove();
 });
 
+test("an outside press collapses only once its click completes", async () => {
+  // The panel is IN FLOW. Collapsing on mousedown would reflow the pane before
+  // the mouseup, so a control below it moves out from under the pointer and
+  // loses its click. The dismissal therefore waits for the completed click.
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+
+  const outside = outsideTarget();
+  await user.pointer({ target: outside, keys: "[MouseLeft>]" });
+  // Still expanded between press and release: the layout has not shifted yet,
+  // so the control being clicked keeps its position and receives its click.
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
+  await user.pointer({ keys: "[/MouseLeft]" });
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
+  outside.remove();
+});
+
 test("pressing inside the expanded panel leaves it open", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
@@ -711,9 +730,15 @@ test("Escape does not save a dirty draft it collapses", async () => {
   expect(result.current?.timer).toBeUndefined();
 });
 
-test("an unsaved draft survives an outside press and is not saved by it", async () => {
+test("an outside press keeps the draft and schedules the save it implies", async () => {
+  // Pressing outside the panel is LEAVING the field, and shared-notes.md's rule
+  // is "If you already left the field, its scheduled save survives closing the
+  // panel." So the draft stays, no write happens inside the debounce, and one
+  // is armed for after it. (Escape is the other half of that rule: closing
+  // WITHOUT leaving the field saves nothing, hence its own test above.)
   const model = makeModel({ humanNote: "Saved note" });
   const setNote = vi.spyOn(threadsStore.getState(), "setHumanNote");
+  const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
   await user.click(screen.getByTestId("top-notes-summary"));
@@ -727,6 +752,9 @@ test("an unsaved draft survives an outside press and is not saved by it", async 
   // still there to reopen.
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
   expect(screen.getByText("Saved note plus edits")).toBeTruthy();
+  // Nothing has been written yet; the debounce is still running.
   expect(setNote).not.toHaveBeenCalled();
+  expect(result.current?.dirty).toBe(true);
+  expect(result.current?.timer).toBeDefined();
   outside.remove();
 });

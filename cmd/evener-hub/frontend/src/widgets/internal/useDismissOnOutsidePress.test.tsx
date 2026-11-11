@@ -6,6 +6,11 @@ function press(target: EventTarget) {
   target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
 }
 
+function release(target: EventTarget) {
+  target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+}
+
 test("a press outside dismisses", () => {
   const panel = document.createElement("div");
   const outside = document.createElement("button");
@@ -116,6 +121,64 @@ test("a fresh predicate each render does not re-subscribe the listener", () => {
   } finally {
     add.mockRestore();
     remove.mockRestore();
+    outside.remove();
+  }
+});
+
+test("click mode waits for the completed click to dismiss", () => {
+  // An in-flow surface must not collapse on the press: the reflow would move
+  // whatever is below it out from under the pointer before mouseup.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    expect(onDismiss).not.toHaveBeenCalled();
+    release(outside);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode ignores a click that began inside the surface", () => {
+  const panel = document.createElement("div");
+  const inside = document.createElement("span");
+  panel.append(inside);
+  const outside = document.createElement("button");
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    // Press inside, drag out, release: a selection gesture, not a dismissal.
+    press(inside);
+    release(outside);
+    expect(onDismiss).not.toHaveBeenCalled();
+    // A normal press-and-click outside still dismisses.
+    press(outside);
+    release(outside);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
     outside.remove();
   }
 });
