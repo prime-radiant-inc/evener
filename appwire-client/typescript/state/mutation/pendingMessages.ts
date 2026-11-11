@@ -830,12 +830,17 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       method: "queue",
       state: "delivering",
       text: entry.text,
-      displayText: pendingEntryPreview({
-        text: entry.text,
-        imageCount: entry.imageCount,
-        skillNames: entry.skillNames,
-        commandNames: entry.commandNames,
-      }),
+      // Match the live queue row's own rule: full text composes with markers,
+      // a preview-only row falls back to the legacy display so the same
+      // message does not change text when another client consumes it.
+      displayText: entry.textComplete
+        ? pendingEntryPreview({
+            text: entry.text,
+            imageCount: entry.imageCount,
+            skillNames: entry.skillNames,
+            commandNames: entry.commandNames,
+          })
+        : legacyQueueDisplayText(entry.text, entry.skillNames, entry.commandNames),
       textComplete: entry.textComplete,
       images: [],
       imageCount: entry.imageCount,

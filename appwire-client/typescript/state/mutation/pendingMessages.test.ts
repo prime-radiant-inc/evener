@@ -302,7 +302,7 @@ test("a carried consumed row leaves once a current snapshot records the delivery
   expect(rows).toEqual([]);
 });
 
-test("a carried row stays when the snapshot records a different mutation", () => {
+test("a carried row stays while the recorded mutation owns no queue entry", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },
     pendingMutations: [],

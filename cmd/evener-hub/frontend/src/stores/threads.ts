@@ -5974,6 +5974,10 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     return { mutationAuthorityRefs };
   });
   const runtime = getMutationRuntime();
+  // Repository-owned refs publish through their own repository rather than
+  // through publishThreadHydration, so this is their prune boundary. It needs
+  // no storage runtime: the registry is in-memory.
+  if (authoritative) pruneConsumedQueueRows(ref, model);
   if (runtime && authoritative && shouldReplayAcceptedCopies(ref, response)) {
     const recorded = transcriptMutationIds(model);
     // An older daemon can omit consumed ids for a promotion. These reads are
@@ -7411,6 +7415,10 @@ function teardownWiring(): void {
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   dispatchableMutationRefs.clear();
+  // A carried row describes a queue transition this connection observed. The
+  // next connection re-learns it from its own frames rather than inheriting a
+  // row whose retirement evidence it never saw.
+  consumedQueueRows.clear();
   unwireNotification?.();
   unwireNotification = null;
   unwireReady?.();
