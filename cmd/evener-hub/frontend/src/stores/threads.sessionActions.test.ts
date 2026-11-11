@@ -1800,6 +1800,44 @@ describe("useThreadsStore.drainAsSteer", () => {
     inspector.close();
   });
 
+  test("a consumed queue row waits for its authoritative read before settling", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
+    }));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    const read = deferred<ThreadReadResponse>();
+    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+    fake.on("thread/read", () => read.promise);
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > readsBefore);
+
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+    read.resolve(readResponse("ref_a"));
+    let settled = false;
+    for (let attempt = 0; attempt < 40 && !settled; attempt += 1) {
+      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    }
+    expect(settled).toBe(true);
+    inspector.close();
+  });
+
   // A malformed consumedClientMutationIds (anything that is not an array of
   // non-empty strings) must be ignored outright: a string is itself iterable
   // character-by-character, so an unguarded spread would settle a record
