@@ -42,6 +42,28 @@ func TestARecheckThatAnswersNoRestoresTheNoBackendDelegateBehavior(t *testing.T)
 	}
 }
 
+// TestASandboxedParentNeverDegradesItsDelegatesAfterARecheckAnswersNo: a
+// parent that started sandboxed while its host check had not answered keeps
+// its delegates inside a sandbox when the check later answers no. The degraded
+// scope would hand the delegate an unconfined shell, wider than the box the
+// user selected for the parent.
+func TestASandboxedParentNeverDegradesItsDelegatesAfterARecheckAnswersNo(t *testing.T) {
+	t.Parallel()
+	lane, home := sbxLane(t)
+	facts := sandbox.HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap",
+		BwrapRecheck: sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckFailed }),
+	}
+	parent := sbxDelegateSession(t, facts)
+	sbxSandboxedParent(t, parent, facts, lane)
+	facts.BwrapRecheck.Outcome(context.Background())
+
+	policy, _ := parent.readOnlyDelegateSandbox()
+	if policy != nil && policy.Mode == sandbox.ModeOff {
+		t.Fatalf("a sandboxed parent's delegate degraded to %+v, an unconfined shell", policy)
+	}
+}
+
 // TestRestoreOnAnUnconfirmedHostResumesWithTheSandboxPending: a session
 // persisted sandboxed resumes on a host whose bwrap check has not answered,
 // with its box enforced but unconfirmed, instead of failing the resume.

@@ -385,9 +385,9 @@ hooks, stdio MCP servers) reruns the check first:
 - **It answers no.** That command and every later one are refused, and the host
   is treated exactly as one that answered no at startup.
 
-Two spawns get special handling. A `PreToolUse` hook that cannot run for this
-reason refuses the tool call it guards, so the call never proceeds without its
-guard. A stdio MCP server starts once, at session start, so its start keeps
+Two spawns get special handling. A `PreToolUse` hook that its sandbox refuses
+to spawn, whether the check has not answered or answered no, refuses the tool
+call it guards, so the call never proceeds without its guard. A stdio MCP server starts once, at session start, so its start keeps
 rechecking within its connect time bound. If the check still has no answer
 then, the server fails to start, like any server that cannot start, and is
 absent for that session.
@@ -396,7 +396,9 @@ File tools are confined in process and keep working throughout. A delegate on
 such a host keeps the sandbox modes on offer, and a derived read-only delegate
 keeps its real read-only box, which waits for the same check. The weaker
 fallback, confined file tools with an unconfined shell, is reserved for a host
-that answered that it has no backend.
+that answered that it has no backend, and only for an unsandboxed parent: a
+sandboxed parent's read-only delegate refuses rather than receive a shell wider
+than the parent's own box.
 
 On macOS the floor's check is whether `/usr/bin/sandbox-exec` exists, which
 always answers, so a Mac never starts unconfirmed.

@@ -51,32 +51,46 @@ func TestHookCommandWaitsForAnUnconfirmedSandbox(t *testing.T) {
 }
 
 // TestUnconfirmedSandboxDeniesTheToolAGuardHookCouldNotCheck: a PreToolUse
-// hook that cannot run because its sandbox is not yet confirmed refuses the
-// tool call it guards, so the call never proceeds without the user's guard.
+// hook that cannot run because its sandbox refused the spawn, whether the host
+// check has not answered or answered no, refuses the tool call it guards, so
+// the call never proceeds without the user's guard.
 func TestUnconfirmedSandboxDeniesTheToolAGuardHookCouldNotCheck(t *testing.T) {
 	t.Parallel()
-	recheck := sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckInconclusive })
-	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapRecheck: recheck}
-	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, t.TempDir())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	w, err := sandbox.NewWrapper(rp, host.BwrapPath, t.TempDir())
-	if err != nil {
-		t.Fatalf("NewWrapper: %v", err)
-	}
-	spawned := 0
-	runner := newRunner(nil, "")
-	runner.commandHookRuntime = systemCommandHookRuntime{run: func(context.Context, commandHookInvocation, *exec.Cmd) error {
-		spawned++
-		return nil
-	}}
-	runner.SetSandboxWrapper(w)
-	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 30, Command: "guard"})
+	for _, tc := range []struct {
+		name    string
+		outcome sandbox.CheckOutcome
+	}{
+		{"check has not answered", sandbox.CheckInconclusive},
+		{"check answered no", sandbox.CheckFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recheck := sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return tc.outcome })
+			host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapRecheck: recheck}
+			rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, t.TempDir())
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			w, err := sandbox.NewWrapper(rp, host.BwrapPath, t.TempDir())
+			if err != nil {
+				t.Fatalf("NewWrapper: %v", err)
+			}
+			spawned := 0
+			runner := newRunner(nil, "")
+			runner.commandHookRuntime = systemCommandHookRuntime{run: func(context.Context, commandHookInvocation, *exec.Cmd) error {
+				spawned++
+				return nil
+			}}
+			runner.SetSandboxWrapper(w)
+			runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 30, Command: "guard"})
 
-	result := runner.RunPreToolUse(context.Background(), Input{CWD: t.TempDir(), HookEventName: "PreToolUse", ToolName: "Bash"})
-	if !result.Denied || result.DenyMessage == "" || spawned != 0 {
-		t.Fatalf("an unconfirmed guard must deny the tool with a reason and spawn nothing: denied=%v message=%q spawned=%d",
-			result.Denied, result.DenyMessage, spawned)
+			for range 2 {
+				result := runner.RunPreToolUse(context.Background(), Input{CWD: t.TempDir(), HookEventName: "PreToolUse", ToolName: "Bash"})
+				if !result.Denied || result.DenyMessage == "" || spawned != 0 {
+					t.Fatalf("a guard its sandbox refused must deny the tool with a reason and spawn nothing: denied=%v message=%q spawned=%d",
+						result.Denied, result.DenyMessage, spawned)
+				}
+			}
+		})
 	}
 }

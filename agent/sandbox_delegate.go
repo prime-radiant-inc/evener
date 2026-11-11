@@ -316,9 +316,12 @@ func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 	// has a working backend, and inheriting its narrower box is never the degrade.
 	// The degrade needs a file-tool layer that can actually hold the boundary, so a
 	// host with neither an OS backend nor file-tool enforcement keeps the refusal
-	// rather than handing back a delegate whose file tools all fail closed.
+	// rather than handing back a delegate whose file tools all fail closed. Only an
+	// unsandboxed parent degrades: the degraded scope's shell is unconfined, which
+	// is wider than any box a sandboxed parent runs in, so a sandboxed parent's
+	// delegate keeps the read-only request and refuses if it cannot be enforced.
 	host := s.sandboxHostFacts()
-	if !delegateSandboxBackendAvailable(host) && s.delegateFileToolEnforceable(host) {
+	if parentMode == sandbox.ModeOff && !delegateSandboxBackendAvailable(host) && s.delegateFileToolEnforceable(host) {
 		return &sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, nil
 	}
 	return resolveDelegateSandboxRequest(sandbox.ModeReadOnly.String(), nil, parentMode, parentNetwork)

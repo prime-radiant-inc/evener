@@ -528,11 +528,11 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	}
 
 	if err != nil {
-		// A guard hook that could not run because its sandbox is not yet
-		// confirmed refuses the tool call it guards, with the retryable reason,
+		// A guard hook that could not run because its sandbox refused the
+		// spawn refuses the tool call it guards, with the refusal's reason,
 		// rather than letting the call through unguarded.
 		var refusal *sandbox.RefusalError
-		if event == plugin.HookPreToolUse && errors.As(err, &refusal) && refusal.Kind == sandbox.RefusalUnconfirmed {
+		if event == plugin.HookPreToolUse && errors.As(err, &refusal) {
 			return parsedHookOutput{Continue: true, PermissionDecision: "deny", PermissionReason: err.Error()}
 		}
 		if summarizesHookFailure(event) {
