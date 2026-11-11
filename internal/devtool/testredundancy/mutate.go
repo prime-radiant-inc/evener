@@ -74,17 +74,43 @@ func loadJSON[T any](path string) (T, error) {
 
 // Mutate applies each mutation alone, runs the tests it selects, and restores
 // the file with a file-scoped git restore before the next. Restoring discards
-// uncommitted work, so it refuses a mutation of a file git reports modified.
+// uncommitted work and cannot bring back an untracked file, so it refuses a
+// mutation of a file git does not track or reports modified. Each mutation's
+// tests first run on the unmutated source: a failure there would read as a
+// catch, so the mutation is invalid instead.
 func (r *Runner) Mutate(ctx context.Context, muts []Mutation) ([]MutationResult, error) {
-	bin := filepath.Join(r.cacheDir, "build", "mutant.test")
-	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+	for _, m := range muts {
+		if err := r.checkRestorable(ctx, m.File); err != nil {
+			return nil, fmt.Errorf("mutation %s: %w", m.Name, err)
+		}
+	}
+	clean, err := r.newBinaryPath("unmutated")
+	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = os.Remove(clean) }()
+	if err := r.goTestBuild(ctx, clean); err != nil {
+		return nil, err
+	}
+	mutant, err := r.newBinaryPath("mutant")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(mutant) }()
+
+	baseline := map[string]string{} // run pattern -> why it cannot judge a mutation
 	var results []MutationResult
 	for _, m := range muts {
-		res, err := r.mutateOne(ctx, bin, m)
-		if err != nil {
-			return results, fmt.Errorf("mutation %s: %w", m.Name, err)
+		if _, seen := baseline[m.Run]; !seen {
+			if baseline[m.Run], err = r.baselineProblem(ctx, clean, m.Run); err != nil {
+				return results, err
+			}
+		}
+		res := MutationResult{Mutation: m, Outcome: OutcomeInvalid, Detail: baseline[m.Run]}
+		if res.Detail == "" {
+			if res, err = r.mutateOne(ctx, mutant, m); err != nil {
+				return results, fmt.Errorf("mutation %s: %w", m.Name, err)
+			}
 		}
 		_, _ = fmt.Fprintf(r.log, "%s: %s %s\n", m.Name, res.Outcome, strings.Join(res.Failed, " "))
 		results = append(results, res)
@@ -92,15 +118,45 @@ func (r *Runner) Mutate(ctx context.Context, muts []Mutation) ([]MutationResult,
 	return results, nil
 }
 
+// checkRestorable refuses a file git restore could not put back as it is.
+func (r *Runner) checkRestorable(ctx context.Context, file string) error {
+	path := filepath.Join(r.absDir, file)
+	if _, err := r.git(ctx, "ls-files", "--error-unmatch", "--", path); err != nil {
+		return fmt.Errorf("%s is not tracked by git, so git restore cannot undo a mutation of it", file)
+	}
+	status, err := r.git(ctx, "status", "--porcelain", "--", path)
+	if err != nil {
+		return err
+	}
+	if status != "" {
+		return fmt.Errorf("%s has uncommitted changes; restoring it would discard them", file)
+	}
+	return nil
+}
+
+// baselineProblem runs the tests pattern selects on the unmutated binary and
+// says why they cannot judge a mutation, or "" when they can.
+func (r *Runner) baselineProblem(ctx context.Context, bin, pattern string) (string, error) {
+	if pattern == "" {
+		return "an empty run pattern selects every test", nil
+	}
+	run, err := r.runBinary(ctx, bin, false, testTimeout, "-test.run="+pattern)
+	switch {
+	case err != nil:
+		return "", err
+	case run.noTests:
+		return "no test matches " + pattern, nil
+	case run.exitErr:
+		return "the selected tests fail without the mutation: " + strings.Join(run.failed, " "), nil
+	}
+	return "", nil
+}
+
 func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res MutationResult, err error) {
 	res = MutationResult{Mutation: m, Outcome: OutcomeInvalid}
 	path := filepath.Join(r.absDir, m.File)
-	status, err := r.git(ctx, "status", "--porcelain", "--", path)
-	if err != nil {
+	if err := r.checkRestorable(ctx, m.File); err != nil {
 		return res, err
-	}
-	if status != "" {
-		return res, fmt.Errorf("%s has uncommitted changes; restoring it would discard them", m.File)
 	}
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -127,18 +183,14 @@ func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res Mut
 		res.Detail = berr.Error()
 		return res, nil
 	}
-	run, err := r.runBinary(ctx, bin, "", testTimeout, "-test.run="+m.Run)
+	run, err := r.runBinary(ctx, bin, false, testTimeout, "-test.run="+m.Run)
 	if err != nil {
 		return res, err
 	}
-	switch {
-	case run.exitErr:
+	res.Outcome = OutcomeSurvived
+	if run.exitErr {
 		res.Outcome = OutcomeCaught
 		res.Failed = run.failed
-	case run.noTests:
-		res.Detail = "no test matches " + m.Run
-	default:
-		res.Outcome = OutcomeSurvived
 	}
 	return res, nil
 }

@@ -24,14 +24,16 @@ Finds tests a Go package can lose without losing behavior coverage, and builds
 the proof docs/developing-evener/testing.md ("Deleting and Consolidating
 Tests") asks a deletion PR to carry. The package's cover test binary is built
 once per run; each test's profile is cached under -cache by the binary's
-content, so an unchanged package never profiles a test twice. Export
-GOFLAGS=-trimpath so worktrees share build-cache entries. Tests are profiled
-one at a time; set GOMAXPROCS to bound the load.
+content, so an unchanged package never profiles a test twice. The key is the
+binary alone: after changing testdata or the environment tests read, pass a
+fresh -cache. Export GOFLAGS=-trimpath so worktrees share build-cache
+entries. Tests are profiled one at a time; set GOMAXPROCS to bound the load.
 
 Commands:
   profile -tests FILE           run each named test alone and cache its profile
   unique  -tests FILE           for each named test, the statements no other
-                                test in the package reaches (runs the package
+                                test in the package reaches, and the ones only
+                                other named tests also reach (runs the package
                                 once without the named tests)
   pairs   -tests FILE [-top N]  rank pairs of named tests by coverage
                                 containment, then assertion similarity
@@ -44,12 +46,15 @@ Commands:
                                 print the coverage diff and mutation results
                                 as Markdown; exit 1 when the batch lost more
                                 statements than the noise band
+                                (measure the band with two cover runs into
+                                separate -cache dirs)
 
 -tests FILE holds one top-level test name per line; blank lines and lines
 starting with # are ignored. A mutation spec is a JSON array of
 {"name", "file", "old", "new", "run"}: replace the one occurrence of old in
-file (relative to -pkg) with new, and run the tests the -test.run pattern run
-selects.
+file (relative to -pkg, tracked by git and unmodified) with new, and run the
+tests the -test.run pattern run selects. A mutation whose tests fail without
+it is invalid, not caught.
 
 Flags common to every command:
   -pkg DIR     the package directory (required)
@@ -58,7 +63,7 @@ Flags common to every command:
 `
 
 func testRedundancyMain(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	return testRedundancyRun(ctx, args, os.Stdout, os.Stderr)
 }
@@ -198,7 +203,7 @@ func redundancyUnique(ctx context.Context, r *testredundancy.Runner, names []str
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(w, "STMTS\tASSERTS\tTEST\tUNIQUE BLOCKS")
+	_, _ = fmt.Fprintln(w, "UNIQUE\tSHARED\tASSERTS\tTEST\tUNIQUE BLOCKS")
 	zero := 0
 	for _, u := range report.Unique {
 		if u.Stmts == 0 {
@@ -209,7 +214,7 @@ func redundancyUnique(ctx context.Context, r *testredundancy.Runner, names []str
 			b.File = r.DisplayFile(b.File)
 			blocks[i] = b.String()
 		}
-		_, _ = fmt.Fprintf(w, "%d\t%d\t%s\t%s\n", u.Stmts, u.Assertions, u.Name, strings.Join(blocks, " "))
+		_, _ = fmt.Fprintf(w, "%d\t%d\t%d\t%s\t%s\n", u.Stmts, u.SharedStmts, u.Assertions, u.Name, strings.Join(blocks, " "))
 	}
 	_, _ = fmt.Fprintf(w, "\n%d candidates profiled, %d with no unique statements, %d not profiled\n", len(report.Unique), zero, len(report.Failed))
 	writeUnprofiled(w, report.Failed)

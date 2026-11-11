@@ -2,6 +2,7 @@ package calc
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -51,5 +52,24 @@ func TestSignPositiveUnchecked(t *testing.T) {
 func TestFailsWhenAsked(t *testing.T) {
 	if os.Getenv("FIXTURE_FAIL") != "" {
 		t.Fatal("asked to fail")
+	}
+}
+
+// A panic ends the binary: no later test runs, and the profile is not written.
+func TestPanicsWhenAsked(t *testing.T) {
+	if os.Getenv("FIXTURE_PANIC") != "" {
+		panic("asked to panic")
+	}
+}
+
+// A child that outlives the test and holds its output open.
+func TestLeavesAChildWhenAsked(t *testing.T) {
+	if os.Getenv("FIXTURE_LEAK") == "" {
+		return
+	}
+	cmd := exec.Command("sleep", "60")
+	cmd.Stdout = os.Stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
 	}
 }

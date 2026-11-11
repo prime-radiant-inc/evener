@@ -19,8 +19,9 @@ func parseProfileText(t *testing.T, text string) Profile {
 }
 
 // A candidate's unique statements are the ones neither the rest of the package
-// nor any other candidate reaches; a block two candidates share is unique to
-// neither, so deleting both would need a separate decision.
+// nor any other candidate reaches. A block only candidates reach, two or more of
+// them, is unique to none and is counted as shared, so deleting the whole set
+// cannot hide it.
 func TestUniqueCoverageExcludesTheRestAndTheOtherCandidates(t *testing.T) {
 	rest := parseProfileText(t, ""+
 		"m/p/a.go:1.1,2.2 3 1\n"+
@@ -43,12 +44,16 @@ func TestUniqueCoverageExcludesTheRestAndTheOtherCandidates(t *testing.T) {
 		"TestOwnsBlock":  2,
 		"TestSharesTwo":  1,
 	}
+	wantShared := map[string]int{"TestSharesOne": 4, "TestSharesTwo": 4}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
 	}
 	for _, u := range got {
 		if u.Stmts != want[u.Name] {
 			t.Errorf("%s: %d unique statements, want %d (%+v)", u.Name, u.Stmts, want[u.Name], u.Blocks)
+		}
+		if u.SharedStmts != wantShared[u.Name] {
+			t.Errorf("%s: %d statements shared only among candidates, want %d", u.Name, u.SharedStmts, wantShared[u.Name])
 		}
 	}
 	owns := got[slices.IndexFunc(got, func(u Unique) bool { return u.Name == "TestOwnsBlock" })]
@@ -123,6 +128,10 @@ func TestChecks(t *testing.T) {
 	requireEqual(t, got, 4)
 	if got > 0 {
 		_ = got
+	}
+	var err error
+	if got > 1 && err != nil {
+		t.Log(err.Error())
 	}
 }
 

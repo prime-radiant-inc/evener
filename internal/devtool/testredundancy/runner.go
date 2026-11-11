@@ -110,14 +110,16 @@ func (r *Runner) DisplayFile(profileFile string) string {
 	return profileFile
 }
 
-// build compiles the package's cover test binary and hashes it.
+// build compiles the package's cover test binary and hashes it. Each build
+// gets its own file, so runs sharing the cache never run each other's binary;
+// the caller removes it.
 func (r *Runner) build(ctx context.Context) (testBinary, error) {
-	buildDir := filepath.Join(r.cacheDir, "build")
-	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+	bin, err := r.newBinaryPath(filepath.Base(r.absDir))
+	if err != nil {
 		return testBinary{}, err
 	}
-	bin := filepath.Join(buildDir, filepath.Base(r.absDir)+".test")
 	if err := r.goTestBuild(ctx, bin, "-cover"); err != nil {
+		_ = os.Remove(bin)
 		return testBinary{}, err
 	}
 	f, err := os.Open(bin)
@@ -134,6 +136,21 @@ func (r *Runner) build(ctx context.Context) (testBinary, error) {
 		return testBinary{}, err
 	}
 	return testBinary{path: bin, hashDir: hashDir}, nil
+}
+
+func (b testBinary) remove() { _ = os.Remove(b.path) }
+
+// newBinaryPath reserves a unique file in the cache's build directory.
+func (r *Runner) newBinaryPath(name string) (string, error) {
+	buildDir := filepath.Join(r.cacheDir, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(buildDir, name+"-*.test")
+	if err != nil {
+		return "", err
+	}
+	return f.Name(), f.Close()
 }
 
 // errBuild marks a package that does not compile.
@@ -157,6 +174,15 @@ type binaryRun struct {
 	failed  []string // top-level tests reported as failed
 	exitErr bool     // the binary exited nonzero
 	noTests bool     // -test.run matched nothing
+	panic   bool     // a panic or timeout ended the binary
+	profile string   // the coverage profile it wrote, which the caller owns
+}
+
+// crashed reports a run that ended before its tests finished: a panic, a
+// -test.timeout, or a nonzero exit with no failed test to account for it. Its
+// profile is missing or partial.
+func (b binaryRun) crashed() bool {
+	return b.panic || (b.exitErr && len(b.failed) == 0)
 }
 
 // noTestsRun is the testing package's report that -test.run matched nothing.
@@ -165,23 +191,36 @@ var noTestsRun = []byte("testing: warning: no tests to run")
 // failLine matches the testing package's report of a failed top-level test.
 var failLine = regexp.MustCompile(`(?m)^--- FAIL: (\S+)`)
 
+// panicLine matches the runtime's report of a panic, including the testing
+// package's -test.timeout panic.
+var panicLine = regexp.MustCompile(`(?m)^panic: `)
+
+// waitDelay bounds how long a process a test left behind can hold the output
+// pipe open after the binary exits.
+const waitDelay = 3 * time.Second
+
 // runBinary runs the test binary in the package directory, in its own process
-// group so cancelling stops anything a test started. With a profile path it
-// writes the coverage profile to a unique temporary name and renames it into
-// place only after the binary exits, so an interrupted run, or a concurrent
-// one sharing the cache, never sees a partial profile.
-func (r *Runner) runBinary(ctx context.Context, bin, profile string, timeout time.Duration, args ...string) (binaryRun, error) {
+// group, and kills that group when the binary is done or cancelled, so nothing
+// a test started outlives it. With withProfile it writes the coverage profile
+// to a unique temporary file that the caller renames into the cache or
+// removes: a concurrent run sharing the cache never sees a partial profile.
+func (r *Runner) runBinary(ctx context.Context, bin string, withProfile bool, timeout time.Duration, args ...string) (binaryRun, error) {
 	args = append([]string{"-test.count=1", "-test.timeout=" + timeout.String()}, args...)
-	var tmp string
-	if profile != "" {
-		f, err := os.CreateTemp(filepath.Dir(profile), filepath.Base(profile)+".partial-*")
+	var run binaryRun
+	if withProfile {
+		f, err := os.CreateTemp(filepath.Dir(bin), "profile-*.cov")
 		if err != nil {
 			return binaryRun{}, err
 		}
-		tmp = f.Name()
+		run.profile = f.Name()
 		_ = f.Close()
-		defer func() { _ = os.Remove(tmp) }()
-		args = append(args, "-test.coverprofile="+tmp)
+		args = append(args, "-test.coverprofile="+run.profile)
+	}
+	fail := func(err error) (binaryRun, error) {
+		if run.profile != "" {
+			_ = os.Remove(run.profile)
+		}
+		return binaryRun{}, err
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = r.absDir
@@ -191,29 +230,48 @@ func (r *Runner) runBinary(ctx context.Context, bin, profile string, timeout tim
 		procgroup.Kill(cmd.Process.Pid)
 		return nil
 	}
-	// A process a test left holding the output pipe cannot hold Wait open.
-	cmd.WaitDelay = 10 * time.Second
+	cmd.WaitDelay = waitDelay
 	if err := procgroup.Start(cmd); err != nil {
-		return binaryRun{}, err
+		return fail(err)
 	}
 	runErr := cmd.Wait()
+	procgroup.Kill(cmd.Process.Pid)
 	if ctx.Err() != nil {
-		return binaryRun{}, ctx.Err()
+		return fail(ctx.Err())
 	}
 	var exit *exec.ExitError
-	if runErr != nil && !errors.As(runErr, &exit) {
-		return binaryRun{}, runErr
+	if runErr != nil && !errors.As(runErr, &exit) && !errors.Is(runErr, exec.ErrWaitDelay) {
+		return fail(runErr)
 	}
-	run := binaryRun{out: out.Bytes(), exitErr: runErr != nil, noTests: bytes.Contains(out.Bytes(), noTestsRun)}
+	run.out = out.Bytes()
+	run.exitErr = exit != nil
+	run.noTests = bytes.Contains(run.out, noTestsRun)
+	run.panic = panicLine.Match(run.out)
 	for _, m := range failLine.FindAllSubmatch(run.out, -1) {
 		run.failed = append(run.failed, string(m[1]))
 	}
-	if profile != "" {
-		if err := os.Rename(tmp, profile); err != nil {
-			return binaryRun{}, err
-		}
-	}
 	return run, nil
+}
+
+// writeFileAtomic writes data to a unique temporary file and renames it over
+// path, so a concurrent reader sees the old content or the new, never a part.
+func writeFileAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		_ = os.Remove(f.Name())
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// tail is the last n lines of out.
+func tail(out []byte, n int) string {
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	return strings.Join(lines[max(0, len(lines)-n):], "\n")
 }
 
 // ProfileTests runs each named top-level test alone, one at a time, and caches
@@ -224,6 +282,7 @@ func (r *Runner) ProfileTests(ctx context.Context, names []string) ([]TestRun, e
 	if err != nil {
 		return nil, err
 	}
+	defer bin.remove()
 	return r.profileTests(ctx, bin, names)
 }
 
@@ -236,25 +295,23 @@ func (r *Runner) profileTests(ctx context.Context, bin testBinary, names []strin
 			continue
 		}
 		start := time.Now()
-		staged := profile + ".staged"
-		res, err := r.runBinary(ctx, bin.path, staged, testTimeout, "-test.run=^"+regexp.QuoteMeta(name)+"$")
+		res, err := r.runBinary(ctx, bin.path, true, testTimeout, "-test.run=^"+regexp.QuoteMeta(name)+"$")
 		if err != nil {
 			return runs, fmt.Errorf("%s: %w", name, err)
 		}
 		var run TestRun
 		switch {
 		case res.exitErr:
-			_ = os.Remove(staged)
 			run = TestRun{Name: name, Status: StatusFailed, Output: string(res.out)}
 		case res.noTests:
-			_ = os.Remove(staged)
 			run = TestRun{Name: name, Status: StatusMissing}
 		default:
-			if err := os.Rename(staged, profile); err != nil {
+			if err := os.Rename(res.profile, profile); err != nil {
 				return runs, err
 			}
 			run = TestRun{Name: name, Status: StatusRan, Profile: profile}
 		}
+		_ = os.Remove(res.profile)
 		_, _ = fmt.Fprintf(r.log, "[%d/%d] %s %s %.1fs\n", i+1, len(names), name, run.Status, time.Since(start).Seconds())
 		runs = append(runs, run)
 	}
@@ -269,6 +326,7 @@ func (r *Runner) ProfileRest(ctx context.Context, skip []string) (RestRun, error
 	if err != nil {
 		return RestRun{}, err
 	}
+	defer bin.remove()
 	return r.profileRest(ctx, bin, skip)
 }
 
@@ -295,15 +353,18 @@ func (r *Runner) profileRest(ctx context.Context, bin testBinary, skip []string)
 		args = append(args, "-test.skip=^("+strings.Join(quoted, "|")+")$")
 	}
 	start := time.Now()
-	staged := profile + ".staged"
-	res, err := r.runBinary(ctx, bin.path, staged, restTimeout, args...)
+	res, err := r.runBinary(ctx, bin.path, true, restTimeout, args...)
 	if err != nil {
 		return RestRun{}, err
 	}
-	if err := os.WriteFile(failedFile, []byte(strings.Join(res.failed, "\n")), 0o644); err != nil {
+	defer func() { _ = os.Remove(res.profile) }()
+	if res.crashed() {
+		return RestRun{}, fmt.Errorf("the package run crashed (a panic, timeout or exit), so its profile is incomplete:\n%s", tail(res.out, 40))
+	}
+	if err := writeFileAtomic(failedFile, []byte(strings.Join(res.failed, "\n"))); err != nil {
 		return RestRun{}, err
 	}
-	if err := os.Rename(staged, profile); err != nil {
+	if err := os.Rename(res.profile, profile); err != nil {
 		return RestRun{}, err
 	}
 	_, _ = fmt.Fprintf(r.log, "package run skipping %d tests: %d failed, %.0fs\n", len(sorted), len(res.failed), time.Since(start).Seconds())
@@ -328,6 +389,7 @@ func (r *Runner) Unique(ctx context.Context, names []string) (UniqueReport, erro
 	if err != nil {
 		return UniqueReport{}, err
 	}
+	defer bin.remove()
 	cands, failed, err := r.candidateProfiles(ctx, bin, names)
 	if err != nil {
 		return UniqueReport{}, err
@@ -357,6 +419,7 @@ func (r *Runner) Pairs(ctx context.Context, names []string) ([]Pair, []TestRun, 
 	if err != nil {
 		return nil, nil, err
 	}
+	defer bin.remove()
 	cands, failed, err := r.candidateProfiles(ctx, bin, names)
 	if err != nil {
 		return nil, nil, err

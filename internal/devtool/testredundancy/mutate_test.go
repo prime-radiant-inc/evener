@@ -21,9 +21,12 @@ func committedFixture(t *testing.T) (*Runner, string) {
 
 // Each mutation is applied alone, judged by the tests it names, and restored:
 // a mutation a named test fails on is caught, one they all pass is survived,
-// and one that cannot be applied or built is invalid rather than caught.
+// and one that cannot be applied or built, selects no test or every test, or
+// whose tests already fail on the unmutated source is invalid rather than
+// caught.
 func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 	r, dir := committedFixture(t)
+	t.Setenv("FIXTURE_FAIL", "1")
 	src := filepath.Join(dir, "calc.go")
 	original, err := os.ReadFile(src)
 	if err != nil {
@@ -35,6 +38,8 @@ func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 		{Name: "absent-text", File: "calc.go", Old: "return 42", New: "return 2", Run: "^TestSignZero$"},
 		{Name: "does-not-build", File: "calc.go", Old: "return 0", New: "return zero", Run: "^TestSignZero$"},
 		{Name: "no-tests", File: "calc.go", Old: "return 0", New: "return 2", Run: "^TestNoSuchTest$"},
+		{Name: "fails-unmutated", File: "calc.go", Old: "return 0", New: "return 2", Run: "^(TestSignZero|TestFailsWhenAsked)$"},
+		{Name: "selects-everything", File: "calc.go", Old: "return 0", New: "return 2", Run: ""},
 	}
 	results, err := r.Mutate(t.Context(), muts)
 	if err != nil {
@@ -46,6 +51,8 @@ func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 		"absent-text":        OutcomeInvalid,
 		"does-not-build":     OutcomeInvalid,
 		"no-tests":           OutcomeInvalid,
+		"fails-unmutated":    OutcomeInvalid,
+		"selects-everything": OutcomeInvalid,
 	}
 	for _, res := range results {
 		if res.Outcome != want[res.Name] {
@@ -92,5 +99,30 @@ func TestMutateRefusesAModifiedFile(t *testing.T) {
 	}
 	if string(after) != string(edited) {
 		t.Fatalf("the uncommitted edit was lost:\n%s", after)
+	}
+}
+
+// git restore cannot bring back a file git does not track, so a mutation of an
+// untracked or ignored file is refused before any change.
+func TestMutateRefusesAnUntrackedFile(t *testing.T) {
+	r, dir := committedFixture(t)
+	extra := filepath.Join(dir, "extra.go")
+	original := []byte("package calc\n\nfunc extra() int { return 0 }\n")
+	if err := os.WriteFile(extra, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("extra.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Mutate(t.Context(), []Mutation{{Name: "m", File: "extra.go", Old: "return 0", New: "return 2", Run: "^TestSignZero$"}})
+	if err == nil {
+		t.Fatal("Mutate accepted a file git does not track")
+	}
+	after, err := os.ReadFile(extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("the untracked file was changed:\n%s", after)
 	}
 }

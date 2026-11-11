@@ -124,6 +124,42 @@ func TestProfileTestsCachesByTestBinary(t *testing.T) {
 	}
 }
 
+// A package run that crashed covers only the tests before the crash, so it is
+// an error and is not cached: the run after the cause is gone runs afresh.
+func TestProfileRestRefusesToCacheACrashedRun(t *testing.T) {
+	r, _ := fixtureRunner(t)
+	t.Setenv("FIXTURE_PANIC", "1")
+	if _, err := r.ProfileRest(t.Context(), nil); err == nil {
+		t.Fatal("a package run that panicked returned a profile")
+	}
+	t.Setenv("FIXTURE_PANIC", "")
+	rest, err := r.ProfileRest(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("ProfileRest after the panic is gone: %v", err)
+	}
+	p, err := LoadProfile(rest.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Covered() == 0 {
+		t.Fatalf("the rerun returned an empty profile: %d of %d", p.Covered(), p.Total())
+	}
+}
+
+// A test that passes but leaves a child holding its output is profiled like
+// any other passing test; the child does not stop the batch.
+func TestProfileTestsKeepsGoingPastALeakedChild(t *testing.T) {
+	r, _ := fixtureRunner(t)
+	t.Setenv("FIXTURE_LEAK", "1")
+	runs, err := r.ProfileTests(t.Context(), []string{"TestLeavesAChildWhenAsked", "TestSignZero"})
+	if err != nil {
+		t.Fatalf("ProfileTests: %v", err)
+	}
+	if got := statuses(runs); got["TestLeavesAChildWhenAsked"] != StatusRan || got["TestSignZero"] != StatusRan {
+		t.Fatalf("statuses = %v, want both ran", got)
+	}
+}
+
 func mapsEqual(a, b map[string]Status) bool {
 	if len(a) != len(b) {
 		return false
@@ -158,8 +194,7 @@ func TestUniqueFindsWhatOnlyEachCandidateReaches(t *testing.T) {
 	for _, name := range []string{"TestSignZero", "TestSignPositiveUnchecked"} {
 		u := got[name]
 		if u.Stmts != 1 || len(u.Blocks) != 1 {
-			t.Errorf("%s unique = %+v, want its one return statement", name, u)
-			continue
+			t.Fatalf("%s unique = %+v, want its one return statement", name, u)
 		}
 		if file := r.DisplayFile(u.Blocks[0].File); file != filepath.Join(dir, "calc.go") {
 			t.Errorf("%s block file displays as %q, want the package-relative source file", name, file)

@@ -128,19 +128,22 @@ func (p Profile) coveredMinus(other Profile) ([]BlockRef, int) {
 	})
 }
 
-// Unique is what one candidate test alone reaches in its package, and how
-// many assertions it makes (see Assertions).
+// Unique is what one candidate test alone reaches in its package. SharedStmts
+// counts the statements it reaches that only other candidates also reach:
+// deleting every candidate loses those too. Assertions counts its assertions
+// (see Assertions).
 type Unique struct {
-	Name       string
-	Stmts      int
-	Blocks     []BlockRef
-	Assertions int
+	Name        string
+	Stmts       int
+	Blocks      []BlockRef
+	SharedStmts int
+	Assertions  int
 }
 
 // UniqueCoverage reports, for each candidate, the statements it reaches that
 // neither rest (a run of every other test in the package) nor any other
-// candidate reaches. Rows come back fewest unique statements first, then by
-// name: the head of the list is what can go without lowering coverage.
+// candidate reaches, and the statements it shares only with other candidates.
+// Rows come back fewest unique statements first, then by name.
 func UniqueCoverage(candidates map[string]Profile, rest Profile) []Unique {
 	reachedBy := map[blockKey]int{}
 	for _, p := range candidates {
@@ -151,11 +154,15 @@ func UniqueCoverage(candidates map[string]Profile, rest Profile) []Unique {
 	names := slices.Sorted(maps.Keys(candidates))
 	out := make([]Unique, 0, len(names))
 	for _, name := range names {
-		blocks, stmts := candidates[name].coveredWhere(func(k blockKey) bool {
-			_, inRest := rest.covered[k]
-			return !inRest && reachedBy[k] == 1
-		})
-		out = append(out, Unique{Name: name, Stmts: stmts, Blocks: blocks})
+		onlyCandidates := func(want func(int) bool) func(blockKey) bool {
+			return func(k blockKey) bool {
+				_, inRest := rest.covered[k]
+				return !inRest && want(reachedBy[k])
+			}
+		}
+		blocks, stmts := candidates[name].coveredWhere(onlyCandidates(func(n int) bool { return n == 1 }))
+		_, shared := candidates[name].coveredWhere(onlyCandidates(func(n int) bool { return n > 1 }))
+		out = append(out, Unique{Name: name, Stmts: stmts, Blocks: blocks, SharedStmts: shared})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Stmts < out[j].Stmts })
 	return out
@@ -315,7 +322,8 @@ func failsTest(body *ast.BlockStmt) bool {
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && failureCalls[sel.Sel.Name] {
+			// A zero-argument Error is error.Error(), not testing.TB.Error.
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && failureCalls[sel.Sel.Name] && (sel.Sel.Name != "Error" || len(call.Args) > 0) {
 				found = true
 			}
 		}
