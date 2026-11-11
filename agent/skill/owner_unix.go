@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -78,4 +79,48 @@ func ancestorDirTrusted(info fs.FileInfo) bool {
 		return false
 	}
 	return int(stat.Uid) == os.Getuid() || stat.Uid == 0
+}
+
+// readUIDMap is the /proc/self/uid_map boundary. A platform or a filtered proc
+// view that cannot report the map leaves it empty, and no owner is then treated
+// as unmapped, so the read-only-mount exemption fails closed.
+var readUIDMap = func() []byte {
+	text, _ := os.ReadFile("/proc/self/uid_map")
+	return text
+}
+
+// ancestorOwnerUnmapped reports whether info's owner is a uid this user
+// namespace does not map. Unmapped uids appear as the overflow uid, which is how
+// host-root-owned ancestors look inside a sandbox that maps only the session
+// user (issue #5809). A mapped owner, including a foreign user mapped into the
+// namespace, is not unmapped and gets no exemption.
+func ancestorOwnerUnmapped(info fs.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	mapped, known := uidMapped(stat.Uid, string(readUIDMap()))
+	return known && !mapped
+}
+
+// uidMapped reports whether uid falls inside one of a uid_map's inside ranges.
+// known is false when the map holds no parseable range, so an absent or
+// filtered map is never mistaken for a map that makes every uid unmapped.
+func uidMapped(uid uint32, text string) (mapped, known bool) {
+	for line := range strings.SplitSeq(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		inside, insideErr := strconv.ParseUint(fields[0], 10, 32)
+		length, lengthErr := strconv.ParseUint(fields[2], 10, 32)
+		if insideErr != nil || lengthErr != nil || length == 0 {
+			continue
+		}
+		known = true
+		if uint64(uid) >= inside && uint64(uid) < inside+length {
+			return true, true
+		}
+	}
+	return false, known
 }

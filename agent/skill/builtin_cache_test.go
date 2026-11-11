@@ -25,6 +25,37 @@ func skillFSFixture(files map[string]string) fstest.MapFS {
 	return m
 }
 
+// Issue #5809: the broader-than-needed ancestor warning reaches the session
+// through the skill diagnostic channel, which session init turns into a
+// user-facing warning, rather than a package log line.
+func TestEmbeddedSkillsDiagnosticsReportsAcceptedBroadAncestors(t *testing.T) {
+	broadAncestorsMu.Lock()
+	saved := broadAncestors
+	broadAncestors = nil
+	broadAncestorsMu.Unlock()
+	t.Cleanup(func() {
+		broadAncestorsMu.Lock()
+		broadAncestors = saved
+		broadAncestorsMu.Unlock()
+	})
+	if got := EmbeddedSkillsDiagnostics(); got != nil {
+		t.Fatalf("diagnostics before an acceptance = %v, want none", got)
+	}
+	rememberBroadAncestors([]string{"/home", "/home/user"})
+	got := EmbeddedSkillsDiagnostics()
+	if len(got) != 1 {
+		t.Fatalf("diagnostics = %v, want one", got)
+	}
+	for _, ancestor := range []string{"/home", "/home/user"} {
+		if !strings.Contains(got[0].Message, ancestor) {
+			t.Fatalf("diagnostic = %+v, want it to name %s", got[0], ancestor)
+		}
+	}
+	if got[0].Source != "embedded" {
+		t.Fatalf("diagnostic = %+v, want source embedded", got[0])
+	}
+}
+
 func sampleSkillFS() fstest.MapFS {
 	return skillFSFixture(map[string]string{
 		"sample/SKILL.md":               sampleSkillDocument,

@@ -52,3 +52,7 @@ func processCopyRootTrusted(fs.FileInfo) bool { return false }
 // through fs.FileInfo, and the user cache directory's chain is protected by the
 // OS. The accepted limit is the same as tempRootTrusted's.
 func ancestorDirTrusted(fs.FileInfo) bool { return true }
+
+// ancestorOwnerUnmapped cannot be checked portably on Windows, so the
+// read-only-mount exemption never applies there.
+func ancestorOwnerUnmapped(fs.FileInfo) bool { return false }

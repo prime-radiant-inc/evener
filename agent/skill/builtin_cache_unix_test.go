@@ -3,6 +3,7 @@
 package skill
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -181,6 +182,9 @@ func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *t
 // a read-only mount whose mode grants no group or other write.
 func TestReadOnlyMountAncestor_AcceptsOnlyANonWritableAncestorOnAReadOnlyMount(t *testing.T) {
 	otherUser := uint32(os.Getuid()) + 1
+	savedUIDMap := readUIDMap
+	t.Cleanup(func() { readUIDMap = savedUIDMap })
+	readUIDMap = func() []byte { return []byte(fmt.Sprintf("%d %d 1\n", os.Getuid(), os.Getuid())) }
 	unverifiableOwner := func(perm os.FileMode) fs.FileInfo {
 		return fakeFileInfo{mode: os.ModeDir | perm, uid: otherUser}
 	}
@@ -209,6 +213,36 @@ func TestReadOnlyMountAncestor_AcceptsOnlyANonWritableAncestorOnAReadOnlyMount(t
 			}
 		})
 	}
+	// A user this namespace maps is not the overflow uid: it can be named, and
+	// it can rename its own directories through a writable host mount.
+	readUIDMap = func() []byte {
+		return []byte(fmt.Sprintf("%d %d 1\n%d %d 1\n", os.Getuid(), os.Getuid(), otherUser, otherUser))
+	}
+	if readOnlyMountAncestor(unverifiableOwner(0o755), mounts, "/work/user") {
+		t.Fatal("accepted an ancestor owned by a mapped foreign user")
+	}
+	// A map this process cannot read is no evidence that the owner is unmapped.
+	readUIDMap = func() []byte { return nil }
+	if readOnlyMountAncestor(unverifiableOwner(0o755), mounts, "/work/user") {
+		t.Fatal("accepted an ancestor with no uid-map evidence")
+	}
+
+	readUIDMap = func() []byte { return []byte(fmt.Sprintf("%d %d 1\n", os.Getuid(), os.Getuid())) }
+	// Stacked mounts at the covering path: the table does not order them so the
+	// visible mount can be picked, so neither position is confinement evidence.
+	stacked := parseMountPoints("" +
+		"1 0 0:1 / / rw - tmpfs tmpfs rw\n" +
+		"2 1 0:2 / /home ro - tmpfs tmpfs ro\n" +
+		"3 2 0:3 / /home rw - tmpfs tmpfs rw\n")
+	if readOnlyMountAncestor(unverifiableOwner(0o755), stacked, "/home/alice") {
+		t.Fatal("accepted a path whose covering path has stacked mounts")
+	}
+	// A filtered or truncated table without its root is not a mount tree this
+	// check can resolve.
+	partial := parseMountPoints("2 1 0:2 / /home ro - tmpfs tmpfs ro\n")
+	if readOnlyMountAncestor(unverifiableOwner(0o755), partial, "/home/alice") {
+		t.Fatal("accepted a mount table without a root")
+	}
 }
 
 // Issue #5809: the chain accepts a non-writable ancestor whose owner cannot be
@@ -227,6 +261,9 @@ func TestEnsureTrustedAncestors_AcceptsANonWritableAncestorOnAReadOnlyMountWithA
 	t.Cleanup(func() { warnBroadAncestors = savedWarn })
 	savedMounts := readMountInfo
 	t.Cleanup(func() { readMountInfo = savedMounts })
+	savedUIDMap := readUIDMap
+	t.Cleanup(func() { readUIDMap = savedUIDMap })
+	readUIDMap = func() []byte { return []byte(fmt.Sprintf("%d %d 1\n", os.Getuid(), os.Getuid())) }
 
 	otherUser := uint32(os.Getuid()) + 1
 	ancestorInfo := fs.FileInfo(fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser})
@@ -240,10 +277,30 @@ func TestEnsureTrustedAncestors_AcceptsANonWritableAncestorOnAReadOnlyMountWithA
 	warnBroadAncestors = func(ancestors []string) {
 		warnings = append(warnings, append([]string(nil), ancestors...))
 	}
-
-	readMountInfo = func() []byte {
-		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	mountTable := func(options string) []byte {
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " " + options + ",relatime - tmpfs tmpfs rw\n")
 	}
+	noWarnings := func(t *testing.T) {
+		t.Helper()
+		if len(warnings) != 0 {
+			t.Fatalf("warned about a refused ancestor: %v", warnings)
+		}
+	}
+
+	// A fully trusted chain consults neither the mount table nor the warning.
+	statAncestor = os.Stat
+	if err := ensureTrustedAncestors(inner); err != nil {
+		t.Fatalf("refused a trusted chain: %v", err)
+	}
+	noWarnings(t)
+	statAncestor = func(name string) (fs.FileInfo, error) {
+		if name == outer {
+			return ancestorInfo, nil
+		}
+		return os.Stat(name)
+	}
+
+	readMountInfo = func() []byte { return mountTable("ro") }
 	if err := ensureTrustedAncestors(inner); err != nil {
 		t.Fatalf("refused a non-writable ancestor on a read-only mount: %v", err)
 	}
@@ -252,26 +309,37 @@ func TestEnsureTrustedAncestors_AcceptsANonWritableAncestorOnAReadOnlyMountWithA
 	}
 
 	warnings = nil
-	readMountInfo = func() []byte {
-		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " rw,relatime - tmpfs tmpfs rw\n")
-	}
+	readMountInfo = func() []byte { return mountTable("rw") }
 	if err := ensureTrustedAncestors(inner); err == nil {
 		t.Fatal("accepted a non-writable ancestor on a writable mount")
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("warned about a refused ancestor: %v", warnings)
-	}
+	noWarnings(t)
 
-	readMountInfo = func() []byte {
-		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
-	}
+	readMountInfo = func() []byte { return mountTable("ro") }
 	ancestorInfo = fakeFileInfo{mode: os.ModeDir | 0o777, uid: otherUser}
 	if err := ensureTrustedAncestors(inner); err == nil {
 		t.Fatal("accepted a world-writable ancestor on a read-only mount")
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("warned about a refused ancestor: %v", warnings)
+	noWarnings(t)
+
+	// A symlinked ancestor makes the stat'ed object and the judged mount differ,
+	// so the path-based exemption does not apply even when the target passes the
+	// ownership check.
+	linkRoot := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(outer, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
 	}
+	statAncestor = func(name string) (fs.FileInfo, error) {
+		if name == outer || name == linkRoot {
+			return fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser}, nil
+		}
+		return os.Stat(name)
+	}
+	readMountInfo = func() []byte { return mountTable("ro") }
+	if err := ensureTrustedAncestors(filepath.Join(linkRoot, "inner")); err == nil {
+		t.Fatal("accepted a symlinked ancestor on a read-only mount")
+	}
+	noWarnings(t)
 }
 
 // The read-only filesystem-root rule belongs to the filesystem root alone: the

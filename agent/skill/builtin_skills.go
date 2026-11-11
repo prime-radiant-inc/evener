@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -428,11 +427,12 @@ func ensureTrustedProcessRoot(root string) error {
 
 // ensureTrustedAncestors verifies the chain above root, which must already have
 // been verified by the caller. A writable ancestor lets another user replace the
-// directories on the way to root, so each one must carry the sticky bit or be
-// owned by this user or by root with no group or other write; ownership by root
-// is accepted, unlike for the root itself, because the platform's temp chain
-// above a user's own directory is normally root-owned. Ancestors are resolved
-// through symlinks the way path lookup resolves them.
+// directories on the way to root, so each one carries the sticky bit, or is
+// owned by this user or by root with no group or other write, or qualifies for
+// the read-only-mount exception below; ownership by root is accepted, unlike for
+// the root itself, because the platform's temp chain above a user's own
+// directory is normally root-owned. Ancestors are resolved through symlinks the
+// way path lookup resolves them.
 //
 // The filesystem root is accepted when it is on a read-only mount, whatever its
 // owner: the mount pins that inode, no parent directory holds its name, and the
@@ -444,12 +444,13 @@ func ensureTrustedProcessRoot(root string) error {
 // writable host mount.
 //
 // An ordinary ancestor whose owner cannot be verified gets the same acceptance
-// only when the mount covering it refuses writes and its mode grants no group or
-// other write, and each acceptance is reported once as a warning: that is the
-// TMPDIR-under-/home shape of issue #5809. Renaming an ordinary ancestor needs
-// write on its parent, so a broader-than-needed ancestor on a read-only mount is
-// accepted rather than refusing a legitimate configuration, but a group- or
-// other-writable ancestor is still replaceable and still refused.
+// only when the owner is unmapped, the mount covering it refuses writes, and its
+// mode grants no group or other write; the accepted ancestors are reported in
+// one warning per chain, which is the TMPDIR-under-/home shape of issue #5809.
+// Renaming an ordinary ancestor needs write on its parent, so a
+// broader-than-needed ancestor on a read-only mount is accepted rather than
+// refusing a legitimate configuration, but a group- or other-writable ancestor
+// is still replaceable and still refused.
 func ensureTrustedAncestors(root string) error {
 	var (
 		mounts     []mountPoint
@@ -479,7 +480,15 @@ func ensureTrustedAncestors(root string) error {
 			} else {
 				trusted = readOnlyMountAncestor(info, mounts, dir)
 				if trusted {
-					broad = append(broad, dir)
+					// The exemption judges the pathname's mount, so it applies
+					// only when the pathname reaches the directory with no link
+					// in between: otherwise os.Stat may describe a different
+					// object than the mount the path sits on.
+					if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved == dir {
+						broad = append(broad, dir)
+					} else {
+						trusted = false
+					}
 				}
 			}
 		}
@@ -501,12 +510,47 @@ func ensureTrustedAncestors(root string) error {
 // of a real directory cannot be arranged without privilege.
 var statAncestor = os.Stat
 
-// warnBroadAncestors reports ancestors accepted by the read-only-mount rule
-// despite an owner the process cannot verify. A warning names them so the user
-// can narrow the configured path, which is broader than the private cache root
-// needs.
-var warnBroadAncestors = func(ancestors []string) {
-	slog.Warn("skill cache ancestors are broader than needed but accepted on a read-only mount", "ancestors", ancestors)
+// warnBroadAncestors records ancestors accepted by the read-only-mount rule
+// despite an owner the process cannot verify, so discovery can report them
+// through the same skill diagnostics the session shows the user. It is a seam
+// so a test can observe the one warning the chain emits.
+var warnBroadAncestors = rememberBroadAncestors
+
+// broadAncestorsMu guards broadAncestors. The resolution paths that record an
+// acceptance already hold the cache or process lock, so this is a separate lock
+// rather than a field on either.
+var (
+	broadAncestorsMu sync.Mutex
+	broadAncestors   []string
+)
+
+// rememberBroadAncestors keeps the ancestors accepted by the read-only-mount
+// rule for the base this process resolved.
+func rememberBroadAncestors(ancestors []string) {
+	if len(ancestors) == 0 {
+		return
+	}
+	broadAncestorsMu.Lock()
+	broadAncestors = append([]string(nil), ancestors...)
+	broadAncestorsMu.Unlock()
+}
+
+// EmbeddedSkillsDiagnostics reports the broader-than-needed ancestors the
+// read-only-mount rule accepted while resolving the bundled-skills base. It is
+// how the warning reaches a session: Discover appends these to the catalog
+// diagnostics, and session init turns each into a user-facing warning.
+func EmbeddedSkillsDiagnostics() []Diagnostic {
+	broadAncestorsMu.Lock()
+	defer broadAncestorsMu.Unlock()
+	if len(broadAncestors) == 0 {
+		return nil
+	}
+	return []Diagnostic{{
+		Category: "broad_ancestor",
+		Name:     "embedded",
+		Source:   "embedded",
+		Message:  "accepted broader-than-needed skill cache ancestors on a read-only mount: " + strings.Join(broadAncestors, ", "),
+	}}
 }
 
 // readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
@@ -530,14 +574,18 @@ func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) b
 }
 
 // readOnlyMountAncestor reports whether an ordinary ancestor that failed the
-// ownership check may still be accepted: the mount covering it refuses writes,
-// so this namespace cannot replace it, and its mode grants no group or other
-// write, so another user cannot rename the directories beneath it through a
-// writable mount of the same host filesystem. The owner is not verified because
-// a user namespace that does not map the ancestor's host owner reports the
-// overflow uid (issue #5809).
+// ownership check may still be accepted: its owner is a uid this user namespace
+// does not map (host root appears as the overflow uid inside a sandbox that maps
+// only the session user), the mount covering it refuses writes, and its mode
+// grants no group or other write, so another user cannot rename the directories
+// beneath it through a writable mount of the same host filesystem. A mapped
+// foreign owner is deliberately not accepted: the process can name that user,
+// and that user could rename the ancestor through a writable host mount.
 func readOnlyMountAncestor(info fs.FileInfo, mounts []mountPoint, dir string) bool {
 	if info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	if !ancestorOwnerUnmapped(info) {
 		return false
 	}
 	return readOnlyMountAt(mounts, dir)
