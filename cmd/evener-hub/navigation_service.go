@@ -96,8 +96,8 @@ type navigationServiceConfig struct {
 	NewTimer     func(time.Duration) navigationTimer
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
-	// Logf receives one line per slow or periodic build and per timed-out
-	// build. Nil disables them.
+	// Logf receives one line per slow or periodic build and per failed
+	// build, timed out or not. Nil disables them.
 	Logf func(format string, args ...any)
 	// historyEntries and historyBytes override the default delta-history
 	// retention. Production leaves both zero for the full default budget;
@@ -840,9 +840,17 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 	started := time.Now()
 	stats := navigationBuildStats{phase: "capture"}
 	defer func() {
-		if flight.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			stats.Total = time.Since(started)
+		if flight.err == nil {
+			return
+		}
+		stats.Total = time.Since(started)
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			s.statsLog.timedOut(stats)
+		case ctx.Err() == nil:
+			// A canceled build is the service stopping; any other failure
+			// leaves the navigation surface stale, so the log must say why.
+			s.statsLog.failed(stats, flight.err)
 		}
 	}()
 	for {
@@ -958,6 +966,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		s.core = &navigationCoreSnapshot{projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
 		s.coreBuilds++
 		if flight.mutated {
+			stats.phase = "commit"
 			flight.mutation, err = s.commitTargetsLocked(changes, flight.hint)
 			if err != nil {
 				s.mu.Unlock()
