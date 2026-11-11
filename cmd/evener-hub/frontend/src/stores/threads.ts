@@ -6686,17 +6686,33 @@ function handleNotification(n: AnyNotification): void {
     const acceptedFrame =
       n.method === "history/updated" &&
       (acceptedFrameRefs.has(settlementRef) || (!historyInvalid && frameNamesIdentity));
+    const deferredConsumed = n.method === "thread/queueChanged" && consumed.length > 0 && getWiredClient() !== null;
     let retireIds = mutationIdentities;
     let retainIds: string[] = [];
     if (!acceptedFrame) {
       const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
       const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
       retireIds = transcriptIds
-        ? mutationIdentities.filter((id) => transcriptIds.has(id) || consumed.includes(id))
-        : consumed;
+        ? mutationIdentities.filter((id) => transcriptIds.has(id) || (!deferredConsumed && consumed.includes(id)))
+        : deferredConsumed
+          ? []
+          : consumed;
       retainIds = transcriptIds ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id)) : [];
     }
     const runtime = getMutationRuntime();
+    if (runtime && deferredConsumed) {
+      const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
+      for (const id of consumed) pending.add(id);
+      pendingConsumedSettlements.set(settlementRef, pending);
+      const client = getWiredClient();
+      if (client) {
+        void handleReady(client, getReadyEpoch(), settlementRef).finally(() => {
+          const ids = pendingConsumedSettlements.get(settlementRef);
+          pendingConsumedSettlements.delete(settlementRef);
+          if (ids && ids.size > 0) void runtime.dispatcher.reconcileIdentities(ids);
+        });
+      }
+    }
     if (runtime && retireIds.length > 0) {
       void runtime.dispatcher
         .reconcileIdentities(retireIds)
@@ -7391,6 +7407,7 @@ function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
 // singleton bookkeeping (the thread owners, wiredClient, ...).
 let replayAcceptedCopiesOnReady = false;
 const acceptedCopyReplayRefs = new Set<string>();
+const pendingConsumedSettlements = new Map<string, Set<string>>();
 connectionStore.subscribe((state) => {
   if (state.client?.state !== "ready") replayAcceptedCopiesOnReady = true;
   if (state.client?.state !== "ready" && threadsStore.getState().mutationAuthorityRefs.size > 0) {
@@ -9218,6 +9235,7 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   replayAcceptedCopiesOnReady = false;
   acceptedCopyReplayRefs.clear();
+  pendingConsumedSettlements.clear();
   resetThreadOwnersForTests();
   cacheLifetimeHeld.clear();
   // A pre-reset ensure may still await the cache. Do not reuse its generation
