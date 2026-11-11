@@ -374,8 +374,20 @@ const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
 const NO_PENDING_MESSAGES: PendingMessage[] = [];
+const NO_TRANSCRIPT_IDS: ReadonlySet<string> = new Set();
+const transcriptIdsByModel = new WeakMap<object, Set<string>>();
 
 type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
+
+function transcriptIdsFor(model: ThreadsPortModel): ReadonlySet<string> {
+  if (!model) return NO_TRANSCRIPT_IDS;
+  let ids = transcriptIdsByModel.get(model);
+  if (ids === undefined) {
+    ids = transcriptMutationIds(model);
+    transcriptIdsByModel.set(model, ids);
+  }
+  return ids;
+}
 
 // Both pending projections read the same two stores.
 function subscribePendingInputs(ref: string, onStoreChange: () => void): () => void {
@@ -478,7 +490,7 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
 export function usePendingMessages(ref: string): PendingMessage[] {
   const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
-    for (const id of transcriptMutationIds(model)) deliveredHere.add(id);
+    for (const id of transcriptIdsFor(model)) deliveredHere.add(id);
   }, [model]);
 
   const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange), [ref]);
@@ -507,7 +519,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     ) {
       return cached.rows;
     }
-    const transcriptIds = transcriptMutationIds(model);
+    const transcriptIds = transcriptIdsFor(model);
     const rows = projectPendingMessages({
       ref,
       outbox: [...outbox.values()],
@@ -559,7 +571,7 @@ function useOutboxRecordsByState(ref: string, state: "blockedUnknown" | "cancele
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = outboxEntriesByState(outbox, ref, state);
+    const records = state === "canceled" ? canceledEntries(outbox, ref) : outboxEntriesByState(outbox, ref, state);
     return records.length > 0 ? records : NO_BLOCKED;
   }, [outbox, ref, state]);
 }
@@ -578,14 +590,7 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
 // composition's only durable copy, and the session the user is looking at
 // must still show it.
 export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
-  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
-  useEffect(() => {
-    void refreshPendingTurnsProjection(ref);
-  }, [ref]);
-  return useMemo(() => {
-    const records = canceledEntries(outbox, ref);
-    return records.length > 0 ? records : NO_BLOCKED;
-  }, [outbox, ref]);
+  return useOutboxRecordsByState(ref, "canceled");
 }
 
 // A durable mutation and the projection refresh that publishes it are one

@@ -1017,6 +1017,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPr
 // AcceptClientMutationPromoteQueuedAsSteerAs accepts or replays promotion attributed to actor.
 func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	var response appwire.TurnPromoteQueuedAsSteerResponse
+	var consumedClientMutationIDs []string
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
 		actor:         actor,
 		method:        clientMutationMethodPromote,
@@ -1060,6 +1061,10 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")
 		response = appwire.TurnPromoteQueuedAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
+		if entry.ClientMutationID != "" {
+			response.Receipt.ConsumedClientMutationIDs = []string{entry.ClientMutationID}
+			consumedClientMutationIDs = []string{entry.ClientMutationID}
+		}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -1086,7 +1091,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 		s.wakeForPendingSteering()
 		return replayed, nil
 	}
-	s.reflectDurableInputQueue()
+	s.reflectDurableInputQueue(consumedClientMutationIDs...)
 	s.reflectDurableClientSteering()
 	// The promoted message is steering now: a waiting call carries it in one
 	// more try, as it does a steer.
@@ -1099,6 +1104,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 // input cancellation.
 func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	var response appwire.TurnCancelQueuedResponse
+	var consumedClientMutationIDs []string
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
 		method:               clientMutationMethodCancel,
 		id:                   params.ClientMutationID,
@@ -1135,6 +1141,10 @@ func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueu
 			RemovedImages: len(queued.Images),
 			Receipt:       mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method)),
 		}
+		if entry.ClientMutationID != "" {
+			response.Receipt.ConsumedClientMutationIDs = []string{entry.ClientMutationID}
+			consumedClientMutationIDs = []string{entry.ClientMutationID}
+		}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -1159,7 +1169,7 @@ func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueu
 		}
 		return replayed, nil
 	}
-	s.reflectDurableInputQueue()
+	s.reflectDurableInputQueue(consumedClientMutationIDs...)
 	s.wakeForPendingQueuedInput()
 	return response, nil
 }

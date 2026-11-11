@@ -243,11 +243,11 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // server replays it, and the replay's own receipt carries the same
       // consumed ids again. Settling the drain first would durably remove
       // the one record whose receipt names them, with no path left to retry.
-      // Scoped to method === "turn/drainAsSteer": the field means "consumed
-      // by THIS drain," never "consumed by whatever this receipt happens to
-      // be for" -- a well-formed array riding a different mutation's receipt
-      // must settle nothing.
-      if (method === "turn/drainAsSteer") {
+      // Scoped to the transitions that consume a queue entry: the field means
+      // "consumed by THIS transition," never "consumed by whatever this receipt
+      // happens to be for" -- a well-formed array riding a different mutation's
+      // receipt must settle nothing.
+      if (method === "turn/drainAsSteer" || method === "turn/cancelQueued" || method === "turn/promoteQueuedAsSteer") {
         const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
         if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }

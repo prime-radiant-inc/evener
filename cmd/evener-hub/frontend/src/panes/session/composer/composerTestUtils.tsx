@@ -124,7 +124,7 @@ export async function mountComposerWithHandle(
       {options.pendingStack === false ? (
         <Composer ref={ref} source={source} focused={options.focused ?? false} />
       ) : (
-        <ComposerWithPendingStack ref={ref} source={source} />
+        <ComposerWithPendingStack ref={ref} source={source} focused={options.focused ?? false} />
       )}
     </ClientProvider>,
   );

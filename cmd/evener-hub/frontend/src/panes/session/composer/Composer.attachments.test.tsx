@@ -268,8 +268,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         });
         const row = screen.getByText("merge me").closest("li");
         if (!row) throw new Error("missing rejected queue row");
-        const editRecovery = within(row).getByRole("button", { name: "Edit message" });
-        expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
+        const editRecovery = within(row).getByRole<HTMLButtonElement>("button", { name: "Edit message" });
+        expect(editRecovery.disabled).toBe(true);
         fireEvent.click(editRecovery);
       }
     } finally {

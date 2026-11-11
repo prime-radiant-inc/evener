@@ -1004,22 +1004,27 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         await this.#discardSupersededNoteRecovery(transaction, subject);
         const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
         const retainDisplay = options?.retainDisplayCopy === true && carriesOptimisticInput(subject);
+        const settleOptimisticCopy = async (key: string, deleteWhenMissing: boolean): Promise<void> => {
+          if (retainDisplay) {
+            await requestResult(optimistic.put(acceptedRecord(subject)));
+          } else if (deleteWhenMissing) {
+            await requestResult(optimistic.delete(key));
+          }
+        };
         if (named) {
           if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
-          else if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+          await settleOptimisticCopy(clientMutationId, optimisticRecord !== undefined);
           if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
             await requestResult(recovery.delete(clientMutationId));
         } else if (wireCarriers.length > 0) {
           // The wire lives only as unedited recovery copies: the carrier is
           // the subject. When the caller needs the display copy, convert it to
           // the optimistic store before retiring the recovery row.
-          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
+          await settleOptimisticCopy(subject.clientMutationId, false);
           await requestResult(recovery.delete(subject.clientMutationId));
         } else {
           await requestResult(outbox.delete(subject.clientMutationId));
-          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
-          else await requestResult(optimistic.delete(subject.clientMutationId));
+          await settleOptimisticCopy(subject.clientMutationId, true);
         }
         // The same one sibling sweep as settleReceipt.
         const retiredIds = await this.#retireWireFamily(transaction, family, {

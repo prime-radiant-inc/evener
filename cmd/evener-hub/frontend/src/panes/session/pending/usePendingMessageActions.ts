@@ -42,7 +42,7 @@ type PendingRowKind = "recovery" | "queue" | "local";
 
 function rowKind(row: PendingMessage): PendingRowKind {
   if (row.recovery) return "recovery";
-  if (row.queueEntryId !== undefined && row.outbox === undefined) return "queue";
+  if (row.queueEntryId !== undefined) return "queue";
   return "local";
 }
 
@@ -87,8 +87,12 @@ export function usePendingMessageActions(context: PendingActionContext) {
       const target = record.targetRef;
       if (action === "edit") {
         const recovery = await editQueuedPendingTurn(id, target);
-        if (recovery) await context.onEditRecovery?.(recovery);
-        else pushRecoveryRefusal("changed");
+        if (recovery) {
+          await context.onEditRecovery?.(recovery);
+          context.focusComposer?.();
+        } else {
+          pushRecoveryRefusal("changed");
+        }
       } else if (!(await removeQueuedPendingTurn(id, target))) {
         pushRecoveryRefusal("changed");
       }
@@ -243,28 +247,29 @@ export function usePendingMessageActions(context: PendingActionContext) {
   async function handleDrain(): Promise<void> {
     const release = context.tryAcquireRecoveryOperation?.();
     if (context.tryAcquireRecoveryOperation && !release) return;
-    if (pressLocalRecoveryFenced(context.ref)) {
-      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+    function abandon(message?: string): void {
+      if (message !== undefined) toasts.push("error", message);
       release?.();
+    }
+    if (pressLocalRecoveryFenced(context.ref)) {
+      abandon(RECOVERY_ACTIONS_UNAVAILABLE_REASON);
       return;
     }
     const refusal = pressRefusal(context.ref, "drain");
     if (refusal !== undefined) {
-      toasts.push("error", refusal);
-      release?.();
+      abandon(refusal);
       return;
     }
     const { text, attachments, hasPending, skillNames, commandNames, mentions } = context.getComposerText();
     if (hasPending) {
-      toasts.push("error", "Image attachment is still processing");
-      release?.();
+      abandon("Image attachment is still processing");
       return;
     }
     const model = threadsStore.getState().threads.get(context.ref);
     const selectionGate = selectionRefusal({ skillNames, commandNames }, model?.capabilities);
     if (selectionGate) {
       pushSelectionRefusal(selectionGate);
-      release?.();
+      abandon();
       return;
     }
     let recoveryRefusal: "changed" | "consumed" | undefined;
@@ -315,8 +320,12 @@ export function usePendingMessageActions(context: PendingActionContext) {
               context.compositionOwnerId,
             );
             if (outcome.status !== "sent") {
-              recoveryRefusal = outcome.status === "refused" ? "changed" : "consumed";
-              throw outcome.status === "refused" ? recoveryResendRefusal : recoveryAlreadySent;
+              if (outcome.status === "refused") {
+                recoveryRefusal = "changed";
+                throw recoveryResendRefusal;
+              }
+              recoveryRefusal = "consumed";
+              throw recoveryAlreadySent;
             }
             return;
           }
@@ -341,14 +350,15 @@ export function usePendingMessageActions(context: PendingActionContext) {
   }
 
   function action(row: PendingMessage, verb: PendingRowAction): void {
+    const kind = rowKind(row);
     switch (verb) {
       case "edit":
-        if (rowKind(row) === "recovery") void handleRecoveryEdit(row);
-        else if (rowKind(row) === "queue") void handleEdit(row);
+        if (kind === "recovery") void handleRecoveryEdit(row);
+        else if (kind === "queue") void handleEdit(row);
         else void handleLocalAction(row, "edit");
         break;
       case "remove":
-        if (rowKind(row) === "queue") void handleCancel(row);
+        if (kind === "queue") void handleCancel(row);
         else void handleLocalAction(row, "remove");
         break;
       case "retry":

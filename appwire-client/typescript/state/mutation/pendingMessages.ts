@@ -92,6 +92,9 @@ export interface PendingMessage<A extends MutationAttachmentRef = MutationAttach
   // A refused Stop has no user composition, but it is still waiting work the
   // user must dismiss. It renders as a row with only Dismiss.
   interrupt?: boolean;
+  // A refused queue cancellation names the control that failed, not a message
+  // the user can edit or resend.
+  controlFailure?: "cancel";
   // The durable source this row came from, for the action layer. At most one
   // of these describes a given position in the wire family; recovery wins.
   outbox?: MutationOutboxRecord<A>;
@@ -123,10 +126,12 @@ interface InputContent {
   imageCount: number;
   skillNames: string[];
   commandNames: string[];
+  mentions: ComposerMention[];
 }
 
 // The same input array is read by the base row and again when a queue row
 // merges into it. Cache the decoded content so image data URIs are built once.
+const NO_INPUT: readonly InputItem[] = [];
 const inputContentCache = new WeakMap<readonly InputItem[], InputContent>();
 
 function inputContent(input: readonly InputItem[]): InputContent {
@@ -134,6 +139,7 @@ function inputContent(input: readonly InputItem[]): InputContent {
   if (cached) return cached;
   const content = textualInput(input);
   const images: PendingMessageImage[] = [];
+  const mentions: ComposerMention[] = [];
   for (const item of input) {
     if (item.type === "image" && typeof item.data === "string") {
       images.push({
@@ -141,11 +147,17 @@ function inputContent(input: readonly InputItem[]): InputContent {
         ...(item.name ? { name: item.name } : {}),
       });
     }
+    for (const mention of item.mentions ?? []) {
+      if (mention.kind === "skill" || mention.kind === "command") {
+        mentions.push({ kind: mention.kind, name: mention.name, offset: mention.offset });
+      }
+    }
   }
   const result = {
     ...content,
     images,
     imageCount: images.length,
+    mentions,
   };
   inputContentCache.set(input, result);
   return result;
@@ -217,6 +229,12 @@ function familyInput<A extends MutationAttachmentRef>(family: LocalFamily<A> | u
   return input.length > 0 ? input : undefined;
 }
 
+function recoveryRowId(recovery: MutationRecoveryRecord): string {
+  const wireId = effectiveWireId(recovery);
+  const revision = recovery.compositionRevision ?? 0;
+  return revision > 0 ? `${wireId}:edited:${recovery.clientMutationId}:${revision}` : wireId;
+}
+
 function methodState(method: PendingMethod, claimed: boolean): PendingMessageState {
   if (claimed) return "delivering";
   switch (method) {
@@ -228,6 +246,17 @@ function methodState(method: PendingMethod, claimed: boolean): PendingMessageSta
     case "drain":
     case "promote":
       return "steering";
+  }
+}
+
+function entryState(state: string, method: PendingMethod): PendingMessageState {
+  switch (state) {
+    case "blockedUnknown":
+      return "uncertain";
+    case "canceled":
+      return "canceled";
+    default:
+      return methodState(method, false);
   }
 }
 
@@ -283,13 +312,7 @@ function rowFromBase<A extends MutationAttachmentRef>(
   const commandNames = content?.commandNames ?? entry.commandNames ?? [];
   const familyEntry = familyRecord(family);
   const method = entry.method;
-  const state =
-    durableState(family, pending, method) ??
-    (entry.state === "blockedUnknown"
-      ? "uncertain"
-      : entry.state === "canceled"
-        ? "canceled"
-        : methodState(method, false));
+  const state = durableState(family, pending, method) ?? entryState(entry.state, method);
   const queueEntryIds = pending?.queueEntryIds ?? (entry.queueEntryId ? [entry.queueEntryId] : []);
   return {
     id: entry.id,
@@ -303,6 +326,7 @@ function rowFromBase<A extends MutationAttachmentRef>(
     imageCount,
     skillNames,
     commandNames,
+    ...(content && content.mentions.length > 0 ? { mentions: content.mentions } : {}),
     ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
     ...(familyEntry?.intentSequence !== undefined ? { intentSequence: familyEntry.intentSequence } : {}),
     fromThisClient: entry.fromThisClient,
@@ -344,6 +368,7 @@ function mergeQueueContent<A extends MutationAttachmentRef>(
       imageCount: content.imageCount,
       skillNames: content.skillNames,
       commandNames: content.commandNames,
+      ...(content.mentions.length > 0 ? { mentions: content.mentions } : {}),
     };
   }
   return row;
@@ -362,8 +387,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   input: PendingMessagesInput<A>,
 ): PendingMessage<A>[] {
   const { ref, model } = input;
-  const delivered = new Set(input.transcriptIds ?? transcriptMutationIds(model));
-  for (const id of input.deliveredHere ?? []) delivered.add(id);
+  const transcriptIds = input.transcriptIds ?? transcriptMutationIds(model);
+  const isDelivered = (id: string): boolean => transcriptIds.has(id) || input.deliveredHere?.has(id) === true;
 
   const families = new Map<string, LocalFamily<A>>();
   const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
@@ -405,7 +430,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     reconciliationModel,
     input.submittedHere ?? new Map(),
     input.isOwnMutationRecord,
-  ).filter((entry) => !delivered.has(wireByStorageKey.get(entry.id) ?? entry.id));
+  ).filter((entry) => !isDelivered(wireByStorageKey.get(entry.id) ?? entry.id));
 
   const rows = new Map<string, PendingMessage<A>>();
   for (const entry of base) {
@@ -416,17 +441,19 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   // Recovery rows that never became a pending entry (refused, orphaned,
   // interrupt refusals) are pending messages too.
   for (const [id, family] of families) {
-    if (rows.has(id) || delivered.has(id)) continue;
     const recovery = family.recovery;
     if (!recovery) continue;
+    const cancelFailure = recovery.method === "turn/cancelQueued";
+    const rowId = cancelFailure ? `${id}:cancel-failure:${recovery.clientMutationId}` : recoveryRowId(recovery);
+    if (rows.has(rowId) || (rowId === id && isDelivered(id))) continue;
     const method = composerVerb(recovery.method);
     const interrupt = recovery.method === "turn/interrupt";
-    if (!method && !interrupt) continue;
-    const collected = inputContent(familyInput(family) ?? []);
-    rows.set(id, {
-      id,
+    if (!method && !interrupt && !cancelFailure) continue;
+    const collected = inputContent(familyInput(family) ?? NO_INPUT);
+    rows.set(rowId, {
+      id: rowId,
       ref,
-      method: method ?? "send",
+      method: method ?? (cancelFailure ? "queue" : "send"),
       state: recovery.recoveryKind === "orphaned" ? "orphaned" : "refused",
       text: collected.text,
       displayText: composeDisplayText(
@@ -446,7 +473,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       fromThisClient: input.isOwnMutationRecord(recovery),
       queueEntryIds: [],
       recoveryKind: recovery.recoveryKind,
-      ...(interrupt ? { interrupt: true } : {}),
+      ...(interrupt || cancelFailure ? { interrupt: true } : {}),
+      ...(cancelFailure ? { controlFailure: "cancel" } : {}),
       ...(recovery.recoveryReason !== undefined ? { reason: recovery.recoveryReason } : {}),
       recovery,
     });
@@ -476,7 +504,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     const localRecord = familyRecord(local);
     const pending = mutationId ? pendingById.get(mutationId) : undefined;
     const id = mutationId ?? (entryId ? `queue:${entryId}` : `queue:${index}`);
-    if (delivered.has(id)) continue;
+    if (isDelivered(id)) continue;
     const createdAt = (mutationId ? input.submittedHere?.get(mutationId) : undefined) ?? familyCreatedAt(local);
     const row: PendingMessage<A> = {
       id,
@@ -536,6 +564,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         queueEntryIds: [...new Set([...withQueue.queueEntryIds, ...(row.queueEntryId ? [row.queueEntryId] : [])])],
         displayText: withQueue.displayText !== "" ? withQueue.displayText : row.displayText,
         textComplete: withQueue.textComplete || row.textComplete,
+        ...(row.mentions !== undefined ? { mentions: row.mentions } : {}),
       };
       rows.set(owner.id, next);
       if (entryId) ownerByEntryId.set(entryId, next);
@@ -544,28 +573,33 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     }
   }
 
-  // A legacy queue row carries no clientMutationId. Merge it with the one
-  // local queue entry whose own preview matches it, in order, so the same
-  // message does not render once from the queue and once from local storage.
   // A legacy queue row carries no clientMutationId and no entry-id link. Merge
   // it only when its complete text matches a still-unmatched local queue row;
   // a preview alone must not be restored or acted on as if it were full
   // content. Pairing in queue order keeps two identical messages as two rows.
   const matchedLocalIds = new Set<string>();
+  const normalizedText = new Map<string, string>();
+  for (const [id, row] of rows) normalizedText.set(id, normalizeText(row.text));
   for (const row of queueRows) {
     if (!row.id.startsWith("queue:") || !row.textComplete) continue;
-    const match = [...rows.values()].find(
-      (candidate) =>
+    let match: PendingMessage<A> | undefined;
+    const rowText = normalizeText(row.text);
+    for (const candidate of rows.values()) {
+      if (
         !matchedLocalIds.has(candidate.id) &&
         candidate.method === "queue" &&
         !candidate.queueEntryId &&
         candidate.textComplete &&
-        normalizeText(candidate.text) === normalizeText(row.text) &&
+        normalizedText.get(candidate.id) === rowText &&
         candidate.imageCount === row.imageCount &&
         sameStrings(candidate.skillNames, row.skillNames) &&
         sameStrings(candidate.commandNames, row.commandNames) &&
-        candidate.queueEntryIds.length === 0,
-    );
+        candidate.queueEntryIds.length === 0
+      ) {
+        match = candidate;
+        break;
+      }
+    }
     if (!match) continue;
     matchedLocalIds.add(match.id);
     row.id = match.id;

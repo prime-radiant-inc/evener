@@ -889,6 +889,93 @@ func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T
 	}
 }
 
+func TestClientMutation_CancelEmitsConsumedClientMutationID(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	entry := sess.clientMutations.snapshot().InputQueue[0]
+	params := appwire.TurnCancelQueuedParams{
+		ClientMutationID: "cancel-consumed",
+		Index:            0,
+		ExpectedEntryID:  entry.ID,
+	}
+
+	evs, stop := captureEvents(sess)
+	first, err := sess.AcceptClientMutationCancelQueued(params)
+	stop()
+	if err != nil {
+		t.Fatalf("AcceptClientMutationCancelQueued: %v", err)
+	}
+	if want := []string{entry.ClientMutationID}; !slices.Equal(first.Receipt.ConsumedClientMutationIDs, want) {
+		t.Fatalf("receipt ConsumedClientMutationIDs = %v, want %v", first.Receipt.ConsumedClientMutationIDs, want)
+	}
+	var latest *events.QueueChangedData
+	for _, ev := range *evs {
+		if ev.Kind != events.EventQueueChanged {
+			continue
+		}
+		data := ev.Data.(events.QueueChangedData)
+		latest = &data
+	}
+	if latest == nil {
+		t.Fatal("no QueueChanged event observed for the cancellation")
+	}
+	if want := []string{entry.ClientMutationID}; !slices.Equal(latest.ConsumedClientMutationIDs, want) {
+		t.Fatalf("push ConsumedClientMutationIDs = %v, want %v", latest.ConsumedClientMutationIDs, want)
+	}
+
+	replayed, err := sess.AcceptClientMutationCancelQueued(params)
+	if err != nil {
+		t.Fatalf("AcceptClientMutationCancelQueued (replay): %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("replay disposition = %q, want replayed", replayed.Receipt.Disposition)
+	}
+	if want := []string{entry.ClientMutationID}; !slices.Equal(replayed.Receipt.ConsumedClientMutationIDs, want) {
+		t.Fatalf("replayed ConsumedClientMutationIDs = %v, want %v", replayed.Receipt.ConsumedClientMutationIDs, want)
+	}
+}
+
+func TestClientMutation_PromoteEmitsConsumedClientMutationID(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	entry := sess.clientMutations.snapshot().InputQueue[0]
+	params := appwire.TurnPromoteQueuedAsSteerParams{
+		ClientMutationID: "promote-consumed",
+		Index:            0,
+		ExpectedEntryID:  entry.ID,
+	}
+
+	evs, stop := captureEvents(sess)
+	first, err := sess.AcceptClientMutationPromoteQueuedAsSteer(params)
+	stop()
+	if err != nil {
+		t.Fatalf("AcceptClientMutationPromoteQueuedAsSteer: %v", err)
+	}
+	if want := []string{entry.ClientMutationID}; !slices.Equal(first.Receipt.ConsumedClientMutationIDs, want) {
+		t.Fatalf("receipt ConsumedClientMutationIDs = %v, want %v", first.Receipt.ConsumedClientMutationIDs, want)
+	}
+	var latest *events.QueueChangedData
+	for _, ev := range *evs {
+		if ev.Kind != events.EventQueueChanged {
+			continue
+		}
+		data := ev.Data.(events.QueueChangedData)
+		latest = &data
+	}
+	if latest == nil {
+		t.Fatal("no QueueChanged event observed for the promotion")
+	}
+	if want := []string{entry.ClientMutationID}; !slices.Equal(latest.ConsumedClientMutationIDs, want) {
+		t.Fatalf("push ConsumedClientMutationIDs = %v, want %v", latest.ConsumedClientMutationIDs, want)
+	}
+}
+
 func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)

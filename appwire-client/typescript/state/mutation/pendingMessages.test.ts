@@ -44,10 +44,12 @@ function recovery(
   kind: MutationRecoveryRecord["recoveryKind"],
   method = "turn/start",
   text = "hello",
+  overrides: Partial<MutationRecoveryRecord> = {},
 ): MutationRecoveryRecord {
   return recoveryRecord({
     ...local(id, method, text),
     recoveryKind: kind,
+    ...overrides,
   });
 }
 
@@ -96,6 +98,38 @@ test("a daemon queue row and its local pending row project as one message", () =
     queueIndex: 0,
     queueEntryId: "q1",
   });
+});
+
+test("a queue row keeps the daemon's mentions when it merges with the local row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+      mentions: [[{ kind: "skill", name: "review", offset: 0 }]],
+    },
+  });
+  const rows = project({ outbox: [local("m1")], model });
+  expect(rows[0]?.mentions).toEqual([{ kind: "skill", name: "review", offset: 0 }]);
+});
+
+test("a text item's selected mentions survive into the pending row", () => {
+  const record = local("m1", "turn/start", "hello", {
+    payload: {
+      ref: "ref_a",
+      input: [{ type: "text", text: "hello", mentions: [{ kind: "command", name: "ship", offset: 0 }] }],
+      clientMutationId: "m1",
+    },
+    optimisticDisplay: {
+      method: "turn/start",
+      input: [{ type: "text", text: "hello", mentions: [{ kind: "command", name: "ship", offset: 0 }] }],
+    },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]?.mentions).toEqual([{ kind: "command", name: "ship", offset: 0 }]);
 });
 
 test("a visible transcript item suppresses its queue row even when the queue snapshot still lists it", () => {
@@ -421,6 +455,30 @@ test("durable local and recovery states map to their pending states", () => {
     m4: "canceled",
     m5: "refused",
     m6: "orphaned",
+  });
+});
+
+test("an edited recovery survives delivery of the attempt it was edited from", () => {
+  const edited = recovery("m1", "rejected", "turn/start", "edited request", {
+    compositionRevision: 1,
+    composerText: "edited request",
+  });
+  const rows = project({ recovery: [edited], transcriptIds: new Set(["m1"]) });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.text).toBe("edited request");
+});
+
+test("a refused queue cancellation stays visible as a control failure", () => {
+  const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
+    recoveryReason: "the queue moved",
+  });
+  const rows = project({ recovery: [failed], transcriptIds: new Set(["m1"]) });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    state: "refused",
+    interrupt: true,
+    controlFailure: "cancel",
+    reason: "the queue moved",
   });
 });
 

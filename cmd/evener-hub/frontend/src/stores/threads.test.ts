@@ -2098,6 +2098,44 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(0);
   });
 
+  test("a queue identity also named in pendingMutations keeps its display copy", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    const [record] = await inspector.listOutbox("ref_a");
+    expect(record).toBeDefined();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: [record!.clientMutationId] },
+          pendingMutations: [
+            {
+              clientMutationId: record!.clientMutationId,
+              method: "turn/queue",
+              executionState: "accepted",
+              projectionState: "pending",
+            },
+          ],
+        },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    for (
+      let attempt = 0;
+      attempt < 50 && (await inspector.getOptimistic(record!.clientMutationId)) === undefined;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect((await inspector.getOptimistic(record!.clientMutationId))?.state).toBe("accepted");
+    inspector.close();
+  });
+
   test("a stale client hydration cannot settle an intent in a newer ready generation", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
     await storage.enqueueIntent({

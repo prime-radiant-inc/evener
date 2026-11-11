@@ -1,7 +1,8 @@
 import { formatElapsed } from "@evener/appwire-client";
 import type { PendingMessage } from "@evener/appwire-client/state/mutation";
-import { render, screen, within } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
+import { threadsStore } from "../../../stores/threads";
 import { SessionNowContext } from "../liveness";
 import type { PendingActionContext } from "./actionContext";
 import { PendingMessageStack } from "./PendingMessageStack";
@@ -101,6 +102,26 @@ test("a queued row offers edit and remove", () => {
   renderStack([row({ queueIndex: 0, queueEntryId: "q1" })], context);
   expect(screen.getByRole("button", { name: "Edit message" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+});
+
+test("a daemon queue row with a local display copy removes through the queue entry", async () => {
+  const cancel = vi.spyOn(threadsStore.getState(), "cancelQueued").mockResolvedValue(undefined);
+  try {
+    renderStack(
+      [
+        row({
+          queueIndex: 0,
+          queueEntryId: "q1",
+          outbox: { clientMutationId: "m1" } as PendingMessage["outbox"],
+        }),
+      ],
+      context,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove from queue" }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("ref_a", 0, "q1"));
+  } finally {
+    cancel.mockRestore();
+  }
 });
 
 test("a legacy queue row with only a preview shows it but offers no Edit", () => {

@@ -15,6 +15,11 @@ Controls follow that ownership, not the preview text or connection status.
   and is waiting on, whose edit would race that send; a legacy row with no
   attempt metadata at all; and the non-composer verbs (interrupt, clear, note
   saves), which keep their own controls.
+- A daemon queue row that also has a local display copy routes Edit and Remove
+  through the queue entry id, then retires the display copy. It never deletes
+  only the local copy and leaves the daemon message queued. A refused queue
+  cancellation stays visible as a dismissible control-failure row carrying the
+  daemon's reason.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
   "Delivery uncertain" as a subtitle. Editing it carries the row's inherited wire
@@ -34,6 +39,9 @@ Controls follow that ownership, not the preview text or connection status.
   suppressed once a recorded transcript item with the same identity is visible.
   A move back to the local queue after an explicit refusal is not announced as
   delivery or failure.
+- An independently edited recovery keeps its own row after the attempt it was
+  edited from delivers. Mentions travel through the pending row, so editing
+  preserves literal `/name` references instead of turning them into selections.
 
 A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
 queue's tail and settles the predecessor terminal. The predecessor keeps its

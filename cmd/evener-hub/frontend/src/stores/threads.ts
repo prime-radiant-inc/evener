@@ -6017,11 +6017,11 @@ async function publishAndReconcileThreadHydration(
         );
         const responseQueueIds = new Set(hydration.response.thread.evener.queue?.clientMutationIds ?? []);
         await runtime.dispatcher.reconcileIdentities(
-          [...authoritativeIds].filter((id) => responseTranscriptIds.has(id) || responsePendingIds.has(id)),
+          [...authoritativeIds].filter((id) => responseTranscriptIds.has(id)),
         );
         await runtime.dispatcher.reconcileIdentities(
           [...authoritativeIds].filter(
-            (id) => responseQueueIds.has(id) && !responseTranscriptIds.has(id) && !responsePendingIds.has(id),
+            (id) => !responseTranscriptIds.has(id) && (responsePendingIds.has(id) || responseQueueIds.has(id)),
           ),
           { retainDisplayCopy: true },
         );
@@ -6630,9 +6630,9 @@ function handleNotification(n: AnyNotification): void {
   // visible: a recorded transcript item, or a queue row that is the pending
   // representation. A history frame this client ignored or invalidated must not
   // delete the only pending row and leave nothing behind. Consumed queue ids
-  // are the one positive-evidence exception: the drain's own row carries them,
-  // and a drain's queueChanged must settle them even when no model fold is
-  // tracked here.
+  // are the one positive-evidence exception: the consuming transition's own
+  // row carries them, and its queueChanged must settle them even when no model
+  // fold is tracked here.
   const settlementRef = notificationRef(n);
   if (mutationIdentities.length > 0 && settlementRef) {
     const settledModel =
@@ -6641,8 +6641,6 @@ function handleNotification(n: AnyNotification): void {
       nextThreads?.get(settlementRef) ??
       threads.get(settlementRef) ??
       watchedThreads.get(settlementRef);
-    const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
-    const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
     const consumed =
       n.method === "thread/queueChanged" ? validConsumedClientMutationIds(n.params.consumedClientMutationIds) : [];
     // An accepted history frame proves the identities it names applied, even
@@ -6663,15 +6661,16 @@ function handleNotification(n: AnyNotification): void {
     const acceptedFrame =
       n.method === "history/updated" &&
       (acceptedFrameRefs.has(settlementRef) || (!historyInvalid && frameNamesIdentity));
-    const retireIds = acceptedFrame
-      ? mutationIdentities
-      : transcriptIds
+    let retireIds = mutationIdentities;
+    let retainIds: string[] = [];
+    if (!acceptedFrame) {
+      const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
+      const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
+      retireIds = transcriptIds
         ? mutationIdentities.filter((id) => transcriptIds.has(id) || consumed.includes(id))
         : consumed;
-    const retainIds =
-      !acceptedFrame && transcriptIds
-        ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id))
-        : [];
+      retainIds = transcriptIds ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id)) : [];
+    }
     const runtime = getMutationRuntime();
     if (runtime && retireIds.length > 0) {
       void runtime.dispatcher

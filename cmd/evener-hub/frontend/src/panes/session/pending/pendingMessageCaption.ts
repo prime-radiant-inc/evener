@@ -25,15 +25,17 @@ export function pendingMessageCaption(
     case "canceled":
       return "Canceled by Stop";
     case "refused":
+      if (row.controlFailure === "cancel") {
+        return row.reason ? `Couldn't remove from queue: ${row.reason}` : "Couldn't remove from queue";
+      }
       return row.reason ? `Couldn't send: ${row.reason}` : "Couldn't send";
     case "orphaned":
       return "Destination deleted";
     case "steering": {
-      const stage = hubRefused
-        ? "Waiting for the hub"
-        : turnActive
-          ? "Delivers when this step finishes"
-          : "Delivers with the next turn";
+      let stage: string;
+      if (hubRefused) stage = "Waiting for the hub";
+      else if (turnActive) stage = "Delivers when this step finishes";
+      else stage = "Delivers with the next turn";
       const elapsed = row.createdAt === undefined ? undefined : formatElapsed(now - row.createdAt);
       if (elapsed === undefined) return stage;
       return row.optimistic !== undefined ? `${stage} · held ${elapsed}` : `${stage} · ${elapsed}`;

@@ -34,7 +34,10 @@ export function PendingMessageStack({
   // The composer owns the recovery row it has activated; the stack keeps the
   // rest of the tray.
   const shown = withoutActiveRecovery(messages, context?.activeRecoveryId);
-  const queued = shown.some((row) => row.method === "queue");
+  const queued = shown.some(
+    (row) =>
+      row.method === "queue" && row.queueEntryId !== undefined && (row.state === "queued" || row.state === "held"),
+  );
 
   if (shown.length === 0) return null;
 

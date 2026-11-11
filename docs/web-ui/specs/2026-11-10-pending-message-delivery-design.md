@@ -61,11 +61,12 @@ Row states:
 | `delivering` | reflected but not yet visible | none |
 | `uncertain` | delivery unknown | Edit, Remove, Retry |
 | `canceled` | Stop canceled | Edit, Remove, Retry |
-| `refused` | rejected recovery or refused Stop | Edit, or Dismiss for a Stop |
+| `refused` | rejected recovery, refused queue cancellation, or refused Stop | Edit, or Dismiss for a control failure or Stop |
 | `orphaned` | destination deleted | Copy |
 
 The stack header keeps the existing "Steer queue now" drain affordance when a
-queued row exists and the session's controls allow a drain.
+row that actually participates in the queue exists and the session's controls
+allow a drain.
 
 ## Settlement
 
@@ -81,7 +82,8 @@ entry after its queue entry is gone.
 message visible: a recorded transcript item for history frames, or a queue row
 for queue frames. A history frame the client ignores or invalidates must not
 delete the only pending row. Consumed queue ids are the one positive-evidence
-exception: a drain's own row carries them.
+exception: the consuming transition's row carries them, and cancellation and
+promotion name the queue entry they consumed alongside a drain.
 
 An accepted history frame settles the identities it names even when the
 projected model has not exposed the item yet; the frame itself proves the
@@ -104,9 +106,10 @@ existence, carry the fence.
 
 ## Non-goals
 
-- No wire change in this implementation. A daemon-assigned sequence for exact
-  cross-client ordering is a follow-up; the current order uses known creation
-  time, durable intent sequence, queue position and identity.
+- A daemon-assigned sequence for exact cross-client ordering is a follow-up;
+  the current order uses known creation time, durable intent sequence, queue
+  position and identity. Cancellation and promotion now carry the queue entry
+  identity they consumed, so every client can retire the same display copy.
 - No fake transcript items and no in-place replacement inside recorded history.
 - No native client change in this implementation; `mobile-native`'s ghost
   projection can adopt the shared rows later.
@@ -115,10 +118,11 @@ existence, carry the fence.
 ## Tests
 
 The projection suite covers identity merge, queue and pending-execution merge,
-drain and promote suppression, visible-delivery retirement, identical text,
-images and selections, legacy queue rows, state mapping, ordering and the
-delivered-identity guard. The renderer suite covers one row per message, the
-status slot, active-recovery exclusion, action visibility and image rendering.
+drain and promote suppression, visible-delivery retirement, mention
+preservation, edited-recovery survival, identical text, images and selections,
+legacy queue rows, state mapping, ordering and the delivered-identity guard.
+The renderer suite covers one row per message, the status slot, active-recovery
+exclusion, action visibility and image rendering.
 The composer integration, queued-message and submit suites cover queue edit,
 cancel, promote, drain, recovery consolidation, retry and the shared busy gate. The
 session transcript suite covers the trailing row, fenced and dormant surfaces,

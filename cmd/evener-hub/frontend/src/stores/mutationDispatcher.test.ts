@@ -60,6 +60,20 @@ function drainIntent(targetRef = "ref-a", text = "steer this"): MutationIntent {
   };
 }
 
+function queueControlIntent(
+  method: "turn/cancelQueued" | "turn/promoteQueuedAsSteer",
+  targetRef = "ref-a",
+): MutationIntent {
+  return {
+    targetRef,
+    threadId: "thread-a",
+    method,
+    payload: { ref: targetRef, index: 0, expectedEntryId: "entry-a" },
+    attachments: [],
+    optimisticDisplay: null,
+  };
+}
+
 function storage(indexedDB: IDBFactory, databaseName: string, mutationIds: string[]): MutationOutboxIndexedDB {
   let nextId = 0;
   return new MutationOutboxIndexedDB({
@@ -1321,6 +1335,32 @@ describe("MutationDispatcher", () => {
     expect(optimistic.map((record) => record.clientMutationId)).toEqual([drain.clientMutationId]);
     outbox.close();
   });
+
+  test.each(["turn/cancelQueued", "turn/promoteQueuedAsSteer"] as const)(
+    "%s receipt settles the queue intent it named as consumed",
+    async (method) => {
+      const indexedDB = new IDBFactory();
+      const outbox = storage(indexedDB, `control-receipt-${method}`, ["queue-a", "control-a"]);
+      const queued = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+      const control = await outbox.enqueueIntent(queueControlIntent(method));
+      const client = new FakeClient();
+      client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+      client.on(method, (params) => ({
+        receipt: {
+          ...receipt(params.clientMutationId, "applied", "pending"),
+          consumedClientMutationIds: [queued.clientMutationId],
+        },
+      }));
+      const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+      await dispatcher.dispatchTargets(["ref-a"]);
+
+      expect(await outbox.listOutbox("ref-a")).toEqual([]);
+      expect(await outbox.getOptimistic(queued.clientMutationId)).toBeUndefined();
+      expect(await outbox.getOptimistic(control.clientMutationId)).toBeUndefined();
+      outbox.close();
+    },
+  );
 
   // A queue intent submitted WHILE the drain is in flight lands on the
   // emptied queue as fresh work: the drain's own receipt names only the id it
