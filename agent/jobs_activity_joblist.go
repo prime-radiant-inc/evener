@@ -76,21 +76,16 @@ func activityJobOwnedBy(sessionID, owner string) bool {
 	return sessionID == "" || owner == "" || owner == sessionID
 }
 
-// newActivityJobList orders records the way a fold does: by first
-// appearance of each job ID, a later record for an ID replacing the earlier
-// one in place. Records without a job ID are dropped. The list holds the
-// records themselves, so the caller hands over records it will not mutate.
+// newActivityJobList lists records, already one per job ID in the order a
+// page shows them (mergeActivityRecords' output), dropping nil records. The
+// list holds the records themselves, so the caller hands over records it
+// will not mutate.
 func newActivityJobList(records []*jobstore.JobRecord) *activityJobList {
-	b := newActivityJobListBuilder(nil, make(map[string]int, len(records)))
+	b := newActivityJobListBuilder(nil, nil)
 	for _, rec := range records {
-		if rec == nil || rec.JobID == "" {
-			continue
+		if rec != nil {
+			b.push(rec)
 		}
-		if at, seen := b.positions[rec.JobID]; seen {
-			b.replace(at, func(*jobstore.JobRecord) *jobstore.JobRecord { return rec })
-			continue
-		}
-		b.push(rec)
 	}
 	return b.list()
 }
@@ -189,9 +184,9 @@ func (c *activityJobChunk) count(rec *jobstore.JobRecord, delta int) {
 
 // activityJobListBuilder derives a new list from a base list without
 // changing the base: it copies the chunk list once and a chunk the first
-// time it writes to it. positions maps each job ID to its index and is
-// updated in place, so it must describe the base list and belong to this
-// builder alone.
+// time it writes to it. positions, when not nil, maps each job ID to its
+// index and is updated in place, so it must describe the base list and
+// belong to this builder alone.
 type activityJobListBuilder struct {
 	chunks    []*activityJobChunk
 	written   map[int]bool // chunks this builder copied or created
@@ -243,7 +238,9 @@ func (b *activityJobListBuilder) push(rec *jobstore.JobRecord) {
 	chunk := b.writable(len(b.chunks) - 1)
 	chunk.records = append(chunk.records, rec)
 	chunk.count(rec, 1)
-	b.positions[rec.JobID] = b.length
+	if b.positions != nil {
+		b.positions[rec.JobID] = b.length
+	}
 	b.length++
 }
 

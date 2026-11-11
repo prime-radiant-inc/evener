@@ -152,10 +152,10 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	}
 }
 
-// TestLoadSessionJobActivityTree_PageCostDoesNotGrowWithHistory is crux (g):
-// serving one page of an unchanged journal costs the page, not the history
+// TestLoadSessionJobActivityTree_PageCostDoesNotGrowWithHistory proves
+// that serving one page of an unchanged journal costs the page, not the history
 // behind it. The same mid-history page is served from a short history and
-// from one four times longer; the runtime's own allocation count (no
+// from one several times longer; the runtime's own allocation count (no
 // instrumentation the code under test could misreport) must stay flat
 // between them. Copying, filtering or re-indexing every record per page
 // allocates at least once per record, so the longer history would show tens
@@ -164,13 +164,18 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 // Not parallel: testing.AllocsPerRun counts every allocation in the process.
 func TestLoadSessionJobActivityTree_PageCostDoesNotGrowWithHistory(t *testing.T) {
 	const shortHistory = 3 * activityMaxWorkUnits
-	const longHistory = 12 * activityMaxWorkUnits
+	longHistory := 12 * activityMaxWorkUnits
+	if raceDetectorEnabled {
+		// Allocation counts are the same under -race; a shorter long history
+		// keeps this serial test's one-time write and fold cheap there.
+		longHistory = 6 * activityMaxWorkUnits
+	}
 	short := secondPageAllocations(t, "shorthistory", shortHistory)
 	long := secondPageAllocations(t, "longhistory", longHistory)
 	t.Logf("page allocations: %.0f with %d jobs, %.0f with %d jobs", short, shortHistory, long, longHistory)
 	// One allocation per hundred extra records is far below anything that
 	// visits each record, and far above run-to-run noise in a fixed page.
-	if growth := long - short; growth > (longHistory-shortHistory)/100 {
+	if growth := long - short; growth > float64(longHistory-shortHistory)/100 {
 		t.Fatalf("a page of a %d-job history allocated %.0f times, %.0f more than the same page of a %d-job history: page cost grows with history",
 			longHistory, long, growth, shortHistory)
 	}

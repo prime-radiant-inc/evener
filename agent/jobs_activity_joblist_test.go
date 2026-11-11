@@ -55,7 +55,7 @@ func activityJobListTestEvents(rng *rand.Rand, n int) []jobstore.Event {
 // filtering that order directly.
 func requireActivityJobListMatchesFold(t *testing.T, list *activityJobList, events []jobstore.Event) {
 	t.Helper()
-	want := newActivityJobList(jobstore.FoldOrdered(events))
+	want := newActivityJobList(slices.DeleteFunc(jobstore.FoldOrdered(events), func(rec *jobstore.JobRecord) bool { return rec.JobID == "" }))
 	if got, wantAll := slices.Collect(list.all()), slices.Collect(want.all()); !sameActivityRecords(got, wantAll) {
 		t.Fatalf("folded list = %v, want %v", activityRecordIDs(got), activityRecordIDs(wantAll))
 	}
@@ -102,8 +102,8 @@ func TestHistoricalJobFold_IncrementalExtensionMatchesFullFold(t *testing.T) {
 	rng := rand.New(rand.NewPCG(7, 11))
 	events := activityJobListTestEvents(rng, 6*activityJobChunkRecords)
 	type kept struct {
-		fold    historicalJobFold
-		records []jobstore.JobRecord
+		fold   historicalJobFold
+		folded int
 	}
 	var earlier []kept
 	var fold historicalJobFold
@@ -112,21 +112,35 @@ func TestHistoricalJobFold_IncrementalExtensionMatchesFullFold(t *testing.T) {
 		fold = fold.extend(events[folded : folded+size])
 		folded += size
 		requireActivityJobListMatchesFold(t, fold.jobs, events[:folded])
-
-		var values []jobstore.JobRecord
-		for rec := range fold.jobs.all() {
-			values = append(values, *rec.Clone())
-		}
-		earlier = append(earlier, kept{fold: fold, records: values})
+		earlier = append(earlier, kept{fold: fold, folded: folded})
 	}
-	for i, k := range earlier {
-		var now []jobstore.JobRecord
-		for rec := range k.fold.jobs.all() {
-			now = append(now, *rec)
-		}
-		if !reflect.DeepEqual(now, k.records) {
-			t.Fatalf("fold %d changed after later extensions", i)
-		}
+	// Records, counts and positions alike: a reader of any earlier fold
+	// still sees exactly the history that fold covered.
+	for _, k := range earlier {
+		requireActivityJobListMatchesFold(t, k.fold.jobs, events[:k.folded])
+	}
+}
+
+// TestActivityJobList_ResumePassesWholeChunksByTheirCounts pins how a late
+// page reaches its first record: a chunk whose counts say it holds only
+// records the page has already shown is passed without visiting its
+// records. The first chunk here claims a full chunk of root's shell records
+// but holds none, so resuming past that many records starts at the second
+// chunk's first record; walking the records instead would skip into the
+// second chunk and lose its records.
+func TestActivityJobList_ResumePassesWholeChunksByTheirCounts(t *testing.T) {
+	t.Parallel()
+	later := make([]*jobstore.JobRecord, 0, activityJobChunkRecords)
+	for i := range activityJobChunkRecords {
+		later = append(later, &jobstore.JobRecord{JobID: fmt.Sprintf("job_%d", i), Type: jobstore.JobShell, OwnerSessionID: "root"})
+	}
+	list := &activityJobList{chunks: []*activityJobChunk{
+		{owners: map[string]activityJobCounts{"root": {shell: activityJobChunkRecords}}},
+		newActivityJobList(later).chunks[0],
+	}}
+	got := slices.Collect(list.records("root", activityShellJob, activityJobChunkRecords))
+	if !sameActivityRecords(got, later) {
+		t.Fatalf("resume past the first chunk yielded %d records starting %v, want all %d of the second chunk", len(got), activityRecordIDs(got[:min(len(got), 1)]), len(later))
 	}
 }
 
@@ -183,28 +197,5 @@ func TestExtendHistoricalJobFold_OlderSeqInDeltaRefoldsWholeJournal(t *testing.T
 	requireActivityJobListMatchesFold(t, fold.jobs, append(first, early))
 	if got := activityRecordIDs(slices.Collect(fold.jobs.all())); got[0] != "job_early" {
 		t.Fatalf("order = %v, want the older seq first", got)
-	}
-}
-
-// TestNewActivityJobList_LaterDuplicateReplacesInPlace pins the ordering a
-// live session's merged records keep: first appearance, a later record for
-// the same job replacing the earlier one where it stands.
-func TestNewActivityJobList_LaterDuplicateReplacesInPlace(t *testing.T) {
-	t.Parallel()
-	list := newActivityJobList([]*jobstore.JobRecord{
-		{JobID: "a", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning},
-		{JobID: "b", Type: jobstore.JobShell, OwnerSessionID: "root"},
-		{JobID: "a", Type: jobstore.JobType("unknown"), OwnerSessionID: "root", Status: jobstore.StatusCompleted},
-		{JobID: ""},
-	})
-	got := slices.Collect(list.all())
-	if ids := activityRecordIDs(got); !reflect.DeepEqual(ids, []string{"a", "b"}) {
-		t.Fatalf("ids = %v, want [a b]", ids)
-	}
-	if got[0].Status != jobstore.StatusCompleted {
-		t.Fatalf("a = %+v, want the later record", got[0])
-	}
-	if counts := list.counts("root"); counts != (activityJobCounts{shell: 1, unsupported: 1}) {
-		t.Fatalf("counts = %+v, want the replaced record counted by its new type", counts)
 	}
 }

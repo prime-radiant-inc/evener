@@ -86,7 +86,9 @@ type historicalJobFold struct {
 // activityJobPositions maps each job ID in list to its index. Extending a
 // fold updates the map in place for the extended list, so it describes only
 // the list it names: extending a fold whose list is not that one rebuilds
-// the map from the fold's own list first.
+// the map from the fold's own list first. Extensions sharing one map must
+// not run at once; foldcache.Cache runs at most one Extend per path at a
+// time, and each path's folds have their own map.
 type activityJobPositions struct {
 	of   map[string]int
 	list *activityJobList
@@ -96,8 +98,8 @@ var historicalJobFoldCache = foldcache.New[historicalJobFold](historicalJobFoldC
 
 // extendHistoricalJobFold is historicalJobFoldCache's foldcache.Extend: it
 // reads only the events appended since fromOffset and folds them onto prior
-// without changing prior, which foldcache.Cache may still be handing to
-// other callers. A delta holding an event older than one already folded
+// without changing anything a reader of prior can see, since
+// foldcache.Cache may still be handing prior to other callers. A delta holding an event older than one already folded
 // belongs earlier in a full fold, so that delta refolds the journal from
 // byte zero instead.
 func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, error) {
@@ -173,12 +175,12 @@ func loadCachedJobRecords(ctx context.Context, jobsPath string) (*activityJobLis
 	return result.Value.jobs, result.Epoch, result.Absent, nil
 }
 
-// historicalDelegateFold is delegatestore's fold-cache payload. Unlike
+// historicalDelegateFold is delegatestore's fold-cache payload. Like
 // historicalJobFold, this retains the FOLDED delegatestore.State directly
 // (not raw events), extended incrementally via delegatestore.Apply for each
 // new event, so a request folds only the events appended since the cached
 // state instead of re-folding a growing root's full event history from
-// scratch — the same treatment jobstore gets above.
+// scratch.
 // eventCount tracks how many events have been applied so far, so a delta can
 // still be checked for sequence continuity (event.Seq must equal
 // eventCount+1 as each is applied) the same way delegatestore.Fold checks a
