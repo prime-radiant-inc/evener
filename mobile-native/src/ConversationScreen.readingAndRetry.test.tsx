@@ -2188,7 +2188,7 @@ it("follows a published identity change without moving the draft", async () => {
 	subscribe.mockRestore();
 });
 
-it("moves a delivered resend's settlement markers when the draft has no unsent text", async () => {
+it("leaves a delivered resend's settlement markers with the retired session", async () => {
 	const runtime = getNativeMutationRuntime();
 	const subscribe = vi.spyOn(runtime, "subscribeIdentities");
 	subscribe.mockClear();
@@ -2197,20 +2197,18 @@ it("moves a delivered resend's settlement markers when the draft has no unsent t
 	if (!listener) throw new Error("conversation did not subscribe to identity changes");
 	const from = { hubId: "hub-1", sessionRef: "ref-settlement" };
 	const to = { hubId: "hub-1", sessionRef: "ref-settlement-2" };
-	act(() => {
-		drafts.open(from).adopt({
-			draft: "",
-			unconfirmed: "the sent words",
-			unconfirmedComposer: { recoveryIds: ["capture-1"] },
-		});
-	});
-	act(() => listener({ hubId: "hub-1", from: from.sessionRef, to: to.sessionRef }));
-	expect(nativeDrafts().read(to)).toMatchObject({
+	nativeDrafts().write(from, {
 		draft: "",
 		unconfirmed: "the sent words",
 		unconfirmedComposer: { recoveryIds: ["capture-1"] },
 	});
-	expect(nativeDrafts().read(from)).toMatchObject({ draft: "", unconfirmed: null });
+	act(() => listener({ hubId: "hub-1", from: from.sessionRef, to: to.sessionRef }));
+	expect(nativeDrafts().read(to)).toMatchObject({ draft: "", unconfirmed: null });
+	expect(nativeDrafts().read(from)).toMatchObject({
+		draft: "",
+		unconfirmed: "the sent words",
+		unconfirmedComposer: { recoveryIds: ["capture-1"] },
+	});
 	subscribe.mockRestore();
 });
 

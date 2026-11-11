@@ -77,7 +77,6 @@ import { useNativePreferences } from "./NativePreferencesProvider";
 import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey, subscribeNativeIdentities } from "./nativeMutationRuntime";
-import { drafts } from "./nativeDrafts";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
@@ -748,29 +747,6 @@ function ConversationScreenView({
 	useEffect(() => {
 		return subscribeNativeIdentities((change) => {
 			if (nativeMutationTargetKey(change.hubId, change.from) !== recovery.targetKey) return;
-			// A composed draft never follows an identity change (Jesse's
-			// 2026-11-11 ruling). With no unsent composition at the retired ref,
-			// the settlement markers can move with the delivered message so its
-			// resend receipt still settles; otherwise the draft keeps all of it.
-			try {
-				const record = drafts.open({ hubId: change.hubId, sessionRef: change.from }).getSnapshot().record;
-				const noComposedDraft =
-					record.draft === "" &&
-					(record.images?.length ?? 0) === 0 &&
-					(record.parkedCompositions?.length ?? 0) === 0 &&
-					(record.composer?.skillNames?.length ?? 0) === 0 &&
-					(record.composer?.commandNames?.length ?? 0) === 0 &&
-					(record.composer?.mentions?.length ?? 0) === 0;
-				if (noComposedDraft) {
-					drafts.handoff(
-						{ hubId: change.hubId, sessionRef: change.from },
-						{ hubId: change.hubId, sessionRef: change.to },
-					);
-				}
-			} catch {
-				// Draft storage is unavailable; the screen still follows and the
-				// recovery surface owns the visible failure.
-			}
 			// Keep the route this screen was opened on: a Subagent route carries
 			// its coordinator here, and a Conversation route its title. The
 			// navigation state has the full params the session view reconstructed.
