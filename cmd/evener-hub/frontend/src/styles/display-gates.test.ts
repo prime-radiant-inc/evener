@@ -266,3 +266,36 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
     "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
   ).not.toBeNull();
 });
+
+// The folded row reserves the chrome's intrinsic width so a content-sized
+// leading still reports the pickers it will hold. That reservation is sized
+// for the full folded row (the status rung plus the menu); the phone's
+// compact resting row holds the menu alone. While it applied there, WebKit
+// sized the control row from the 356px reservation instead of the compact
+// basis and the writing field collapsed to a quarter of the card, with a dead
+// gap where the pickers would go. The reservation must therefore never apply
+// to a compact row.
+test("no leading rule reserves width on the phone's compact resting row", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const reserving: string[] = [];
+  for (const block of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
+    const selector = block[1]!.trim().split("\n").pop()!.trim();
+    if (!selector.startsWith(".leading")) continue;
+    const declared = /contain-intrinsic-inline-size:\s*([^;]+)/.exec(block[2]!);
+    if (declared === null || declared[1]!.trim() === "none") continue;
+    reserving.push(selector);
+  }
+  expect(reserving.length, "the folded row still needs its intrinsic reservation").toBeGreaterThan(0);
+  for (const selector of reserving) {
+    // Every occurrence of the compact attribute must sit inside a :not(),
+    // i.e. the selector subtracts compact rows rather than including them.
+    const compactMentions = selector.match(/\[data-compact="true"\]/g) ?? [];
+    const compactExclusions = selector.match(/:not\(\[data-compact="true"\]\)/g) ?? [];
+    expect(compactMentions.length, `${selector} reserves width on a compact row`).toBe(compactExclusions.length);
+    expect(compactExclusions.length, `${selector} must exclude the compact resting row`).toBeGreaterThan(0);
+  }
+});
