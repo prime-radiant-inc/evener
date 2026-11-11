@@ -226,9 +226,12 @@ async function runLegacy(driver, scenario) {
   ]);
   assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
   if (scenario.mode === "refused") {
-    await driver.waitPage(`document.querySelector('button[aria-label="Edit message"]') !== null`, {
-      label: "refused continuation recovery",
-    });
+    await driver.waitPage(
+      `[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === "Edit message")`,
+      {
+        label: "refused continuation recovery",
+      },
+    );
     assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
     await driver.selectAll(scenario.ref);
     await driver.press(scenario.ref, "Backspace");
@@ -398,7 +401,8 @@ async function runLatestOnly(driver, scenario) {
   await driver.waitPage(
     `(() => { const composer = ${driver.composerStateExpr(ref)};
       const buttons = ${retryButtonsExpr()};
-      const rows = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-testid='transcript-row']")];
+      const rows = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-testid='transcript-row']")]
+        .filter((row) => row.dataset.rowId !== "live-edge");
       return composer && composer.steerVisible && buttons.length === 0 &&
         rows.every((row) => !row.textContent.includes("RETRY_RUNNING_NEW")) ? true : null; })()`,
     { label: "newer running turn hides the older Retry before its items" },
