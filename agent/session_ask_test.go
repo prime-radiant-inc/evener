@@ -113,6 +113,7 @@ func newAskTestSession(t *testing.T, cfg SessionConfig) *Session {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

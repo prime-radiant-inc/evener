@@ -176,6 +176,7 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	if o.clock != nil {
 		cfg.clock = o.clock
 	}
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	env := o.env
 	if env == nil {
 		env = execenv.NewLocalExecutionEnvironment(o.dir)
