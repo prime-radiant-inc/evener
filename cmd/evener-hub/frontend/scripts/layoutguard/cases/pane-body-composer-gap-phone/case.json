@@ -1,0 +1,27 @@
+{
+  "name": "pane-body-composer-gap-phone",
+  "description": "On a phone the breakpoint's own .body rule declares a different bottom inset; a pane that docks a footer must still close its scrolling body on the footer's top hairline, while a footer-less pane keeps the phone's inset.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "widthMatrix": [
+    {
+      "width": 390
+    }
+  ],
+  "mutation": {
+    "declaration": "panescaffold.module.css: remove the rule that zeroes the bottom padding of a body whose pane docks a footer",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Measured 2026-11-11: without the rule this case fails at 390px with a 16.0px empty band above the docked footer (body padding-bottom 16px), the phone breakpoint's own inset. The footer-less control still read 16px in both runs."
+  }
+}

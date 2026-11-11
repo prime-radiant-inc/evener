@@ -115,6 +115,14 @@
   overflow: clip;
 }
 
+/* The body's bottom padding is end-of-scroll clearance for the pane's own
+ * bottom edge; a docked footer owns that edge, so the clearance would sit
+ * there as a dead band between the last row and the footer. (0,3,0) beats
+ * both the base and the mobile .body rules. */
+.pane:has(> .footer) > .body {
+  padding-bottom: 0;
+}
+
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-5);

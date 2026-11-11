@@ -6,7 +6,7 @@ import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { escapeRegExp, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -283,12 +283,18 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
 // content covered by StackHost's blanket host padding; with that gone (the
 // composer owns its own dock), the body's scroll padding carries the inset
 // so the last content still clears the home indicator.
+//
+// That inset belongs to the pane's bottom edge. A pane that docks a footer
+// (the session pane's composer row) hands the edge to the footer's top
+// hairline, so the inset there would be a dead band between the last row and
+// the composer. jsdom computes no cascade, so the geometry is pinned by
+// layoutguard's pane-body-composer-gap cases; this pins the declarations.
 test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const css = readModuleCss(import.meta.url, "panescaffold.module.css");
-  const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
-  expect(bodyRule).toContain(
+  expect(topRuleBlock(css, ".body")).toContain(
     "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
   );
+  expect(topRuleBlock(css, ".pane:has(> .footer) > .body")).toContain("padding-bottom: 0");
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
