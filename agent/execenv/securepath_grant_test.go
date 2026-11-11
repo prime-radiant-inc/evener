@@ -71,7 +71,7 @@ func TestGrant_ReadsExactLeafOutsideReadRoots(t *testing.T) {
 	}
 
 	// With the exact path granted, the read succeeds through the same fd-anchored path.
-	s.grant = outside
+	s.grant = literalGrant(outside)
 	got, err := s.readFile("read_file", outside)
 	if err != nil {
 		t.Fatalf("granted read: %v", err)
@@ -102,7 +102,7 @@ func TestGrant_WritesExactLeafOutsideWriteRoots(t *testing.T) {
 		t.Fatalf("expected write denial without a grant, got %v", err)
 	}
 
-	s.grant = target
+	s.grant = literalGrant(target)
 	if err := s.writeFile("write_file", target, []byte("granted write"), 0o644); err != nil {
 		t.Fatalf("granted write: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestGrant_RefusesSymlinkedLeaf(t *testing.T) {
 
 	// Granting a symlinked leaf must NOT let the grant follow it: the race-safe
 	// no-symlinks open still refuses. (Prevents a symlink-swap escape via a grant.)
-	s.grant = link
+	s.grant = literalGrant(link)
 	var d *sandbox.DeniedError
 	if _, err := s.readFile("read_file", link); !asDenied(err, &d) {
 		t.Fatalf("a granted symlink leaf must still be refused, got %v", err)
@@ -157,12 +157,12 @@ func TestGrant_RefusesSymlinkedParent_Read(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A grant whose PARENT is a symlink must NOT be resolved through it: the grant
-	// widens containment only, never symlink resolution. Reading link/secret must be
-	// refused, never redirected to real/secret. (This is the escape the adversarial
-	// review caught: openRootDir would have followed the parent symlink.)
+	// A grant approved for the literal spelling link/secret must NOT follow the
+	// symlinked parent to a target nobody approved: reading link/secret is
+	// refused, never redirected to real/secret. Only a grant whose approved
+	// target is real/secret reaches it.
 	grantPath := filepath.Join(link, "secret")
-	s.grant = grantPath
+	s.grant = literalGrant(grantPath)
 	var d *sandbox.DeniedError
 	if _, err := s.readFile("read_file", grantPath); !asDenied(err, &d) {
 		t.Fatalf("a grant with a symlinked parent must be refused, got %v", err)
@@ -182,8 +182,10 @@ func TestGrant_RefusesSymlinkedParent_Write(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Approved for the literal spelling, so the symlinked parent's real target
+	// was never approved.
 	grantPath := filepath.Join(link, "planted") // link -> real
-	s.grant = grantPath
+	s.grant = literalGrant(grantPath)
 	var d *sandbox.DeniedError
 	if err := s.writeFile("write_file", grantPath, []byte("x"), 0o644); !asDenied(err, &d) {
 		t.Fatalf("a granted write with a symlinked parent must be refused, got %v", err)
@@ -214,7 +216,7 @@ func TestGrant_DoesNotOverrideGitProtection(t *testing.T) {
 
 	// Even granted, a git-protected surface stays write-denied — the grant widens
 	// containment only, never the git-protection floor.
-	s.grant = protected
+	s.grant = literalGrant(protected)
 	var d *sandbox.DeniedError
 	if err := s.writeFile("write_file", protected, []byte("tampered"), 0o644); !asDenied(err, &d) {
 		t.Fatalf("a granted git-protected write must still deny, got %v", err)
@@ -242,7 +244,7 @@ func TestGrant_DoesNotOverrideMasking(t *testing.T) {
 
 	// Even granted, a masked (credential) path stays denied — the grant widens
 	// containment only, never the secrets floor.
-	s.grant = masked
+	s.grant = literalGrant(masked)
 	var d *sandbox.DeniedError
 	if _, err := s.readFile("read_file", masked); !asDenied(err, &d) {
 		t.Fatalf("a granted masked path must still deny, got %v", err)

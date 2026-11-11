@@ -64,6 +64,21 @@ type DeniedError struct {
 	// on re-run and must stay final. The zero value (DenialUnspecified) is NOT
 	// curable, so a denial constructed without a kind fails closed (stays final).
 	ReasonKind DenialReason
+
+	// GrantTarget is where an approved per-invocation grant for Path lands: Path
+	// with every symlink in its parent directory resolved. The file-tool layer
+	// sets it on a curable containment denial. It equals Path when no parent
+	// component is a symlink, and is empty on every other denial.
+	GrantTarget string
+}
+
+// ApprovalTarget is the path an approval card shows and an approved grant
+// reaches: GrantTarget when the file-tool layer resolved one, else Path.
+func (e *DeniedError) ApprovalTarget() string {
+	if e.GrantTarget != "" {
+		return e.GrantTarget
+	}
+	return e.Path
 }
 
 // DenialReason classifies a sandbox denial by cause, independent of its display

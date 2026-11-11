@@ -34,11 +34,16 @@ import (
 // never wrongly allows a write.
 func (s *sandboxFS) checkWritable(tool, abs string) error {
 	abs = filepath.Clean(abs)
+	// A per-invocation grant is judged by the write itself (grantedWriteParent),
+	// which applies the grant's target, masking, and git-protection checks.
+	if s.isGranted(abs) {
+		return nil
+	}
 	if len(s.policy.FileTool.WriteRoots) == 0 {
-		return s.deny(tool, abs, denyReasonWriteDenied)
+		return s.denyOutsideRoots(tool, abs, denyReasonWriteDenied, true)
 	}
 	if _, _, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); !ok {
-		return s.deny(tool, abs, denyReasonOutsideWrite)
+		return s.denyOutsideRoots(tool, abs, denyReasonOutsideWrite, true)
 	}
 	if s.underMaskedForWrite(abs) {
 		return s.deny(tool, abs, denyReasonMasked)

@@ -33,12 +33,15 @@ type EscalationRequest struct {
 	Tool string
 	// Kind selects the card shape (file_tool vs shell).
 	Kind EscalationKind
-	// DeniedPath is the path shown on the human's approval card. For an ordinary
-	// (non-sensitive) denial — the only kind that escalates — it is the FULL literal
-	// path, so the human gives INFORMED consent to exactly what will be accessed
-	// (a basename alone could hide a symlinked parent). A sensitive path never
-	// escalates, but as a defensive floor it renders as "<denied>" here.
+	// DeniedPath is the path shown on the human's approval card: the FULL location
+	// an approval reaches, with every symlink in its parent directory resolved, so
+	// the human gives INFORMED consent to exactly where the file is read or
+	// written. A sensitive path never escalates, but as a defensive floor it
+	// renders as "<denied>" here.
 	DeniedPath string
+	// RequestedPath is the path as the tool call spelled it, set only when that
+	// spelling crosses a symlink and so differs from DeniedPath.
+	RequestedPath string
 	// Command is the full shell command (shell kind only; empty for file tools).
 	Command string
 	// OutputSoFar is what a partially-run command emitted before it was stopped
@@ -60,9 +63,9 @@ type EscalationDecision struct {
 
 // NewEscalationRequest builds an EscalationRequest from a typed denial and an
 // opaque id. A denial that carries a Command is the shell kind (and may have
-// partially run); otherwise it is a file-tool denial. DeniedPath is the FULL path
-// for informed consent (a sensitive denial — which never escalates — degrades to
-// "<denied>" defensively).
+// partially run); otherwise it is a file-tool denial. DeniedPath is the FULL
+// approval target for informed consent (a sensitive denial — which never
+// escalates — degrades to "<denied>" defensively).
 func NewEscalationRequest(id string, d *DeniedError) EscalationRequest {
 	kind := EscalationFileTool
 	partial := false
@@ -70,18 +73,23 @@ func NewEscalationRequest(id string, d *DeniedError) EscalationRequest {
 		kind = EscalationShell
 		partial = true
 	}
-	deniedPath := d.Path
+	deniedPath := d.ApprovalTarget()
+	requestedPath := ""
+	if deniedPath != d.Path {
+		requestedPath = d.Path
+	}
 	if d.Sensitive {
-		deniedPath = "<denied>"
+		deniedPath, requestedPath = "<denied>", ""
 	}
 	return EscalationRequest{
-		ID:           id,
-		Mode:         d.Mode,
-		Tool:         d.Tool,
-		Kind:         kind,
-		DeniedPath:   deniedPath,
-		Command:      d.Command,
-		OutputSoFar:  d.OutputSoFar,
-		PartiallyRan: partial,
+		ID:            id,
+		Mode:          d.Mode,
+		Tool:          d.Tool,
+		Kind:          kind,
+		DeniedPath:    deniedPath,
+		RequestedPath: requestedPath,
+		Command:       d.Command,
+		OutputSoFar:   d.OutputSoFar,
+		PartiallyRan:  partial,
 	}
 }

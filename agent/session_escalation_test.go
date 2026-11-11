@@ -270,7 +270,7 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	s := escalatableSession(t)
 	res, denied := deniedResult("/etc/hosts")
 
-	var gotGrant string
+	var gotGrant escalationGrant
 	var grantOK bool
 	rerun := func(ctx context.Context) tool.ExecResult {
 		gotGrant, grantOK = invocationGrant(ctx)
@@ -286,8 +286,8 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	}
 	got := <-done
 
-	if !grantOK || gotGrant != denied.Path {
-		t.Fatalf("re-run ctx must carry the granted path %q, got %q (ok=%v)", denied.Path, gotGrant, grantOK)
+	if want := (escalationGrant{path: denied.Path, target: denied.Path}); !grantOK || gotGrant != want {
+		t.Fatalf("re-run ctx must carry the granted path %+v, got %+v (ok=%v)", want, gotGrant, grantOK)
 	}
 	if got.IsError || got.FullOutput != "wrote /etc/hosts" {
 		t.Fatalf("approve must return the successful re-run output, got %+v", got)
@@ -295,6 +295,37 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 	// The grant must not have leaked onto the session or its policy.
 	if len(pendingIDs(s)) != 0 {
 		t.Fatalf("escalation should be removed after resolve, saw %v", pendingIDs(s))
+	}
+}
+
+// A denial whose path crosses a symlink shows the resolved target on the card,
+// notes the path as requested, and grants exactly that target.
+func TestEscalation_ApprovalTargetsResolvedLocation(t *testing.T) {
+	t.Parallel()
+	s := escalatableSession(t)
+	res, denied := deniedResult("/tmp/link/out.txt")
+	denied.GrantTarget = "/private/tmp/real/out.txt"
+
+	grants := make(chan escalationGrant, 1)
+	rerun := func(ctx context.Context) tool.ExecResult {
+		grant, _ := invocationGrant(ctx)
+		grants <- grant
+		return succeededResult()
+	}
+	done := make(chan tool.ExecResult, 1)
+	go func() { done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, rerun) }()
+
+	ids := awaitPending(t, s, 1)
+	card := s.PendingEscalations()[0]
+	if card.DeniedPath != denied.GrantTarget || card.RequestedPath != denied.Path {
+		t.Fatalf("card shows target %q requested as %q; want target %q requested as %q", card.DeniedPath, card.RequestedPath, denied.GrantTarget, denied.Path)
+	}
+	if err := s.ResolveSandboxEscalation(ids[0], true); err != nil {
+		t.Fatalf("resolve approve: %v", err)
+	}
+	<-done
+	if got, want := <-grants, (escalationGrant{path: denied.Path, target: denied.GrantTarget}); got != want {
+		t.Fatalf("re-run grant = %+v, want %+v", got, want)
 	}
 }
 

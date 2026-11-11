@@ -1064,6 +1064,7 @@ describe("current transcript checkpoints", () => {
         tool: "Read",
         kind: "path",
         deniedPath: "",
+        requestedPath: "",
         partiallyRan: false,
       },
     ];

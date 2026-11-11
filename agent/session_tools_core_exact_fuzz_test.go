@@ -353,7 +353,7 @@ type stceGrantEnv struct {
 	grants []string
 }
 
-func (e *stceGrantEnv) WithSandboxInvocationGrant(path string) execenv.ExecutionEnvironment {
+func (e *stceGrantEnv) WithSandboxInvocationGrant(path, _ string) execenv.ExecutionEnvironment {
 	e.grants = append(e.grants, path)
 	return e
 }

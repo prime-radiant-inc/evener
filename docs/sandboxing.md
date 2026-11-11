@@ -674,6 +674,20 @@ the browse tools, and a masked/git-protected/symlinked/escape denial all stay fi
 exactly as a non-interactive session. The model can never trigger, approve, or
 observe an approval: the escalation and its resolution never enter session history.
 
+An approval targets the location the file actually occupies. When the denied path
+crosses a symlinked directory, the card shows the resolved location (every symlink
+in the parent directory resolved) and notes the path as the agent requested it;
+Allow grants exactly that resolved location for the one re-run, and the file is
+read or written there. On macOS this covers `/tmp` and `$TMPDIR`, which sit under
+the `/var` → `/private/var` symlink. A symlink never redirects an approved
+operation: the re-run opens the approved location with every symlink refused, and
+if a symlink in the requested path was retargeted after the card appeared, so that
+the path no longer resolves to the approved location, the re-run is refused and
+returns the typed denial. The file tools never follow a symlinked final component,
+inside or outside the roots, so resolution stops at the parent directory. An
+out-of-roots path whose final component is a symlink, or whose symlinked parent
+leads into a masked or git-protected location, gets that final denial and no card.
+
 ## Subagents and worktrees
 
 A sandboxed session's delegates and subagents inherit its policy floor. Worktree

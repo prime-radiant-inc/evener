@@ -3449,6 +3449,7 @@ Underlying Go kind: `string` (no struct fields).
 | `tool` | string |  |  |
 | `kind` | string |  |  |
 | `deniedPath` | string |  |  |
+| `requestedPath` | string | yes |  |
 | `command` | string | yes |  |
 | `outputSoFar` | string | yes |  |
 | `partiallyRan` | bool | yes |  |

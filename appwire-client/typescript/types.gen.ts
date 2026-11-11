@@ -3414,6 +3414,7 @@ export interface SandboxEscalationRequested {
   tool: string;
   kind: string;
   deniedPath: string;
+  requestedPath?: string;
   command?: string;
   outputSoFar?: string;
   partiallyRan?: boolean;
@@ -6255,7 +6256,7 @@ export const WIRE_FIELD_KEYS = {
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],
-  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"],
+  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "requestedPath", "command", "outputSoFar", "partiallyRan"],
   SessionURL: ["id", "url", "label", "addedBy", "addedAt"],
   ThreadStatus: ["type", "activeFlags"],
   TaskAggregate: ["total", "done", "cancelled", "remaining", "current"],

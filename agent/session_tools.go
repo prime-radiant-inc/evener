@@ -614,9 +614,9 @@ func (s *Session) execToolCheckpoint(name string) {
 
 func (s *Session) rerunToolWithGrant(ctx context.Context, call llm.ToolCallData) tool.ExecResult {
 	env := s.currentEnv()
-	if grantPath, ok := invocationGrant(ctx); ok {
+	if grant, ok := invocationGrant(ctx); ok {
 		if g, gok := env.(sandboxGranter); gok {
-			env = g.WithSandboxInvocationGrant(grantPath)
+			env = g.WithSandboxInvocationGrant(grant.path, grant.target)
 		}
 	}
 	rerunStart := s.sclock().Now()
