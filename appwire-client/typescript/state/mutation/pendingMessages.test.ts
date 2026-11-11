@@ -524,6 +524,17 @@ test("an edited recovery's text does not become the queued original's content", 
   expect(originalRow?.recovery).toBeUndefined();
 });
 
+test("a confirmed queue entry joins a later promotion to the same row", () => {
+  const original = accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] });
+  const model = threadModel({
+    queue: { depth: 0, revision: 2 },
+    pendingMutations: [pending("m2", "turn/promoteQueuedAsSteer", "queued", { queueEntryIds: ["q1"] })],
+  });
+  const rows = project({ optimistic: [original], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", method: "promote", state: "steering", text: "queued" });
+});
+
 test("a refused queue cancellation stays visible as a control failure", () => {
   const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
     recoveryReason: "the queue moved",

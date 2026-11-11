@@ -815,8 +815,12 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     });
   }
 
-  async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
-    return (await this.settleReceiptResult(clientMutationId, projectionState)).settled;
+  async settleReceipt(
+    clientMutationId: string,
+    projectionState: string,
+    queueEntryIds?: readonly string[],
+  ): Promise<boolean> {
+    return (await this.settleReceiptResult(clientMutationId, projectionState, queueEntryIds)).settled;
   }
 
   // The settlement's full outcome: what settled and every sibling row the
@@ -826,6 +830,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   async settleReceiptResult(
     clientMutationId: string,
     projectionState: string,
+    queueEntryIds?: readonly string[],
   ): Promise<{ settled: boolean; retiredIds: string[] }> {
     let settledSource: MutationRecord | undefined;
     let settledWireId: string | undefined;
@@ -891,7 +896,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         if (retained) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
-          await requestResult(optimistic.put(acceptedRecord(subject)));
+          await requestResult(
+            optimistic.put(
+              acceptedRecord(queueEntryIds && queueEntryIds.length > 0 ? { ...subject, queueEntryIds } : subject),
+            ),
+          );
         } else if (optimisticRecord) {
           // The delete stays CONDITIONAL on the named optimistic record: a
           // repeated pending receipt must leave the retained accepted copy

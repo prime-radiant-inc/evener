@@ -150,7 +150,7 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // saved after this one) is preserved. The port declares no separate discard
   // method for this: it is the settlement's own side effect, so structural
   // interface conformance alone does not prove it.
-  settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
+  settleReceipt(clientMutationId: string, projectionState: string, queueEntryIds?: readonly string[]): Promise<boolean>;
   // Records an authoritative apply, with the same notes/human/set supersede
   // side effect as settleReceipt. Returns the record the settlement resolved
   // as its subject - the row the id names, else a carrier of the id's wire

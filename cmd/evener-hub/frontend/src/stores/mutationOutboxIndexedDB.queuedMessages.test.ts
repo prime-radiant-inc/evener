@@ -1676,6 +1676,13 @@ test("a retained copy from an edited recovery keeps the frozen original input", 
   expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
 });
 
+test("a queue receipt stores its confirmed lineage on the accepted copy", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  expect(await f.storage.settleReceipt(queued.clientMutationId, "pending", ["entry-a"])).toBe(true);
+  expect((await f.storage.getOptimistic(queued.clientMutationId))?.queueEntryIds).toEqual(["entry-a"]);
+});
+
 test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {
   const f = fixture();
   const a = await f.storage.enqueueIntent(queuedIntent());

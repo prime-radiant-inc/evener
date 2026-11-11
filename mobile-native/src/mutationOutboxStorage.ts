@@ -520,7 +520,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// record (the daemon has not reflected it yet); any other pending receipt
 	// (a receipt-only control) or projection state has nothing worth carrying
 	// forward, so the record is simply retired everywhere it lives.
-	async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+	async settleReceipt(
+		clientMutationId: string,
+		projectionState: string,
+		queueEntryIds?: readonly string[],
+	): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_receipt", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
@@ -533,7 +537,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// build: it never spreads, so a recovery-sourced receipt
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
 				// not leak into the optimistic row.
-				this.replace(TABLES.optimistic, acceptedRecord(source));
+				this.replace(
+					TABLES.optimistic,
+					acceptedRecord(queueEntryIds && queueEntryIds.length > 0 ? { ...source, queueEntryIds } : source),
+				);
 				// Acceptance is its own moment. A read already in flight when this
 				// receipt lands never saw the record, so its absence must not retire
 				// it; the prune compares against this stamp, never enqueue time.
