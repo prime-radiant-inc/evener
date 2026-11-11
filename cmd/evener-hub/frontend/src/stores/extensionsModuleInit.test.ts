@@ -1,7 +1,18 @@
 // @vitest-environment node
 
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
+
+// The module graph's first transform is a setup cost, not the scenario: under
+// host load it can exceed the test's 5s deadline even though the import is
+// awaited (#5870). Warm it in a hook whose 60s ceiling is a hang tripwire,
+// then reset the module registry so the test still evaluates both modules
+// fresh against an already-ready client.
+beforeAll(async () => {
+  await import("./connection");
+  await import("./extensions");
+  vi.resetModules();
+}, 60_000);
 
 afterEach(() => {
   vi.resetModules();
