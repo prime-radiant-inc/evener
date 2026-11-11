@@ -605,11 +605,12 @@ run_module() {
 			capture_shard_rows agent || shardStatus=1
 		fi
 		# A split run (AGENT_SHARD_PART=k/m, one CI runner per part) runs the
-		# unsharded subpackages in part 1 alone, so the split runs them once.
-		case "${AGENT_SHARD_PART:-}" in
-		"" | 1/*) ;;
-		*) return "$shardStatus" ;;
-		esac
+		# unsharded subpackages in the last part alone, so the split runs them
+		# once. Equal-weight packing hands any remainder tests to the
+		# lowest-numbered shards, so the last part has the least shard work.
+		if [ -n "${AGENT_SHARD_PART:-}" ] && [ "${AGENT_SHARD_PART%%/*}" != "${AGENT_SHARD_PART#*/}" ]; then
+			return "$shardStatus"
+		fi
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list

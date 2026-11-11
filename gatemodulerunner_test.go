@@ -1093,8 +1093,8 @@ func TestTimed(t *testing.T) {
 
 // TestModuleRunnerRunsAgentSubpackagesInOnePartOnly pins the split agent race
 // lane: each runner runs one AGENT_SHARD_PART of the agent package's shards,
-// and the module's subpackages, which are not sharded, run in part 1 alone so
-// the split runs them once. A whole run still runs them.
+// and the module's subpackages, which are not sharded, run in the last part
+// alone so the split runs them once. A whole run still runs them.
 func TestModuleRunnerRunsAgentSubpackagesInOnePartOnly(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1102,8 +1102,8 @@ func TestModuleRunnerRunsAgentSubpackagesInOnePartOnly(t *testing.T) {
 		wantSubpkgs bool
 	}{
 		{"whole", "", true},
-		{"first part", "1/2", true},
-		{"second part", "2/2", false},
+		{"first part", "1/2", false},
+		{"last part", "2/2", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -294,7 +294,7 @@ RACE_AGENT_PART ?= all
 ##   else in the root module). RACE_AGENT_PART (agent scope only) splits the
 ##   agent module the same way: all (default, one unsharded go test) or k/m,
 ##   which runs part k of m of 8 equally weighted agent shards, the module's
-##   subpackages riding with part 1.
+##   subpackages riding with the last part.
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \

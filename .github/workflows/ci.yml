@@ -622,7 +622,7 @@ jobs:
         env:
           SCOPE: ${{ matrix.scope }}
           AGENT_SHARD_CONCURRENCY: 4
-          AGENT_SHARD_PARALLEL: 2
+          AGENT_SHARD_PARALLEL: 3
         run: |
           case "$SCOPE" in
           agent-*) make test-race RACE_SCOPE=agent RACE_AGENT_PART="${SCOPE#agent-}/2" ;;
