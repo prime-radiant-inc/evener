@@ -861,6 +861,7 @@ it("returns to the identity its session resumes to while reading", async () => {
 	if (!listener) throw new Error("the reader did not subscribe to identity changes");
 	act(() => listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" }));
 	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
+	await settle();
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "local:fix-3" }));
 });

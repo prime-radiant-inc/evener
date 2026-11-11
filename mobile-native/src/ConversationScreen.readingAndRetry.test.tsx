@@ -2256,6 +2256,7 @@ it("defers an identity change until a sheet above the conversation closes", asyn
 	};
 	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
 	act(() => listener({ hubId: "hub-1", from: "ref-deferred", to: "ref-deferred-2" }));
+	act(() => listener({ hubId: "hub-1", from: "ref-deferred-2", to: "ref-deferred-3" }));
 	expect(navigation.replace).not.toHaveBeenCalled();
 	// Closing the sheet brings the conversation back to the top; the held move
 	// now applies once.
@@ -2264,7 +2265,7 @@ it("defers an identity change until a sheet above the conversation closes", asyn
 		routes: [{ key: route.key, name: "Conversation", params: route.params as object }],
 	};
 	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
-	expect(navigation.replace).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "ref-deferred-2" }));
+	expect(navigation.replace).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "ref-deferred-3" }));
 	subscribe.mockRestore();
 });
 

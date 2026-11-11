@@ -109,7 +109,9 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: messageRef.current, title: sessionTitle }));
+		// Return to the conversation that owns the document; its deferred
+		// replacement moves it to the resolved ref after this sheet closes.
+		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
 	};
 
 	const why = !online

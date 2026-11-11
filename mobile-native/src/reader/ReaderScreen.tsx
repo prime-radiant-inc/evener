@@ -94,11 +94,13 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	// The session may resume to a different ref while this reader is open. Its
 	// document stays the one opened here, but returning to the session or filing
 	// a quote must land on the identity the resume resolved to.
-	const resolvedRef = useRef(sessionRef);
+	const [messageRef, setMessageRef] = useState(sessionRef);
 	useEffect(() => {
-		resolvedRef.current = sessionRef;
+		setMessageRef(sessionRef);
 		return subscribeNativeIdentities((change) => {
-			if (change.hubId === hubId && change.from === resolvedRef.current) resolvedRef.current = change.to;
+			if (change.hubId === hubId) {
+				setMessageRef((current) => (change.from === current ? change.to : current));
+			}
 		});
 	}, [hubId, sessionRef]);
 	const memory = documentMemory(hubId);
@@ -263,7 +265,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const [canReview, setCanReview] = useState(false);
 	useEffect(() => {
 		if (!inFront || !client || activeProfile?.id !== hubId || state !== "ready") return;
-		const link = new SessionLink(client, sessionRef);
+		const link = new SessionLink(client, messageRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
 			const session = link.getSnapshot();
@@ -283,7 +285,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			unsubscribe();
 			link.dispose();
 		};
-	}, [inFront, client, activeProfile?.id, hubId, state, sessionRef, source, reload]);
+	}, [inFront, client, activeProfile?.id, hubId, state, messageRef, source, reload]);
 	useEffect(() => {
 		if (reference !== routeReference) navigation.setParams({ reference });
 	}, [reference, routeReference, navigation]);
@@ -368,7 +370,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 						{
 							type: "action",
 							label: "Open session",
-							onPress: () => returnToSession(navigation, { hubId, ref: resolvedRef.current, title: sessionTitle }),
+							onPress: () => returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle }),
 						},
 						{ type: "action", label: "Copy path", onPress: () => void copyText(namedFileTarget(reference)) },
 						...(text === null
@@ -407,6 +409,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		about,
 		reload,
 		share,
+		messageRef,
 	]);
 
 	const cellRenderer = useMemo(
@@ -459,7 +462,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		sessionRef,
 		path,
 		sessionTitle,
-		...(resolvedRef.current !== sessionRef ? { messageSessionRef: resolvedRef.current } : {}),
+		...(messageRef !== sessionRef ? { messageSessionRef: messageRef } : {}),
 		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
 	});
 	// The rows keep one callback; it reaches this render's values through the ref.
@@ -481,8 +484,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				return;
 			case "quote":
 				setSelecting(null);
-				holdQuote(hubId, resolvedRef.current, selected);
-				returnToSession(navigation, { hubId, ref: resolvedRef.current, title: sessionTitle });
+				holdQuote(hubId, messageRef, selected);
+				returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle });
 				return;
 			case "copy":
 				void copyText(block.text);

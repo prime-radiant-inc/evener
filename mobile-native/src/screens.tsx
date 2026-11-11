@@ -748,6 +748,10 @@ function ConversationScreenView({
 	// resume moves the pane too. A sheet or screen above holds the move until it
 	// closes. The draft does not follow: it belongs to the session that owns it.
 	const pendingIdentity = useRef<string | null>(null);
+	const currentIdentity = useRef(route.params.ref);
+	useEffect(() => {
+		currentIdentity.current = route.params.ref;
+	}, [route.params.ref]);
 	const topmostNow = useRef(topmost);
 	topmostNow.current = topmost;
 	const replaceForIdentity = useCallback(
@@ -763,7 +767,12 @@ function ConversationScreenView({
 	);
 	useEffect(() => {
 		return subscribeNativeIdentities((change) => {
-			if (nativeMutationTargetKey(change.hubId, change.from) !== recovery.targetKey) return;
+			if (
+				nativeMutationTargetKey(change.hubId, change.from) !==
+				nativeMutationTargetKey(route.params.hubId, currentIdentity.current)
+			)
+				return;
+			currentIdentity.current = change.to;
 			// A sheet above owns a host with unsaved edits (SessionInfo's rename,
 			// for one). Replacing the conversation under it would release that host
 			// and dismiss the sheet without its discard guard. Hold the move until
@@ -771,7 +780,7 @@ function ConversationScreenView({
 			if (topmostNow.current) replaceForIdentity(change.to);
 			else pendingIdentity.current = change.to;
 		});
-	}, [recovery.targetKey, recoveryAvailable, replaceForIdentity]);
+	}, [recoveryAvailable, replaceForIdentity, route.params.hubId]);
 	useEffect(() => {
 		if (!topmost || pendingIdentity.current === null) return;
 		const to = pendingIdentity.current;

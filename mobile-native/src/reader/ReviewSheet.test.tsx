@@ -399,7 +399,7 @@ it("sends a review to a paused session by resuming it", async () => {
 	expect(mutations()).toEqual(["turn/start"]);
 });
 
-it("returns to the identity the review's session resumes to", async () => {
+it("returns to the owning conversation after its session resumes elsewhere", async () => {
 	status = "idle";
 	resumeRequired = true;
 	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
@@ -411,10 +411,8 @@ it("returns to the identity the review's session resumes to", async () => {
 	choose(tree, "Approve");
 	await send(tree);
 	await settle();
-	expect(sheetNavigation.navigate).toHaveBeenCalledWith(
-		"Conversation",
-		expect.objectContaining({ ref: "local:fix-2" }),
-	);
+	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
+	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
 });
 
 it("waits for the connection, and reads again when it returns", async () => {
