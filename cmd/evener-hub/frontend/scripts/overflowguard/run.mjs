@@ -540,8 +540,11 @@ function assertComposerFooter(measurement, width) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge and owns the safe-area
-  // band in every focus state - resting, editing, or a control focused.
+  // composer's own dock is the pane's bottom edge. When its activity line
+  // renders, that line IS the bottom surface - the chips fill the safe-area
+  // band themselves, so the dock reserves nothing below them (Jesse,
+  // 2026-11-11: the band was eating the transcript). Without the line, the
+  // dock keeps owning the band.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -554,9 +557,11 @@ function assertComposerFooter(measurement, width) {
     ) {
       failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
+    const lineCarriesBand = measurement.focus === "editor" && measurement.activityLine !== null;
+    const expectedPadding = lineCarriesBand ? 0 : requiredClearance;
+    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, expectedPadding)) {
       failures.push(
-        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+        `composer dock padding=${measurement.paddingBottom}px, expected ${expectedPadding}px (${lineCarriesBand ? "activity line owns the band" : `safe-area clearance=${requiredClearance}px`})`,
       );
     }
     // The resting row sheds attach but never its actions control - Send, or
@@ -573,8 +578,22 @@ function assertComposerFooter(measurement, width) {
         );
       }
     }
-    if (measurement.activityChipCount === 0) failures.push("phone activity line is missing its chips");
-    if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+    // The folded resting card is the phone's smallest surface: it shows no
+    // activity line, and the counts come back with the expanded card.
+    if (measurement.focus === "editor") {
+      if (measurement.activityChipCount === 0) failures.push("engaged composer lost its activity chips");
+      if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+      if (measurement.activityLine !== null && measurement.card !== null) {
+        const lineBottom = measurement.activityLine.bottom;
+        if (measurement.paneBottom !== null && lineBottom < measurement.paneBottom - 1) {
+          failures.push(
+            `activity line leaves ${Math.round(measurement.paneBottom - lineBottom)}px below itself at the pane's bottom edge`,
+          );
+        }
+      }
+    } else if (measurement.activityLine !== null) {
+      failures.push("resting composer still renders its activity line");
+    }
     if (
       measurement.activityLine !== null &&
       measurement.lastBottom !== null &&
@@ -774,10 +793,11 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live on their own line below the card, so every
-    // phone state - empty, engaged, drafting, attached, ask-pending,
-    // approval - mounts all four counters.
-    const expectedCount = 4;
+    // The activity counts live on their own line below the card. The folded
+    // resting card renders no line, so the empty state mounts none; every
+    // expanded state - engaged, drafting, attached, ask-pending, approval -
+    // mounts all four.
+    const expectedCount = state.state === "empty" ? 0 : 4;
     if (state.counters.length !== expectedCount)
       failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
     for (const counter of state.counters) {

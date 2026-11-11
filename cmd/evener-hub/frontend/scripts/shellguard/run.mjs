@@ -779,6 +779,16 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
+    // A folded resting phone composer renders no activity line - the counts
+    // come back with the expanded card - so the phone measurement engages the
+    // editor first. That is the state whose chips this guard checks.
+    if (mobile) {
+      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
+      if (editor && !document.querySelector('[data-testid="composer-activity-line"]')) {
+        editor.focus();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+    }
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
       text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
       label: measure(element.querySelector('span'), element.textContent)
@@ -959,7 +969,7 @@ function assertOverview(result, viewport, theme) {
     }
     const footer = result.footer;
     if (!footer) {
-      failures.push("phone composer activity row is not rendered");
+      failures.push("engaged phone composer does not render its activity line");
     } else {
       // The phone pane renders no footer strip: the quiet line below the
       // composer card carries the same four activity tabs, each at the tap

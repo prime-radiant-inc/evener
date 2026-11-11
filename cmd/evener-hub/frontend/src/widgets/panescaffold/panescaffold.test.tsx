@@ -277,6 +277,12 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   expect(css).toMatch(
     /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
   );
+  // The composer's activity line is the pane's bottom edge: its chips already
+  // occupy the tap floor, so reserving the home-indicator band below them
+  // spends that band twice and eats the transcript's height. A phone pane
+  // renders no edge footer, so this must address .footer - the composer's
+  // actual home on a phone - not the session's .footerBeforeEdge exemption.
+  expect(css).toMatch(/\.footer:has\(:global\(\[data-composer-activity-line="true"\]\)\) \{[^}]*padding-bottom: 0;/);
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll

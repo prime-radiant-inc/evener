@@ -56,7 +56,9 @@
 }
 
 /* The phone's activity counts sit on a glance line below the composer card,
- * where the desktop status bar puts them: not a control in the writing row. */
+ * where the desktop status bar puts them: not a control in the writing row.
+ * The line is the pane's bottom edge, and the chips are already the tap
+ * floor, so it adds no height of its own. */
 .activityRow {
   display: flex;
   align-items: center;

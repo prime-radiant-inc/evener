@@ -1203,15 +1203,16 @@ test("mobile keeps the session's activity chips in the composer's control row, w
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
 
-  // A resting editor sheds Attach; the activity line stays, and Send stays,
-  // so the resting card is still a usable one-line composer. A real blur()
-  // moves focus off the editor, which the engagement reconcile reads.
+  // A resting editor sheds Attach and the activity line too - the folded card
+  // is the phone's smallest surface - and Send stays, so it is still a usable
+  // one-line composer. A real blur() moves focus off the editor, which the
+  // engagement reconcile reads.
   act(() => {
     editor.blur();
   });
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
 
   // Re-engaged, a chip is the phone's one-tap way into the Overview list.
