@@ -481,8 +481,9 @@ func pluginHookEvents(hooks map[agentplugin.HookEvent][]agentplugin.RegisteredHo
 // component file (kind and file the loader recorded, then its own reason),
 // and one note per declared hook event evener will never fire. Reserved
 // events (recognized Claude events evener does not fire) and unrecognized
-// event names use the sentence shape the session-load warnings use, so a
-// plugin's diagnostics read the same wherever they surface.
+// event names take their sentences from the plugin package, which the
+// session-load warnings use too, so a plugin's diagnostics read the same
+// wherever they surface.
 func pluginLoadWarnings(instance agentplugin.Instance) []string {
 	var warnings []string
 	warnings = append(warnings, instance.MCPConfigWarnings...)
@@ -490,14 +491,10 @@ func pluginLoadWarnings(instance agentplugin.Instance) []string {
 		warnings = append(warnings, fmt.Sprintf("%s %s skipped: %s", skipped.Kind, filepath.Base(skipped.File), skipped.Reason))
 	}
 	for _, event := range slices.Sorted(maps.Keys(instance.UnsupportedHooks)) {
-		warnings = append(warnings, fmt.Sprintf(
-			"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
-			instance.Manifest.Name, event))
+		warnings = append(warnings, agentplugin.UnsupportedHookEventWarning(instance.Manifest.Name, string(event)))
 	}
 	for _, event := range slices.Sorted(maps.Keys(instance.UnknownHooks)) {
-		warnings = append(warnings, fmt.Sprintf(
-			"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
-			instance.Manifest.Name, event))
+		warnings = append(warnings, agentplugin.UnknownHookEventWarning(instance.Manifest.Name, event))
 	}
 	return warnings
 }

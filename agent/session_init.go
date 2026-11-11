@@ -2093,7 +2093,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unsupported hook event",
-				Message:    unsupportedHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnsupportedHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2111,7 +2111,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unknown hook event",
-				Message:    unknownHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnknownHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2531,25 +2531,6 @@ func (s *Session) restoreSideEffect(point string, run func() error) error {
 		return fault
 	}
 	return run()
-}
-
-// unknownHookEventWarning builds the load-time warning text for a hook declared
-// under an event name that is neither a evener event nor a recognized Claude
-// event — almost always a typo. It names the plugin and the offending event
-// only; no hook payload or secret is included.
-func unknownHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
-		pluginName, event)
-}
-
-// unsupportedHookEventWarning builds the load-time warning text for a hook
-// declared under a recognized Claude event that evener does not yet fire
-// (reserved-placeholder). It names the plugin and the reserved event only.
-func unsupportedHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
-		pluginName, event)
 }
 
 // supportedHookHandlerTypes is the set of handler "type" values evener actually
