@@ -224,6 +224,38 @@ test("useFocusRehome re-homes inside the overlay the keyboard was in", () => {
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "overlay-first" }));
 });
 
+/** A surface nested inside an ancestor overlay - the mobile selection sheet
+ * wraps the whole launcher panel. Recovery belongs to the surface's own catch
+ * root (the tabIndex -1 root, never a tab stop); climbing out to the sheet's
+ * first control would strand the keyboard at the sheet top, and the next
+ * Escape would dismiss the sheet over the user's draft. */
+function AncestorDialogHarness({ row }: { row: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusRehome(ref);
+  return (
+    <div role="dialog" aria-modal="true">
+      <button type="button">sheet-first</button>
+      <div ref={ref} tabIndex={-1}>
+        {row && <button type="button">row</button>}
+      </div>
+    </div>
+  );
+}
+
+test("useFocusRehome stays in its own root inside an ancestor dialog instead of climbing out", () => {
+  const { rerender } = render(<AncestorDialogHarness row />);
+  const row = screen.getByRole("button", { name: "row" });
+  const sheetFirst = screen.getByRole("button", { name: "sheet-first" });
+  act(() => row.focus());
+
+  rerender(<AncestorDialogHarness row={false} />);
+
+  expect(document.activeElement).not.toBe(sheetFirst);
+  const catchRoot = sheetFirst.parentElement?.querySelector("[tabindex='-1']");
+  if (!(catchRoot instanceof HTMLElement)) throw new Error("no catch root renders");
+  expect(document.activeElement).toBe(catchRoot);
+});
+
 test("useFocusRehome re-homes once per removal, not on every later commit", () => {
   const { rerender } = render(<Harness row />);
   const row = screen.getByRole("button", { name: "row" });

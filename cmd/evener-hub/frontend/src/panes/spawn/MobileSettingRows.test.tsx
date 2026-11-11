@@ -308,6 +308,111 @@ test("Escape right after opening details preserves the mobile selection draft", 
   expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
 });
 
+test("contents expansion inside the details keeps the keyboard local to the sheet's draft", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  const pluginClient = new FakeClient();
+  const nineSkills = Array.from({ length: 9 }, (_, i) => `skill-0${i + 1}`);
+  pluginClient.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((target) => ({ ...target, components: { skills: nineSkills } })),
+  }));
+  renderRows({
+    pluginClient,
+    onPluginSelectionChange,
+    pluginPreview: {
+      status: "ready",
+      response: {
+        plugins: [
+          {
+            name: "alpha",
+            source: "directory",
+            path: "/tmp/alpha",
+            selected: true,
+            skillCount: 9,
+            agentCount: 0,
+            commandCount: 0,
+            hookCount: 0,
+            mcpCount: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Plugins: 1 of 1" }));
+  const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
+  await user.click(within(parent).getByRole("button", { name: "Details" }));
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no detail body expanded");
+  // The contents block appears when the components read settles.
+  const expander = await within(details).findByRole("button", { name: "+1 more" });
+  expander.focus();
+  await user.keyboard("{Enter}");
+  expect(expander.isConnected).toBe(false);
+
+  // The expansion rehomes focus to the contents row inside the details - not
+  // to the sheet's first control, where the next Escape would cancel the sheet.
+  expect(details.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
+  await user.click(within(parent).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "default" });
+});
+
+test("retrying the contents read inside the details keeps the keyboard local to the sheet's draft", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  const pluginClient = new FakeClient();
+  pluginClient.on("evener/plugin/components", () => {
+    throw new Error("read-failed");
+  });
+  renderRows({
+    pluginClient,
+    onPluginSelectionChange,
+    pluginPreview: {
+      status: "ready",
+      response: {
+        plugins: [
+          {
+            name: "alpha",
+            source: "directory",
+            path: "/tmp/alpha",
+            selected: true,
+            skillCount: 1,
+            agentCount: 0,
+            commandCount: 0,
+            hookCount: 0,
+            mcpCount: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Plugins: 1 of 1" }));
+  const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
+  await user.click(within(parent).getByRole("button", { name: "Details" }));
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no detail body expanded");
+  const retry = await within(details).findByRole("button", { name: "Retry" });
+  retry.focus();
+  await user.keyboard("{Enter}");
+  expect(retry.isConnected).toBe(false);
+
+  // The retry swaps the block for loading content; the rehome stays inside the
+  // details rather than jumping to the sheet's first control, where the next
+  // Escape would cancel the sheet over the draft.
+  expect(details.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
+  await user.click(within(parent).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "default" });
+});
+
 test("Escape inside the expanded details collapses them without closing the selection sheet", async () => {
   const user = userEvent.setup();
   const onPluginSelectionChange = vi.fn();

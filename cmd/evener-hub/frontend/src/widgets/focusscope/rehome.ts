@@ -67,13 +67,17 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
     const remember = (target: EventTarget | null): void => {
       const node = root.current;
       if (!(target instanceof HTMLElement) || node === null || !node.contains(target)) return;
+      const dialog = target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]');
       lastFocused.current = {
         target,
-        // The innermost overlay the control sits in (a sheet, a dialog, a
-        // confirm opened over this surface), so the recovery lands inside the
-        // overlay the keyboard was actually in. Falling back to the surface
-        // itself would push focus out of a nested modal and break its trap.
-        container: target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]') ?? node,
+        // The innermost dialog this surface OWNS - a dialog nested inside the
+        // root (a confirm opened over this surface), where recovery has to
+        // land to keep the keyboard in the modal it was in. An ANCESTOR dialog
+        // (the mobile selection sheet wrapping a whole panel) never owns a
+        // nested surface's recovery: the surface's own catch root keeps the
+        // keyboard where the user was, so the next Escape dismisses the
+        // details instead of the sheet over the draft.
+        container: dialog !== null && node.contains(dialog) ? dialog : node,
       };
     };
     const onFocusIn = (event: FocusEvent): void => remember(event.target);
