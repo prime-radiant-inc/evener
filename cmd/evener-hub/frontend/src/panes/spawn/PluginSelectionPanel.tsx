@@ -8,20 +8,21 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import { type ReactElement, useEffect, useState } from "react";
+import { Fragment, type ReactElement, useEffect, useRef, useState } from "react";
 import { Button, Card, Disclosure, EmptyState, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { LauncherPluginRow } from "../plugins/PluginRow";
-import { LauncherPluginSheet } from "./LauncherPluginSheet";
+import { usePluginRowFocusRehome } from "../plugins/pluginRowFocus";
+import { LauncherPluginDetails } from "./LauncherPluginDetails";
 import styles from "./pluginSelection.module.css";
 
 export interface PluginSelectionPanelProps {
   preview: PluginPreviewResponse;
   selection: PluginSelectionState;
   removeOnly?: boolean;
-  /** The client a Details-opened sheet reads component inventories through. */
+  /** The client a Details-expanded body reads component inventories through. */
   client: Pick<AppwireClientLike, "request">;
-  /** The launch source the preview resolved against; the sheet's read follows
+  /** The launch source the preview resolved against; the body's read follows
    * it so its Contents describe the plugins that host would load. */
   host?: string;
   onSelectionChange(next: PluginSelectionState): void;
@@ -48,17 +49,20 @@ export function PluginSelectionPanel({
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  // The panel owns the one open sheet: a row's Details opens its candidate,
-  // and only one candidate is open at a time. The sheet mounts only while it
-  // is open, so its read starts when the sheet does.
-  const [sheetName, setSheetName] = useState<string | null>(null);
-  const sheetCandidate = preview.plugins.find((plugin) => plugin.name === sheetName);
+  // The panel owns the one expanded row: a row's Details expands its
+  // candidate's body under it, only one row is expanded at a time, and the
+  // same action collapses it. The body mounts only while it is expanded,
+  // so its read starts when it does.
+  const [expandedName, setExpandedName] = useState<string | null>(null);
+  const expandedCandidate = preview.plugins.find((plugin) => plugin.name === expandedName);
+  // The list rows' focus-rehome root: collapsing a candidate's details
+  // unmounts the body's focused control, and the keyboard returns to the row.
+  const listRef = useRef<HTMLDivElement>(null);
+  usePluginRowFocusRehome(expandedName === null ? null : { plugin: expandedName }, listRef);
   useEffect(() => {
-    if (sheetName !== null && sheetCandidate === undefined) setSheetName(null);
-  }, [sheetName, sheetCandidate]);
+    if (expandedName !== null && expandedCandidate === undefined) setExpandedName(null);
+  }, [expandedName, expandedCandidate]);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
-  const sheetSelected =
-    sheetCandidate !== undefined && (selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected);
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
   const selectedCount = selectedPluginNames(selection, preview).length;
@@ -119,38 +123,43 @@ export function PluginSelectionPanel({
           </div>
         )}
 
-        <div className={CLASS.list} data-testid="plugin-selection-list">
+        <div ref={listRef} className={CLASS.list} data-testid="plugin-selection-list">
           {preview.plugins.map((plugin) => {
             const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
+            const isExpanded = expandedName === plugin.name;
             return (
-              <LauncherPluginRow
-                key={plugin.name}
-                candidate={plugin}
-                selected={selected}
-                removeOnly={removeOnly}
-                onToggleSelected={(next) => onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))}
-                onOpen={() => setSheetName(plugin.name)}
-              />
+              <Fragment key={plugin.name}>
+                <LauncherPluginRow
+                  candidate={plugin}
+                  selected={selected}
+                  removeOnly={removeOnly}
+                  expanded={isExpanded}
+                  onToggleSelected={(next) =>
+                    onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))
+                  }
+                  onOpen={() => setExpandedName(isExpanded ? null : plugin.name)}
+                />
+                {isExpanded && (
+                  <LauncherPluginDetails
+                    candidate={plugin}
+                    client={client}
+                    host={host}
+                    selected={selected}
+                    selectionDisabled={removeOnly && !selected}
+                    onCollapse={() => setExpandedName(null)}
+                    onToggleSelected={(next) => {
+                      // The same remove-only guard the row's own switch
+                      // applies: an unreadable preview still allows taking
+                      // plugins out.
+                      if (!removeOnly || !next)
+                        onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
+                    }}
+                  />
+                )}
+              </Fragment>
             );
           })}
         </div>
-        {sheetCandidate !== undefined && (
-          <LauncherPluginSheet
-            open
-            onClose={() => setSheetName(null)}
-            candidate={sheetCandidate}
-            client={client}
-            host={host}
-            selected={sheetSelected}
-            selectionDisabled={removeOnly && !sheetSelected}
-            onToggleSelected={(next) => {
-              // The same remove-only guard the row's own switch applies: an
-              // unreadable preview still allows taking plugins out.
-              if (!removeOnly || !next)
-                onSelectionChange(setPluginSelected(selection, preview, sheetCandidate.name, next));
-            }}
-          />
-        )}
         {preview.plugins.length === 0 && (
           <EmptyState size="compact" title="No plugins are available for this session." />
         )}

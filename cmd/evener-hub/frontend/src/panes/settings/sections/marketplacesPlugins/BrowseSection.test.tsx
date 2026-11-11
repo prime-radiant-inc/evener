@@ -45,7 +45,14 @@ const INSTALLED_LINTER: PluginEntry = {
 // stands in for that parent for this component's own tests.
 function Harness({ initialExpanded = new Set<string>() }: { initialExpanded?: Set<string> }) {
   const [expanded, setExpanded] = useState(initialExpanded);
-  return <BrowseSection expandedMarketplaces={expanded} setExpandedMarketplaces={setExpanded} />;
+  return (
+    <BrowseSection
+      expandedMarketplaces={expanded}
+      setExpandedMarketplaces={setExpanded}
+      expanded={null}
+      onToggle={() => {}}
+    />
+  );
 }
 
 // Each marketplace node is a Disclosure: its summary is the toggle, and the

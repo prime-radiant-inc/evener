@@ -2,8 +2,8 @@
 // Workspace redesign. Every row is the shared InstalledPluginRow - status
 // (dot + chips), identity, and the plugin's component counts once the
 // components cache holds them - and every ACTION (enable/disable,
-// auto-upgrade, upgrade, remove) lives in the PluginDetailSheet that opens
-// when a row is selected, so the list stays a single-tap-target-per-row on
+// auto-upgrade, upgrade, remove) lives in the PluginDetailBody a row tap
+// expands under that row, so the list stays a single-tap-target-per-row on
 // both desktop and mobile. The client-side filter matches plugin name OR
 // marketplace, case-insensitively.
 //
@@ -15,8 +15,10 @@ import { useState } from "react";
 import { Button, EmptyState, Input } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstalledPluginRow } from "../../../plugins/PluginRow";
+import { samePluginTarget } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
+import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -25,11 +27,13 @@ const CLASS = {
 };
 
 export interface InstalledSectionProps {
-  onSelect: (target: { plugin: string; marketplace: string }) => void;
+  /** The one row whose details are expanded, owned by the section's parent. */
+  expanded: PluginDetailTarget | null;
+  onToggle: (target: PluginDetailTarget) => void;
   onBrowse?: () => void;
 }
 
-export function InstalledSection({ onSelect, onBrowse }: InstalledSectionProps) {
+export function InstalledSection({ expanded, onToggle, onBrowse }: InstalledSectionProps) {
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const pluginComponents = useExtensionsHostState((s) => s.pluginComponents);
   const [filterQuery, setFilterQuery] = useState("");
@@ -69,13 +73,18 @@ export function InstalledSection({ onSelect, onBrowse }: InstalledSectionProps) 
         ) : (
           visible.map((p) => {
             const key = pluginComponentsKey({ plugin: p.plugin, marketplace: p.marketplace });
+            const pair = { plugin: p.plugin, marketplace: p.marketplace };
+            const isExpanded = expanded !== null && samePluginTarget(expanded, pair);
             return (
-              <li key={key}>
-                <InstalledPluginRow
-                  entry={p}
-                  components={pluginComponents.get(key)}
-                  onOpen={() => onSelect({ plugin: p.plugin, marketplace: p.marketplace })}
-                />
+              // data-plugin/data-marketplace identify the row to the focus
+              // rehome: the row's own elements do not survive a reshape (the
+              // split row and the whole-row button remount), but this <li>
+              // does.
+              <li key={key} data-plugin={p.plugin} data-marketplace={p.marketplace}>
+                <InstalledPluginRow entry={p} components={pluginComponents.get(key)} onOpen={() => onToggle(pair)} />
+                {isExpanded && expanded !== null && (
+                  <PluginDetailBody target={expanded} onCollapse={() => onToggle(pair)} />
+                )}
               </li>
             );
           })
