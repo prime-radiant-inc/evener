@@ -87,7 +87,7 @@ func TestSpawnBannerNamesTheDaemonLogFile(t *testing.T) {
 	}
 	want := fmt.Sprintf("[hub] daemon session=033z7k96Nj0LLiLImAqa9s pid=%d log=%s\n",
 		entry.PID, filepath.Join(runDir, "logs", "daemon-033z7k96Nj0LLiLImAqa9s.log"))
-	if threadLifecycleBannerLog(t, hubLog.String()) != want {
+	if hubLog.String() != want {
 		t.Fatalf("hub log:\n got %q\nwant %q", hubLog.String(), want)
 	}
 }
@@ -110,7 +110,7 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 			t.Fatalf("resumeDaemon(%s): %v", said, err)
 		}
 		want := fmt.Sprintf("[hub] daemon session=01JRESUME pid=%d log=%s\n", entry.PID, logPath)
-		if threadLifecycleBannerLog(t, hubLog.String()) != want {
+		if hubLog.String() != want {
 			t.Fatalf("hub log after %s:\n got %q\nwant %q", said, hubLog.String(), want)
 		}
 	}
