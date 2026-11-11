@@ -784,6 +784,8 @@ func (c *shellReceiptClock) awaitBlockTimer(t *testing.T) time.Duration {
 			t.Fatalf("shell armed timer %s, want the %s block timeout", armed, shellReceiptBlockTimeout)
 		}
 		return armed
+	// TRIPWIRE: the fake clock arms this timer synchronously during runShell
+	// setup, so 30s only fires on a genuine hang, not on host load.
 	case <-time.After(30 * time.Second):
 		t.Fatalf("runShell never armed its %s block timeout", shellReceiptBlockTimeout)
 		return 0
