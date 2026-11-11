@@ -1,8 +1,10 @@
 package testredundancy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,6 +32,11 @@ func TestMain(m *testing.M) {
 // go.mod, and the developer's GOFLAGS cannot change what is built.
 func fixtureRunner(t *testing.T) (*Runner, string) {
 	t.Helper()
+	return fixtureRunnerWithLog(t, io.Discard)
+}
+
+func fixtureRunnerWithLog(t *testing.T, log io.Writer) (*Runner, string) {
+	t.Helper()
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOENV", "off")
 	t.Setenv("GOFLAGS", "-trimpath")
@@ -41,7 +48,7 @@ func fixtureRunner(t *testing.T) (*Runner, string) {
 	// subprocesses run in the package directory, so it must resolve the path
 	// against the caller's working directory first.
 	t.Chdir(t.TempDir())
-	r, err := NewRunner(t.Context(), dir, "cache", io.Discard)
+	r, err := NewRunner(t.Context(), dir, "cache", log)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
@@ -270,5 +277,106 @@ func TestCoverageDiffListsLostStatements(t *testing.T) {
 	}
 	if DiffCoverage(bp, bp, 0).LostStmts != 0 {
 		t.Fatalf("a profile lost statements against itself")
+	}
+}
+
+// A skip set whose single -test.skip argument would exceed the per-argument
+// limit is split over several -test.run processes. Their concatenated profile
+// must be the same rest profile the one-process run produces, and every
+// included test must run exactly once across the chunks.
+func TestProfileRestChunksALargeSkipSet(t *testing.T) {
+	var log bytes.Buffer
+	r, _ := fixtureRunnerWithLog(t, &log)
+	skip := []string{"TestAbsNegative", "TestSignPositiveUnchecked"}
+	// The skip argument here is 56 bytes; every remaining test's -test.run
+	// argument still fits under 40.
+	r.restArgLimit = 40
+	chunkLog := filepath.Join(t.TempDir(), "chunk-runs.log")
+	t.Setenv("FIXTURE_RUN_LOG", chunkLog)
+	chunked, err := r.ProfileRest(t.Context(), skip)
+	if err != nil {
+		t.Fatalf("ProfileRest with a chunked skip set: %v", err)
+	}
+	cp, err := LoadProfile(chunked.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunked.Failed) != 0 {
+		t.Fatalf("chunked rest run failed tests: %v", chunked.Failed)
+	}
+	if !strings.Contains(log.String(), "across 5 process(es)") {
+		t.Fatalf("the skip set was not chunked; runner log:\n%s", log.String())
+	}
+
+	// The one-process run is the ground truth for the same skip set. Clear the
+	// cache so the chunked profile cannot answer this call.
+	if err := os.RemoveAll(r.cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	r.restArgLimit = maxRestArgBytes
+	t.Setenv("FIXTURE_RUN_LOG", filepath.Join(t.TempDir(), "single-runs.log"))
+	single, err := r.ProfileRest(t.Context(), skip)
+	if err != nil {
+		t.Fatalf("ProfileRest without chunking: %v", err)
+	}
+	sp, err := LoadProfile(single.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.Total() != sp.Total() {
+		t.Errorf("chunked profile totals %d statements, one-process profile totals %d", cp.Total(), sp.Total())
+	}
+	if !maps.Equal(cp.covered, sp.covered) {
+		t.Errorf("chunked profile covers %d blocks, one-process profile covers %d; the union differs", len(cp.covered), len(sp.covered))
+	}
+
+	data, err := os.ReadFile(chunkLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := strings.Fields(string(data))
+	slices.Sort(ran)
+	want := []string{"TestAbsNegativeAgain", "TestSignZero"}
+	if !slices.Equal(ran, want) {
+		t.Fatalf("chunked runs executed %v, want each included recording test exactly once: %v", ran, want)
+	}
+}
+
+// A failure in one chunk is reported once, and the failed test's partial
+// profile still contributes to the concatenated rest profile.
+func TestProfileRestChunksMergeFailures(t *testing.T) {
+	r, _ := fixtureRunner(t)
+	r.restArgLimit = 40
+	t.Setenv("FIXTURE_FAIL", "1")
+	rest, err := r.ProfileRest(t.Context(), []string{"TestAbsNegative", "TestSignPositiveUnchecked"})
+	if err != nil {
+		t.Fatalf("ProfileRest: %v", err)
+	}
+	if !slices.Equal(rest.Failed, []string{"TestFailsWhenAsked"}) {
+		t.Fatalf("chunked rest failures = %v, want TestFailsWhenAsked once", rest.Failed)
+	}
+	if _, err := LoadProfile(rest.Profile); err != nil {
+		t.Fatalf("a chunked rest profile with a failed test: %v", err)
+	}
+}
+
+func TestChunkTestNamesBoundsEachArgument(t *testing.T) {
+	names := []string{"TestA", "TestB", "TestC", "TestD"}
+	chunks, err := chunkTestNames(names, 22)
+	if err != nil {
+		t.Fatalf("chunkTestNames: %v", err)
+	}
+	var flat []string
+	for _, chunk := range chunks {
+		if got := len(testRunArg(chunk)); got > 22 {
+			t.Errorf("chunk %v builds a %d-byte argument, over the 22-byte limit", chunk, got)
+		}
+		flat = append(flat, chunk...)
+	}
+	if !slices.Equal(flat, names) {
+		t.Fatalf("chunks %v flatten to %v, want %v", chunks, flat, names)
+	}
+	if _, err := chunkTestNames([]string{"TestLongName"}, 15); err == nil {
+		t.Fatal("a test whose argument cannot fit the limit was chunked instead of refused")
 	}
 }
