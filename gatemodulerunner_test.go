@@ -1091,6 +1091,22 @@ func TestTimed(t *testing.T) {
 	}
 }
 
+// runnerPhases returns the phases the gate's summary timed: each `TIME  <label>
+// <seconds>s` line whose seconds parse.
+func runnerPhases(output string) map[string]bool {
+	phases := map[string]bool{}
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "TIME" {
+			continue
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSuffix(fields[2], "s"), 64); err == nil {
+			phases[fields[1]] = true
+		}
+	}
+	return phases
+}
+
 // TestModuleRunnerRunsAgentSubpackagesInOnePartOnly pins the split agent race
 // lane: each runner runs one AGENT_SHARD_PART of the agent package's shards,
 // and the module's subpackages, which are not sharded, run in the last part
@@ -1144,6 +1160,17 @@ func TestSubpackage(t *testing.T) {
 			_, err := os.Stat(filepath.Join(observe, "sub.ran"))
 			if ran := err == nil; ran != tc.wantSubpkgs {
 				t.Fatalf("subpackage ran = %v, want %v:\n%s", ran, tc.wantSubpkgs, result.output)
+			}
+			// A green run's output is all CI keeps, so it carries the phase
+			// summary: the runner's own phases and the gate's around them.
+			phases := runnerPhases(result.output)
+			for _, phase := range []string{"gate:check-flags", "gate:wave2", "agent:runner-build", "agent:runner", "agent:build", "agent:shards"} {
+				if !phases[phase] {
+					t.Fatalf("no %s phase in the summary:\n%s", phase, result.output)
+				}
+			}
+			if phases["agent:subpkgs"] != tc.wantSubpkgs {
+				t.Fatalf("subpackage phase reported = %v, want %v:\n%s", phases["agent:subpkgs"], tc.wantSubpkgs, result.output)
 			}
 		})
 	}

@@ -334,6 +334,41 @@ if [ -n "${EVENER_GATE_TIMING_TSV:-}" ]; then
 fi
 timing_slug() { printf '%s' "$1" | tr '/.' '__'; }
 
+# --- The phase summary ----------------------------------------------------
+#
+# A green run's module logs are deleted, so CI keeps only this script's own
+# output. Each timed phase prints `TIME  <label> <seconds>s` into the stream it
+# runs in (a module's log, or $gate_phase_log for the gate's own steps), the
+# shard runners print the same lines for theirs, and the summary at the end
+# collects them, so a green run still records where its wall time went.
+gate_phase_log="$logdir/gate.phases"
+: >"$gate_phase_log"
+
+# phase_clock prints the wall clock in seconds: fractional under bash 5's
+# EPOCHREALTIME, whole seconds otherwise.
+phase_clock() {
+	if [ -n "${EPOCHREALTIME:-}" ]; then
+		printf '%s\n' "${EPOCHREALTIME/,/.}"
+	else
+		date +%s
+	fi
+}
+
+# print_phase LABEL START — print the TIME line for a phase begun at START.
+print_phase() {
+	printf 'TIME  %s %ss\n' "$1" "$(awk -v s="$2" -v e="$(phase_clock)" 'BEGIN { printf "%.2f", e - s }')"
+}
+
+# timed_phase LABEL CMD... — run CMD, print its TIME line, keep its status.
+timed_phase() {
+	local label="$1" start rc=0
+	shift
+	start="$(phase_clock)"
+	"$@" || rc=$?
+	print_phase "$label" "$start"
+	return "$rc"
+}
+
 # shard_package LABEL — the import path a sharded package's timing rows name.
 # The runner needs it because it emits the package's own wall-time row; it is
 # the same root-module prefix gate-root-shards.sh composes for its own table.
@@ -500,8 +535,8 @@ run_module() {
 		local -a packages=()
 		local pkg package_list
 		package_list="$logdir/root.packages"
-		derive_list_flags "$m" || return $?
-		run_enumeration "$m" "$package_list" || return $?
+		timed_phase root:list-flags derive_list_flags "$m" || return $?
+		timed_phase root:enumeration run_enumeration "$m" "$package_list" || return $?
 		local -a sharded=()
 		local excluded label prefix
 		while IFS= read -r excluded; do
@@ -588,7 +623,7 @@ run_module() {
 		# the built binary unbounded -- a fixed bound on the test suite itself
 		# could manufacture a flake on a loaded runner.
 		local agent_shards_bin="$logdir/agent-shards.bin"
-		if ! run_bounded_build "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev agent-shards build' "$m" \
+		if ! timed_phase agent:runner-build run_bounded_build "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev agent-shards build' "$m" \
 			"$logdir/agent-shards-build" "$agent_shards_bin" "$repo_root" ./cmd/evener-dev/bin; then
 			printf 'run-module-tests.sh: could not build the agent-shards runner\n' >&2
 			return 1
@@ -602,7 +637,10 @@ run_module() {
 		if [ "$timing_enabled" -eq 1 ]; then
 			agent_env+=("EVENER_SHARD_JSON_DIR=$timing_rows_dir/shards/agent" "EVENER_SHARD_JSON_PACKAGE=$(shard_package agent)")
 		fi
+		local runner_start
+		runner_start="$(phase_clock)"
 		(cd .. && env "${agent_env[@]}" "$agent_shards_bin" dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		print_phase agent:runner "$runner_start"
 		if [ "$timing_enabled" -eq 1 ] && [ "$shardStatus" -eq 0 ]; then
 			capture_shard_rows agent || shardStatus=1
 		fi
@@ -615,14 +653,14 @@ run_module() {
 		if [ -n "${AGENT_SHARD_PART:-}" ] && [ "${AGENT_SHARD_PART%%/*}" -ne "${AGENT_SHARD_PART#*/}" ]; then
 			return "$shardStatus"
 		fi
-		derive_list_flags "$m" || return $?
+		timed_phase agent:list-flags derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
 		agent_list="$logdir/agent.packages"
 		# Same bound and exit-status check as the root enumeration: a failed or
 		# hung go list must not pass as "no subpackages" over an already-green
 		# shard run.
-		run_enumeration "$m" "$agent_list" || return $?
+		timed_phase agent:enumeration run_enumeration "$m" "$agent_list" || return $?
 		while IFS= read -r pkg; do
 			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
@@ -631,7 +669,7 @@ run_module() {
 			if [ "$timing_enabled" -eq 1 ]; then
 				printf '%s\n' "${subpkgs[@]}" >"$timing_rows_dir/agent-subpkgs.packages"
 			fi
-			run_go_test_capture agent-subpkgs "$timing_rows_dir/agent-subpkgs.packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			timed_phase agent:subpkgs run_go_test_capture agent-subpkgs "$timing_rows_dir/agent-subpkgs.packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
@@ -703,10 +741,12 @@ finish_stream() {
 # rather than a second one in shell. A rejected or timed-out validation must not
 # leave a started stream for cleanup to stop.
 effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+gate_flags_start="$(phase_clock)"
 if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev check-gate-flags' 'gate' "$logdir/gate-flags" run_check_gate_flags "$effective_goflags"; then
 	printf 'run-module-tests.sh: refusing to run: the caller flags or GOFLAGS are not usable by this gate\n' >&2
 	exit 2
 fi
+print_phase gate:check-flags "$gate_flags_start" >>"$gate_phase_log"
 
 # ROOT_FULL drops short mode for the root module through the same value-aware
 # parser, computed once here: a value that spells -short survives, and every
@@ -754,11 +794,25 @@ if [ "$WEB" -ne 0 ]; then
 	active_pids+=("$web_pid")
 fi
 
+wave_start="$(phase_clock)"
 run_wave $WAVE1
+[ -z "$WAVE1" ] || print_phase gate:wave1 "$wave_start" >>"$gate_phase_log"
 
+wave_start="$(phase_clock)"
 run_wave $WAVE2
+[ -z "$WAVE2" ] || print_phase gate:wave2 "$wave_start" >>"$gate_phase_log"
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
+
+# The phase summary, green or red: the gate's own steps, then each module's.
+for m in $WAVE1 $WAVE2; do
+	log="$(logpath "$m")"
+	[ -f "$log" ] && grep -h '^TIME  ' "$log" >>"$gate_phase_log"
+done
+if [ -s "$gate_phase_log" ]; then
+	echo "--- phase timing ---"
+	cat "$gate_phase_log"
+fi
 
 # The frontend's rows come from the JSON report vitest wrote during that same
 # stream; a missing report means the frontend was not measured, which fails
