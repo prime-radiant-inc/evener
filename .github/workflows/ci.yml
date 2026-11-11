@@ -724,9 +724,8 @@ jobs:
         run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
 
       # Survey failure replay is abbreviated. Keep the full surveys and raw
-      # timing-capture shard text, never the surrounding homes or test
-      # binaries. After the timing check so a
-      # timing-only failure still collects them.
+      # timing-capture shard text, never the surrounding homes or test binaries.
+      # After the timing check so a timing-only failure still collects them.
       # A job stopped at its time limit can end cancelled rather than failed,
       # and a hang's logs are the ones most worth keeping, so a cancelled job
       # keeps them too. The same holds for every failed-log step in this workflow.

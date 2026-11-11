@@ -1,9 +1,9 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,9 +35,8 @@ func TestResumeDaemonPrelaunchCancellationClassification(t *testing.T) {
 				ctx, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
 				defer cancel()
 			}
-			var log bytes.Buffer
 			dir := t.TempDir()
-			_, err := resumeDaemon(ctx, filepath.Join(dir, "absent-executable"), filepath.Join(dir, "run"), hubcore.ResumeRequest{SessionID: hubtest.SessionID(t)}, 0, &log)
+			_, err := resumeDaemon(ctx, filepath.Join(dir, "absent-executable"), filepath.Join(dir, "run"), hubcore.ResumeRequest{SessionID: hubtest.SessionID(t)}, 0, io.Discard)
 			if !errors.Is(err, tc.cause) {
 				t.Fatalf("context cause lost: got %v, want %v", err, tc.cause)
 			}

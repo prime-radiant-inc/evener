@@ -467,12 +467,6 @@ func hubThreadAutoResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 }
 
 func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, automatic bool) (response appwire.ThreadResumeResponse, resumeErr error) {
-	logSessionID := strings.TrimSpace(params.Session)
-	if logSessionID == "" {
-		if ref, err := appwire.ParseRef(params.Ref); err == nil {
-			logSessionID = ref.ThreadID
-		}
-	}
 	var cleanupErr error
 	var activeResume *hubcore.ActiveResume
 	requestedRefID := ""
@@ -533,20 +527,16 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		// Register before waiting for ownership; complete after every subsequent
 		// defer has released ownership and the launcher has confirmed cleanup.
 		defer func() { active.Complete(cleanupErr) }()
-		var heldStarted time.Time
 		defer func() {
 			// AcquireOwnership and ReleaseOwnership bracket the same span the
 			// reacquire loop used to, in the registration's sorted ownership
 			// order, and hubcore records the hold so a concurrent force stop
 			// can tell this launch's reservation from an unrelated action's.
 			active.ReleaseOwnership()
-			if !heldStarted.IsZero() {
-			}
 		}()
 		if err := active.AcquireOwnership(ctx); err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
-		heldStarted = time.Now()
 		// A deletion record may name any alias in the resolved ownership
 		// group, so the whole group is fenced here, under the locks that make
 		// the check final, before live-owner reuse or launching below.
@@ -630,9 +620,6 @@ type resumeLaunch struct {
 // resumeThreadLockedLaunch is resumeThreadLocked for a caller that holds a
 // launch lifetime in hand.
 func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, launch *resumeLaunch) (appwire.ThreadResumeResponse, error) {
-	// The request's trace travels in the context, already carrying the resolved
-	// session identity the wrapper stamped. A caller that enters here without
-	// one records nothing: every stage below is nil-safe.
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)

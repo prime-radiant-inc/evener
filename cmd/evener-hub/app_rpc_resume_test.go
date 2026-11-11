@@ -274,6 +274,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
 		t.Run(fault, func(t *testing.T) {
+			capture := captureHubDiagnostics(t)
 			refreshes := captureRosterRefreshErrors(t)
 			const sessionID = "resumed-owner"
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
@@ -337,6 +338,11 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 				if reads == 0 {
 					t.Fatal("injected owner read fault did not run")
 				}
+				for _, line := range capture.recorded() {
+					if strings.HasPrefix(line, "[hub] lifecycle ") {
+						t.Fatalf("explicit resume still emits the removed lifecycle diagnostic stream: %q", line)
+					}
+				}
 				return
 			}
 			if fault == "listing" || fault == "confirmed" {
@@ -349,6 +355,11 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			}
 			if response.Thread.ID != sessionID || !roster.HasConfirmedEntry(entry) {
 				t.Fatalf("resume did not publish owner: %+v", response.Thread)
+			}
+			for _, line := range capture.recorded() {
+				if strings.HasPrefix(line, "[hub] lifecycle ") {
+					t.Fatalf("explicit resume still emits the removed lifecycle diagnostic stream: %q", line)
+				}
 			}
 			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID}); err != nil {
 				t.Fatal(err)

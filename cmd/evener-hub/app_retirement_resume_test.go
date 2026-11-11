@@ -951,7 +951,12 @@ func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
 	}
 	// The spawn identity is the assertion; the zero rendezvous entry cannot
 	// project a responsive thread, so the call's own error is not the subject.
-	_ = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	diagnostics := captureHubStderr(t, func() {
+		_ = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	})
+	if strings.Contains(diagnostics, "[hub] lifecycle ") {
+		t.Fatalf("retirement spawn path still emits the removed lifecycle diagnostic stream:\n%s", diagnostics)
+	}
 	if spawned != target {
 		t.Fatalf("spawn request session = %q, want the resolved target %q (not the requested alias %q)", spawned, target, requested)
 	}
