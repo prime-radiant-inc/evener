@@ -497,6 +497,15 @@ test("a queue resting after Stop projects as held", () => {
   expect(project({ model })).toMatchObject([{ id: "m1", state: "held" }]);
 });
 
+test("a contentless drain keeps a nonempty display fallback", () => {
+  const drain = local("m1", "turn/drainAsSteer", "", {
+    payload: { ref: "ref_a", expectedQueueRevision: 1, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+  });
+  const rows = project({ outbox: [drain] });
+  expect(rows[0]?.displayText).toBe("[queued messages]");
+});
+
 test("image bytes and selections survive into the pending row", () => {
   const input: InputItem[] = [
     { type: "text", text: "look" },

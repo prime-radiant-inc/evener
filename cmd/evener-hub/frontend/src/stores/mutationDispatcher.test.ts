@@ -1362,6 +1362,39 @@ describe("MutationDispatcher", () => {
     },
   );
 
+  test("a terminal replay retires an accepted copy another client cancelled", async () => {
+    const outbox = storage(new IDBFactory(), "accepted-terminal-replay", ["accepted-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    await outbox.settleApplied(record.clientMutationId, { retainDisplayCopy: true });
+    expect(await outbox.getOptimistic(record.clientMutationId)).toBeDefined();
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({
+      receipt: receipt(params.clientMutationId, "replayed", "removed"),
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.reconcileAcceptedCopies("ref-a", new Set());
+
+    expect(await outbox.getOptimistic(record.clientMutationId)).toBeUndefined();
+    outbox.close();
+  });
+
+  test("a pending replay keeps an accepted copy the snapshot did not name", async () => {
+    const outbox = storage(new IDBFactory(), "accepted-pending-replay", ["accepted-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    await outbox.settleApplied(record.clientMutationId, { retainDisplayCopy: true });
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({
+      receipt: receipt(params.clientMutationId, "replayed", "pending"),
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.reconcileAcceptedCopies("ref-a", new Set());
+
+    expect(await outbox.getOptimistic(record.clientMutationId)).toBeDefined();
+    outbox.close();
+  });
+
   // A queue intent submitted WHILE the drain is in flight lands on the
   // emptied queue as fresh work: the drain's own receipt names only the id it
   // actually consumed, never this late arrival, so it must survive settlement

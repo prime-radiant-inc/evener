@@ -25,6 +25,7 @@ import {
   type NotesHumanSetResponse,
   type ThreadClearResponse,
 } from "../../types.gen";
+import { PENDING_TURN_METHODS } from "./composerMethods";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord, type MutationRecord } from "./records";
 
@@ -37,7 +38,7 @@ import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord,
 // ids the first execution did) - so a receipt or refusal names the wire id,
 // and the dispatch loop must judge and settle the row by it, while every
 // storage settle stays keyed on the row's own (fresh) id.
-function wireMutationId(record: MutationOutboxRecord): string {
+function wireMutationId(record: MutationRecord): string {
   return effectiveWireId(record);
 }
 
@@ -147,6 +148,42 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       }),
     );
     if (targetRefs.size > 0) this.#onStorageChange([...targetRefs]);
+  }
+
+  // A retained accepted copy is display-only after its outbox row settled. A
+  // snapshot that names neither the copy nor its transcript item can mean
+  // "delivered beyond this page" or "cancelled by another client while this
+  // one was offline". Replaying the original mutation asks the daemon's
+  // journal which one it is; only a terminal projection retires the copy.
+  async reconcileAcceptedCopies(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+    const accepted = await this.#storage.listOptimistic(targetRef);
+    await Promise.all(
+      accepted
+        .filter(
+          (record) =>
+            record.displayOnly === true &&
+            !authoritativeIds.has(record.clientMutationId) &&
+            PENDING_TURN_METHODS.includes(record.method),
+        )
+        .map(async (record) => {
+          const client = this.#getClient(targetRef, record.method);
+          if (!client || !isClientReady(client)) return;
+          try {
+            const method = mutationMethod(record.method);
+            const request = client.request as unknown as (
+              requestMethod: MethodName,
+              params: Record<string, unknown>,
+            ) => Promise<unknown>;
+            const result = await request.call(client, method, record.payload);
+            const receipt = mutationReceipt(result);
+            if (!receipt || receipt.clientMutationId !== wireMutationId(record)) return;
+            if (receipt.projectionState !== "removed" && receipt.projectionState !== "reflected") return;
+            await this.reconcileIdentities([record.clientMutationId]);
+          } catch {
+            // No terminal evidence: keep the display copy for the next read.
+          }
+        }),
+    );
   }
 
   #dispatchTarget(targetRef: string): Promise<void> {

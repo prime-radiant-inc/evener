@@ -383,6 +383,10 @@ function compareRows(left: PendingMessage, right: PendingMessage): number {
   );
 }
 
+function drainFallback<A extends MutationAttachmentRef>(row: PendingMessage<A>): PendingMessage<A> {
+  return row.method === "drain" && row.displayText === "" ? { ...row, displayText: "[queued messages]" } : row;
+}
+
 export function projectPendingMessages<A extends MutationAttachmentRef = MutationAttachmentRef>(
   input: PendingMessagesInput<A>,
 ): PendingMessage<A>[] {
@@ -619,7 +623,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     rows.delete(match.id);
   }
 
-  const all = [...queueRows, ...rows.values()];
+  const all = [...queueRows, ...rows.values()].map(drainFallback);
 
   return all.sort(compareRows);
 }

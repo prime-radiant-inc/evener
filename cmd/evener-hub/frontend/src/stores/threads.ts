@@ -7133,7 +7133,11 @@ async function handleReady(
   // `reopenOnlyClientMutationId` narrows the reconciliation's reopen to the
   // one record for the same caller: a background note retry must not return an
   // unrelated blocked row to submitting (#1716).
-  options?: { suppressTargetDispatch?: () => boolean; reopenOnlyClientMutationId?: string },
+  options?: {
+    suppressTargetDispatch?: () => boolean;
+    reopenOnlyClientMutationId?: string;
+    replayAcceptedCopies?: boolean;
+  },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
   if (targetRef) dispatchableMutationRefs.delete(targetRef);
@@ -7170,6 +7174,9 @@ async function handleReady(
     client.state !== "ready"
   )
     return;
+  if (runtime && !targetedResync && options?.replayAcceptedCopies) {
+    for (const ref of refs) void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
+  }
   if (!targetedResync) {
     const alreadyHydrated = new Set(refs);
     const discovered = await discoveredPinnedRefs;
@@ -7256,6 +7263,8 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
       const epoch = advanceReadyEpoch();
+      const replayAcceptedCopies = replayAcceptedCopiesOnReady;
+      replayAcceptedCopiesOnReady = false;
       residencyIfCreated?.connection(epoch, true);
       threadsStore.setState({ mutationAuthorityRefs: new Set() });
       // onReady is the SAME client reconnecting: its old connection's
@@ -7267,7 +7276,7 @@ function rewireClient(client: AppwireClientLike): void {
       dispatchReadyEpoch = -1;
       dispatchableMutationRefs.clear();
       invalidateHeldHistoriesForReconnect();
-      void handleReady(client, getReadyEpoch());
+      void handleReady(client, getReadyEpoch(), undefined, { replayAcceptedCopies });
     }),
   );
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
@@ -7279,9 +7288,11 @@ function rewireClient(client: AppwireClientLike): void {
   // without this, swapping to an already-ready client would never
   // re-subscribe/re-hydrate this store's tracked refs at all.
   if (client.state === "ready") {
+    const replayAcceptedCopies = replayAcceptedCopiesOnReady;
+    replayAcceptedCopiesOnReady = false;
     residencyIfCreated?.connection(getReadyEpoch(), true);
     invalidateHeldHistoriesForReconnect();
-    void handleReady(client, getReadyEpoch());
+    void handleReady(client, getReadyEpoch(), undefined, { replayAcceptedCopies });
   }
 }
 
@@ -7345,7 +7356,9 @@ function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
 // on state-only changes (e.g. a client's own onStateChange mirroring) too.
 // Registered once, at module load, same lifetime as this module's other
 // singleton bookkeeping (the thread owners, wiredClient, ...).
+let replayAcceptedCopiesOnReady = false;
 connectionStore.subscribe((state) => {
+  if (state.client?.state !== "ready") replayAcceptedCopiesOnReady = true;
   if (state.client?.state !== "ready" && threadsStore.getState().mutationAuthorityRefs.size > 0) {
     threadsStore.setState({ mutationAuthorityRefs: new Set() });
   }
