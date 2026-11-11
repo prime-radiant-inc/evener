@@ -1348,6 +1348,39 @@ func TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow(t *testing.T) {
 	}
 }
 
+// TestDelegateIdleRelease_TestOverrideSetsArmedDelay pins the test-only grace
+// override at the arm site. The integration waits that rely on the override
+// share testwait's 30s ceiling with the production default, so an arm that
+// ignored the override would still pass them once the real default fired; the
+// fake clock makes the armed delay itself observable. The callback must stay
+// armed just short of the override and fire at it, which only holds when the
+// arm reads the override rather than delegateIdleReleaseDelayDefault.
+func TestDelegateIdleRelease_TestOverrideSetsArmedDelay(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	override := 250 * time.Millisecond
+	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.delegateIdleReleaseDelay = &override
+	})
+
+	callbacksBefore := fake.PendingCallbacks()
+	s.scheduleIdleRuntimeRelease(1)
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 1 {
+		t.Fatalf("arm parked %d grace callbacks, want 1", got)
+	}
+	fake.Advance(override - time.Millisecond)
+	fake.Drain()
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 1 {
+		t.Fatalf("grace callback fired %s before the override; want it still armed", time.Millisecond)
+	}
+	fake.Advance(time.Millisecond)
+	fake.Drain()
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 0 {
+		t.Fatalf("grace callback still armed at the override; the arm did not use the override delay")
+	}
+}
+
 // TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration pins the
 // generation check in the timer swap: arming a timer and installing it are two
 // steps, so an older retry paused between them can resume after a newer
