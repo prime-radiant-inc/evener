@@ -384,6 +384,48 @@ test("an authoritative hydration keeps the confirmed queue lineage on the retain
   storage.close();
 });
 
+test("a queue frame during a read keeps the published snapshot stale", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+  expect(threadsStore.getState().mutationSnapshotRefs.has("ref_a")).toBe(true);
+
+  const read = deferred<ThreadReadResponse>();
+  const started = deferred<void>();
+  fake.on("thread/read", () => {
+    started.resolve();
+    return read.promise;
+  });
+  const reading = threadsStore.getState().refreshThread("ref_a");
+  await started.promise;
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 2 } },
+  });
+  read.resolve(
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2 },
+      },
+    }),
+  );
+  await reading;
+
+  expect(threadsStore.getState().mutationSnapshotRefs.has("ref_a")).toBe(false);
+});
+
 test("an authoritative hydration retires an absent retained queue source", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
   await storage.enqueueIntent({

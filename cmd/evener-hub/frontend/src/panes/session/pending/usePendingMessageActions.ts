@@ -41,6 +41,12 @@ export type PendingRowAction = "edit" | "remove" | "retry" | "steerNow" | "dismi
 type PendingRowKind = "recovery" | "queue" | "local";
 
 function rowKind(row: PendingMessage): PendingRowKind {
+  // A live queue entry owns the actions even when an unedited recovery copy
+  // still accompanies it. Activating that recovery's edit would leave the
+  // daemon's queued entry behind; an independently edited recovery is its own
+  // composition and keeps recovery ownership.
+  const editedRecovery = (row.recovery?.compositionRevision ?? 0) > 0;
+  if (row.queueEntryId !== undefined && row.queueIndex !== undefined && !editedRecovery) return "queue";
   if (row.recovery) return "recovery";
   const local = row.outbox;
   if (

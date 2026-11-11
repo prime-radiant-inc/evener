@@ -5947,10 +5947,7 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
     else mutationAuthorityRefs.delete(ref);
-    const mutationSnapshotRefs = new Set(state.mutationSnapshotRefs);
-    if (response.thread.evener.mutationStateAuthoritative === true) mutationSnapshotRefs.add(ref);
-    else mutationSnapshotRefs.delete(ref);
-    return { mutationAuthorityRefs, mutationSnapshotRefs };
+    return { mutationAuthorityRefs };
   });
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
@@ -5969,17 +5966,29 @@ async function publishAndReconcileThreadHydration(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
   onAuthoritativePublished?: (model: ThreadModel) => void,
+  mutationStateGeneration?: number,
 ): Promise<ThreadModel | null> {
   if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
+  const snapshotCurrent =
+    mutationStateGeneration === undefined || (mutationStateGenerations.get(ref) ?? 0) === mutationStateGeneration;
+  threadsStore.setState((state) => {
+    const current = state.mutationSnapshotRefs.has(ref);
+    const nextCurrent = snapshotCurrent && hydration.response.thread.evener.mutationStateAuthoritative === true;
+    if (current === nextCurrent) return state;
+    const mutationSnapshotRefs = new Set(state.mutationSnapshotRefs);
+    if (nextCurrent) mutationSnapshotRefs.add(ref);
+    else mutationSnapshotRefs.delete(ref);
+    return { mutationSnapshotRefs };
+  });
+  if (snapshotCurrent && hydration.response.thread.evener.mutationStateAuthoritative === true) {
     onAuthoritativePublished?.(published);
   }
   if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
     const runtime = getMutationRuntime();
-    if (runtime) settleConsumedFromModel(runtime, ref, published);
+    if (runtime && snapshotCurrent) settleConsumedFromModel(runtime, ref, published);
   }
   // A published replace that adopted the outgoing repository's pending
   // recorded-range recovery needs the chain's successor against the NEW
@@ -6198,7 +6207,7 @@ async function publishAndReconcileThreadHydration(
     } finally {
       if (pendingMutationReconciliations.get(ref) === reconciliation) pendingMutationReconciliations.delete(ref);
     }
-    if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
+    if (snapshotCurrent && hydration.response.thread.evener.mutationStateAuthoritative === true) {
       const recorded = new Set<string>();
       for (const turn of hydration.response.thread.turns ?? []) {
         for (const item of turn.items ?? []) if (item.clientMutationId) recorded.add(item.clientMutationId);
@@ -6683,7 +6692,7 @@ function handleNotification(n: AnyNotification): void {
   // consumed queue id is banked on its queue frame and settled by the next
   // accepted snapshot, never by the frame itself.
   const settlementRef = notificationRef(n);
-  if (mutationIdentities.length > 0 && settlementRef) {
+  if ((mutationIdentities.length > 0 || n.method === "thread/queueChanged") && settlementRef) {
     const settledModel =
       publishableThreads?.get(settlementRef) ??
       nextWatchedThreads?.get(settlementRef) ??
@@ -6717,6 +6726,7 @@ function handleNotification(n: AnyNotification): void {
       // A queue frame proves the transition, not that the replacement is
       // visible. Keep the display copy and ask its hydration owner for the
       // authoritative snapshot that names the message it became.
+      noteMutationStateChange(settlementRef);
       threadsStore.setState((state) => {
         if (!state.mutationSnapshotRefs.has(settlementRef)) return state;
         const mutationSnapshotRefs = new Set(state.mutationSnapshotRefs);
@@ -7090,6 +7100,7 @@ async function refreshTrackedThreadNow(
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
   const retirePending = () => retirePendingHydration(ref, pending, pendingThreadHydrations);
   signal?.addEventListener("abort", retirePending, { once: true });
+  const mutationStateGeneration = mutationStateGenerations.get(ref) ?? 0;
   // No pre-check here: pending.client is this `client` and pending.epoch is this
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
@@ -7125,6 +7136,7 @@ async function refreshTrackedThreadNow(
       reopenOnlyClientMutationId,
       intent,
       options.onAuthoritativePublished,
+      mutationStateGeneration,
     );
   });
   if (registerCompletion) registerHydrationSettlement(ref, hydration);
@@ -7749,9 +7761,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         cachedBase ?? threadsStore.getState().threads.get(ref),
         hydrationEpoch,
       );
+      const mutationStateGeneration = mutationStateGenerations.get(ref) ?? 0;
       const hydration = readThreadHydration(hydrationClient, ref, Date.now(), pending, { kind: "thread" })
         .then(async (result) => {
-          const model = await publishAndReconcileThreadHydration(ref, pending, result);
+          const model = await publishAndReconcileThreadHydration(
+            ref,
+            pending,
+            result,
+            undefined,
+            undefined,
+            undefined,
+            mutationStateGeneration,
+          );
           // A message queued while this read was in flight found the ref not
           // yet dispatchable, so its enqueue discovery left it waiting.
           // Reconciliation has now opened the gate; deliver it here rather

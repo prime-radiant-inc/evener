@@ -121,6 +121,21 @@ test("a queued row offers edit and remove", () => {
   expect(screen.getByRole("button", { name: "Remove from queue" })).toBeTruthy();
 });
 
+test("a queued row with an unedited recovery still offers queue actions", () => {
+  renderStack(
+    [
+      row({
+        queueIndex: 0,
+        queueEntryId: "q1",
+        recovery: { clientMutationId: "m1", compositionRevision: 0 } as PendingMessage["recovery"],
+      }),
+    ],
+    context,
+  );
+  expect(screen.getByRole("button", { name: "Edit message" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+});
+
 test("a daemon queue row with a local display copy removes through the queue entry", async () => {
   const cancel = vi.spyOn(threadsStore.getState(), "cancelQueued").mockResolvedValue(undefined);
   try {
