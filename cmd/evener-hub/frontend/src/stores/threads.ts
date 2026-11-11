@@ -5955,13 +5955,15 @@ async function publishAndReconcileThreadHydration(
   // other caller leaves this undefined for the ordinary target-wide reopen.
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
-  onPublished?: (model: ThreadModel) => void,
 ): Promise<ThreadModel | null> {
   if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  onPublished?.(published);
+  if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
+    const runtime = getMutationRuntime();
+    if (runtime) settleConsumedFromModel(runtime, ref, published);
+  }
   // A published replace that adopted the outgoing repository's pending
   // recorded-range recovery needs the chain's successor against the NEW
   // display — armed here, after the publish, so the successor's
@@ -6653,13 +6655,12 @@ function handleNotification(n: AnyNotification): void {
   const acceptedFrameRefs = new Set(publishableChangedThreads);
   for (const ref of entryAcceptedRefs) acceptedFrameRefs.add(ref);
 
-  // Settle a durable mutation only once the accepted model makes its message
-  // visible: a recorded transcript item, or a queue row that is the pending
-  // representation. A history frame this client ignored or invalidated must not
-  // delete the only pending row and leave nothing behind. Consumed queue ids
-  // are the one positive-evidence exception: the consuming transition's own
-  // row carries them, and its queueChanged must settle them even when no model
-  // fold is tracked here.
+  // Settle a durable mutation only once the accepted model proves where its
+  // message went: a recorded transcript item, a queue row, or a later
+  // authoritative snapshot that no longer names it. A history frame this
+  // client ignored or invalidated must not delete the only pending row. A
+  // consumed queue id is banked on its queue frame and settled by the next
+  // accepted snapshot, never by the frame itself.
   const settlementRef = notificationRef(n);
   if (mutationIdentities.length > 0 && settlementRef) {
     const settledModel =
@@ -6690,60 +6691,44 @@ function handleNotification(n: AnyNotification): void {
     const acceptedFrame =
       n.method === "history/updated" &&
       (acceptedFrameRefs.has(settlementRef) || (!historyInvalid && frameNamesIdentity));
-    const deferredConsumed = n.method === "thread/queueChanged" && consumed.length > 0 && getWiredClient() !== null;
-    let retireIds = mutationIdentities;
-    let retainIds: string[] = [];
-    if (!acceptedFrame) {
-      const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
-      const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
-      retireIds = transcriptIds
-        ? mutationIdentities.filter((id) => transcriptIds.has(id) || (!deferredConsumed && consumed.includes(id)))
-        : deferredConsumed
-          ? []
-          : consumed;
-      retainIds = transcriptIds ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id)) : [];
-    }
     const runtime = getMutationRuntime();
-    if (runtime && deferredConsumed) {
-      const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
-      for (const id of consumed) pending.add(id);
-      pendingConsumedSettlements.set(settlementRef, pending);
-      const client = getWiredClient();
-      if (client) {
-        let published = false;
-        void handleReady(client, getReadyEpoch(), settlementRef, {
-          onTargetPublished: () => {
-            published = true;
-          },
-        })
-          .then(() => {
-            const ids = pendingConsumedSettlements.get(settlementRef);
-            pendingConsumedSettlements.delete(settlementRef);
-            // A superseded or failed read proves nothing about the replacement.
-            // Keep the consumed display copy until an authoritative hydration
-            // publishes the model that retires it.
-            if (published && ids && ids.size > 0) void runtime.dispatcher.reconcileIdentities(ids);
-          })
+    if (n.method === "thread/queueChanged") {
+      // A queue frame proves the transition, not that the replacement is
+      // visible. Keep the display copy until an authoritative snapshot names
+      // the message it became.
+      if (runtime && consumed.length > 0) {
+        const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
+        for (const id of consumed) pending.add(id);
+        pendingConsumedSettlements.set(settlementRef, pending);
+      }
+    } else {
+      let retireIds = mutationIdentities;
+      let retainIds: string[] = [];
+      if (!acceptedFrame) {
+        const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
+        const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
+        retireIds = transcriptIds ? mutationIdentities.filter((id) => transcriptIds.has(id)) : [];
+        retainIds = transcriptIds ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id)) : [];
+      }
+      if (runtime && retireIds.length > 0) {
+        void runtime.dispatcher
+          .reconcileIdentities(retireIds)
+          .then(() => refreshMutationPins(runtime, [settlementRef]))
           .catch(() => {
-            pendingConsumedSettlements.delete(settlementRef);
+            // A later snapshot or receipt retries the same identity settlement.
           });
       }
-    }
-    if (runtime && retireIds.length > 0) {
-      void runtime.dispatcher
-        .reconcileIdentities(retireIds)
-        .then(() => refreshMutationPins(runtime, [settlementRef]))
-        .catch(() => {
-          // A later snapshot or receipt retries the same identity settlement.
-        });
-    }
-    if (runtime && retainIds.length > 0) {
-      void runtime.dispatcher
-        .reconcileIdentities(retainIds, { retainDisplayCopy: true })
-        .then(() => refreshMutationPins(runtime, [settlementRef]))
-        .catch(() => {
-          // A later snapshot or receipt retries the same identity settlement.
-        });
+      if (runtime && retainIds.length > 0) {
+        void runtime.dispatcher
+          .reconcileIdentities(retainIds, { retainDisplayCopy: true })
+          .then(() => refreshMutationPins(runtime, [settlementRef]))
+          .catch(() => {
+            // A later snapshot or receipt retries the same identity settlement.
+          });
+      }
+      if (runtime && acceptedFrame && settledModel) {
+        settleConsumedFromModel(runtime, settlementRef, settledModel);
+      }
     }
   }
   if (!nextThreads && !nextWatchedThreads && acceptedFrameRefs.size === 0) return;
@@ -7015,8 +7000,6 @@ interface TrackedRefreshOptions {
   intent?: HydrationIntent;
   /** False when the caller already holds a wider completion registration. */
   registerCompletion?: boolean;
-  /** Runs only when this refresh publishes a current authoritative model. */
-  onPublished?: (model: ThreadModel) => void;
 }
 
 async function refreshTrackedThread(
@@ -7097,14 +7080,7 @@ async function refreshTrackedThreadNow(
       throw error;
     }
     if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
-    return publishAndReconcileThreadHydration(
-      ref,
-      pending,
-      result,
-      reopenOnlyClientMutationId,
-      intent,
-      options.onPublished,
-    );
+    return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId, intent);
   });
   if (registerCompletion) registerHydrationSettlement(ref, hydration);
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
@@ -7203,7 +7179,6 @@ async function handleReady(
     suppressTargetDispatch?: () => boolean;
     reopenOnlyClientMutationId?: string;
     replayAcceptedCopies?: boolean;
-    onTargetPublished?: (model: ThreadModel) => void;
   },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -7229,9 +7204,6 @@ async function handleReady(
       refreshTrackedThread(client, epoch, ref, targetedResync, {
         reopenOnlyClientMutationId: options?.reopenOnlyClientMutationId,
         intent: hydrationIntentFor(ref),
-        ...(targetRef !== undefined && ref === targetRef && options?.onTargetPublished
-          ? { onPublished: options.onTargetPublished }
-          : {}),
       }),
     ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
@@ -7437,6 +7409,31 @@ function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
 let replayAcceptedCopiesOnReady = false;
 const acceptedCopyReplayRefs = new Set<string>();
 const pendingConsumedSettlements = new Map<string, Set<string>>();
+
+// A consumed queue identity retires only when an accepted authoritative
+// snapshot shows the message is no longer queued, pending, or recorded. The
+// queue frame that named the consumption keeps the copy visible until then.
+function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: ThreadModel): void {
+  const pending = pendingConsumedSettlements.get(ref);
+  if (!pending || pending.size === 0) return;
+  const present = transcriptMutationIds(model);
+  // Without a recorded user item the replacement is not visible yet; keep the
+  // display copy rather than blinking the message out between the two states.
+  if (present.size === 0) return;
+  for (const id of model.queue?.clientMutationIds ?? []) present.add(id);
+  for (const mutation of model.pendingMutations ?? []) present.add(mutation.clientMutationId);
+  const retired = [...pending].filter((id) => !present.has(id));
+  if (retired.length === 0) return;
+  for (const id of retired) pending.delete(id);
+  if (pending.size === 0) pendingConsumedSettlements.delete(ref);
+  void runtime.dispatcher
+    .reconcileIdentities(retired)
+    .then(() => refreshMutationPins(runtime, [ref]))
+    .catch(() => {
+      // A later accepted snapshot retries the same identity settlement.
+    });
+}
+
 connectionStore.subscribe((state) => {
   if (state.client?.state !== "ready") replayAcceptedCopiesOnReady = true;
   if (state.client?.state !== "ready" && threadsStore.getState().mutationAuthorityRefs.size > 0) {

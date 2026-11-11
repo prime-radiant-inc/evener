@@ -191,6 +191,20 @@ test("a drain's authoritative queueEntryIds suppress the consumed queue rows", (
   expect(rows[0]!.text).toBe("three");
 });
 
+test("a multi-entry drain merges every retained original into one row", () => {
+  const drain = local("m3", "turn/drainAsSteer", "three", { queueEntryIds: ["q1", "q2"] });
+  const rows = project({
+    optimistic: [
+      accepted("m1", "turn/queue", "one", { queueEntryIds: ["q1"] }),
+      accepted("m2", "turn/queue", "two", { queueEntryIds: ["q2"] }),
+    ],
+    outbox: [drain],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ method: "drain", state: "sending", text: "three" });
+  expect(rows[0]?.queueEntryIds).toEqual(["q1", "q2"]);
+});
+
 test("a promote row suppresses its queue entry", () => {
   const model = threadModel({
     queue: {

@@ -412,50 +412,69 @@ function isSteeringRow(row: PendingMessage): boolean {
 // command and the promotion, drain or delivery that consumes it. Join those
 // commands before rendering so the message keeps one row and one identity
 // across the transition.
+function mergePendingRows<A extends MutationAttachmentRef>(
+  existing: PendingMessage<A>,
+  row: PendingMessage<A>,
+): PendingMessage<A> {
+  return {
+    ...existing,
+    ...(isSteeringRow(row)
+      ? {
+          method: row.method,
+          state: row.state,
+          text: row.text,
+          displayText: row.displayText,
+          textComplete: row.textComplete,
+          images: row.images,
+          imageCount: row.imageCount,
+          skillNames: row.skillNames,
+          commandNames: row.commandNames,
+          ...(row.mentions !== undefined ? { mentions: row.mentions } : {}),
+        }
+      : {}),
+    ...(row.queueEntryId !== undefined ? { queueEntryId: row.queueEntryId } : {}),
+    ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
+    ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),
+    queueEntryIds: [...new Set([...existing.queueEntryIds, ...row.queueEntryIds])],
+    fromThisClient: existing.fromThisClient || row.fromThisClient,
+    ...(row.outbox !== undefined ? { outbox: row.outbox } : {}),
+    ...(row.optimistic !== undefined ? { optimistic: row.optimistic } : {}),
+    ...(row.recovery !== undefined
+      ? {
+          recovery: row.recovery,
+          recoveryKind: row.recoveryKind,
+          ...(row.reason !== undefined ? { reason: row.reason } : {}),
+        }
+      : {}),
+  };
+}
+
 function mergeLineageRows<A extends MutationAttachmentRef>(rows: PendingMessage<A>[]): PendingMessage<A>[] {
   const byEntryId = new Map<string, PendingMessage<A>>();
   const out: PendingMessage<A>[] = [];
   for (const row of rows) {
-    const existing = row.queueEntryIds.map((id) => byEntryId.get(id)).find((candidate) => candidate !== undefined);
-    if (!existing) {
+    const intersecting = [
+      ...new Set(
+        row.queueEntryIds
+          .map((id) => byEntryId.get(id))
+          .filter((candidate): candidate is PendingMessage<A> => candidate !== undefined),
+      ),
+    ];
+    if (intersecting.length === 0) {
       out.push(row);
       for (const id of row.queueEntryIds) byEntryId.set(id, row);
       continue;
     }
-    const incomingSteering = isSteeringRow(row);
-    const merged: PendingMessage<A> = {
-      ...existing,
-      ...(incomingSteering
-        ? {
-            method: row.method,
-            state: row.state,
-            text: row.text,
-            displayText: row.displayText,
-            textComplete: row.textComplete,
-            images: row.images,
-            imageCount: row.imageCount,
-            skillNames: row.skillNames,
-            commandNames: row.commandNames,
-            ...(row.mentions !== undefined ? { mentions: row.mentions } : {}),
-          }
-        : {}),
-      ...(row.queueEntryId !== undefined ? { queueEntryId: row.queueEntryId } : {}),
-      ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
-      ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),
-      queueEntryIds: [...new Set([...existing.queueEntryIds, ...row.queueEntryIds])],
-      fromThisClient: existing.fromThisClient || row.fromThisClient,
-      ...(row.outbox !== undefined ? { outbox: row.outbox } : {}),
-      ...(row.optimistic !== undefined ? { optimistic: row.optimistic } : {}),
-      ...(row.recovery !== undefined
-        ? {
-            recovery: row.recovery,
-            recoveryKind: row.recoveryKind,
-            ...(row.reason !== undefined ? { reason: row.reason } : {}),
-          }
-        : {}),
-    };
-    const index = out.indexOf(existing);
-    if (index >= 0) out[index] = merged;
+    const [first, ...rest] = intersecting;
+    if (!first) continue;
+    let merged = first;
+    for (const other of rest) merged = mergePendingRows(merged, other);
+    merged = mergePendingRows(merged, row);
+    for (const other of intersecting) {
+      const index = out.indexOf(other);
+      if (index >= 0) out.splice(index, 1);
+    }
+    out.push(merged);
     for (const id of merged.queueEntryIds) byEntryId.set(id, merged);
   }
   return out;

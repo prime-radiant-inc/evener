@@ -344,7 +344,7 @@ test("a failed history read keeps the accepted copy when a frame names its ident
   storage.close();
 });
 
-test("queue evidence keeps the accepted display copy through the handoff", async () => {
+test("queue evidence keeps the accepted display copy without settling it", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
@@ -378,7 +378,7 @@ test("queue evidence keeps the accepted display copy through the handoff", async
     },
   });
   await flushIndexedDBUntil(() => false);
-  expect(settleSpy.mock.calls).toEqual([["m1", { retainDisplayCopy: true }]]);
+  expect(settleSpy).not.toHaveBeenCalled();
   expect(await storage.getOptimistic("m1")).toBeDefined();
   storage.close();
 });
@@ -1839,10 +1839,10 @@ describe("useThreadsStore.drainAsSteer", () => {
   });
 
   // A drain's own thread/queueChanged push names the client mutation ids it
-  // consumed (issue #1704), so the client settles those optimistic turn/queue
-  // records by positive evidence -- never by inferring consumption from
-  // sequence order.
-  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+  // consumed (issue #1704). The frame proves the transition, not that the
+  // replacement is visible, so the record survives until an authoritative
+  // snapshot shows it is no longer queued, pending, or recorded.
+  test("a queueChanged naming consumed ids keeps the record until an authoritative snapshot", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({
       receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
@@ -1868,15 +1868,44 @@ describe("useThreadsStore.drainAsSteer", () => {
       },
     });
 
-    let settled = false;
-    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
-      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
-    }
-    expect(settled).toBe(true);
+    await flushIndexedDBUntil(() => false);
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: true,
+          queue: { revision: 8 },
+        },
+        turns: [
+          {
+            id: "turn_replacement",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_replacement",
+                turnId: "turn_replacement",
+                type: "userMessage",
+                text: "queued",
+                clientMutationId: "replacement",
+                version: 1,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(async () => (await inspector.getOptimistic(record.clientMutationId)) === undefined);
+
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
     inspector.close();
   });
 
-  test("a consumed queue row waits for its authoritative read before settling", async () => {
+  test("a consumed queue row does not trigger its own read", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({
       receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
@@ -1890,9 +1919,7 @@ describe("useThreadsStore.drainAsSteer", () => {
     }
     if (!record) throw new Error("queued record never reached the optimistic store");
 
-    const read = deferred<ThreadReadResponse>();
     const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
-    fake.on("thread/read", () => read.promise);
     fake.emitNotification({
       method: "thread/queueChanged",
       params: {
@@ -1902,15 +1929,9 @@ describe("useThreadsStore.drainAsSteer", () => {
         consumedClientMutationIds: [record.clientMutationId],
       },
     });
-    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > readsBefore);
-
+    await flushIndexedDBUntil(() => false);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
     expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
-    read.resolve(readResponse("ref_a"));
-    let settled = false;
-    for (let attempt = 0; attempt < 40 && !settled; attempt += 1) {
-      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
-    }
-    expect(settled).toBe(true);
     inspector.close();
   });
 
@@ -1928,9 +1949,6 @@ describe("useThreadsStore.drainAsSteer", () => {
     }
     if (!record) throw new Error("queued record never reached the optimistic store");
 
-    const read = deferred<ThreadReadResponse>();
-    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
-    fake.on("thread/read", () => read.promise);
     const notification = {
       method: "thread/queueChanged" as const,
       params: {
@@ -1941,17 +1959,14 @@ describe("useThreadsStore.drainAsSteer", () => {
       },
     };
     fake.emitNotification(notification);
-    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > readsBefore);
-    read.reject(new Error("authoritative read failed"));
     await flushIndexedDBUntil(() => false);
-
     expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
 
-    fake.on("thread/read", () => readResponse("ref_a"));
-    fake.emitNotification(notification);
-    await flushIndexedDBUntil(async () => (await inspector.getOptimistic(record.clientMutationId)) === undefined);
-
-    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
+    fake.on("thread/read", () => {
+      throw new Error("authoritative read failed");
+    });
+    await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow();
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
     inspector.close();
   });
 
