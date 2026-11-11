@@ -1,19 +1,88 @@
-import type { MarketplaceEntry } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  type MarketplaceEntry,
+  type PluginEntry,
+  WireError,
+} from "@evener/appwire-client";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { resetConnectionStoreForTests } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../../testing/fakeTimers";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { MarketplacesSection } from "./MarketplacesSection";
-import { showsEmptyRow } from "./marketplacesTestUtils";
+import { MarketplacesSection, type MarketplacesSectionProps } from "./MarketplacesSection";
+import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
 const MARKETPLACE_A: MarketplaceEntry = {
   name: "acme-plugins",
   source: { kind: "github", repo: "acme/plugins" },
   lastUpdated: 1000,
 };
+const MARKETPLACE_B: MarketplaceEntry = {
+  name: "other-plugins",
+  source: { kind: "url", url: "https://example.com/x.git" },
+  lastUpdated: 2000,
+};
+
+const INSTALLED_LINTER: PluginEntry = {
+  plugin: "linter",
+  marketplace: "acme-plugins",
+  version: "1.0.0",
+  enabled: true,
+  autoUpgrade: false,
+  broken: false,
+  installPath: "/x",
+  installedAt: 1,
+  lastUpdated: 1,
+};
+
+// Wraps BrowseSection with the lifted expandedMarketplaces state its real
+// parent (marketplacesPlugins/index.tsx) owns - a plain useState here
+// stands in for that parent for this component's own tests.
+function sectionProps(overrides: Partial<MarketplacesSectionProps> = {}): MarketplacesSectionProps {
+  return {
+    expandedMarketplaces: new Set<string>(),
+    setExpandedMarketplaces: vi.fn(),
+    expanded: null,
+    onToggleRow: vi.fn(),
+    onCollapseMarketplace: vi.fn(),
+    onRenamedMarketplace: vi.fn(),
+    appliedRemovalNames: new Set<string>(),
+    connectionClient: connectionStore.getState().client ?? null,
+    onAppliedRemoval: vi.fn(),
+    ...overrides,
+  };
+}
+
+function renderSection(overrides: Partial<MarketplacesSectionProps> = {}) {
+  return render(<MarketplacesSection {...sectionProps(overrides)} />);
+}
+
+function Harness({
+  initialExpanded = new Set<string>(),
+  ...overrides
+}: { initialExpanded?: Set<string> } & Partial<MarketplacesSectionProps>) {
+  const [expanded, setExpanded] = useState(initialExpanded);
+  return (
+    <MarketplacesSection
+      {...sectionProps({ expandedMarketplaces: expanded, setExpandedMarketplaces: setExpanded, ...overrides })}
+    />
+  );
+}
+
+// Each marketplace row is the shared ListRow: its main button is the toggle,
+// and the node's plugin list is mounted only while it is open.
+function marketplaceToggle(name: string): HTMLElement {
+  return screen.getByRole("button", { name: new RegExp(name) });
+}
+
+function isExpanded(name: string): boolean {
+  return screen.queryByRole("list", { name: `${name} plugins` }) !== null;
+}
 
 beforeEach(() => {
   resetConnectionStoreForTests();
@@ -23,39 +92,412 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
-test("renders each marketplace as one tappable row carrying name, kind, and source; tapping selects it", async () => {
+test("every registered marketplace renders as a collapsed node regardless of filter", () => {
   connectReadyFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  const onSelect = vi.fn();
-  render(<MarketplacesSection onSelect={onSelect} />);
-  const row = screen.getByRole("button", { name: /acme-plugins/ });
-  expect(within(row).getByText("github")).toBeTruthy();
-  expect(within(row).getByText("github: acme/plugins")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-  // No in-section heading or count: the page-level SegmentedControl carries
-  // "Marketplaces (n)" - asserted in index.test.tsx.
-  expect(screen.queryByRole("heading")).toBeNull();
-  expect(screen.queryByText("1 entry")).toBeNull();
-  await userEvent.setup().click(row);
-  expect(onSelect).toHaveBeenCalledWith("acme-plugins");
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
+  render(<Harness />);
+  expect(isExpanded("acme-plugins")).toBe(false);
+  expect(isExpanded("other-plugins")).toBe(false);
 });
 
-test("shows the empty state when there are no marketplaces", () => {
+test("shows the no-marketplaces empty state", () => {
   connectReadyFakeClient();
-  extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  extensionsStore.setState({ marketplaces: [], plugins: [] });
+  render(<Harness />);
   expect(showsEmptyRow()).toBe(true);
+});
+
+test("expanding a node lazily fetches its catalog once; re-expanding does not refetch", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [{ name: "linter", description: "Lints code" }] }));
+  fake.on("evener/marketplace/browse", browseSpy);
+  render(<Harness />);
+  const toggle = marketplaceToggle("acme-plugins");
+  await user.click(toggle);
+  expect(await screen.findByText("linter")).toBeTruthy();
+  await user.click(toggle); // collapse
+  await user.click(toggle); // re-expand
+  expect(screen.getByText("linter")).toBeTruthy();
+  expect(browseSpy).toHaveBeenCalledTimes(1);
+});
+
+test("an inline install returns focus to the row it reshaped", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: MARKETPLACE_A.name,
+    plugins: [{ name: "formatter", description: "Formats code" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      {
+        plugin: "formatter",
+        marketplace: MARKETPLACE_A.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByRole("list", { name: "acme-plugins plugins" });
+  // Confirm from the trailing Install control, so the confirm's FocusScope
+  // remembers that button as its opener.
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // The install's fresh list reshapes the row - the split row with its
+  // trailing Install becomes the whole-row button.
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
+});
+
+// A marketplace change from another client retires every cached catalog,
+// including the one an expanded node is showing. Nothing toggles, so the node
+// is the only thing that can ask for the replacement.
+test("an expanded marketplace whose catalog was retired re-browses; a collapsed one does not", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+  extensionsStore.setState({
+    marketplaces: [MARKETPLACE_A, MARKETPLACE_B],
+    plugins: [],
+    browseCatalogs: new Map([
+      ["acme-plugins", { status: "loaded" as const, plugins: [{ name: "linter" }] }],
+      ["other-plugins", { status: "loaded" as const, plugins: [{ name: "formatter" }] }],
+    ]),
+  });
+  const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [{ name: "fresh-linter" }] }));
+  fake.on("evener/marketplace/browse", browseSpy);
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
+  render(<Harness initialExpanded={new Set(["acme-plugins"])} />);
+  expect(screen.getByText("linter")).toBeTruthy();
+  expect(browseSpy).not.toHaveBeenCalled();
+
+  act(() => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }));
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Expanded marketplace did not start its replacement browse");
+  await act(() => browse.value);
+
+  expect(await screen.findByText("fresh-linter")).toBeTruthy();
+  const browseCalls = fake.calls.filter((c) => c.method === "evener/marketplace/browse");
+  expect(browseCalls.map((c) => c.params)).toEqual([{ name: "acme-plugins" }]);
+});
+
+// FIX 2c: the loading state gets the Loader widget instead of a static
+// "Loading…" string.
+test("shows a Loader while a marketplace's catalog is loading", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("evener/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [] };
+  });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  expect(showsEmptyRow()).toBe(false);
+
+  release();
+  await waitFor(() => expect(showsEmptyRow()).toBe(true));
+});
+
+// The store caches a failed browse in its friendly form, translated while the
+// error still has its type: a hub's own explanation survives, and the
+// client's connection-state wiring text never reaches the screen.
+test.each([
+  ["a hub-reported WireError", new WireError("catalog clone is locked", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+])("a failed browse from %s shows its friendly form", async (_name, err) => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => {
+    throw err;
+  });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await waitFor(() => expect(document.body.textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
+test("an empty catalog shows its own empty message", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await waitFor(() => expect(showsEmptyRow()).toBe(true));
+});
+
+test("an already-installed plugin shows an Installed badge instead of an Install button", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [INSTALLED_LINTER] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    plugins: [{ name: "linter" }, { name: "formatter" }],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByText("linter");
+  const linterRow = screen.getByText("linter").closest("li") as HTMLElement;
+  expect(chipKinds(linterRow)).toEqual(["installed"]);
+  expect(within(linterRow).queryByRole("button", { name: "Install" })).toBeNull();
+  // The shared row with no trailing control: the whole row is one button.
+  expect(within(linterRow).getAllByRole("button")).toHaveLength(1);
+  const formatterRow = screen.getByText("formatter").closest("li") as HTMLElement;
+  expect(within(formatterRow).getByRole("button", { name: "Install" })).toBeTruthy();
+});
+
+test("rows are the shared shape: the plugin name is the row's main button, Install rides the trailing slot", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    plugins: [{ name: "linter", description: "Lints code" }],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByText("linter");
+  const main = screen.getByRole("button", { name: /linter/ });
+  const install = screen.getByRole("button", { name: "Install" });
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
+  // No nested buttons: the shared row's split shape.
+  expect(main.closest("button")).toBe(main);
+  expect(install.closest("button")).toBe(install);
+  // Only the trailing Install opens the install confirm; the main area is
+  // the row's own target and does not install.
+  await user.click(main);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+  await user.click(install);
+  expect(screen.getByRole("dialog", { name: "Install plugin" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+});
+
+test("Install opens a non-destructive confirm; confirming installs and toasts success", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", (params) => {
+    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
+    return { plugins: [INSTALLED_LINTER] };
+  });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  expect(within(dialog).getByRole("button", { name: "Install" })).toBeTruthy();
+  await user.click(within(dialog).getByRole("button", { name: "Install" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Installed linter")).toBe(true),
+  );
+});
+
+test("the install confirm states the marketplace's actual source, not just its name", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  expect(within(dialog).getByText(/github: acme\/plugins/)).toBeTruthy();
+});
+
+test("cancelling the install confirm does not call installPlugin", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  const installSpy = vi.fn();
+  fake.on("evener/plugin/install", installSpy);
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(installSpy).not.toHaveBeenCalled();
+});
+
+test("a failed install toasts failure", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", () => {
+    throw new Error("boom");
+  });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(dialog).getByRole("button", { name: "Install" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "error" && t.text === "Install failed: boom")).toBe(true),
+  );
+});
+
+test("the install confirm's buttons disable while the install is in flight", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(dialog).getByRole("button", { name: "Install" }));
+  expect((within(dialog).getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("typing a filter query auto-expands (after the debounce) a marketplace with a matching plugin and hides a successfully-loaded, zero-match one entirely", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
+  fake.on("evener/marketplace/browse", (params) =>
+    params.name === "acme-plugins"
+      ? { name: "acme-plugins", plugins: [{ name: "linter" }] }
+      : { name: "other-plugins", plugins: [{ name: "formatter" }] },
+  );
+  render(<Harness />);
+  await user.type(screen.getByPlaceholderText("Filter marketplaces and plugins…"), "lint");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  expect(isExpanded("acme-plugins")).toBe(true);
+  // other-plugins' catalog resolved with zero matches for "lint" - per the
+  // floor doc ("only a successfully-loaded, zero-match catalog is hidden
+  // entirely"), it's not merely collapsed, it's absent from the tree.
+  expect(screen.queryByRole("button", { name: /other-plugins/ })).toBeNull();
+  expect(screen.getByText("linter")).toBeTruthy();
+});
+
+test("clearing the filter immediately collapses every node with no debounce", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  render(<Harness initialExpanded={new Set(["acme-plugins"])} />);
+  const filter = screen.getByPlaceholderText("Filter marketplaces and plugins…");
+  await user.type(filter, "x");
+  await user.clear(filter);
+  expect(isExpanded("acme-plugins")).toBe(false);
+});
+
+// The tree-wide "Loading marketplaces…" belongs to one query's catalog load,
+// and a keystroke can outrun that query mid-load. Both then wait on the same
+// in-flight catalogs; the newer query is the one that clears the flag and
+// expands its matches, and the outrun query returns without clearing a flag
+// that is no longer its to clear.
+test("a filter query outrun by a newer one leaves the tree loading no longer than the newer one", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("evener/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [{ name: "linter" }] };
+  });
+  render(<Harness />);
+  const filter = screen.getByPlaceholderText("Filter marketplaces and plugins…");
+  await user.type(filter, "li");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  expect(screen.getByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
+
+  // The next keystroke, while that catalog is still in flight.
+  await user.type(filter, "n");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  await act(async () => {
+    release();
+    await gate;
+  });
+
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
+  expect(isExpanded("acme-plugins")).toBe(true);
+  expect(screen.getByText("linter")).toBeTruthy();
+});
+
+// A catalog can already be loading when a query runs - a click expanded the
+// node, a retire sent an expanded node back for a replacement, an earlier
+// keystroke's query started it - and only the request's own promise says when
+// it lands. A query that does not wait for it decides the marketplace has no
+// match while its plugins are still on the wire, and nothing reruns the
+// filter afterwards.
+test("the filter waits for a catalog that was already loading when the query ran", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("evener/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [{ name: "linter" }] };
+  });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.type(screen.getByPlaceholderText("Filter marketplaces and plugins…"), "lin");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  expect(screen.getByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
+
+  await act(async () => {
+    release();
+    await gate;
+  });
+
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
+  expect(isExpanded("acme-plugins")).toBe(true);
+  expect(screen.getByText("linter")).toBeTruthy();
+});
+
+test("zero matches anywhere shows a not-found message quoting the query", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  render(<Harness />);
+  await user.type(screen.getByPlaceholderText("Filter marketplaces and plugins…"), "zzz");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
 });
 
 test("the Add form and the + Add marketplace button are mutually exclusive", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.queryByRole("button", { name: "+ Add marketplace" })).toBeNull();
@@ -66,7 +508,7 @@ test("only the field matching the checked source radio is shown", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.getByPlaceholderText("https://github.com/owner/repo.git")).toBeTruthy();
   expect(screen.getByLabelText("Branch or tag (optional)")).toBeTruthy();
@@ -96,7 +538,7 @@ test("the local-path field browses real directories and sends the picked one", a
     return { marketplaces: [] };
   });
   fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/opt" : path }));
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "Local path" }));
 
@@ -119,7 +561,7 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
     expect(params).toEqual({ name: "", source: { kind: "github", repo: "acme/plugins" } });
     return { marketplaces: [MARKETPLACE_A] };
   });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "owner/repo" }));
   await user.type(screen.getByPlaceholderText("owner/repo"), "acme/plugins");
@@ -139,7 +581,7 @@ test("a branch or tag is sent as the git source's ref", async () => {
     });
     return { marketplaces: [MARKETPLACE_A] };
   });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "owner/repo" }));
   await user.type(screen.getByPlaceholderText("owner/repo"), "acme/plugins");
@@ -161,7 +603,7 @@ test("a branch or tag is sent for a git url source", async () => {
     });
     return { marketplaces: [] };
   });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.type(screen.getByLabelText("Branch or tag (optional)"), "v2");
@@ -179,7 +621,7 @@ test("a non-empty name is appended to the success toast and sent in the payload"
     expect(params).toEqual({ name: "my-name", source: { kind: "url", url: "https://example.com/x.git" } });
     return { marketplaces: [] };
   });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.type(screen.getByPlaceholderText("defaults to the marketplace's own name"), "my-name");
@@ -196,7 +638,7 @@ test("a failed add toasts failure and keeps the form open", async () => {
   fake.on("evener/marketplace/add", () => {
     throw new Error("boom");
   });
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -212,9 +654,95 @@ test("Cancel closes the form without calling addMarketplace", async () => {
   extensionsStore.setState({ marketplaces: [] });
   const addSpy = vi.fn();
   fake.on("evener/marketplace/add", addSpy);
-  render(<MarketplacesSection onSelect={vi.fn()} />);
+  renderSection();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
   expect(addSpy).not.toHaveBeenCalled();
+});
+
+// --- the unified screen's own contract: marketplace management is inline ---
+
+test("expanding a marketplace row shows its catalog and management actions inline, with no dialog", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+
+  expect(screen.getByRole("list", { name: "acme-plugins plugins" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("the expanded marketplace row's opener exposes aria-expanded and points at its body", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  render(<Harness />);
+  const row = marketplaceToggle("acme-plugins");
+  expect(row.getAttribute("aria-expanded")).toBe("false");
+  expect(row.getAttribute("aria-controls")).toBeNull();
+
+  await user.click(row);
+
+  expect(row.getAttribute("aria-expanded")).toBe("true");
+  const controls = row.getAttribute("aria-controls");
+  expect(controls).not.toBeNull();
+  expect(document.getElementById(controls ?? "")?.getAttribute("data-kind")).toBe("marketplace-detail");
+});
+
+test("Escape on the expanded marketplace row collapses it and marks the key handled", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  const parentKeys: boolean[] = [];
+  const listener = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") parentKeys.push(event.defaultPrevented);
+  };
+  document.addEventListener("keydown", listener);
+  render(<Harness />);
+  const row = marketplaceToggle("acme-plugins");
+  await user.click(row);
+  expect(screen.queryByRole("list", { name: "acme-plugins plugins" })).toBeTruthy();
+  row.focus();
+
+  await user.keyboard("{Escape}");
+  document.removeEventListener("keydown", listener);
+
+  expect(screen.queryByRole("list", { name: "acme-plugins plugins" })).toBeNull();
+  expect(parentKeys).toEqual([true]);
+});
+
+test("collapsing a marketplace row asks the page to clear any plugin details open inside it", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  const onCollapseMarketplace = vi.fn();
+  render(<Harness onCollapseMarketplace={onCollapseMarketplace} />);
+  const row = marketplaceToggle("acme-plugins");
+  await user.click(row);
+  await user.click(row);
+  expect(onCollapseMarketplace).toHaveBeenCalledWith("acme-plugins");
+});
+
+test("a rename asks the page to move the marketplace's expansion and any open plugin detail", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  const renamed = { ...MARKETPLACE_A, name: "acme-renamed" };
+  fake.on("evener/marketplace/edit", () => ({ marketplaces: [renamed] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-renamed", plugins: [] }));
+  const onRenamedMarketplace = vi.fn();
+  render(<Harness onRenamedMarketplace={onRenamedMarketplace} />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const name = screen.getByLabelText("Name") as HTMLInputElement;
+  await user.clear(name);
+  await user.type(name, "acme-renamed");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  expect(onRenamedMarketplace).toHaveBeenCalledWith("acme-plugins", "acme-renamed");
 });

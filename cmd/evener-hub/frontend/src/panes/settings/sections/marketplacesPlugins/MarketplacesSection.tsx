@@ -15,7 +15,6 @@ import {
   ConfirmDialog,
   EmptyState,
   FormRow,
-  InlineNotice,
   Input,
   ListRow,
   Loader,
@@ -24,7 +23,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { handleRowEscape, marketplaceDetailBodyId } from "../../../plugins/pluginRowFocus";
+import { handleRowEscape, marketplaceDetailBodyId, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MarketplaceDetailBody } from "./MarketplaceDetailBody";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
@@ -86,6 +85,11 @@ export function MarketplacesSection({
   const [filterQuery, setFilterQuery] = useState("");
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  // An inline install's fresh list reshapes the confirmed row, and the
+  // confirm's own focus restore then loses its opener: the hook returns
+  // focus to the row when that happened.
+  usePluginRowFocusRehome(pendingInstall, sectionRef);
 
   const [addOpen, setAddOpen] = useState(false);
   const [kind, setKind] = useState<MarketplaceSourceKind>("url");
@@ -245,7 +249,7 @@ export function MarketplacesSection({
   }
 
   return (
-    <section className={CLASS.section}>
+    <section ref={sectionRef} className={CLASS.section}>
       <p>
         A marketplace is a repository or local directory carrying a <code>.claude-plugin/marketplace.json</code> plugin
         catalog. Open one to install its plugins or change where it comes from. See the{" "}
@@ -300,8 +304,11 @@ export function MarketplacesSection({
                     onToggleRow={onToggleRow}
                     onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
                     onRenamed={(oldName, newName) => {
+                      // The rename came from this body, so the marketplace
+                      // was expanded; add the new name unconditionally - the
+                      // page's vanish prune can have already dropped the old
+                      // name in the same batch as the list update.
                       setExpandedMarketplaces((current) => {
-                        if (!current.has(oldName)) return current;
                         const next = new Set(current);
                         next.delete(oldName);
                         next.add(newName);
