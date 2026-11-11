@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 
@@ -82,8 +84,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
 	}
 	if err := reg.Register(tool.RegisteredTool{
-		Definition: resultToolDef,
-		OmitIntent: true,
+		Definition:    resultToolDef,
+		OmitIntent:    true,
+		UnmarshalArgs: unmarshalCommunicateArguments,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {
@@ -235,6 +238,40 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		// resultToolName; leaving the canonical registration behind would
 		// advertise a second, unwired result tool (issue #4906).
 		reg.Remove(tool.DefaultResultToolName)
+	}
+	return nil
+}
+
+// unmarshalCommunicateArguments keeps the structured output's numbers exact.
+// The registry's ordinary decoder turns every JSON number into float64, which
+// rounds an integer outside binary64's exact range before communicate can put
+// it in the canonical report packet. Only the output subtree takes
+// json.Number; every other argument keeps encoding/json's ordinary types, so
+// this does not change the types any other handler or validator sees.
+func unmarshalCommunicateArguments(raw []byte, args *map[string]any) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return json.Unmarshal(raw, args)
+	}
+	outputRaw, present := fields["output"]
+	if !present || string(outputRaw) == "null" {
+		return json.Unmarshal(raw, args)
+	}
+	ordinary := map[string]any{}
+	if err := json.Unmarshal(raw, &ordinary); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(outputRaw))
+	decoder.UseNumber()
+	var output any
+	if err := decoder.Decode(&output); err != nil {
+		return err
+	}
+	ordinary["output"] = output
+	if *args == nil {
+		*args = ordinary
+	} else {
+		maps.Copy(*args, ordinary)
 	}
 	return nil
 }
