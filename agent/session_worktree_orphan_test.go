@@ -5236,6 +5236,9 @@ func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
 		t.Fatalf("delegate %s is not retained", fixture.childID)
 	}
 	child := sub.sess
+	// The clock is swapped only once the child's run and its detached namer
+	// have settled, so nothing reads it concurrently.
+	waitForStableSupervisionRun(t, root, fixture.childID)
 	clk := agenttest.NewFakeClockAt(time.Now())
 	child.clock = clk
 	child.managedJobStarted()
