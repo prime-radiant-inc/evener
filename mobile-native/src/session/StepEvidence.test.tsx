@@ -19,11 +19,11 @@ vi.mock("./evidence", async (importOriginal) => {
 	return { ...original, stepEvidence: vi.fn(original.stepEvidence) };
 });
 
-const ALIVE_INK = "#12763B";
-const DANGER_INK = "#C51D23";
-const DIFF_ADD = "#E9F4EE";
-const DIFF_DEL = "#F5EAF0";
-const INK_LOW = "#62626D";
+const ALIVE_INK = "#0F6E36";
+const DANGER_INK = "#BD1B21";
+const DIFF_ADD = "#DCEFE4";
+const DIFF_DEL = "#F3DFE8";
+const INK_LOW = "#5C626D";
 
 function step(label: string, detail: RunStep["detail"], over: Partial<RunStep> = {}): RunStep {
 	return { kind: "activity", id: `${label}-1`, label, family: "tool", state: "completed", detail, ...over };

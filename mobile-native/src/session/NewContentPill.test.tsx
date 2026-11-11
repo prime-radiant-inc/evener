@@ -6,7 +6,7 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 
-const ACCENT_INK = "#0064C2";
+const ACCENT_INK = "#005FBA";
 
 describe("the new-content pill", () => {
 	it("says how many new rows arrived below, in accent ink", () => {

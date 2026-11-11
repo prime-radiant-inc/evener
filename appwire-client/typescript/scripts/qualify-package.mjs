@@ -494,6 +494,17 @@ const servingFacts: client.HistoryServingFacts = { servedFrom: "saved-index" };
 const replacesWindow: boolean = client.historyReplacesWindow(servingFacts); void replacesWindow;`,
       smoke: rootSmokeCalls,
     },
+    // The one color palette both apps render, and the OKLab mix their tints
+    // derive with.
+    "./palette": {
+      esmTypeUses: `const light: ThemePalette = palettes.light;
+const ink: string = light["ink-hi"];
+const mixed: string = mix("#000000", "#FFFFFF", 0.5); void ink; void mixed;`,
+      cjsTypeUses: `const mixed: string = client.mix("#000000", "#FFFFFF", 0.5);
+const ink: string = client.palettes.light["ink-hi"]; void ink; void mixed;`,
+      smoke: `assert.equal(client.mix("#000000", "#FFFFFF", 0.5), "#636363");
+assert.equal(client.palettes.light["surface-0"], "#F6F7F9");`,
+    },
     // The doc-pane data layer, published as its own specifier because
     // readDocFile is not a root export: it needs a fetch, and a consumer that
     // wants to substitute one (or spy on the module) needs a real subpath to

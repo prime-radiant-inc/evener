@@ -47,7 +47,7 @@ vi.mock("react-native-gesture-handler", async () =>
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
-const DANGER_INK = "#C51D23";
+const DANGER_INK = "#BD1B21";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 type Level = (typeof LEVELS)[number];

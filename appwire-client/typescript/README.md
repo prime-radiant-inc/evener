@@ -503,6 +503,11 @@ an activity view cannot unsubscribe a transcript that holds its own lease.
 
 Besides the root, `package.json` `exports` publishes these subpaths:
 
+- `@evener/appwire-client/palette` - the one color palette the web and the
+  phone render: `webPalettes` (the roles `tokens.css` declares),
+  `NativeExtras`/`ThemePalette` (the full phone palette), and the OKLab
+  `mix` both clients derive tints with. `webPalettes` and `palettes` are
+  `Record<Scheme, …>` for `"light" | "dark"`.
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
   document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,

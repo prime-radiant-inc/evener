@@ -44,13 +44,13 @@ it("maps the existing color keys onto the spec's light palette", () => {
 	mode.scheme = "light";
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors).toMatchObject({
-		background: "#FFFFFF",
-		surface: "#EDEDF2",
-		text: "#1C1C1E",
-		secondary: "#55555E",
-		border: "#D8D8DF",
-		accent: "#0064C2",
-		error: "#C51D23",
+		background: "#F6F7F9",
+		surface: "#F2F4F7",
+		text: "#1A1D23",
+		secondary: "#555B66",
+		border: "#D5D9E0",
+		accent: "#005FBA",
+		error: "#BD1B21",
 		warning: "#9C4908",
 		onAccent: "#FFFFFF",
 	});
@@ -61,11 +61,11 @@ it("maps the existing color keys onto the spec's dark palette", () => {
 	mode.scheme = "dark";
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors).toMatchObject({
-		background: "#111113",
-		surface: "#252528",
-		text: "#F5F5F7",
-		secondary: "#B8B8C1",
-		border: "#38383D",
+		background: "#111214",
+		surface: "#191C21",
+		text: "#F1F3F6",
+		secondary: "#B2B7C0",
+		border: "#333842",
 		accent: "#459EFF",
 		error: "#F17478",
 		warning: "#F68F3C",
@@ -78,7 +78,7 @@ it("treats an unspecified scheme as light", () => {
 	mode.scheme = "unspecified";
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors.palette.scheme).toBe("light");
-	expect(colors.background).toBe("#FFFFFF");
+	expect(colors.background).toBe("#F6F7F9");
 });
 
 it("scales the yourMessage variant's text size with Dynamic Type", () => {

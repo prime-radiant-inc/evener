@@ -6,13 +6,14 @@ The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in b
 
 **Platform scope.** This guide governs the web frontend, including its phone browser
 layout. The native iPhone app is governed by [mobile-native/DESIGN.md](../../mobile-native/DESIGN.md)
-and its [native tokens](../../mobile-native/src/design/tokens.ts). Evener shares semantic
-color meanings, identity, and the distinction between conversation, evidence, and controls.
-Typography, surface values, geometry, and navigation remain platform-native: do not copy
-this guide's desktop hex values, type sizes, radii, or breakpoint rules literally onto iOS.
-The native app uses neutral light/dark surfaces, SF interface text, optional Source Serif
-reading text, Menlo evidence, and native stacks and sheets. References to phone or mobile
-layout below mean the web frontend, not the React Native app.
+and its [native tokens](../../mobile-native/src/design/tokens.ts). Both clients render the
+one palette in [the shared palette source](../../appwire-client/typescript/palette.ts); the native tokens alias its
+roles onto the phone's surface vocabulary, so the palette and its semantic meanings are
+shared rather than transcribed twice. Typography, geometry, and navigation remain
+platform-native: do not copy this guide's type sizes, radii, or breakpoint rules literally
+onto iOS. The native app uses neutral light/dark surfaces, SF interface text, optional
+Source Serif reading text, Menlo evidence, and native stacks and sheets. References to
+phone or mobile layout below mean the web frontend, not the React Native app.
 
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
@@ -362,14 +363,17 @@ viewport. Other HoverCards and tooltips keep their default placement.
 
 ## 2. Tokens as shipped
 
-`src/styles/tokens.css` is the single source of every color, type, space, radius, and motion
-value in the web app. Consumers only ever write `var(--name)` — no component CSS branches on
-theme; the light-theme block (`[data-theme="light"]`) redeclares every color token under the
-same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
-but not the other's.
+The one palette lives in [the shared palette source](../../appwire-client/typescript/palette.ts),
+which the phone aliases and which owns the shared OKLab mix. `src/styles/tokens.css` declares that palette
+as custom properties for the web, alongside the type, space, radius, and motion values the
+web app uses; consumers only ever write `var(--name)` — no component CSS branches on theme,
+the light-theme block (`[data-theme="light"]`) redeclares every color token under the same
+name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block but
+not the other's or if a value drifts from the shared palette.
 
 **Color** — the cool neutral roles below are implemented in both theme blocks. All existing
-token names are retained. The table is a reference; `tokens.css` is authoritative.
+token names are retained. The table is a reference; `tokens.css` is authoritative for the
+web's custom properties, and `@evener/appwire-client/palette` for the values themselves.
 
 | Role | Dark | Light |
 |---|---|---|
@@ -378,19 +382,20 @@ token names are retained. The table is a reference; `tokens.css` is authoritativ
 | Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
 | Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
 | Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
-| Hover / selected `--hover-1/2` | `#252931` / `#2E333C` | `#E7EAEF` / `#DCE0E7` |
+| Hover / selected `--hover-1/2` | `#252931` / `#303034` | `#E7EAEF` / `#DCDEE3` |
 | Editable field `--field` | `#23272E` | `#F1F3F6` |
 | Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
-| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#626873` |
+| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#5C626D` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.23/5.09.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.72/6.14.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
-companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
-`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own tinted grounds.
+companions. Text uses `-ink`, never the bare hue. Light attention/alive/danger/accent text
+colors are `#9C4908` / `#0F6E36` / `#BD1B21` / `#005FBA`, darkened to preserve AA on their
+own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
