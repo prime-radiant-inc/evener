@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,6 +20,42 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
+
+// parseRunFlags parses args through the same defineRunFlags wiring runSuite
+// uses, so a test reads the flag defaults and values the runner actually gets.
+func parseRunFlags(t *testing.T, args ...string) runConfig {
+	t.Helper()
+	var cfg runConfig
+	var systemPromptAppend cmdutil.StringSliceFlag
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	defineRunFlags(fs, &cfg, &systemPromptAppend)
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("parse %v: %v", args, err)
+	}
+	applySandboxDefaultAfterParse(fs, &cfg.sandbox)
+	cfg.systemPromptAppend = []string(systemPromptAppend)
+	return cfg
+}
+
+// TestDefaultSandboxIsWorkspaceWrite: a probe runs confined by default so it
+// cannot write outside its work dir; --sandbox off is the explicit opt-out for
+// a task that needs the whole host (#3724).
+func TestDefaultSandboxIsWorkspaceWrite(t *testing.T) {
+	cfg := parseRunFlags(t)
+	if cfg.sandbox != "workspace-write" {
+		t.Fatalf("default --sandbox = %q, want workspace-write", cfg.sandbox)
+	}
+	if mode, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil || mode != sandbox.ModeWorkspaceWrite {
+		t.Fatalf("default sandbox mode = %v, %v; want workspace-write", mode, err)
+	}
+	if got := parseRunFlags(t, "--sandbox", "off").sandbox; got != "off" {
+		t.Fatalf("--sandbox off = %q, want the opt-out", got)
+	}
+	// An unset variable in --sandbox "$MODE" must not read as off.
+	if got := parseRunFlags(t, "--sandbox", "").sandbox; got != "workspace-write" {
+		t.Fatalf("--sandbox with an empty value = %q, want the safe default", got)
+	}
+}
 
 // enforceableSandboxHost is a host that can serve the full mode matrix: bwrap
 // present and able to create its namespaces. Tests use it instead of probing

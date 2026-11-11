@@ -378,6 +378,7 @@ func runSuite(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	applySandboxDefaultAfterParse(fs, &cfg.sandbox)
 	cfg.systemPromptAppend = []string(systemPromptAppend)
 	// Decide the process-wide hermetic setting once, right after parsing and
 	// before any probe runs (#3227). See configureHermeticRunEnv.
@@ -401,7 +402,11 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
-	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
+	// workspace-write is the default because an unconfined probe can write
+	// anywhere the operator can: one wrote a CSV into the directory holding the
+	// operator's repositories (#3724). Pass --sandbox off for a task that needs
+	// the whole host.
+	fs.StringVar(&cfg.sandbox, "sandbox", defaultSandboxMode, "sandbox `mode`: workspace-write (default), off, read-only, or restricted (applies to both harnesses; off lets probes write anywhere the operator can)")
 	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
 }
@@ -1110,6 +1115,21 @@ func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 		return sandbox.ModeOff, false, err
 	}
 	return mode, net, nil
+}
+
+// defaultSandboxMode confines probe workers to their work dir unless the
+// operator opts out with --sandbox off (#3724).
+const defaultSandboxMode = "workspace-write"
+
+// applySandboxDefaultAfterParse keeps the safe default when the flag was given
+// an empty value: `--sandbox "$SANDBOX_MODE"` with the variable unset must not
+// read as off. An explicit "off" is still the opt-out.
+func applySandboxDefaultAfterParse(fs *flag.FlagSet, mode *string) {
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "sandbox" && strings.TrimSpace(*mode) == "" {
+			*mode = defaultSandboxMode
+		}
+	})
 }
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
