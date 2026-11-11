@@ -51,6 +51,19 @@ const (
 	defaultRestTimeout = 90 * time.Minute // the whole package in one process
 )
 
+// maxRestArgBytes bounds one argument handed to a test binary. Linux rejects a
+// single argument longer than MAX_ARG_STRLEN (128 KiB) with E2BIG, and macOS
+// has its own per-argument bound; half of Linux's limit leaves room for the
+// flag name and a chunk's separators. A skip set larger than this is split
+// over several -test.run processes instead of one -test.skip argument.
+const maxRestArgBytes = 64 << 10
+
+const (
+	testSkipPrefix = "-test.skip=^("
+	testRunPrefix  = "-test.run=^("
+	testArgSuffix  = ")$"
+)
+
 // Runner profiles one package's tests through a single cover-instrumented test
 // binary, caching every profile under its cache directory by the binary's
 // content hash: an unchanged package reuses its profiles across invocations
@@ -63,6 +76,7 @@ type Runner struct {
 	log        io.Writer // one progress line per test run
 
 	testTimeout, restTimeout time.Duration
+	restArgLimit             int // max bytes of one test-binary argument
 }
 
 // testBinary is one build of the package's cover test binary and the cache
@@ -98,6 +112,7 @@ func NewRunner(ctx context.Context, pkgDir, cacheDir string, log io.Writer) (*Ru
 	return &Runner{
 		pkgDir: pkgDir, absDir: absDir, importPath: importPath, cacheDir: cacheDir, log: log,
 		testTimeout: defaultTestTimeout, restTimeout: defaultRestTimeout,
+		restArgLimit: maxRestArgBytes,
 	}, nil
 }
 
@@ -335,9 +350,10 @@ func (r *Runner) profileTests(ctx context.Context, bin testBinary, names []strin
 	return runs, nil
 }
 
-// ProfileRest runs the whole package except the skipped tests in one process
-// and caches the profile by the binary and the skip set. With no skips it is
-// the package's whole-suite profile.
+// ProfileRest runs the whole package except the skipped tests and caches the
+// profile by the binary and the skip set. With no skips it is the package's
+// whole-suite profile. A skip set too large for one -test.skip argument is
+// split over several -test.run processes whose profiles are concatenated.
 func (r *Runner) ProfileRest(ctx context.Context, skip []string) (RestRun, error) {
 	bin, err := r.build(ctx)
 	if err != nil {
@@ -361,31 +377,226 @@ func (r *Runner) profileRest(ctx context.Context, bin testBinary, skip []string)
 		}
 		return RestRun{Profile: profile, Failed: strings.Fields(string(failed))}, nil
 	}
-	var args []string
-	if len(sorted) > 0 {
-		quoted := make([]string, len(sorted))
-		for i, name := range sorted {
-			quoted[i] = regexp.QuoteMeta(name)
-		}
-		args = append(args, "-test.skip=^("+strings.Join(quoted, "|")+")$")
-	}
 	start := time.Now()
-	res, err := r.runBinary(ctx, bin.path, true, r.restTimeout, args...)
+	var (
+		merged string
+		failed []string
+		runs   int
+		err    error
+	)
+	var skipArg string
+	if len(sorted) > 0 {
+		skipArg = testSkipArg(sorted)
+	}
+	if len(skipArg) > r.restArgLimit {
+		merged, failed, runs, err = r.runRestChunks(ctx, bin, sorted)
+		if err != nil {
+			return RestRun{}, err
+		}
+		defer func() { _ = os.Remove(merged) }()
+	} else {
+		var args []string
+		if skipArg != "" {
+			args = append(args, skipArg)
+		}
+		res, err := r.runRestOnce(ctx, bin.path, true, r.restTimeout, args...)
+		if err != nil {
+			return RestRun{}, err
+		}
+		merged, failed, runs = res.profile, res.failed, 1
+		defer func() { _ = os.Remove(res.profile) }()
+	}
+	if err := fsatomic.WriteWithoutSync(failedFile, []byte(strings.Join(failed, "\n")), 0o644); err != nil {
+		return RestRun{}, err
+	}
+	if err := os.Rename(merged, profile); err != nil {
+		return RestRun{}, err
+	}
+	_, _ = fmt.Fprintf(r.log, "package run skipping %d tests across %d process(es): %d failed, %.0fs\n", len(sorted), runs, len(failed), time.Since(start).Seconds())
+	return RestRun{Profile: profile, Failed: failed}, nil
+}
+
+// testSkipArg is the one-argument skip regex for names.
+func testSkipArg(names []string) string {
+	return testSkipPrefix + joinedQuoted(names) + testArgSuffix
+}
+
+// testRunArg is the one-argument run regex for names.
+func testRunArg(names []string) string {
+	return testRunPrefix + joinedQuoted(names) + testArgSuffix
+}
+
+func joinedQuoted(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = regexp.QuoteMeta(name)
+	}
+	return strings.Join(quoted, "|")
+}
+
+// runRestChunks runs the package in several processes when one -test.skip
+// argument would exceed restArgLimit. It lists the runnable names, removes the
+// skipped set, and passes each chunk of the remainder through -test.run,
+// concatenating the coverage profiles. The chunks partition the included
+// tests, so their union is exactly the profile of the package without the
+// skipped tests: covstmt reads a concatenation as an any-hit union.
+func (r *Runner) runRestChunks(ctx context.Context, bin testBinary, skip []string) (string, []string, int, error) {
+	start := time.Now()
+	timeLeft := func() (time.Duration, error) {
+		left := r.restTimeout - time.Since(start)
+		if left <= 0 {
+			return 0, fmt.Errorf("the chunked rest run used its %s budget before finishing", r.restTimeout)
+		}
+		return left, nil
+	}
+	left, err := timeLeft()
 	if err != nil {
-		return RestRun{}, err
+		return "", nil, 0, err
 	}
-	defer func() { _ = os.Remove(res.profile) }()
+	all, err := r.listRunnable(ctx, bin.path, left)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	skipped := make(map[string]struct{}, len(skip))
+	for _, name := range skip {
+		skipped[name] = struct{}{}
+	}
+	remaining := make([]string, 0, len(all))
+	for _, name := range all {
+		if _, ok := skipped[name]; !ok {
+			remaining = append(remaining, name)
+		}
+	}
+	if len(remaining) == 0 {
+		// Every runnable name is skipped. A small skip-everything regex still
+		// runs the package's initialization, whose profile belongs to the rest.
+		left, err := timeLeft()
+		if err != nil {
+			return "", nil, 0, err
+		}
+		res, err := r.runRestOnce(ctx, bin.path, true, left, "-test.skip=.*")
+		if err != nil {
+			return "", nil, 0, err
+		}
+		return res.profile, res.failed, 1, nil
+	}
+	chunks, err := chunkTestNames(remaining, r.restArgLimit)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	merged, err := os.CreateTemp(bin.hashDir, "rest-chunks-*.cov")
+	if err != nil {
+		return "", nil, 0, err
+	}
+	fail := func(err error) (string, []string, int, error) {
+		_ = merged.Close()
+		_ = os.Remove(merged.Name())
+		return "", nil, 0, err
+	}
+	var failed []string
+	for _, chunk := range chunks {
+		left, err := timeLeft()
+		if err != nil {
+			return fail(err)
+		}
+		res, err := r.runRestOnce(ctx, bin.path, true, left, testRunArg(chunk))
+		if err != nil {
+			return fail(err)
+		}
+		if err := appendProfile(merged, res.profile); err != nil {
+			_ = os.Remove(res.profile)
+			return fail(err)
+		}
+		_ = os.Remove(res.profile)
+		// The chunks partition the included tests, so one name can fail in
+		// only one of them.
+		failed = append(failed, res.failed...)
+	}
+	if err := merged.Close(); err != nil {
+		_ = os.Remove(merged.Name())
+		return "", nil, 0, err
+	}
+	return merged.Name(), failed, len(chunks), nil
+}
+
+// runRestOnce runs the test binary once and refuses a run that crashed before
+// finishing: its profile is missing or partial.
+func (r *Runner) runRestOnce(ctx context.Context, bin string, withProfile bool, timeout time.Duration, args ...string) (binaryRun, error) {
+	res, err := r.runBinary(ctx, bin, withProfile, timeout, args...)
+	if err != nil {
+		return binaryRun{}, err
+	}
 	if res.crashed() {
-		return RestRun{}, fmt.Errorf("the package run crashed (a panic, timeout or exit), so its profile is incomplete:\n%s", tail(res.out, 40))
+		if res.profile != "" {
+			_ = os.Remove(res.profile)
+		}
+		return binaryRun{}, fmt.Errorf("the package run crashed (a panic, timeout or exit), so its profile is incomplete:\n%s", tail(res.out, 40))
 	}
-	if err := fsatomic.WriteWithoutSync(failedFile, []byte(strings.Join(res.failed, "\n")), 0o644); err != nil {
-		return RestRun{}, err
+	return res, nil
+}
+
+// appendProfile appends src's coverage profile to dst. covstmt reads the
+// concatenation as an any-hit union, so the profile files need only a newline
+// between them.
+func appendProfile(dst *os.File, src string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(res.profile, profile); err != nil {
-		return RestRun{}, err
+	defer func() { _ = f.Close() }()
+	if _, err := io.Copy(dst, f); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintf(r.log, "package run skipping %d tests: %d failed, %.0fs\n", len(sorted), len(res.failed), time.Since(start).Seconds())
-	return RestRun{Profile: profile, Failed: res.failed}, nil
+	_, err = dst.WriteString("\n")
+	return err
+}
+
+// listRunnable lists the names -test.run and -test.skip match: tests, examples
+// and fuzz targets. Benchmarks are left out because the rest run never enables
+// them.
+func (r *Runner) listRunnable(ctx context.Context, bin string, timeout time.Duration) ([]string, error) {
+	res, err := r.runRestOnce(ctx, bin, false, timeout, "-test.list=.*")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for line := range strings.Lines(string(res.out)) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Test") || strings.HasPrefix(line, "Example") || strings.HasPrefix(line, "Fuzz") {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// chunkTestNames splits names into -test.run arguments no longer than limit.
+func chunkTestNames(names []string, limit int) ([][]string, error) {
+	const overhead = len(testRunPrefix) + len(testArgSuffix)
+	var chunks [][]string
+	var cur []string
+	curLen := overhead
+	for _, name := range names {
+		part := regexp.QuoteMeta(name)
+		need := len(part)
+		if len(cur) > 0 {
+			need++ // the '|' separator
+		}
+		if curLen+need > limit {
+			if len(cur) == 0 {
+				return nil, fmt.Errorf("test %q needs a %d-byte -test.run argument, over the %d-byte limit", name, len(testRunArg([]string{name})), limit)
+			}
+			chunks = append(chunks, cur)
+			cur = nil
+			curLen = overhead
+			need = len(part)
+		}
+		cur = append(cur, name)
+		curLen += need
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks, nil
 }
 
 // UniqueReport is the evidence for deleting candidates: what each reaches that
