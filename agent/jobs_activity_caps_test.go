@@ -94,9 +94,9 @@ func TestProjectBoundedActivityTree_CapsOutcomeReasonAndOriginIDs(t *testing.T) 
 	t.Parallel()
 	huge := strings.Repeat("\x01", 1<<20)
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child"}
-	child.Jobs = []*jobstore.JobRecord{{
+	child.Jobs = newActivityJobList([]*jobstore.JobRecord{{
 		JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusRunning,
-	}}
+	}})
 	row := stableActivitySnapshot("dlg_0", "root", "child", "brief")
 	row.descriptor.OriginToolCallID = strings.Repeat("t", 4096)
 	row.descriptor.OriginItemID = strings.Repeat("i", 4096)
@@ -275,7 +275,7 @@ func TestProjectActivitySession_RetiredDelegateRecordsAreNotBranchErrors(t *test
 		{JobID: "job_legacy_delegate", Type: jobstore.JobType(delegateResourceType), OwnerSessionID: "root", Status: jobstore.StatusStopped},
 		{JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning},
 	}
-	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: records}
+	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: newActivityJobList(records)}
 	got := projectActivitySession(snap, newActivityBudget())
 	if got.Branch.Error != "" {
 		t.Fatalf("branch error = %q, want none for a retired delegate record", got.Branch.Error)
@@ -301,7 +301,7 @@ func TestProjectActivitySession_CollapsesUnsupportedTypeErrors(t *testing.T) {
 			Status:         jobstore.StatusRunning,
 		})
 	}
-	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: records}
+	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: newActivityJobList(records)}
 	got := projectActivitySession(snap, newActivityBudget())
 	if c := strings.Count(got.Branch.Error, `job "`); c != 1 {
 		t.Fatalf("branch error = %q, want it to name exactly one offender, got %d", got.Branch.Error, c)
@@ -421,10 +421,10 @@ func TestProjectActivitySession_BoundsTheCollapsedOffenderIdentifier(t *testing.
 	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root",
-		Jobs: []*jobstore.JobRecord{{
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{
 			JobID: strings.Repeat("j", 4<<10), Type: jobstore.JobType("unknown"),
 			OwnerSessionID: "root", Status: jobstore.StatusRunning,
-		}},
+		}}),
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	if !strings.Contains(got.Branch.Error, "…") {
@@ -505,7 +505,7 @@ func TestProjectActivitySession_SingleUnsupportedTypeKeepsOriginalWording(t *tes
 	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root",
-		Jobs: []*jobstore.JobRecord{{JobID: "j1", Type: jobstore.JobType("unknown"), OwnerSessionID: "root", Status: jobstore.StatusRunning}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "j1", Type: jobstore.JobType("unknown"), OwnerSessionID: "root", Status: jobstore.StatusRunning}}),
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	want := fmt.Sprintf("job %q has unsupported type %q", "j1", jobstore.JobType("unknown"))
