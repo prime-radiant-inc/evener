@@ -109,13 +109,13 @@ function storage(): SyncStringStorage {
 	};
 }
 
-const read = (): ThreadReadResponse => ({
-	thread: wireThread("local:fix", {
+const readAt = (ref: string): ThreadReadResponse => ({
+	thread: wireThread(ref, {
 		id: "thread-fix",
 		status: { type: status },
 		turns: [],
 		evener: {
-			ref: "local:fix",
+			ref,
 			instanceId: "instance-fix",
 			capabilities: capabilities(),
 			queue: { revision: 1 },
@@ -124,6 +124,7 @@ const read = (): ThreadReadResponse => ({
 		},
 	}),
 });
+const read = (): ThreadReadResponse => readAt("local:fix");
 
 const applied = (params: unknown): never =>
 	({
@@ -394,6 +395,24 @@ it("sends a review to a paused session by resuming it", async () => {
 	expect(sendDisabled(tree)).toBe(false);
 	await send(tree);
 	expect(mutations()).toEqual(["turn/start"]);
+});
+
+it("returns to the identity the review's session resumes to", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readAt("local:fix-2");
+	};
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+	await settle();
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith(
+		"Conversation",
+		expect.objectContaining({ ref: "local:fix-2" }),
+	);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

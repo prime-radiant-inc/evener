@@ -64,6 +64,9 @@ const sheetNavigation = vi.hoisted(() => ({
 const stack = vi.hoisted(() => ({
 	state: { index: 2, routes: [] as { key: string; name: string; params?: object }[] },
 }));
+const identity = vi.hoisted(() => ({
+	listeners: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
+}));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -127,6 +130,18 @@ vi.mock("expo-secure-store", () => ({
 }));
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("../nativeMutationRuntime", async (original) => ({
+	...(await original<typeof import("../nativeMutationRuntime")>()),
+	getNativeMutationRuntime: () => ({
+		subscribeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+			identity.listeners.push(listener);
+			return () => {
+				const index = identity.listeners.indexOf(listener);
+				if (index >= 0) identity.listeners.splice(index, 1);
+			};
+		},
+	}),
+}));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
 	useHeldAlertCount: () => alerts.held,
@@ -191,6 +206,7 @@ beforeEach(() => {
 	harness.shares = [];
 	harness.shareFailure = null;
 	harness.appState = [];
+	identity.listeners = [];
 	served = { [PATH]: { body: PLAN } };
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
@@ -839,6 +855,16 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+it("returns to the identity its session resumes to while reading", async () => {
+	const { navigation } = await mount();
+	const listener = identity.listeners.at(-1);
+	if (!listener) throw new Error("the reader did not subscribe to identity changes");
+	act(() => listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" }));
+	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
+	menuAction(navigation, "Open session").onPress();
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "local:fix-3" }));
 });
 
 // A retained artifact's folder-relative path names a different file when pasted

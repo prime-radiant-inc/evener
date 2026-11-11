@@ -100,6 +100,10 @@ vi.mock("expo-secure-store", () => ({
 }));
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("../nativeMutationRuntime", async (original) => ({
+	...(await original<typeof import("../nativeMutationRuntime")>()),
+	getNativeMutationRuntime: () => ({ subscribeIdentities: () => () => {} }),
+}));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
 	useHeldAlertCount: () => alerts.held,

@@ -74,7 +74,6 @@ import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import { drafts } from "./nativeDrafts";
 import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -738,6 +737,22 @@ function ConversationScreenView({
 			instanceId: localInstance,
 		});
 	}, [recoveryAvailable, route.params.hubId, route.params.ref, localThread, localInstance, connected]);
+	// A resume can hand the work a different ref. Follow the runtime's
+	// publication here, in the mounted conversation itself, so a flush-driven
+	// resume moves the pane too - including a conversation a sheet or reader
+	// currently covers. The draft does not follow: it belongs to the session
+	// that owns it.
+	useEffect(() => {
+		return getNativeMutationRuntime().subscribeIdentities((change) => {
+			if (nativeMutationTargetKey(change.hubId, change.from) !== recovery.targetKey) return;
+			// Keep the route this screen was opened on: a Subagent route carries
+			// its coordinator here, and a Conversation route its title. The
+			// navigation state has the full params the session view reconstructed.
+			const current = navigation.getState().routes.find((entry) => entry.key === route.key);
+			const replace = navigation.replace as unknown as (name: string, params: object) => void;
+			replace(current?.name ?? "Conversation", { ...(current?.params ?? route.params), ref: change.to });
+		});
+	}, [navigation, recovery.targetKey, route.key, route.params]);
 	// Focus is permission for this view's actions, not ownership of the
 	// canonical data. A mounted view that comes back in front observes the
 	// shared store and asks for a read only when canonical authority is
@@ -2500,24 +2515,6 @@ function ConversationScreenView({
 			const answered = await getNativeMutationRuntime()
 				.settleTarget(hubId, ref, client, {
 					mayResumeFenced: async () => true,
-					// The rows followed the resume; the pane has to as well, or the
-					// message and the work it starts land on a ref nobody is showing.
-					onResolvedIdentity: (resolved) => {
-						// The draft and its recovery ownership follow the same identity:
-						// a replacement screen that loaded the resumed ref must show the
-						// edited composition, not the retired ref's stranded copy.
-						drafts.handoff(
-							{ hubId: route.params.hubId, sessionRef: ref },
-							{ hubId: route.params.hubId, sessionRef: resolved },
-						);
-						navigation.replace("Conversation", {
-							hubId: route.params.hubId,
-							ref: resolved,
-							title: route.params.title,
-							openedBy: route.params.openedBy,
-							slideFrom: route.params.slideFrom,
-						});
-					},
 				})
 				.catch(() => undefined);
 			if (answered === "reconciled" || answered === "open") {

@@ -60,7 +60,7 @@ const harness = vi.hoisted(() => ({
 // suite isn't exercising sheet coverage or a pushed screen, unlike
 // ConversationScreen.sheets.test.tsx.
 const navigationState = vi.hoisted(() => ({
-	state: { index: 0, routes: [] as { key: string; name: string }[] },
+	state: { index: 0, routes: [] as { key: string; name: string; params?: object }[] },
 }));
 
 // Who alerted you most recently, and Next's word that it moved you on.
@@ -2156,41 +2156,63 @@ it("still resumes from a later Send that queues behind a failed resume", async (
 	settle.mockRestore();
 });
 
-// The queued retry must follow an identity-changing resume, or the work it
-// dispatches lands on a ref the mounted screen is not showing.
-it("follows an identity-changing resume driven by a queued Send", async () => {
+// An identity-changing resume publishes the resolved ref from the runtime; the
+// mounted conversation follows it. The draft stays with the session that owns
+// it rather than moving across refs.
+it("follows a published identity change without moving the draft", async () => {
 	vi.mocked(navigation.replace).mockClear();
-	const { tree } = await mount(failedTurn("ref-queued-identity", "go test exited 1", true));
 	const runtime = getNativeMutationRuntime();
-	const settle = vi.spyOn(runtime, "settleTarget");
-	settle.mockClear();
-	const settlesFor = () => settle.mock.calls.filter(([, ref]) => ref === "ref-queued-identity");
-	settle.mockRejectedValueOnce(new Error("resume failed"));
+	const subscribe = vi.spyOn(runtime, "subscribeIdentities");
+	subscribe.mockClear();
+	const { tree } = await mount(failedTurn("ref-queued-identity", "go test exited 1", true));
+	const listener = subscribe.mock.calls.at(-1)?.[0];
+	if (!listener) throw new Error("conversation did not subscribe to identity changes");
 
-	act(() => field(tree)?.props.onChangeText("first"));
-	await press(tree, "Send and resume");
-	act(() => field(tree)?.props.onChangeText("second"));
-	await press(tree, "Queue message");
-
-	// The queued retry passes the same identity-following callback the resume
-	// branch does, so a resolved ref moves the pane with the work.
-	expect(settlesFor()).toHaveLength(2);
-	const options = settlesFor()[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
-	if (!options?.onResolvedIdentity) throw new Error("queued recovery passed no identity callback");
-	act(() => field(tree)?.props.onChangeText("handoff draft"));
-	act(() => options.onResolvedIdentity?.("ref-queued-identity-resolved"));
+	act(() => field(tree)?.props.onChangeText("kept draft"));
+	// Another conversation's move must not take this pane with it.
+	act(() => listener({ hubId: "hub-1", from: "ref-other", to: "ref-elsewhere" }));
+	expect(navigation.replace).not.toHaveBeenCalled();
+	act(() =>
+		listener({
+			hubId: "hub-1",
+			from: "ref-queued-identity",
+			to: "ref-queued-identity-resolved",
+		}),
+	);
 	expect(navigation.replace).toHaveBeenCalledWith(
 		"Conversation",
 		expect.objectContaining({ ref: "ref-queued-identity-resolved" }),
 	);
-	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity-resolved" }).draft).toBe(
-		"handoff draft",
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity" }).draft).toBe("kept draft");
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity-resolved" }).draft).toBe("");
+	subscribe.mockRestore();
+});
+
+it("keeps a Subagent route and its coordinator when following an identity", async () => {
+	vi.mocked(navigation.replace).mockClear();
+	const runtime = getNativeMutationRuntime();
+	const subscribe = vi.spyOn(runtime, "subscribeIdentities");
+	subscribe.mockClear();
+	const { route } = await mount(thread("ref-subagent", "idle"));
+	const listener = subscribe.mock.calls.at(-1)?.[0];
+	if (!listener) throw new Error("conversation did not subscribe to identity changes");
+	const coordinator = { hubId: "hub-1", ref: "ref-coordinator", title: "Coordinator" };
+	navigationState.state = {
+		index: 0,
+		routes: [
+			{
+				key: route.key,
+				name: "Subagent",
+				params: { hubId: "hub-1", ref: "ref-subagent", title: "Subagent", coordinator },
+			},
+		],
+	};
+	act(() => listener({ hubId: "hub-1", from: "ref-subagent", to: "ref-subagent-2" }));
+	expect(navigation.replace).toHaveBeenCalledWith(
+		"Subagent",
+		expect.objectContaining({ ref: "ref-subagent-2", coordinator }),
 	);
-	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity" })).toEqual({
-		draft: "",
-		unconfirmed: null,
-	});
-	settle.mockRestore();
+	subscribe.mockRestore();
 });
 
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {

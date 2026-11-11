@@ -6,7 +6,7 @@
 // message, or as a queued one with Steer now, so sending raises no toast.
 import { basename } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
@@ -43,6 +43,16 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	const sheet = useSheet({ dirty: verdict !== null || note.trim() !== "", discardTitle: "Discard this review?" });
 	const { palette } = useColors();
 	const scale = useTextScale();
+	// The session may resume to a different ref while this sheet is open.
+	// Returning to the ref the sheet opened with would leave the review's work
+	// behind on the identity the daemon retired.
+	const resolvedRef = useRef(sessionRef);
+	useEffect(() => {
+		resolvedRef.current = sessionRef;
+		return getNativeMutationRuntime().subscribeIdentities((change) => {
+			if (change.hubId === hubId && change.from === resolvedRef.current) resolvedRef.current = change.to;
+		});
+	}, [hubId, sessionRef]);
 
 	// What Send does, read when the sheet opens and again each time the
 	// connection returns, which forgets the last answer. Until a read
@@ -93,7 +103,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
+		sheet.finish(() => returnToSession(navigation, { hubId, ref: resolvedRef.current, title: sessionTitle }));
 	};
 
 	const why = !online
