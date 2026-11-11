@@ -5226,8 +5226,9 @@ func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
 	}
 
 	// The cadence delivers its side of the bound: a live tree's evidence,
-	// aged past the floor, is refreshed within the next ticks — never older
-	// than the cadence allows.
+	// aged past the floor, is refreshed on the next tick — never older than
+	// the cadence allows. The child's evidence ticker runs on a fake clock,
+	// so only one tick interval of fake time passes before the refresh.
 	r := newWorktreeRepo(t)
 	fixture, root, _ := spawnRetainedDelegateLane(t, r, "cadence-lane", "dlg_orphanactive000007", "034orphanactive0007")
 	sub := root.subagents.get(fixture.childID)
@@ -5235,13 +5236,17 @@ func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
 		t.Fatalf("delegate %s is not retained", fixture.childID)
 	}
 	child := sub.sess
+	clk := agenttest.NewFakeClockAt(time.Now())
+	child.clock = clk
 	child.managedJobStarted()
 	defer child.managedJobFinished()
+	clk.BlockUntil(1)
 	transcript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
 	aged := time.Now().Add(-(activityEvidenceRefreshFloor + 2*delegateActivityPublishInterval))
 	if err := os.Chtimes(transcript, aged, aged); err != nil {
 		t.Fatalf("age the parent's transcript past the floor: %v", err)
 	}
+	clk.Advance(delegateActivityPublishInterval)
 	testwait.Until(t, "evidence aged past the floor to be refreshed by the next tick", func() bool {
 		info, err := os.Stat(transcript)
 		return err == nil && info.ModTime().After(aged)

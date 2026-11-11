@@ -46,6 +46,7 @@ func TestDelegateSendParkedDelegateSteerIsConsumed(t *testing.T) {
 	}
 
 	// The owned shell is still held: only the steering itself can drive the run.
+	// The parked run consumes the steer on its next drain re-check.
 	testwait.Until(t, "parked delegate consumes the steered message", func() bool {
 		return requestsContain(fixture.adapter.Requests(), "follow-up while parked")
 	})

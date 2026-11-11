@@ -511,6 +511,8 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	teardownFails = false
 	mu.Unlock()
 	clk.Advance(60 * time.Second)
+	// The retry runs on the tick this Advance just fired, so no further
+	// fake time is needed for the watch to leave the live set.
 	testwait.Until(t, "the retried one-shot teardown to end the watch", func() bool {
 		jm.mu.Lock()
 		defer jm.mu.Unlock()

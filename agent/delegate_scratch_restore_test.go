@@ -100,6 +100,7 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 
 	restoreAndCheck := func(label string, prev *subagent) *subagent {
 		t.Helper()
+		// The release follows the test's 100ms grace override.
 		testwait.Until(t, "idle release of "+label, func() bool {
 			tree.mu.Lock()
 			released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
