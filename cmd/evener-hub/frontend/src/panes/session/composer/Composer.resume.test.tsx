@@ -197,15 +197,19 @@ test("Send on a recovery-fenced session resumes, reconciles, and drains exactly 
     resumed = true;
     return idleShape();
   });
-  fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: `thr_${ref}`,
-      projectionState: "reflected",
-    },
-    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-  }));
+  const drained = deferred<void>();
+  fake.on("turn/start", (params) => {
+    drained.resolve();
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   await act(async () => {
     const input = [{ type: "text", text: "uncertain" }];
@@ -232,6 +236,11 @@ test("Send on a recovery-fenced session resumes, reconciles, and drains exactly 
   await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(resumed).toBe(true));
   await flushPendingTurnsProjectionForTests();
+  // The drain is the completion signal this test asserts on: wait for the
+  // turn/start call itself instead of sampling the calls after a flush.
+  await act(async () => {
+    await drained.promise;
+  });
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   const starts = fake.calls.filter((call) => call.method === "turn/start");
   expect(starts).toHaveLength(1);

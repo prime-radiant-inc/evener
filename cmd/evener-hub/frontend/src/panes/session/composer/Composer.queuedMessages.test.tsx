@@ -347,15 +347,20 @@ test("image encoding survives a literal-marker recovery merge while storage is p
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
 
     const deliveredInputs: InputItem[][] = [];
+    const delivered = deferred<void>();
     fake.on("turn/start", (params) => {
       deliveredInputs.push(params.input ?? []);
+      delivered.resolve();
       return {
         turn: { id: "image-merge", status: "inProgress", itemsView: "full", items: [] },
         receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    await act(async () => {
+      await delivered.promise;
+    });
+    expect(deliveredInputs).toHaveLength(1);
     expect(deliveredInputs[0]).toEqual([
       { type: "text", text: "(attached image 2: new.png)\n\nliteral [image 1]" },
       { type: "image", mediaType: "image/png", data: "AQID", name: "new.png" },
@@ -676,8 +681,10 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   selectEditorText(screen.getByRole("textbox", { name: "Message" }), restored.getSnapshot().text.length);
   await user.keyboard("revised ");
   const deliveredInputs: InputItem[][] = [];
+  const delivered = deferred<void>();
   fake.on("turn/start", (params) => {
     deliveredInputs.push(params.input ?? []);
+    delivered.resolve();
     return {
       turn: { id: "revision", status: "inProgress", itemsView: "full", items: [] },
       receipt: appliedReceipt(params.clientMutationId, "thread-a"),
@@ -698,7 +705,10 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
     fake.emitStateChange("ready");
     fake.emitReady();
   });
-  await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+  await act(async () => {
+    await delivered.promise;
+  });
+  expect(deliveredInputs).toHaveLength(1);
   expect(deliveredInputs).toEqual([
     [
       {
@@ -1349,7 +1359,9 @@ test("Send cannot race an unobserved secondary recovery consolidation", async ()
     const send = screen.getByRole("button", { name: "Send" });
     expect(send.getAttribute("aria-disabled") === "true" || (send as HTMLButtonElement).disabled).toBe(true);
     await user.click(send);
-    expect(await storage.listOutbox("root")).toEqual([]);
+    await act(async () => {
+      expect(await storage.listOutbox("root")).toEqual([]);
+    });
     await act(async () => hold.release());
     await flushPendingTurnsProjectionForTests();
     expect(source.getSnapshot().text).toBe("first\n\nsecond");
