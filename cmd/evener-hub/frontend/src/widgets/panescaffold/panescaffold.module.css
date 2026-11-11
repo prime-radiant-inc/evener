@@ -87,15 +87,31 @@
    * a horizontal scrollbar. */
   overflow-x: clip;
   padding: var(--space-5);
-  /* End-of-scroll content stays clear of a phone's home-indicator band now
-   * that StackHost's blanket host padding is gone (see that rule's comment):
-   * footer-less panes (welcome, settings, spawn, doc) dock nothing of their
-   * own, so their scroll padding carries the inset. env() is 0 on desktop,
-   * where this resolves to plain --space-4. The inset yields when the on-screen
-   * keyboard covers the home-indicator band (useKeyboardInset's
-   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
-   * full inset when the keyboard is closed and plain --space-5 when open. */
-  padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+  /* The end-of-scroll inset, as a value: end-of-scroll content stays clear of
+   * a phone's home-indicator band now that StackHost's blanket host padding
+   * is gone (see that rule's comment), and the inset yields when the on-screen
+   * keyboard covers the band (useKeyboardInset's --keyboard-inset, 0px
+   * elsewhere): max(0, inset - keyboard) keeps the full inset when the
+   * keyboard is closed. Declared HERE, once, so the phone breakpoint changes
+   * only the value. */
+  --pane-body-edge-inset: calc(
+    var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))
+  );
+}
+
+/* The inset applies only to a body that IS the pane's bottom edge; a slot
+ * below it - the padded footer or the flush edgeFooter - owns the clearance
+ * instead, and an inset here would be a dead band above that surface. Keyed
+ * on position rather than on which slot exists, so every bottom slot,
+ * including a future one, gets it for free. Written as a pair at two-class
+ * specificity so the mobile block's `padding` shorthand cannot reset the
+ * bottom, and placed before .bodyNoScroll below, whose tie later in the file
+ * wins: the cascade's flush body must stay edge to edge. */
+.body:not(:last-child) {
+  padding-bottom: 0;
+}
+.body:last-child {
+  padding-bottom: var(--pane-body-edge-inset);
 }
 
 /* A pane that owns its scrolling internally (the cascade's columns) renders
@@ -113,14 +129,6 @@
   overflow: hidden;
   /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
   overflow: clip;
-}
-
-/* The body's bottom padding is end-of-scroll clearance for the pane's own
- * bottom edge; a docked footer owns that edge, so the clearance would sit
- * there as a dead band between the last row and the footer. (0,3,0) beats
- * both the base and the mobile .body rules. */
-.pane:has(> .footer) > .body {
-  padding-bottom: 0;
 }
 
 .footer {
@@ -160,10 +168,13 @@
   }
 
   /* The phone keeps the tighter edge inset: 24px a side would spend 48px of
-   * a 375px screen on margins. */
+   * a 375px screen on margins. Only the VALUE changes - the rules above still
+   * decide which bodies get it. */
   .body {
     padding: var(--space-4);
-    padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+    --pane-body-edge-inset: calc(
+      var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))
+    );
   }
 
   .footer {
