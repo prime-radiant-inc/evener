@@ -109,6 +109,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
   readonly #acceptedCopyReplays = new Map<string, Promise<void>>();
+  readonly #acceptedCopyReplayAuthority = new Map<string, ReadonlySet<string>>();
 
   constructor(storage: MutationOutboxStorage<A>, options: MutationDispatcherOptions<A>) {
     this.#storage = storage;
@@ -175,15 +176,32 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   async reconcileAcceptedCopies(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
     // Two boundaries (a tracked publication and a repository read) can ask for
     // the same ref in the same step. Each replay is a journal round trip, so
-    // join the one already running instead of asking twice.
+    // join the one already running instead of asking twice. A later caller
+    // whose snapshot proved more records authoritative still needs its pass,
+    // so record the wider set and let the running loop take it next.
     const running = this.#acceptedCopyReplays.get(targetRef);
-    if (running) return running;
-    const replay = this.#reconcileAcceptedCopiesNow(targetRef, authoritativeIds);
+    if (running) {
+      this.#acceptedCopyReplayAuthority.set(targetRef, authoritativeIds);
+      return running;
+    }
+    const replay = this.#reconcileAcceptedCopiesLoop(targetRef, authoritativeIds);
     this.#acceptedCopyReplays.set(targetRef, replay);
     try {
       await replay;
     } finally {
       this.#acceptedCopyReplays.delete(targetRef);
+      this.#acceptedCopyReplayAuthority.delete(targetRef);
+    }
+  }
+
+  async #reconcileAcceptedCopiesLoop(targetRef: string, first: ReadonlySet<string>): Promise<void> {
+    let ids = first;
+    for (;;) {
+      await this.#reconcileAcceptedCopiesNow(targetRef, ids);
+      const next = this.#acceptedCopyReplayAuthority.get(targetRef);
+      this.#acceptedCopyReplayAuthority.delete(targetRef);
+      if (!next || next === ids) return;
+      ids = next;
     }
   }
 

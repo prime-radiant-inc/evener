@@ -253,6 +253,10 @@ export function outboxInput(record: MutationRecord): InputItem[] | undefined {
 
 // The transcript-item half of the reflected-identity rule, shared by the
 // reflected set below and the pending projection's retirement check.
+// A fresh set every call, deliberately: callers that need to test membership
+// against extra identities add to the result (settleConsumedFromModel), so a
+// shared instance would corrupt every later read of the same model. The
+// pending store memoizes its own copy in transcriptIdsFor when it needs one.
 export function transcriptMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set<string>();
   for (const turn of model?.turns ?? []) {

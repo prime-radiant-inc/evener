@@ -7529,9 +7529,13 @@ function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consum
   const consumedIds = new Set(consumed);
   let entry = consumedQueueRows.get(ref);
   for (let index = 0; index < (queue.ids?.length ?? 0); index += 1) {
+    // Test membership on the raw id first: the shared reader canonicalizes the
+    // selection arrays, which is wasted work for a row we do not carry.
+    const clientMutationId = queue.clientMutationIds?.[index];
+    if (!clientMutationId || !consumedIds.has(clientMutationId)) continue;
     const queued = queueEntryAt(queue, index);
-    const { entryId, clientMutationId } = queued;
-    if (!entryId || !clientMutationId || !consumedIds.has(clientMutationId)) continue;
+    const { entryId } = queued;
+    if (!entryId) continue;
     entry ??= { rows: new Map(), list: undefined };
     entry.list = undefined;
     entry.rows.set(entryId, {
