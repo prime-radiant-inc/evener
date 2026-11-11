@@ -21,7 +21,6 @@ export {
   isActivityFailure,
   isFailedDelegateOutcome,
   isFailedJobOutcome,
-  isTurnContainer,
   jobCommandLabel,
   jobStatusDisplay,
   parseActivityJob,

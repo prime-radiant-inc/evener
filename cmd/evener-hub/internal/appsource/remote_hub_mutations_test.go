@@ -659,8 +659,8 @@ func activityMap(t *testing.T, value any, label string) map[string]any {
 // address, and must reach the controller byte-for-byte. The same holds for a
 // key the enclosing node does not declare at all: a delegate-level
 // "transcriptRef" is not a JobActivityDelegate field (its only ref field is
-// childRef), so it survives untouched. The structural refs alongside them must
-// still translate.
+// childRef), and "turns" is no longer a declared container, so both survive
+// untouched. The structural refs alongside them must still translate.
 func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
 	rawTree := map[string]any{
 		"revision": 1,
@@ -721,11 +721,11 @@ func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
 	}
 	turns, ok := delegate["turns"].([]any)
 	if !ok || len(turns) != 1 {
-		t.Fatalf("delegate.turns = %#v, want one turn", delegate["turns"])
+		t.Fatalf("delegate.turns = %#v, want the undeclared payload preserved", delegate["turns"])
 	}
 	turn := activityMap(t, turns[0], "turn 0")
-	if turn["ownerRef"] != "host:child" || turn["transcriptRef"] != "host:child" {
-		t.Errorf("turn refs = %#v, want both translated to host:child", turn)
+	if turn["ownerRef"] != "local:child" || turn["transcriptRef"] != "local:child" {
+		t.Errorf("undeclared turns payload was rewritten: %#v", turn)
 	}
 
 	message := activityMap(t, delegate["message"], "message")

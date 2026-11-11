@@ -2285,7 +2285,6 @@ Underlying Go kind: `struct` (no struct fields).
 | `delegationAllowance` | int | yes |  |
 | `parentWatchGranted` | bool | yes |  |
 | `worktree` | \*[appwire.JobActivityWorktree](#jobactivityworktree) | yes |  |
-| `turns` | [][appwire.JobActivityJob](#jobactivityjob) |  |  |
 | `child` | \*[appwire.JobActivitySession](#jobactivitysession) | yes |  |
 | `branch` | [appwire.JobActivityBranchState](#jobactivitybranchstate) |  |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
