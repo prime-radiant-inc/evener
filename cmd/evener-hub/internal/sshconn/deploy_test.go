@@ -704,9 +704,9 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 // resolver does not depend on `readlink -f`, a GNU/coreutils extension that BSD
 // `readlink` (macOS) rejects with `readlink: illegal option -- f` — the failure
 // that made every darwin/arm64 deploy fail at path resolution. It runs the real
-// resolver under a `readlink` shim emulating the BSD behavior and confirms the
-// legacy form fails under that same shim, so the test embodies the pre-fix
-// failure it guards against.
+// resolver under a `readlink` shim that rejects -f as BSD readlink does and
+// confirms the legacy form fails under that same shim, so the test embodies the
+// pre-fix failure it guards against.
 func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skipf("sh not available: %v", err)

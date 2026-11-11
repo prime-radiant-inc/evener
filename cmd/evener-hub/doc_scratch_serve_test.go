@@ -273,15 +273,9 @@ func TestDocFile_PrefersTheRecordedScratchBaseOverHubDefaults(t *testing.T) {
 func TestDocFile_ServesTheAllocatedCacheBaseOverARetainedTempTree(t *testing.T) {
 	// Not parallel: t.Setenv redirects TMPDIR and XDG_CACHE_HOME, which name
 	// this process's own scratch bases, for the duration of the test.
-	cacheBase, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	cacheBase := testfs.CanonicalTempDir(t)
 	t.Setenv("XDG_CACHE_HOME", cacheBase)
-	tempBase, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	tempBase := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tempBase)
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-docs-0000000000")

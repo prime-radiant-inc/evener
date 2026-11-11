@@ -157,10 +157,11 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 }
 
 // endpointConfigPath is shared by publication and inspection. An existing file
-// is named by its canonical path, resolved from the owning process's physical
-// cwd: the kernel resolves a relative path's .. from there, while Abs would
-// clean symlink/.. lexically, or against a symlinked $PWD, into a different file.
-// The cwd is joined without cleaning so EvalSymlinks sees every component.
+// is named by its canonical path, resolved as the kernel opens it: a relative
+// path's .. follows the physical parent of the owning process's cwd, while Abs
+// would clean symlink/.. lexically, or against a symlinked $PWD, into a
+// different file. Joining without cleaning lets EvalSymlinks resolve each
+// component, the cwd's symlinks included, before any .. after it.
 func endpointConfigPath(path string, exists bool) (string, error) {
 	if !exists {
 		return filepath.Abs(path)
@@ -170,11 +171,7 @@ func endpointConfigPath(path string, exists bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		physical, err := filepath.EvalSymlinks(cwd)
-		if err != nil {
-			return "", err
-		}
-		path = physical + string(filepath.Separator) + path
+		path = cwd + string(os.PathSeparator) + path
 	}
 	return filepath.EvalSymlinks(path)
 }
