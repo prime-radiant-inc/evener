@@ -152,3 +152,29 @@ func TestModelsListNoteColumnAlignsOnEveryRowKind(t *testing.T) {
 		}
 	}
 }
+
+// A bare model id resolves on the default instance, so inspect discovers that
+// instance's live listing too: bare and qualified refs report the same window.
+func TestModelsInspectBareRefUsesDefaultInstanceListing(t *testing.T) {
+	modelsTestEnv(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "default = \"gw\"\n[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + gatewayModelsServer(t, 524288) + "\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	window := func(ref string) any {
+		var stdout, stderr bytes.Buffer
+		if err := runModels([]string{"inspect", ref}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("inspect %s: %v (%s)", ref, err, stderr.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out["caps"].(map[string]any)["context_window"]
+	}
+	if qualified, bare := window("gw/wide"), window("wide"); qualified != float64(524288) || bare != qualified {
+		t.Fatalf("qualified window %v, bare window %v, want the listed 524288 for both", qualified, bare)
+	}
+}

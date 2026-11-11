@@ -252,7 +252,14 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	instance, _, _ := strings.Cut(fs.Arg(0), "/")
+	// A bare model id resolves on the default instance, so that is the
+	// instance whose listing applies.
+	instance := registry.ParseRef(fs.Arg(0)).Instance
+	if instance == "" {
+		if def, _, err := r.DefaultInstance(); err == nil {
+			instance = def
+		}
+	}
 	liveListing := "unavailable"
 	if applyLiveListing(r, instance) {
 		liveListing = "applied"

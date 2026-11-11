@@ -23,7 +23,9 @@ func modelsTestEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("EVENER_OFFLINE", "1")
-	for _, v := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENAI_BASE_URL", "OLLAMA_HOST", "OLLAMA_BASE_URL"} {
+	// No provider credential or endpoint variable of the developer's shell may
+	// reach a fixture: a configured instance would make list/inspect dial it.
+	for _, v := range curatedProviderEnvVars(t) {
 		t.Setenv(v, "")
 		os.Unsetenv(v)
 	}
