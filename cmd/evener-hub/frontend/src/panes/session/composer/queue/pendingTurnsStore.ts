@@ -490,6 +490,7 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
 export function usePendingMessages(ref: string): PendingMessage[] {
   const model = useThreadsStore((state) => state.threads.get(ref));
   const mutationStateAuthoritative = useThreadsStore((state) => state.mutationAuthorityRefs.has(ref));
+  const mutationSnapshotCurrent = useThreadsStore((state) => state.mutationSnapshotRefs.has(ref));
   useEffect(() => {
     for (const id of transcriptIdsFor(model)) deliveredHere.add(id);
   }, [model]);
@@ -504,6 +505,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     model: ThreadsPortModel;
     ref: string;
     mutationStateAuthoritative: boolean;
+    mutationSnapshotCurrent: boolean;
     rows: PendingMessage[];
   } | null>(null);
   const getSnapshot = useCallback((): PendingMessage[] => {
@@ -518,7 +520,8 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       cached.submittedHere === submittedHere &&
       cached.model === model &&
       cached.ref === ref &&
-      cached.mutationStateAuthoritative === mutationStateAuthoritative
+      cached.mutationStateAuthoritative === mutationStateAuthoritative &&
+      cached.mutationSnapshotCurrent === mutationSnapshotCurrent
     ) {
       return cached.rows;
     }
@@ -532,6 +535,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       deliveredHere,
       transcriptIds,
       mutationStateAuthoritative,
+      mutationSnapshotCurrent,
       submittedHere,
       isOwnMutationRecord,
     });
@@ -544,10 +548,11 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       model,
       ref,
       mutationStateAuthoritative,
+      mutationSnapshotCurrent,
       rows: result,
     };
     return result;
-  }, [ref, mutationStateAuthoritative]);
+  }, [ref, mutationStateAuthoritative, mutationSnapshotCurrent]);
 
   return useSyncExternalStore(subscribe, getSnapshot);
 }

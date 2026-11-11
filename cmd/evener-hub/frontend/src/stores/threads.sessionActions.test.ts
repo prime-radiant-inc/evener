@@ -384,6 +384,59 @@ test("an authoritative hydration keeps the confirmed queue lineage on the retain
   storage.close();
 });
 
+test("an authoritative hydration retires an absent retained queue source", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued" }] },
+  });
+  await storage.markAttempted("m1");
+  expect(await storage.settleReceipt("m1", "pending", ["q1"])).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2 },
+        pendingMutations: [],
+      },
+      turns: [
+        {
+          id: "turn_replacement",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_replacement",
+              turnId: "turn_replacement",
+              type: "userMessage",
+              text: "queued",
+              clientMutationId: "replacement",
+              version: 1,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  fake.on("turn/queue", (params) => ({
+    receipt: { ...mutationReceipt(params.clientMutationId), projectionState: "removed" },
+  }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1")) === undefined);
+
+  expect(await storage.getOptimistic("m1")).toBeUndefined();
+  storage.close();
+});
+
 test("queue evidence keeps the accepted display copy without settling it", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
   setMutationStorageForTests(storage);

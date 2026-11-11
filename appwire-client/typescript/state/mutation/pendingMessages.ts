@@ -117,6 +117,9 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   // The model's queue and pending mutations are current durable authority, not
   // a saved or partial snapshot.
   mutationStateAuthoritative?: boolean;
+  // This model is still the one a successfully published authoritative
+  // hydration produced. A queue-only frame clears it until the next snapshot.
+  mutationSnapshotCurrent?: boolean;
   submittedHere?: ReadonlyMap<string, number>;
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean;
 }
@@ -496,9 +499,11 @@ function deliveredSourceRow<A extends MutationAttachmentRef>(
   queueKnown: boolean,
   pendingKnown: boolean,
   mutationStateAuthoritative: boolean,
+  mutationSnapshotCurrent: boolean,
   deliveredAny: boolean,
 ): boolean {
-  if (!deliveredAny || !queueKnown || !pendingKnown || !mutationStateAuthoritative) return false;
+  if (!deliveredAny || !queueKnown || !pendingKnown || !mutationStateAuthoritative || !mutationSnapshotCurrent)
+    return false;
   // Only the original queue command is a source. A promotion or drain owns the
   // queue entry it consumed, so its own accepted copy must stay until the
   // transcript records that mutation.
@@ -526,6 +531,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const pendingKnown = model?.pendingMutations !== undefined;
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
+  const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
 
   const families = new Map<string, LocalFamily<A>>();
   const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
@@ -769,6 +775,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
           queueKnown,
           pendingKnown,
           mutationStateAuthoritative,
+          mutationSnapshotCurrent,
           deliveredAny,
         ),
     )
