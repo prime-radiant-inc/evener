@@ -9,12 +9,14 @@
 package testredundancy
 
 import (
+	"cmp"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
 	"io"
+	"maps"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -42,11 +44,13 @@ type blockKey struct {
 	startLine, startCol, endLine, endCol int
 }
 
-// Profile is one parsed coverage profile: every block it lists and whether
-// the run reached it.
+// Profile is one parsed coverage profile: the blocks the run reached, with
+// their statement counts, and the statement total of every block it lists.
+// Only reached blocks are kept, so a thousand single-test profiles of a large
+// package stay small.
 type Profile struct {
-	stmts   map[blockKey]int
-	covered map[blockKey]bool
+	covered map[blockKey]int
+	total   int
 }
 
 // ParseProfile reads a Go coverage profile through covstmt, the repo's one
@@ -56,12 +60,11 @@ func ParseProfile(r io.Reader) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	p := Profile{stmts: make(map[blockKey]int, len(blocks)), covered: make(map[blockKey]bool)}
+	p := Profile{covered: map[blockKey]int{}}
 	for _, b := range blocks {
-		k := blockKey{b.File, b.StartLine, b.StartCol, b.EndLine, b.EndCol}
-		p.stmts[k] = b.StmtCount
+		p.total += b.StmtCount
 		if b.Covered {
-			p.covered[k] = true
+			p.covered[blockKey{b.File, b.StartLine, b.StartCol, b.EndLine, b.EndCol}] = b.StmtCount
 		}
 	}
 	return p, nil
@@ -82,61 +85,56 @@ func LoadProfile(path string) (Profile, error) {
 }
 
 // Total is the number of statements the profile lists.
-func (p Profile) Total() int {
-	n := 0
-	for _, s := range p.stmts {
-		n += s
-	}
-	return n
-}
+func (p Profile) Total() int { return p.total }
 
 // Covered is the number of statements the run reached.
 func (p Profile) Covered() int {
 	n := 0
-	for k := range p.covered {
-		n += p.stmts[k]
+	for _, stmts := range p.covered {
+		n += stmts
 	}
 	return n
 }
 
-func (p Profile) ref(k blockKey) BlockRef {
-	return BlockRef{File: k.file, StartLine: k.startLine, StartCol: k.startCol, EndLine: k.endLine, EndCol: k.endCol, Stmts: p.stmts[k]}
-}
-
-// coveredMinus lists the blocks p reached that none of others reached, in
-// position order, with their statement total.
-func (p Profile) coveredMinus(others ...Profile) ([]BlockRef, int) {
+// coveredWhere lists, in position order, the reached blocks keep accepts, with
+// their statement total.
+func (p Profile) coveredWhere(keep func(blockKey) bool) ([]BlockRef, int) {
 	var refs []BlockRef
 	total := 0
-	for k := range p.covered {
-		if slices.ContainsFunc(others, func(o Profile) bool { return o.covered[k] }) {
+	for k, stmts := range p.covered {
+		if !keep(k) {
 			continue
 		}
-		refs = append(refs, p.ref(k))
-		total += p.stmts[k]
+		refs = append(refs, BlockRef{File: k.file, StartLine: k.startLine, StartCol: k.startCol, EndLine: k.endLine, EndCol: k.endCol, Stmts: stmts})
+		total += stmts
 	}
-	sortRefs(refs)
+	slices.SortFunc(refs, func(a, b BlockRef) int {
+		return cmp.Or(
+			strings.Compare(a.File, b.File),
+			cmp.Compare(a.StartLine, b.StartLine),
+			cmp.Compare(a.StartCol, b.StartCol),
+			cmp.Compare(a.EndLine, b.EndLine),
+			cmp.Compare(a.EndCol, b.EndCol),
+		)
+	})
 	return refs, total
 }
 
-func sortRefs(refs []BlockRef) {
-	sort.Slice(refs, func(i, j int) bool {
-		a, b := refs[i], refs[j]
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		if a.StartLine != b.StartLine {
-			return a.StartLine < b.StartLine
-		}
-		return a.StartCol < b.StartCol
+// coveredMinus lists the blocks p reached and other did not.
+func (p Profile) coveredMinus(other Profile) ([]BlockRef, int) {
+	return p.coveredWhere(func(k blockKey) bool {
+		_, hit := other.covered[k]
+		return !hit
 	})
 }
 
-// Unique is what one candidate test alone reaches in its package.
+// Unique is what one candidate test alone reaches in its package, and how
+// many assertions it makes (see Assertions).
 type Unique struct {
-	Name   string
-	Stmts  int
-	Blocks []BlockRef
+	Name       string
+	Stmts      int
+	Blocks     []BlockRef
+	Assertions int
 }
 
 // UniqueCoverage reports, for each candidate, the statements it reaches that
@@ -144,20 +142,19 @@ type Unique struct {
 // candidate reaches. Rows come back fewest unique statements first, then by
 // name: the head of the list is what can go without lowering coverage.
 func UniqueCoverage(candidates map[string]Profile, rest Profile) []Unique {
-	names := make([]string, 0, len(candidates))
-	for name := range candidates {
-		names = append(names, name)
+	reachedBy := map[blockKey]int{}
+	for _, p := range candidates {
+		for k := range p.covered {
+			reachedBy[k]++
+		}
 	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(candidates))
 	out := make([]Unique, 0, len(names))
 	for _, name := range names {
-		others := []Profile{rest}
-		for _, other := range names {
-			if other != name {
-				others = append(others, candidates[other])
-			}
-		}
-		blocks, stmts := candidates[name].coveredMinus(others...)
+		blocks, stmts := candidates[name].coveredWhere(func(k blockKey) bool {
+			_, inRest := rest.covered[k]
+			return !inRest && reachedBy[k] == 1
+		})
 		out = append(out, Unique{Name: name, Stmts: stmts, Blocks: blocks})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Stmts < out[j].Stmts })
@@ -178,15 +175,10 @@ type Pair struct {
 // Pairs are ordered by containment, then assertion similarity: a pair at 1 and
 // 1 runs the same code and checks the same things.
 func RankPairs(cov map[string]Profile, asserts map[string][]string) []Pair {
-	names := make([]string, 0, len(cov))
-	for name := range cov {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(cov))
 
 	// Blocks become bit positions so each pair costs a few hundred word ANDs.
 	index := map[blockKey]int{}
-	sets := make([][]uint64, len(names))
 	for _, name := range names {
 		for k := range cov[name].covered {
 			if _, ok := index[k]; !ok {
@@ -195,15 +187,18 @@ func RankPairs(cov map[string]Profile, asserts map[string][]string) []Pair {
 		}
 	}
 	words := (len(index) + 63) / 64
-	counts := make([]int, len(names))
+	sets := make([][]uint64, len(names))
+	assertSets := make([]map[string]bool, len(names))
 	for i, name := range names {
-		set := make([]uint64, words)
+		sets[i] = make([]uint64, words)
 		for k := range cov[name].covered {
 			bit := index[k]
-			set[bit/64] |= 1 << (bit % 64)
+			sets[i][bit/64] |= 1 << (bit % 64)
 		}
-		sets[i] = set
-		counts[i] = len(cov[name].covered)
+		assertSets[i] = map[string]bool{}
+		for _, a := range asserts[name] {
+			assertSets[i][a] = true
+		}
 	}
 
 	var pairs []Pair
@@ -217,14 +212,14 @@ func RankPairs(cov map[string]Profile, asserts map[string][]string) []Pair {
 				continue
 			}
 			small, big := i, j
-			if counts[j] < counts[i] {
+			if len(cov[names[j]].covered) < len(cov[names[i]].covered) {
 				small, big = j, i
 			}
 			pairs = append(pairs, Pair{
 				Removable:        names[small],
 				Keeper:           names[big],
-				Containment:      float64(shared) / float64(counts[small]),
-				AssertSimilarity: jaccard(asserts[names[i]], asserts[names[j]]),
+				Containment:      float64(shared) / float64(len(cov[names[small]].covered)),
+				AssertSimilarity: jaccard(assertSets[i], assertSets[j]),
 			})
 		}
 	}
@@ -237,26 +232,18 @@ func RankPairs(cov map[string]Profile, asserts map[string][]string) []Pair {
 	return pairs
 }
 
-func jaccard(a, b []string) float64 {
-	if len(a) == 0 && len(b) == 0 {
-		return 0
-	}
-	inA := map[string]bool{}
-	for _, s := range a {
-		inA[s] = true
-	}
-	union := map[string]bool{}
+func jaccard(a, b map[string]bool) float64 {
 	shared := 0
-	for _, s := range b {
-		if inA[s] && !union[s] {
+	for s := range a {
+		if b[s] {
 			shared++
 		}
-		union[s] = true
 	}
-	for s := range inA {
-		union[s] = true
+	union := len(a) + len(b) - shared
+	if union == 0 {
+		return 0
 	}
-	return float64(shared) / float64(len(union))
+	return float64(shared) / float64(union)
 }
 
 // failureCalls are the testing.TB methods that fail a test.

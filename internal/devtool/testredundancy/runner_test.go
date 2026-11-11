@@ -140,7 +140,7 @@ func mapsEqual(a, b map[string]Status) bool {
 // candidate alone reaches: a duplicate reaches nothing the rest does not, and
 // two candidates that share a branch each keep only their own.
 func TestUniqueFindsWhatOnlyEachCandidateReaches(t *testing.T) {
-	r, _ := fixtureRunner(t)
+	r, dir := fixtureRunner(t)
 	report, err := r.Unique(t.Context(), []string{"TestAbsNegative", "TestSignZero", "TestSignPositiveUnchecked"})
 	if err != nil {
 		t.Fatalf("Unique: %v", err)
@@ -161,9 +161,13 @@ func TestUniqueFindsWhatOnlyEachCandidateReaches(t *testing.T) {
 			t.Errorf("%s unique = %+v, want its one return statement", name, u)
 			continue
 		}
-		if file := r.DisplayFile(u.Blocks[0].File); file != filepath.Join(r.PkgDir, "calc.go") {
+		if file := r.DisplayFile(u.Blocks[0].File); file != filepath.Join(dir, "calc.go") {
 			t.Errorf("%s block file displays as %q, want the package-relative source file", name, file)
 		}
+	}
+	if got["TestSignZero"].Assertions <= got["TestSignPositiveUnchecked"].Assertions {
+		t.Errorf("the checked test reports %d assertions and the unchecked one %d",
+			got["TestSignZero"].Assertions, got["TestSignPositiveUnchecked"].Assertions)
 	}
 	if got["TestSignZero"].Blocks[0] == got["TestSignPositiveUnchecked"].Blocks[0] {
 		t.Errorf("both candidates claim the same unique block: %+v", got["TestSignZero"].Blocks[0])

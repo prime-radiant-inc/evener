@@ -43,22 +43,40 @@ type MutationResult struct {
 
 // LoadMutations reads a JSON array of mutations.
 func LoadMutations(path string) ([]Mutation, error) {
+	return loadJSON[[]Mutation](path)
+}
+
+// LoadMutationResults reads the results WriteMutationResults wrote.
+func LoadMutationResults(path string) ([]MutationResult, error) {
+	return loadJSON[[]MutationResult](path)
+}
+
+// WriteMutationResults writes results as the JSON proof reads.
+func WriteMutationResults(path string, results []MutationResult) error {
+	data, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func loadJSON[T any](path string) (T, error) {
+	var v T
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return v, err
 	}
-	var muts []Mutation
-	if err := json.Unmarshal(data, &muts); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return v, fmt.Errorf("%s: %w", path, err)
 	}
-	return muts, nil
+	return v, nil
 }
 
 // Mutate applies each mutation alone, runs the tests it selects, and restores
 // the file with a file-scoped git restore before the next. Restoring discards
 // uncommitted work, so it refuses a mutation of a file git reports modified.
 func (r *Runner) Mutate(ctx context.Context, muts []Mutation) ([]MutationResult, error) {
-	bin := filepath.Join(r.CacheDir, "build", "mutant.test")
+	bin := filepath.Join(r.cacheDir, "build", "mutant.test")
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		return nil, err
 	}
@@ -68,7 +86,7 @@ func (r *Runner) Mutate(ctx context.Context, muts []Mutation) ([]MutationResult,
 		if err != nil {
 			return results, fmt.Errorf("mutation %s: %w", m.Name, err)
 		}
-		_, _ = fmt.Fprintf(r.Log, "%s: %s %s\n", m.Name, res.Outcome, strings.Join(res.Failed, " "))
+		_, _ = fmt.Fprintf(r.log, "%s: %s %s\n", m.Name, res.Outcome, strings.Join(res.Failed, " "))
 		results = append(results, res)
 	}
 	return results, nil
@@ -102,28 +120,22 @@ func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res Mut
 		}
 	}()
 
-	build := exec.CommandContext(ctx, "go", "test", "-c", "-o", bin, ".")
-	build.Dir = r.absDir
-	if out, berr := build.CombinedOutput(); berr != nil {
-		res.Detail = "does not build: " + firstError(out)
+	if berr := r.goTestBuild(ctx, bin); berr != nil {
+		if !errors.Is(berr, errBuild) {
+			return res, berr
+		}
+		res.Detail = berr.Error()
 		return res, nil
 	}
-	run := exec.CommandContext(ctx, bin, "-test.count=1", "-test.timeout="+r.TestTimeout.String(), "-test.run="+m.Run)
-	run.Dir = r.absDir
-	out, runErr := run.CombinedOutput()
-	if ctx.Err() != nil {
-		return res, ctx.Err()
+	run, err := r.runBinary(ctx, bin, "", testTimeout, "-test.run="+m.Run)
+	if err != nil {
+		return res, err
 	}
-	var exit *exec.ExitError
 	switch {
-	case runErr != nil && !errors.As(runErr, &exit):
-		return res, runErr
-	case runErr != nil:
+	case run.exitErr:
 		res.Outcome = OutcomeCaught
-		for _, match := range failLine.FindAllSubmatch(out, -1) {
-			res.Failed = append(res.Failed, string(match[1]))
-		}
-	case bytes.Contains(out, noTestsRun):
+		res.Failed = run.failed
+	case run.noTests:
 		res.Detail = "no test matches " + m.Run
 	default:
 		res.Outcome = OutcomeSurvived
@@ -139,15 +151,4 @@ func (r *Runner) git(ctx context.Context, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, stderrOf(err))
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// firstError is the first line of go build output that is not a "# package"
-// header.
-func firstError(out []byte) string {
-	for line := range strings.Lines(string(out)) {
-		if !strings.HasPrefix(line, "#") {
-			return strings.TrimSpace(line)
-		}
-	}
-	return ""
 }

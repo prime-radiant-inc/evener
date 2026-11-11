@@ -6,14 +6,12 @@ package dev
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -55,8 +53,8 @@ selects.
 
 Flags common to every command:
   -pkg DIR     the package directory (required)
-  -cache DIR   the profile cache (default: the user cache dir's
-               evener/test-redundancy)
+  -cache DIR   the profile cache (default: evener-test-redundancy under
+               GOCACHE)
 `
 
 func testRedundancyMain(args []string) int {
@@ -91,69 +89,55 @@ func testRedundancyRun(ctx context.Context, args []string, stdout, stderr io.Wri
 		_, _ = fmt.Fprintf(stderr, "test-redundancy %s: %s\n", command, msg)
 		return 2
 	}
-	if *pkg == "" || fs.NArg() > 0 {
-		return usageErr("-pkg is required and no positional arguments are taken")
+	required, known := map[string][]string{
+		"profile": {"tests"},
+		"unique":  {"tests"},
+		"pairs":   {"tests"},
+		"cover":   {"o"},
+		"mutate":  {"spec", "o"},
+		"proof":   {"before", "after"},
+	}[command]
+	if !known {
+		return usageErr("unknown command")
 	}
-	if *cache == "" {
-		dir, err := os.UserCacheDir()
-		if err != nil {
-			return usageErr("no -cache and no user cache dir: " + err.Error())
+	for _, name := range append(required, "pkg") {
+		if fs.Lookup(name).Value.String() == "" {
+			return usageErr("-" + name + " is required")
 		}
-		*cache = filepath.Join(dir, "evener", "test-redundancy")
+	}
+	if fs.NArg() > 0 {
+		return usageErr("no positional arguments are taken")
 	}
 	r, err := testredundancy.NewRunner(ctx, *pkg, *cache, stderr)
+	within := true
+	if err == nil {
+		switch command {
+		case "profile", "unique", "pairs":
+			var names []string
+			if names, err = readTestNames(*tests); err != nil {
+				break
+			}
+			switch command {
+			case "profile":
+				err = redundancyProfile(ctx, r, names, stdout)
+			case "unique":
+				err = redundancyUnique(ctx, r, names, stdout)
+			default:
+				err = redundancyPairs(ctx, r, names, *top, stdout)
+			}
+		case "cover":
+			err = redundancyCover(ctx, r, *out, stdout)
+		case "mutate":
+			err = redundancyMutate(ctx, r, *spec, *out)
+		case "proof":
+			within, err = redundancyProof(r, *before, *after, *mutations, *noise, stdout)
+		}
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "test-redundancy: %v\n", err)
 		return 1
 	}
-
-	var run func() error
-	switch command {
-	case "profile", "unique", "pairs":
-		if *tests == "" {
-			return usageErr("-tests is required")
-		}
-		names, err := readTestNames(*tests)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "test-redundancy: %v\n", err)
-			return 1
-		}
-		switch command {
-		case "profile":
-			run = func() error { return redundancyProfile(ctx, r, names, stdout) }
-		case "unique":
-			run = func() error { return redundancyUnique(ctx, r, names, stdout) }
-		default:
-			run = func() error { return redundancyPairs(ctx, r, names, *top, stdout) }
-		}
-	case "cover":
-		if *out == "" {
-			return usageErr("-o is required")
-		}
-		run = func() error { return redundancyCover(ctx, r, *out, stdout) }
-	case "mutate":
-		if *spec == "" || *out == "" {
-			return usageErr("-spec and -o are required")
-		}
-		run = func() error { return redundancyMutate(ctx, r, *spec, *out) }
-	case "proof":
-		if *before == "" || *after == "" {
-			return usageErr("-before and -after are required")
-		}
-		within, err := redundancyProof(r, *before, *after, *mutations, *noise, stdout)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "test-redundancy: %v\n", err)
-			return 1
-		}
-		if !within {
-			return 1
-		}
-		return 0
-	default:
-		return usageErr("unknown command")
-	}
-	if err := run(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "test-redundancy: %v\n", err)
+	if !within {
 		return 1
 	}
 	return 0
@@ -214,10 +198,6 @@ func redundancyUnique(ctx context.Context, r *testredundancy.Runner, names []str
 	if err != nil {
 		return err
 	}
-	asserts, err := testredundancy.Assertions(r.PkgDir)
-	if err != nil {
-		return err
-	}
 	_, _ = fmt.Fprintln(w, "STMTS\tASSERTS\tTEST\tUNIQUE BLOCKS")
 	zero := 0
 	for _, u := range report.Unique {
@@ -229,7 +209,7 @@ func redundancyUnique(ctx context.Context, r *testredundancy.Runner, names []str
 			b.File = r.DisplayFile(b.File)
 			blocks[i] = b.String()
 		}
-		_, _ = fmt.Fprintf(w, "%d\t%d\t%s\t%s\n", u.Stmts, len(asserts[u.Name]), u.Name, strings.Join(blocks, " "))
+		_, _ = fmt.Fprintf(w, "%d\t%d\t%s\t%s\n", u.Stmts, u.Assertions, u.Name, strings.Join(blocks, " "))
 	}
 	_, _ = fmt.Fprintf(w, "\n%d candidates profiled, %d with no unique statements, %d not profiled\n", len(report.Unique), zero, len(report.Failed))
 	writeUnprofiled(w, report.Failed)
@@ -285,11 +265,7 @@ func redundancyMutate(ctx context.Context, r *testredundancy.Runner, spec, out s
 		return err
 	}
 	results, runErr := r.Mutate(ctx, muts)
-	data, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return errors.Join(runErr, err)
-	}
-	return errors.Join(runErr, os.WriteFile(out, append(data, '\n'), 0o644))
+	return errors.Join(runErr, testredundancy.WriteMutationResults(out, results))
 }
 
 func redundancyProof(r *testredundancy.Runner, beforePath, afterPath, mutationsPath string, noise int, w io.Writer) (bool, error) {
@@ -303,12 +279,8 @@ func redundancyProof(r *testredundancy.Runner, beforePath, afterPath, mutationsP
 	}
 	var results []testredundancy.MutationResult
 	if mutationsPath != "" {
-		data, err := os.ReadFile(mutationsPath)
-		if err != nil {
+		if results, err = testredundancy.LoadMutationResults(mutationsPath); err != nil {
 			return false, err
-		}
-		if err := json.Unmarshal(data, &results); err != nil {
-			return false, fmt.Errorf("%s: %w", mutationsPath, err)
 		}
 	}
 	diff := testredundancy.DiffCoverage(before, after, noise)
