@@ -282,10 +282,8 @@ maintain conversation coherence.
 
 ### Why only two layers
 
-Earlier versions had four layers with observation masking (>= 60%) and thinking
-clearing (>= 70%) as gentler precursors to checkpoint. They are gone from every
-strategy because **they bust the prompt cache for all providers**. No strategy
-rewrites a turn before the fold point at any pressure below the trigger.
+No strategy rewrites a turn before the fold point at any pressure below the trigger, because
+in-place rewrites **bust the prompt cache for all providers**.
 
 All major LLM providers use prefix-based prompt caching:
 
@@ -293,18 +291,12 @@ All major LLM providers use prefix-based prompt caching:
 - **OpenAI**: Automatic prefix caching on Responses API (50% discount)
 - **Gemini**: Context caching
 
-Observation masking and thinking clearing modify turns in the middle of the
-conversation history. This changes the content at that position, breaking the cache
-prefix match for everything after. The result:
+An in-place rewrite of an old turn (masking a tool result, clearing thinking) changes the
+content at that position and breaks the cache prefix match for everything after it, which
+costs more than the few hundred tokens it saves. Checkpoint already captures the tool names,
+file paths and exit codes, so nothing is lost by going straight to it.
 
-- **Tokens saved by masking**: ~200-500 per turn (one masked tool result)
-- **Tokens that lose cache benefit**: ~2-5K (all "recent" turns after the masked one)
-- **Net effect**: More expensive, not less
-
-The masked information (tool names, file paths, exit codes) is also captured by the
-checkpoint layer, so skipping straight to checkpoint doesn't lose meaningful context.
-
-The two remaining layers don't have this problem: checkpoint replaces the entire old
+Both layers avoid this problem: checkpoint replaces the entire old
 prefix, and summarize replaces the checkpoint. The old cached prefix is gone regardless.
 
 ### Checkpoint (Layer 1)

@@ -96,6 +96,7 @@ func TestCompactAt_NudgeStaysBelowTheTrigger(t *testing.T) {
 	}{
 		{0, 0.75, 0.74},
 		{70, 0.65, 0.64},
+		{50, 0.45, 0.44},
 	} {
 		s := compactAtSession(t, tc.percent)
 		forcePressureAbove(t, s, tc.silentJust)
@@ -105,6 +106,9 @@ func TestCompactAt_NudgeStaysBelowTheTrigger(t *testing.T) {
 		forcePressureAbove(t, s, tc.nudgeAt)
 		if !s.maybeNudgeSelfCompact(0) {
 			t.Errorf("percent %d: no nudge at %.2f", tc.percent, tc.nudgeAt)
+		}
+		if got := s.contextMgr.Pressure(currentHistory(t, s), 0); got >= s.contextMgr.CheckpointThreshold {
+			t.Errorf("percent %d: nudge pressure %.2f is not before the trigger %.2f", tc.percent, got, s.contextMgr.CheckpointThreshold)
 		}
 	}
 }

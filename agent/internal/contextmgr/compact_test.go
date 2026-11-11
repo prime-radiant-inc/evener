@@ -202,7 +202,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	cm.RecordInputTokens(700, 5)
 
 	// After compaction modifies history, the measurement should reset.
-	// Build a history that's big enough to trigger observation masking.
+	// Build a history that's big enough to trigger compaction.
 	history := makeBigHistory(650)
 	history = append(history,
 		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},

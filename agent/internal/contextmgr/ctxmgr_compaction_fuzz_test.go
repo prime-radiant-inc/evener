@@ -428,7 +428,7 @@ func ctxmgr_manageThresholds(cm *Manager, sel uint8, preserveSel uint8) {
 }
 
 // FuzzCtxmgrSessionLogManageContext drives SessionLogStrategy.ManageContext:
-// masking, thinking clearing, the session-log checkpoint (which replaces the old
+// the session-log checkpoint (which replaces the old
 // prefix with a checkpoint turn built from the session log + original prompt),
 // and LLM summarization on a fault-injected adapter. The session log lives under
 // a t.TempDir sandbox; no real network or process is touched.

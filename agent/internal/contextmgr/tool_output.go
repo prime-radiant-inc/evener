@@ -51,20 +51,9 @@ func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTu
 }
 
 func parseExitCode(shellOutput string) string {
-	// Look for "exit_code=N" (raw shell output) or "exit N" (masked summary format).
+	// Look for "exit_code=N" in the raw shell output.
 	for line := range strings.SplitSeq(shellOutput, "\n") {
-		// Raw format: exit_code=0
 		if _, rest, ok := strings.Cut(line, "exit_code="); ok {
-			end := 0
-			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-				end++
-			}
-			if end > 0 {
-				return rest[:end]
-			}
-		}
-		// Masked format: → exit 0] or "exit 0"
-		if _, rest, ok := strings.Cut(line, "exit "); ok {
 			end := 0
 			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 				end++
