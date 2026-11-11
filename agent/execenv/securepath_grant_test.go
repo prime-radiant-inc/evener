@@ -55,6 +55,12 @@ func TestDenialReasonKindMapping(t *testing.T) {
 	}
 }
 
+// literalGrant is a grant approved for p exactly as spelled: its target is p
+// itself, so the granted operation is refused if p's parent crosses a symlink.
+func literalGrant(p string) invocationGrant {
+	return invocationGrant{path: p, target: p}
+}
+
 func TestGrant_ReadsExactLeafOutsideReadRoots(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newSB(t, sandbox.ModeRestricted)

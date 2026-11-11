@@ -39,12 +39,6 @@ func resolvePolicy(t *testing.T, mode sandbox.Mode, home, cwd string) *sandbox.R
 	return &rp
 }
 
-// literalGrant is a grant approved for p exactly as spelled: its target is p
-// itself, so the granted operation is refused if p's parent crosses a symlink.
-func literalGrant(p string) invocationGrant {
-	return invocationGrant{path: p, target: p}
-}
-
 // realTempDir returns a fresh existing temp directory through its canonical
 // path, so sandbox tests do not accidentally include a host-system symlink such
 // as macOS /var in cases that are not testing symlink refusal.
