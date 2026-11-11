@@ -535,7 +535,7 @@ func skillsFallbackError(resolved string, fallback *skillsRootFallback, err erro
 	if fallback == nil {
 		return err
 	}
-	return fmt.Errorf("skill cache fallback %s is not usable: %w (configured root %s: %v)", resolved, err, fallback.configured, fallback.cause)
+	return fmt.Errorf("skill cache fallback %s is not usable: %w (configured root %s: %w)", resolved, err, fallback.configured, fallback.cause)
 }
 
 // rememberSkillsFallback commits the diagnostic for a fallback that actually
