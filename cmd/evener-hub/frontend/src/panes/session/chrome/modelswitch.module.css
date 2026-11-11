@@ -86,5 +86,5 @@
  * a home-indicator never covers the last option. The Sheet's own .body
  * padding carries the sides. */
 .sheetBody {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--dock-clearance);
 }

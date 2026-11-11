@@ -259,9 +259,8 @@
 
   /* The cascade pane renders flush, and on the phone its column's activity
    * controls are the pane's last tappable row: they own the home-indicator
-   * clearance the composer dock owns elsewhere (the inset yields when the
-   * on-screen keyboard covers the home-indicator band). */
+   * clearance the composer dock owns elsewhere. */
   .column .activityControls {
-    padding-bottom: calc(var(--space-2) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+    padding-bottom: calc(var(--space-2) + var(--dock-clearance));
   }
 }

@@ -879,7 +879,7 @@ describe("resource-backed Rail", () => {
       "",
     );
     const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
-    expect(rule).toContain("padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom))");
+    expect(rule).toContain("padding-bottom: calc(var(--space-2) + var(--dock-clearance))");
   });
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
