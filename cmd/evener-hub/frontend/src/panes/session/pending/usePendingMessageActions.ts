@@ -136,7 +136,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
     setBusy(row.id, true);
     try {
       await threadsStore.getState().promoteQueuedAsSteer(context.ref, row.queueIndex, row.queueEntryId, {
-        text: row.text,
+        text: row.text === "" && row.imageCount > 0 ? row.displayText : row.text,
         skillNames: row.skillNames,
         commandNames: row.commandNames,
       });

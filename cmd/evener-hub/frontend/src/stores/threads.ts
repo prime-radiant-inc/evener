@@ -6449,6 +6449,21 @@ function acceptEntryNotification(
   return accepted;
 }
 
+function withoutConsumedPendingMutations(
+  models: Map<string, ThreadModel> | null,
+  ref: string,
+  consumed: ReadonlySet<string>,
+): Map<string, ThreadModel> | null {
+  const model = models?.get(ref);
+  if (!model?.pendingMutations?.some((pending) => consumed.has(pending.clientMutationId))) return models;
+  const next = new Map(models);
+  next.set(ref, {
+    ...model,
+    pendingMutations: model.pendingMutations.filter((pending) => !consumed.has(pending.clientMutationId)),
+  });
+  return next;
+}
+
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
@@ -6602,6 +6617,14 @@ function handleNotification(n: AnyNotification): void {
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
     if (projected) nextWatchedThreads = projected;
+  }
+  if (n.method === "thread/queueChanged") {
+    const consumed = new Set(validConsumedClientMutationIds(n.params.consumedClientMutationIds));
+    const changedRef = notificationRef(n);
+    if (changedRef && consumed.size > 0) {
+      nextThreads = withoutConsumedPendingMutations(nextThreads, changedRef, consumed);
+      nextWatchedThreads = withoutConsumedPendingMutations(nextWatchedThreads, changedRef, consumed);
+    }
   }
   const publishableThreads = nextThreads;
   const publishableChangedThreads = changedThreads;

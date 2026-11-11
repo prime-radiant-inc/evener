@@ -1647,6 +1647,34 @@ test("a settlement never retires an edited recovery sibling of the settled wire"
   });
 });
 
+test("a retained copy from an edited recovery keeps the frozen original input", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  const originalInput = (queued.payload as { input: InputItem[] }).input;
+  const originalText = originalInput[0]?.text ?? "";
+  await f.storage.markAttempted(queued.clientMutationId);
+  await f.storage.transferToRecovery(queued.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  const edited = await f.storage.updateRecoveryInput(
+    queued.clientMutationId,
+    [{ type: "text", text: "edited after refusal" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+
+  await f.storage.settleApplied(queued.clientMutationId, { retainDisplayCopy: true });
+
+  const optimistic = await f.storage.getOptimistic(queued.clientMutationId);
+  expect((optimistic?.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((optimistic?.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+});
+
 test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {
   const f = fixture();
   const a = await f.storage.enqueueIntent(queuedIntent());

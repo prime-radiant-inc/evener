@@ -84,6 +84,19 @@ type VersionedMutationRecoveryRecord = MutationRecoveryRecord & {
   originalWirePayload?: Record<string, unknown>;
 };
 
+function retainedDisplaySource(subject: MutationRecord): MutationRecord | undefined {
+  if (!("recoveryKind" in subject)) return subject;
+  const recovery = subject as VersionedMutationRecoveryRecord;
+  if ((recovery.compositionRevision ?? 0) === 0) return subject;
+  const original = recovery.originalWirePayload;
+  if (!original || !Array.isArray(original.input)) return undefined;
+  return {
+    ...subject,
+    payload: original,
+    optimisticDisplay: { method: subject.method, input: original.input },
+  };
+}
+
 // A stale row that still holds exactly the composition a refused pane meant to
 // write already preserves it: duplicating it would give the same unsent work
 // two recovery owners.
@@ -1003,10 +1016,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
         const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
-        const retainDisplay = options?.retainDisplayCopy === true && carriesOptimisticInput(subject);
+        const displaySource = options?.retainDisplayCopy === true ? retainedDisplaySource(subject) : undefined;
+        const retainedSource = displaySource && carriesOptimisticInput(displaySource) ? displaySource : undefined;
         const settleOptimisticCopy = async (key: string, deleteWhenMissing: boolean): Promise<void> => {
-          if (retainDisplay) {
-            await requestResult(optimistic.put(acceptedRecord(subject)));
+          if (retainedSource) {
+            await requestResult(optimistic.put(acceptedRecord(retainedSource)));
           } else if (deleteWhenMissing) {
             await requestResult(optimistic.delete(key));
           }

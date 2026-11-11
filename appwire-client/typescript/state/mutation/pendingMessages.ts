@@ -229,6 +229,14 @@ function familyInput<A extends MutationAttachmentRef>(family: LocalFamily<A> | u
   return input.length > 0 ? input : undefined;
 }
 
+function withoutEditedRecovery<A extends MutationAttachmentRef>(
+  family: LocalFamily<A> | undefined,
+): LocalFamily<A> | undefined {
+  return family?.recovery && (family.recovery.compositionRevision ?? 0) > 0
+    ? { ...family, recovery: undefined }
+    : family;
+}
+
 function recoveryRowId(recovery: MutationRecoveryRecord): string {
   const wireId = effectiveWireId(recovery);
   const revision = recovery.compositionRevision ?? 0;
@@ -302,8 +310,7 @@ function rowFromBase<A extends MutationAttachmentRef>(
   pendingById: Map<string, PendingMutation>,
 ): PendingMessage<A> {
   const family = families.get(entry.id);
-  const baseFamily =
-    family?.recovery && (family.recovery.compositionRevision ?? 0) > 0 ? { ...family, recovery: undefined } : family;
+  const baseFamily = withoutEditedRecovery(family);
   const pending = pendingById.get(entry.id);
   const input = pending?.input && pending.input.length > 0 ? pending.input : familyInput(baseFamily);
   const content = input ? inputContent(input) : undefined;
@@ -352,7 +359,7 @@ function mergeQueueContent<A extends MutationAttachmentRef>(
   family: LocalFamily<A> | undefined,
   pending: PendingMutation | undefined,
 ): PendingMessage<A> {
-  const input = pending?.input ?? familyInput(family);
+  const input = pending?.input ?? familyInput(withoutEditedRecovery(family));
   if (input && input.length > 0) {
     const content = inputContent(input);
     return {
@@ -595,6 +602,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         !matchedLocalIds.has(candidate.id) &&
         candidate.method === "queue" &&
         !candidate.queueEntryId &&
+        !(candidate.outbox?.state === "canceled" && candidate.outbox.attempted === false) &&
         candidate.textComplete &&
         normalizedText.get(candidate.id) === rowText &&
         candidate.imageCount === row.imageCount &&

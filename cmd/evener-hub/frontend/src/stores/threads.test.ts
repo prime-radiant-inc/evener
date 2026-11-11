@@ -2176,6 +2176,48 @@ describe("retry-safe mutation outbox integration", () => {
     await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "turn/queue"));
     expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   });
+
+  test("a queue change clears consumed identities from hydrated pendingMutations", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: ["m1"] },
+          pendingMutations: [
+            {
+              clientMutationId: "m1",
+              method: "turn/queue",
+              executionState: "accepted",
+              projectionState: "pending",
+            },
+          ],
+        },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.pendingMutations?.map((pending) => pending.clientMutationId),
+    ).toEqual(["m1"]);
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 2, clientMutationIds: [] },
+        consumedClientMutationIds: ["m1"],
+      },
+    } as AnyNotification);
+    await flushUntil(() => (threadsStore.getState().threads.get("ref_a")?.pendingMutations ?? []).length === 0);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingMutations).toEqual([]);
+  });
 });
 
 test("a new message composed after a saved snapshot can still dispatch", async () => {

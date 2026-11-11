@@ -304,6 +304,23 @@ test("a legacy queue row with complete text merges with its one local queue row"
   expect(rows[0]?.mentions).toEqual([{ kind: "skill", name: "review", offset: 0 }]);
 });
 
+test("a Stop-canceled local row does not absorb an identical legacy queue row", () => {
+  const canceled = local("m1", "turn/queue", "same", { state: "canceled", attempted: false });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["same"],
+      preview: ["same"],
+    },
+  });
+  const rows = project({ model, outbox: [canceled] });
+  expect(rows).toHaveLength(2);
+  expect(rows.some((row) => row.id === "m1" && row.state === "canceled")).toBe(true);
+  expect(rows.some((row) => row.queueEntryId === "q1")).toBe(true);
+});
+
 test("a preview-only legacy row keeps its named skill marker", () => {
   const model = threadModel({
     queue: {
@@ -486,6 +503,25 @@ test("an edited recovery does not attach itself to the original authoritative ro
   expect(rows).toHaveLength(2);
   expect(rows.find((row) => row.id === "m1")?.recovery).toBeUndefined();
   expect(rows.find((row) => row.recovery !== undefined)?.id).not.toBe("m1");
+});
+
+test("an edited recovery's text does not become the queued original's content", () => {
+  const original = local("m1", "turn/queue", "original");
+  const edited = recovery("m1", "rejected", "turn/queue", "edited", { compositionRevision: 1 });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["daemon"],
+      preview: ["daemon"],
+    },
+  });
+  const rows = project({ model, outbox: [original], recovery: [edited] });
+  const originalRow = rows.find((row) => row.id === "m1");
+  expect(originalRow?.text).toBe("original");
+  expect(originalRow?.recovery).toBeUndefined();
 });
 
 test("a refused queue cancellation stays visible as a control failure", () => {

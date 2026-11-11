@@ -22,6 +22,7 @@ type PendingRowIdentity = {
   outbox?: { clientMutationId: string };
   optimistic?: { clientMutationId: string };
   recovery?: { clientMutationId: string };
+  recoveryKind?: string;
 };
 
 // A row is keyed by its wire id, while the composer's activation and the
@@ -43,7 +44,12 @@ export function withoutActiveRecovery<T extends PendingRowIdentity>(
   rows: readonly T[],
   activeRecoveryId: string | undefined,
 ): readonly T[] {
-  return activeRecoveryId === undefined ? rows : rows.filter((row) => !rowMatchesIdentity(row, activeRecoveryId));
+  if (activeRecoveryId === undefined) return rows;
+  return rows.filter((row) =>
+    row.recovery
+      ? row.recovery.clientMutationId !== activeRecoveryId
+      : !(row.recoveryKind !== undefined && row.id === activeRecoveryId),
+  );
 }
 
 // The live-edge arrival counter: bumps when a new pending identity joins the

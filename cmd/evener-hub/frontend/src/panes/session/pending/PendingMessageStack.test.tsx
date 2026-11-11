@@ -1,6 +1,6 @@
-import { formatElapsed } from "@evener/appwire-client";
+import { formatElapsed, type ThreadModel } from "@evener/appwire-client";
 import type { PendingMessage } from "@evener/appwire-client/state/mutation";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { threadsStore } from "../../../stores/threads";
 import { SessionNowContext } from "../liveness";
@@ -79,6 +79,23 @@ test("the composer's active recovery row is not duplicated in the stack", () => 
   expect(screen.queryByTestId("pending-message-stack")).toBeNull();
 });
 
+test("activating an edited recovery keeps the original row with the same wire id", () => {
+  renderStack(
+    [
+      row({ id: "m1", text: "original" }),
+      row({
+        id: "m1:edited:m1:1",
+        text: "edited",
+        recovery: { clientMutationId: "m1" } as PendingMessage["recovery"],
+      }),
+    ],
+    { ...context, activeRecoveryId: "m1" },
+  );
+  const rows = screen.getAllByTestId("pending-message-row");
+  expect(rows).toHaveLength(1);
+  expect(within(rows[0]!).getByTestId("user-bubble").textContent).toContain("original");
+});
+
 test("the active recovery is excluded by its storage key when the row is wire-keyed", () => {
   renderStack(
     [
@@ -121,6 +138,38 @@ test("a daemon queue row with a local display copy removes through the queue ent
     await waitFor(() => expect(cancel).toHaveBeenCalledWith("ref_a", 0, "q1"));
   } finally {
     cancel.mockRestore();
+  }
+});
+
+test("an image-only queue row promotes with its placeholder display", async () => {
+  const previous = threadsStore.getState().threads;
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([
+        [
+          "ref_a",
+          {
+            id: "thr_ref_a",
+            status: { type: "active" },
+            capabilities: { steer: true },
+            queue: { depth: 1, revision: 1 },
+          } as unknown as ThreadModel,
+        ],
+      ]),
+    });
+  });
+  const promote = vi.spyOn(threadsStore.getState(), "promoteQueuedAsSteer").mockResolvedValue(undefined);
+  try {
+    renderStack([row({ queueIndex: 0, queueEntryId: "q1", text: "", displayText: "[image]", imageCount: 1 })], context);
+    fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
+    await waitFor(() =>
+      expect(promote).toHaveBeenCalledWith("ref_a", 0, "q1", expect.objectContaining({ text: "[image]" })),
+    );
+  } finally {
+    promote.mockRestore();
+    act(() => {
+      threadsStore.setState({ threads: previous });
+    });
   }
 });
 
