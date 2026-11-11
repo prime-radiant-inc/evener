@@ -239,11 +239,12 @@
 }
 
 /* The folded row is content-sized, so this slot must report the chrome's
- * intrinsic width. Keep the named container: phone exited/fenced composers
- * still render activity chips in this slot, and those chips compact against
- * it. The width is the 320px status rung plus the session-menu trigger and
- * the gap between them. */
+ * intrinsic width. The chrome's own contained body contributes none, and
+ * contain-intrinsic-inline-size only applies under inline-size containment,
+ * so the folded slot declares it here. The width is the 320px status rung plus
+ * the session-menu trigger and the gap between them. */
 .leading[data-folded="true"] {
+  container-type: inline-size;
   contain-intrinsic-inline-size: 356px;
 }
 
