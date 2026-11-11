@@ -323,12 +323,14 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` means a check failed on the queue's candidate, which is not
-  always your PR: a flaky shared check can drop every PR in the group.
-  Inspect the failed merge-group run to see which candidate failed: when
-  it is another PR's candidate or an unrelated flake, note it on the PR
-  and enqueue again; when it is your candidate, read the failing check,
-  fix the cause, and enqueue again.
+  dropped` names the queue's own removal reason. `failed_checks` means a
+  required check failed in the merge group; that candidate is not always
+  your PR, so read the merge-group failure comment on the PR and re-enqueue
+  when the failed lanes are unrelated to your change or look transient.
+  `checks_timed_out` means the queue gave up waiting: confirm the
+  merge-group run completed green, then re-enqueue the same head. A
+  cancelled group posts no failure comment. Any other reason needs the
+  merge-group run inspected first.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
