@@ -6,22 +6,24 @@ import (
 	"syscall"
 )
 
-// The watcher runs before TestMain so the test process's HOME, git and temp
-// isolation never apply to it, and it exits without running any test.
+// The watcher exits from init, before TestMain and without running any test,
+// so TestMain's HOME, git and temp isolation never apply to it. Package-level
+// variable initializers, including the offline toolchain probe, still run
+// first; the child's environment has no HOME or XDG variables, so they cannot
+// reach the watched fixture files.
 func init() {
 	if os.Getenv(memoryEvalAmbientWatcherEnv) != "1" {
 		return
 	}
-	memoryEvalWatchAmbientReads(os.Args[1:])
-	os.Exit(0)
+	os.Exit(memoryEvalWatchAmbientReads(os.Args[1:]))
 }
 
 // memoryEvalWatchAmbientReads watches each path for IN_OPEN/IN_ACCESS after a
 // positive control proves the watch observes a real read of that path. It
-// prints READY, waits for stdin to close, and exits 1 when any watched fixture
-// file was opened or accessed in between. No mount atime assumption and no
-// product hook.
-func memoryEvalWatchAmbientReads(paths []string) {
+// prints READY, waits for stdin to close, and returns exit status 1 when any
+// watched fixture file was opened or accessed in between. No mount atime
+// assumption and no product hook.
+func memoryEvalWatchAmbientReads(paths []string) int {
 	fd, err := syscall.InotifyInit1(syscall.IN_NONBLOCK | syscall.IN_CLOEXEC)
 	if err != nil {
 		panic(err)
@@ -49,6 +51,7 @@ func memoryEvalWatchAmbientReads(paths []string) {
 	}
 	if n > 0 {
 		fmt.Fprintln(os.Stderr, "ambient fixture file content was opened or accessed")
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
