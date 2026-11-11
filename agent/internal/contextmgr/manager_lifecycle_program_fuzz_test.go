@@ -105,7 +105,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 
 	// Tiny thresholds force the automatic checkpoint and summary layers, on
 	// the smallest window compaction summarizes on.
-	summaryProfile := provider.WithContextWindow(profile, minSummarizingWindow)
+	summaryProfile := withContextWindow(profile, minSummarizingWindow)
 	cm.SetProfile(summaryProfile)
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
@@ -309,7 +309,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	t.Helper()
 	// The summarizer sizes its history budget from the model's window (#4321);
 	// a window this large leaves the full 80k budget these renderings assume.
-	profile = provider.WithContextWindow(profile, 1_000_000)
+	profile = withContextWindow(profile, 1_000_000)
 	input := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("u", 5_100)+token)),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant evidence "+token)),

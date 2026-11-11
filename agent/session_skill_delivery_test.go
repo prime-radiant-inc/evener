@@ -146,7 +146,7 @@ func TestSkillDelivery_MandatoryBudgetFailure(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	// The window admits the first request but not the complete activation.
-	profile := provider.WithContextWindow(newAnthropicProfile("claude-test"), 2000)
+	profile := withContextWindow(newAnthropicProfile("claude-test"), 2000)
 	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(profile))
 	evs, stop := captureEvents(s)
 	_, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil)
@@ -1653,12 +1653,12 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 			return nil
 		},
 	}
-	primaryProfile := WithContextWindow(NewOpenAIProfile("primary"), 200_000)
+	primaryProfile := withContextWindow(NewOpenAIProfile("primary"), 200_000)
 	// The fallback ref carries a different instance prefix so it resolves
 	// through the session resolver (a bare "fallback-b" would WithModel-project
 	// onto the primary and inherit its window); the resolver stamps a strictly
 	// smaller window on the same openai instance.
-	fallbackProfile := WithContextWindow(NewOpenAIProfile("fallback-b"), 64_000)
+	fallbackProfile := withContextWindow(NewOpenAIProfile("fallback-b"), 64_000)
 	if primaryProfile.ContextWindowSize() == 0 || fallbackProfile.ContextWindowSize() == 0 ||
 		fallbackProfile.ContextWindowSize() >= primaryProfile.ContextWindowSize() {
 		t.Fatalf("window fixture broken: primary=%d fallback=%d", primaryProfile.ContextWindowSize(), fallbackProfile.ContextWindowSize())

@@ -783,7 +783,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess := newSession(t, withClient(c), withProfile(WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000)), withDir(dir), withConfig(SessionConfig{}))
+	sess := newSession(t, withClient(c), withProfile(withContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000)), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err := sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
@@ -815,7 +815,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	}
 	c.Register(f)
 
-	sess := newSession(t, withClient(c), withProfile(WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144)), withDir(dir), withConfig(SessionConfig{}))
+	sess := newSession(t, withClient(c), withProfile(withContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144)), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err := sess.ProcessInput(ctx, "describe this image", []ImageAttachment{{

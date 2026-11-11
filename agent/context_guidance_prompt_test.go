@@ -1,19 +1,17 @@
 package agent
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/llm"
 )
 
 // The system prompt's context-length guidance names compact_context only for a
 // session that can call it; a delegate whose tool ceiling excludes it is told
-// only that compaction is automatic. The paragraph is pinned whole per case.
-// Regenerate after a wording change with
+// only that compaction is automatic. The "How you work" section, which holds
+// the guidance, is pinned whole per case. Regenerate after a wording change with
 //
 //	go test ./agent -run 'TestContextLengthGuidanceFollowsTheCompactTool$' -count=1 -update-prompt
 //
@@ -26,32 +24,20 @@ func TestContextLengthGuidanceFollowsTheCompactTool(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var system strings.Builder
-			s := newSession(t, withSteps(func(req llm.Request) llm.Response {
-				for _, msg := range req.Messages {
-					if msg.Role == llm.RoleSystem {
-						system.WriteString(msg.Text())
-					}
-				}
-				return agenttest.FinalResponse("done")
-			}))
+			s := newSession(t)
 			if tc.revoke != "" {
 				s.reg.Remove(tc.revoke)
 				refreshModelFacingCaches(s)
 			}
-			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
-				t.Fatal(err)
+			data, _ := s.buildPromptData(s.env)
+			checkPromptInput(t, "HasTool compact_context", data.HasTool("compact_context"), tc.revoke == "")
+			prompt, warning, _ := s.renderSystemPrompt(s.env)
+			if warning != "" {
+				t.Fatalf("render system prompt: %s", warning)
 			}
-			var paragraph string
-			for p := range strings.SplitSeq(system.String(), "\n\n") {
-				if strings.Contains(p, "because of context length") {
-					paragraph = p
-				}
-			}
-			if paragraph == "" {
-				t.Fatal("system prompt has no context-length guidance")
-			}
-			agenttest.CheckGolden(t, filepath.Join("testdata", "contextguidance", tc.name+".md"), []byte(paragraph+"\n"), *updatePromptGoldens,
+			// Drop the helper's appended framing newline, not rendered content.
+			section := strings.TrimSuffix(systemPromptSection(t, prompt, "## How you work"), "\n")
+			agenttest.CheckGolden(t, filepath.Join("testdata", "contextguidance", tc.name+".md"), []byte(section), *updatePromptGoldens,
 				"Regenerate with `go test ./agent -run 'TestContextLengthGuidanceFollowsTheCompactTool$' -count=1 -update-prompt` and read the diff.")
 		})
 	}

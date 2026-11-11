@@ -1294,7 +1294,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
 	standing := standingRequestTokens(t, dir, profile, SessionConfig{StateDir: t.TempDir()}, "read the big file")
 	window = standing + 15_000
-	profile = WithContextWindow(profile, window)
+	profile = withContextWindow(profile, window)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,

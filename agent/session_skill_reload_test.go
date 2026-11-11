@@ -47,7 +47,7 @@ func newReloadSession(t *testing.T, root string, window int, main, cheap func(ll
 	client.Register(cheapAdapter)
 	profile := WithCheapModel(newAnthropicProfile("claude-test"), "reload-cheap/sum")
 	if window > 0 {
-		profile = WithContextWindow(profile, window)
+		profile = withContextWindow(profile, window)
 	}
 	o := append([]sessionOpt{
 		withClient(client),
@@ -1591,7 +1591,7 @@ func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
 	if got := skillReloadSafetyReserve(window); got != 1024 {
 		t.Fatalf("test setup: reserve at window %d = %d, want 1024", window, got)
 	}
-	s.profile = WithContextWindow(s.profile, window)
+	s.profile = withContextWindow(s.profile, window)
 	if !s.skillReloadReminderFits(content) {
 		t.Fatalf("test setup: the first reminder must fit window %d (used=%d tokens=%d)", window, used, tokens)
 	}

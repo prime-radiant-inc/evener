@@ -214,12 +214,12 @@ func TestWithModelAndCrossProviderRef(t *testing.T) {
 	if same := ant.WithModel("  "); same.Model() != ant.Model() {
 		t.Fatalf("an empty model keeps the active one: %q", same.Model())
 	}
-	// A WithContextWindow override describes one model, so it does not follow
-	// the session to the next one — the new model's row does.
-	pinned := WithContextWindow(mustResolve(t, r, "anthropic/claude-opus-5"), 4096)
+	// A window recorded for one model does not follow the session to the next
+	// one: the new model's row does.
+	pinned := withContextWindow(mustResolve(t, r, "anthropic/claude-opus-5"), 4096)
 	switchedAway := pinned.WithModel("claude-sonnet-4-5")
 	if switchedAway.ContextWindowSize() != mustResolve(t, r, "anthropic/claude-sonnet-4-5").ContextWindowSize() {
-		t.Fatalf("WithModel carried the window override: %d", switchedAway.ContextWindowSize())
+		t.Fatalf("WithModel carried the recorded window: %d", switchedAway.ContextWindowSize())
 	}
 }
 
@@ -248,14 +248,11 @@ func TestWithResolvedReplacesFacts(t *testing.T) {
 	if q.ContextWindowSize() != 272000 || strings.Join(q.ReasoningEffortLevels(), ",") != "low,high" || p.ContextWindowSize() == 272000 {
 		t.Fatalf("WithResolved clones with the new record: %d %v", q.ContextWindowSize(), q.ReasoningEffortLevels())
 	}
-	if WithContextWindow(q, 4096).ContextWindowSize() != 4096 {
-		t.Fatal("WithContextWindow still overrides")
-	}
 	assertTaskListEffortEnum(t, q, []string{"low", "high"})
-	cheap := WithCheapModel(WithContextWindow(p, 4096), "gw/tiny")
+	cheap := WithCheapModel(p, "gw/tiny")
 	kept := cheap.WithResolved(res)
-	if kept.ContextWindowSize() != 4096 || kept.CheapModelRefString() != "gw/tiny" {
-		t.Fatalf("overrides and routing survive WithResolved: %d %q", kept.ContextWindowSize(), kept.CheapModelRefString())
+	if kept.ContextWindowSize() != 272000 || kept.CheapModelRefString() != "gw/tiny" {
+		t.Fatalf("routing survives WithResolved: %d %q", kept.ContextWindowSize(), kept.CheapModelRefString())
 	}
 	if (*Profile)(nil).WithResolved(res) != nil {
 		t.Fatal("nil profile stays nil")

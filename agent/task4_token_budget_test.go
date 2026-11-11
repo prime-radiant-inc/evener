@@ -80,7 +80,7 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 	profile := testOpenAICompatProfile("budget-window-override", "test", 0)
 	resolved := profile.Resolved()
 	resolved.Caps.ContextWindow = new(10_000)
-	profile = provider.WithContextWindow(profile.WithResolved(resolved), 2_000)
+	profile = withContextWindow(profile.WithResolved(resolved), 2_000)
 	req := llm.Request{
 		Provider:            profile.ID(),
 		Model:               profile.Model(),

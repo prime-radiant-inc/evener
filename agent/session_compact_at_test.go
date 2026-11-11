@@ -182,7 +182,7 @@ func TestRequestNearTheWindowRaisesNoContextBudgetWarning(t *testing.T) {
 	c := llm.NewClient()
 	base := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
 	standing := standingRequestTokens(t, dir, base, SessionConfig{StateDir: t.TempDir()}, "hi")
-	profile := WithContextWindow(base, standing*100/90)
+	profile := withContextWindow(base, standing*100/90)
 
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },

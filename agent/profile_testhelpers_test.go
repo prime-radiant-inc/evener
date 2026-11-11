@@ -26,7 +26,6 @@ import (
 var (
 	NewOpenAIProfile            = provider.NewOpenAIProfile
 	WithCheapModel              = provider.WithCheapModel
-	WithContextWindow           = provider.WithContextWindow
 	WithCommunicateOutputSchema = provider.WithCommunicateOutputSchema
 	WithAllowedDecisions        = provider.WithAllowedDecisions
 )
@@ -158,7 +157,7 @@ func newKimiAnthropicProfile(model string) *provider.Profile {
 
 // newOpenAICompatProfile resolves a generic-surface, chat-completions instance
 // by name. The window argument the old constructor took is gone: a row's
-// window is the registry's, and WithContextWindow overrides it.
+// window is the registry's, and withContextWindow overrides it.
 func newOpenAICompatProfile(id, model string, _ int) *provider.Profile {
 	return resolveTestProfile(id, openAICompatInstance(id), model)
 }
@@ -219,13 +218,24 @@ func withWebSearch(p *provider.Profile, on bool) *provider.Profile {
 	return p.WithResolved(res)
 }
 
+// withContextWindow returns a copy of p whose record names an n-token window,
+// the way a live listing does. n <= 0 returns p unchanged.
+func withContextWindow(p *provider.Profile, n int) *provider.Profile {
+	if n <= 0 {
+		return p
+	}
+	res := p.Resolved()
+	res.Caps.ContextWindow = &n
+	return p.WithResolved(res)
+}
+
 // testProfile builds a profile for the given instance and model, with the
 // context window overridden when contextWindow > 0. The common fixture for
 // context-manager, strategy, and transcript tests.
 func testProfile(instance, model string, contextWindow int) *provider.Profile {
 	p := resolveTestProfile(instance, nil, model)
 	if contextWindow > 0 {
-		p = provider.WithContextWindow(p, contextWindow)
+		p = withContextWindow(p, contextWindow)
 	}
 	return p
 }
@@ -254,7 +264,7 @@ func toStringSlice(v any) []string {
 func testOpenAICompatProfile(id, model string, contextWindow int) *provider.Profile {
 	p := newOpenAICompatProfile(id, model, 0)
 	if contextWindow > 0 {
-		p = provider.WithContextWindow(p, contextWindow)
+		p = withContextWindow(p, contextWindow)
 	}
 	return p
 }

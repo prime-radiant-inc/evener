@@ -43,7 +43,7 @@ func tinyWindowResolver(ref string) (*provider.Profile, error) {
 	case "openai":
 		return NewOpenAIProfile(parts[1]), nil
 	case "tiny":
-		return WithContextWindow(NewOpenAIProfile(parts[1]), 100), nil
+		return withContextWindow(NewOpenAIProfile(parts[1]), 100), nil
 	}
 	return nil, nil
 }
@@ -80,7 +80,7 @@ func declaredWindowResolver(ref string) (*provider.Profile, error) {
 	case "openai":
 		return NewOpenAIProfile(parts[1]), nil
 	case "win":
-		return WithContextWindow(NewOpenAIProfile(parts[1]), 4096), nil
+		return withContextWindow(NewOpenAIProfile(parts[1]), 4096), nil
 	}
 	return nil, nil
 }

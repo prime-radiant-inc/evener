@@ -257,7 +257,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 		if ref != "anthropic/claude-opus-4-6" {
 			t.Fatalf("resolver ref = %q, want anthropic/claude-opus-4-6", ref)
 		}
-		return provider.WithContextWindow(newAnthropicProfile("claude-opus-4-6"), 987654), nil
+		return withContextWindow(newAnthropicProfile("claude-opus-4-6"), 987654), nil
 	}
 
 	meta := schema.SessionMeta{

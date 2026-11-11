@@ -293,32 +293,12 @@ func TestWithCheapModel(t *testing.T) {
 	})
 }
 
-func TestWithContextWindow(t *testing.T) {
-	t.Run("nil profile", func(t *testing.T) {
-		if got := WithContextWindow(nil, 100); got != nil {
-			t.Errorf("got non-nil for nil profile")
-		}
-	})
-
-	t.Run("zero or negative", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-5.5")
-		q := WithContextWindow(p, 0)
-		if q.ContextWindowSize() != p.ContextWindowSize() {
-			t.Error("context window changed for n=0")
-		}
-		r := WithContextWindow(p, -5)
-		if r.ContextWindowSize() != p.ContextWindowSize() {
-			t.Error("context window changed for n=-5")
-		}
-	})
-
-	t.Run("valid window", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-5.5")
-		q := WithContextWindow(p, 256000)
-		if q.ContextWindowSize() != 256000 {
-			t.Errorf("ContextWindowSize = %d, want 256000", q.ContextWindowSize())
-		}
-	})
+// withContextWindow returns a copy of p whose record names an n-token window,
+// the way a live listing does.
+func withContextWindow(p *Profile, n int) *Profile {
+	res := p.Resolved()
+	res.Caps.ContextWindow = &n
+	return p.WithResolved(res)
 }
 
 func TestDeepCopyJSONMap(t *testing.T) {

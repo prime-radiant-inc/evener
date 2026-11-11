@@ -18,11 +18,10 @@ type Profile struct {
 	res      registry.Resolved
 	registry *registry.Registry
 
-	toolDefs      []llm.ToolDefinition
-	toolNameMap   map[string]string // canonical → provider-specific
-	docFiles      []string
-	contextWindow int // WithContextWindow override; 0 means the row's
-	cheapModel    string
+	toolDefs    []llm.ToolDefinition
+	toolNameMap map[string]string // canonical → provider-specific
+	docFiles    []string
+	cheapModel  string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
@@ -259,9 +258,6 @@ func (p *Profile) ProjectDocFiles() []string {
 // window instead of running without one (issue #4564); callers that need the
 // fact itself still see 0 here.
 func (p *Profile) ContextWindowSize() int {
-	if p.contextWindow > 0 {
-		return p.contextWindow
-	}
 	if p.res.Caps.ContextWindow != nil {
 		return *p.res.Caps.ContextWindow
 	}
@@ -538,15 +534,14 @@ func (p *Profile) CheapModelRefString() string {
 }
 
 // WithResolved returns a copy carrying a fresh record for the same instance
-// (after a live listing was applied); the window override, the communicate
-// schema, and the cheap-model routing stay. Rebuilding from the record is what
+// (after a live listing was applied); the communicate schema and the
+// cheap-model routing stay. Rebuilding from the record is what
 // resyncs the task_list effort enum to the new ladder.
 func (p *Profile) WithResolved(res registry.Resolved) *Profile {
 	if p == nil {
 		return nil
 	}
 	next := FromResolved(res, p.registry)
-	next.contextWindow = p.contextWindow
 	return next.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 }
 
