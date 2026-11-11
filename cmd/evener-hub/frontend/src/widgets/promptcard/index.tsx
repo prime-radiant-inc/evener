@@ -93,7 +93,6 @@ export function PromptCard({
       ? priorShape.current.height
       : null;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the fold flag is the shape-change trigger; the measured heights live in refs.
   useLayoutEffect(() => {
     const root = rootRef.current;
     const card = cardRef.current;

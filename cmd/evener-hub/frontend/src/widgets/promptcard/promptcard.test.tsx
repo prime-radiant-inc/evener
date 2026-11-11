@@ -272,16 +272,17 @@ test("folding keeps the outgoing height around the card until the animation star
       return height;
     },
   });
-  function TranscriptAbove({ folded }: { folded: boolean }) {
+  // Reads layout in every commit, ahead of the card's own effect.
+  function TranscriptAbove() {
     useLayoutEffect(() => {
       void root?.offsetHeight;
-    }, [folded]);
+    });
     return null;
   }
   function Footer({ folded }: { folded: boolean }) {
     return (
       <>
-        <TranscriptAbove folded={folded} />
+        <TranscriptAbove />
         <LiveCard folded={folded} />
       </>
     );
