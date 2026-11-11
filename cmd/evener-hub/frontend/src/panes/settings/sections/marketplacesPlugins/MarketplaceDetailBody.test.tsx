@@ -289,3 +289,60 @@ test("a directory-source body offers the directory field and no pin row", async 
   await user.click(screen.getByRole("button", { name: "Edit" }));
   expect(screen.getByRole("button", { name: /Local path: \/srv\/mkt/ })).toBeTruthy();
 });
+
+// --- review round: ownership, Escape, and filtering ---
+
+test("a connection change closes the remove confirm and reseeds the editor", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  const { view, props } = renderBody();
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  await user.type(field("Name"), "-draft");
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  expect(screen.getByRole("dialog", { name: "Remove marketplace" })).toBeTruthy();
+
+  // A replacement registration: the open confirm and the draft belonged to the
+  // previous client.
+  const second = connectReadyFakeClient();
+  view.rerender(
+    <>
+      <Toast />
+      <MarketplaceDetailBody {...props} connectionClient={connectionStore.getState().client ?? null} />
+    </>,
+  );
+
+  expect(screen.queryByRole("dialog", { name: "Remove marketplace" })).toBeNull();
+  expect(field("Name").value).toBe("acme");
+  expect(second.calls.filter((call) => call.method === "evener/marketplace/remove")).toHaveLength(0);
+});
+
+test("Escape inside the marketplace body collapses it and marks the key handled", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  const { onCollapse } = renderBody();
+  const parentKeys: boolean[] = [];
+  const listener = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") parentKeys.push(event.defaultPrevented);
+  };
+  document.addEventListener("keydown", listener);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  field("Name").focus();
+  await user.keyboard("{Escape}");
+  document.removeEventListener("keydown", listener);
+
+  expect(onCollapse).toHaveBeenCalled();
+  expect(parentKeys).toEqual([true]);
+});
+
+test("a plugin query filters the body's rows when the marketplace name does not match", async () => {
+  const catalog = {
+    status: "loaded" as const,
+    plugins: [
+      { name: "linter", description: "Lints", category: undefined },
+      { name: "formatter", description: "Formats", category: undefined },
+    ],
+  } as unknown as MarketplaceDetailBodyProps["catalog"];
+  renderBody({ catalog, query: "lint" });
+  expect(screen.getByRole("button", { name: /linter/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /formatter/ })).toBeNull();
+});

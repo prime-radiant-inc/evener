@@ -135,6 +135,9 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   // Marketplace rows and the plugin rows inside them are keyed by name or
   // pair. A marketplace that vanishes (its own remove, or another client's)
   // takes its expansion - and any plugin details opened inside it - with it.
+  // Catalog membership only decides that inside the marketplaces segment: a
+  // plugin stays installed when its marketplace stops listing it, so the
+  // Installed list keeps its own details open by its own disappearance rule.
   useEffect(() => {
     if (marketplaces === null) return;
     const marketplaceNames = new Set(marketplaces.map((m) => m.name));
@@ -142,8 +145,10 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
       const next = new Set([...current].filter((name) => marketplaceNames.has(name)));
       return next.size === current.size ? current : next;
     });
-    setExpandedPair((current) => (current !== null && !marketplaceNames.has(current.marketplace) ? null : current));
-  }, [marketplaces]);
+    if (activeSegment === "marketplaces") {
+      setExpandedPair((current) => (current !== null && !marketplaceNames.has(current.marketplace) ? null : current));
+    }
+  }, [marketplaces, activeSegment]);
 
   /** A marketplace row collapsing takes any plugin details open inside it. */
   function collapseMarketplace(name: string): void {

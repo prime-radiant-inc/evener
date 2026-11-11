@@ -10,6 +10,7 @@
 import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText, marketplaceSourcePin } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
+import type { KeyboardEvent } from "react";
 import { useEffect, useId, useState } from "react";
 import { connectionStore } from "../../../../stores/connection";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
@@ -59,6 +60,9 @@ function lastUpdatedText(seconds: number): string {
 export interface MarketplaceDetailBodyProps {
   /** The body's DOM id, so the row's opener can point here with aria-controls. */
   id: string;
+  /** The filter query: when it matches plugins but not this marketplace's
+   * name, only the matching rows show. */
+  query?: string;
   marketplace: MarketplaceEntry;
   /** The marketplace's catalog cache; absent/loading/error render their own faces. */
   catalog: MarketplaceCatalogEntry | undefined;
@@ -78,6 +82,7 @@ export interface MarketplaceDetailBodyProps {
 
 export function MarketplaceDetailBody({
   id,
+  query = "",
   marketplace,
   catalog,
   isInstalled,
@@ -114,11 +119,14 @@ export function MarketplaceDetailBody({
 
   // The entry is passed in, not looked up: the page mounts this body for the
   // marketplace it has expanded, and a rename or retire arrives as a new prop.
+  // A replacement connection or store owns a different catalog, so the open
+  // confirm and the draft that belonged to the previous owner reset with it -
+  // its confirm would otherwise submit through the replacement client.
   // biome-ignore lint/correctness/useExhaustiveDependencies: identity changes reset the editor, same-name refreshes reconcile below
   useEffect(() => {
     setPendingRemove(false);
     seed(marketplace);
-  }, [marketplace.name]);
+  }, [marketplace.name, connectionClient, store]);
 
   const sourceTouched = marketplaceSourceTouched(baseline, draft);
   const dirty = draft.name.trim() !== baseline.name.trim() || sourceTouched;
@@ -224,10 +232,34 @@ export function MarketplaceDetailBody({
     }
   }
 
-  const rows = catalog?.status === "loaded" ? catalog.plugins : [];
+  const allRows = catalog?.status === "loaded" ? catalog.plugins : [];
+  // A query that names this marketplace shows its whole catalog; a query that
+  // matched some of its plugins shows those rows.
+  const trimmedQuery = query.trim();
+  const nameMatches = trimmedQuery !== "" && marketplace.name.toLowerCase().includes(trimmedQuery.toLowerCase());
+  const rows =
+    trimmedQuery === "" || nameMatches
+      ? allRows
+      : allRows.filter(
+          (p) =>
+            p.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
+            (p.description ?? "").toLowerCase().includes(trimmedQuery.toLowerCase()),
+        );
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    // The removed Sheet closed on Escape itself. Inline, the body owns that:
+    // an unclaimed Escape collapses this marketplace and marks the key
+    // handled, so the Settings pane behind it sees defaultPrevented and stays
+    // open. A nested overlay (the remove confirm) claims its own Escape first.
+    if (event.key === "Escape" && !event.defaultPrevented) {
+      event.preventDefault();
+      onCollapse();
+    }
+  }
 
   return (
-    <div id={id} className={CLASS.body} data-kind="marketplace-detail">
+    // biome-ignore lint/a11y/noStaticElementInteractions: Escape is the keyboard dismissal path for the expanded marketplace, the same contract PluginDetail and OverlayPanel give their own surfaces
+    <div id={id} className={CLASS.body} data-kind="marketplace-detail" onKeyDown={handleKeyDown}>
       <ul aria-label={`${marketplace.name} plugins`} className={CLASS.children}>
         {!catalog || catalog.status === "loading" ? (
           <li>

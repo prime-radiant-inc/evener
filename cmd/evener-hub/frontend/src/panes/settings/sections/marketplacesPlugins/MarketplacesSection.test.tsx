@@ -746,3 +746,41 @@ test("a rename asks the page to move the marketplace's expansion and any open pl
 
   expect(onRenamedMarketplace).toHaveBeenCalledWith("acme-plugins", "acme-renamed");
 });
+
+// --- review round: filter loading, and focus after a marketplace collapse ---
+
+test("a filter that loads an uncached marketplace keeps an open editor and its draft mounted", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
+  fake.on("evener/marketplace/browse", (params) => ({
+    name: params.name,
+    plugins: [{ name: params.name === "acme-plugins" ? "linter" : "formatter" }],
+  }));
+  render(<Harness />);
+  // A's editor holds a draft; B is not cached yet.
+  await user.click(marketplaceToggle("acme-plugins"));
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  const name = screen.getByLabelText("Name") as HTMLInputElement;
+  await user.clear(name);
+  await user.type(name, "acme-draft");
+  // The query matches A and needs B's catalog.
+  await user.type(screen.getByPlaceholderText("Filter marketplaces and plugins…"), "lint");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  });
+
+  expect(screen.getByLabelText("Name")).toBeTruthy();
+  expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("acme-draft");
+});
+
+test("collapsing a marketplace returns focus to its row", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  render(<Harness />);
+  const row = marketplaceToggle("acme-plugins");
+  await user.click(row);
+  await user.click(await screen.findByRole("button", { name: "Hide details" }));
+  expect(document.activeElement).toBe(marketplaceToggle("acme-plugins"));
+});

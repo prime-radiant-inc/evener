@@ -23,7 +23,12 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { handleRowEscape, marketplaceDetailBodyId, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
+import {
+  handleRowEscape,
+  marketplaceDetailBodyId,
+  useMarketplaceRowFocusRehome,
+  usePluginRowFocusRehome,
+} from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MarketplaceDetailBody } from "./MarketplaceDetailBody";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
@@ -90,6 +95,9 @@ export function MarketplacesSection({
   // confirm's own focus restore then loses its opener: the hook returns
   // focus to the row when that happened.
   usePluginRowFocusRehome(pendingInstall, sectionRef);
+  // Collapsing a marketplace - through its row, its Hide details, or Escape -
+  // unmounts the body's focused control; the keyboard returns to its row.
+  useMarketplaceRowFocusRehome(expandedMarketplaces, sectionRef);
 
   const [addOpen, setAddOpen] = useState(false);
   const [kind, setKind] = useState<MarketplaceSourceKind>("url");
@@ -270,61 +278,67 @@ export function MarketplacesSection({
           <li>
             <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one below." />
           </li>
-        ) : trimmedQuery !== "" && filterLoading ? (
-          <li>
-            <Loader label="Loading marketplaces" />
-          </li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (
           <li>
             <EmptyState size="compact" title={`No plugins match "${trimmedQuery}".`} />
           </li>
         ) : (
-          visibleMarketplaces.map((m) => {
-            const isOpen = expandedMarketplaces.has(m.name);
-            return (
-              <li key={m.name} data-marketplace={m.name}>
-                <ListRow
-                  data-kind="marketplace-row"
-                  aria-expanded={isOpen}
-                  aria-controls={isOpen ? marketplaceDetailBodyId(m.name) : undefined}
-                  onKeyDown={(event) => handleRowEscape(event, isOpen, () => toggleMarketplace(m.name))}
-                  label={m.name}
-                  chips={<Chip>{m.source.kind}</Chip>}
-                  meta={marketplaceSourceLabel(m.source)}
-                  onSelect={() => toggleMarketplace(m.name)}
-                />
-                {isOpen && (
-                  <MarketplaceDetailBody
-                    id={marketplaceDetailBodyId(m.name)}
-                    marketplace={m}
-                    catalog={browseCatalogs.get(m.name)}
-                    isInstalled={isInstalled}
-                    installDisabled={hubWriteBusy || pluginsUnavailable}
-                    expandedRow={expanded}
-                    onToggleRow={onToggleRow}
-                    onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
-                    onRenamed={(oldName, newName) => {
-                      // The rename came from this body, so the marketplace
-                      // was expanded; add the new name unconditionally - the
-                      // page's vanish prune can have already dropped the old
-                      // name in the same batch as the list update.
-                      setExpandedMarketplaces((current) => {
-                        const next = new Set(current);
-                        next.delete(oldName);
-                        next.add(newName);
-                        return next;
-                      });
-                      onRenamedMarketplace(oldName, newName);
-                    }}
-                    onCollapse={() => toggleMarketplace(m.name)}
-                    appliedRemovalNames={appliedRemovalNames}
-                    connectionClient={connectionClient}
-                    onAppliedRemoval={onAppliedRemoval}
-                  />
-                )}
+          <>
+            {/* Rows stay mounted while an uncached catalog loads, so an open
+                editor and its draft survive the filter's fetch. */}
+            {trimmedQuery !== "" && filterLoading && (
+              <li>
+                <Loader label="Loading marketplaces" />
               </li>
-            );
-          })
+            )}
+            {visibleMarketplaces.map((m) => {
+              const isOpen = expandedMarketplaces.has(m.name);
+              return (
+                <li key={m.name} data-marketplace={m.name} data-marketplace-row={m.name}>
+                  <ListRow
+                    data-kind="marketplace-row"
+                    aria-expanded={isOpen}
+                    aria-controls={isOpen ? marketplaceDetailBodyId(m.name) : undefined}
+                    onKeyDown={(event) => handleRowEscape(event, isOpen, () => toggleMarketplace(m.name))}
+                    label={m.name}
+                    chips={<Chip>{m.source.kind}</Chip>}
+                    meta={marketplaceSourceLabel(m.source)}
+                    onSelect={() => toggleMarketplace(m.name)}
+                  />
+                  {isOpen && (
+                    <MarketplaceDetailBody
+                      id={marketplaceDetailBodyId(m.name)}
+                      query={trimmedQuery}
+                      marketplace={m}
+                      catalog={browseCatalogs.get(m.name)}
+                      isInstalled={isInstalled}
+                      installDisabled={hubWriteBusy || pluginsUnavailable}
+                      expandedRow={expanded}
+                      onToggleRow={onToggleRow}
+                      onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
+                      onRenamed={(oldName, newName) => {
+                        // The rename came from this body, so the marketplace
+                        // was expanded; add the new name unconditionally - the
+                        // page's vanish prune can have already dropped the old
+                        // name in the same batch as the list update.
+                        setExpandedMarketplaces((current) => {
+                          const next = new Set(current);
+                          next.delete(oldName);
+                          next.add(newName);
+                          return next;
+                        });
+                        onRenamedMarketplace(oldName, newName);
+                      }}
+                      onCollapse={() => toggleMarketplace(m.name)}
+                      appliedRemovalNames={appliedRemovalNames}
+                      connectionClient={connectionClient}
+                      onAppliedRemoval={onAppliedRemoval}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </>
         )}
       </ul>
       {addOpen ? (

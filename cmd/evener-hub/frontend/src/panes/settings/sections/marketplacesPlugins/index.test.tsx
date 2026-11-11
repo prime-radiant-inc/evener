@@ -1301,3 +1301,21 @@ test("an already-installed catalog row expands its details in installed mode", a
   expect(within(details).queryByRole("button", { name: "Install" })).toBeNull();
   await waitFor(() => expect(details.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
 });
+
+// --- review round: catalog membership never closes Installed details ---
+
+test("a marketplace publication that drops the catalog entry leaves an installed plugin's details open", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("button", { name: /linter/ }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+
+  // The catalog stops listing the marketplace, but the plugin stays installed.
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+});
