@@ -125,6 +125,7 @@ func TestMain(m *testing.M) {
 	if err == nil {
 		sharedAgentTempRoot = sharedTempRoot
 	}
+	pinSharedHostProbeEnvironment()
 
 	code := m.Run()
 

@@ -23,7 +23,7 @@ func newTestSessionForState(t *testing.T) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func saveAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(co
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: steps})
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,6 +520,7 @@ func restoreSaved(t *testing.T, dir string, meta schema.SessionMeta, cfg Restore
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	cfg.StateDir = dir
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, cfg)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
