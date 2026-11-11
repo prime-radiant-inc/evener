@@ -614,6 +614,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     row.imageCount = match.imageCount;
     row.skillNames = match.skillNames;
     row.commandNames = match.commandNames;
+    if (row.mentions === undefined) row.mentions = match.mentions;
     row.createdAt = match.createdAt;
     row.fromThisClient = match.fromThisClient;
     row.outbox = match.outbox;

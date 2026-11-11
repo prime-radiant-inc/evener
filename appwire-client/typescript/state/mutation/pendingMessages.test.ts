@@ -288,9 +288,20 @@ test("a legacy queue row with complete text merges with its one local queue row"
       preview: ["hello"],
     },
   });
-  const rows = project({ model, outbox: [local("m1", "turn/queue", "hello")] });
+  const rows = project({
+    model,
+    outbox: [
+      local("m1", "turn/queue", "hello", {
+        optimisticDisplay: {
+          method: "turn/queue",
+          input: [{ type: "text", text: "hello", mentions: [{ kind: "skill", name: "review", offset: 0 }] }],
+        },
+      }),
+    ],
+  });
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
+  expect(rows[0]?.mentions).toEqual([{ kind: "skill", name: "review", offset: 0 }]);
 });
 
 test("a preview-only legacy row keeps its named skill marker", () => {
