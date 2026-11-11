@@ -70,12 +70,10 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 		}
 		wait = n
 	}
-	requestedWait := wait
 	if wait > 0 {
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
-	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
