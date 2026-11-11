@@ -593,15 +593,19 @@ jobs:
           echo "$RESULTS"
           test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
+  # The agent module's race run is split across two runners, agent-1 and
+  # agent-2, each running half of its eight equally weighted shards
+  # (RACE_AGENT_PART); as one unsharded -race binary it was the longest lane.
+  # nonagent runs every other non-root module. `race-modules`, the required
+  # check, passes only when every lane does.
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
     needs: [changes]
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'race-module-shards') }}
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
-        scope: [agent, nonagent]
+        scope: [agent-1, agent-2, nonagent]
         exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_module_shards || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -612,12 +616,23 @@ jobs:
         with:
           go-cache-kind: race-${{ matrix.scope }}
 
+      # Sized to the runner, as race-root's hub lane is: the load-aware
+      # budgets would read a fresh runner's checkout load and start too few.
       - name: Test (race detector — ${{ matrix.scope }})
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        env:
+          SCOPE: ${{ matrix.scope }}
+          AGENT_SHARD_CONCURRENCY: 4
+          AGENT_SHARD_PARALLEL: 3
+        run: |
+          case "$SCOPE" in
+          agent-*) make test-race RACE_SCOPE=agent RACE_AGENT_PART="${SCOPE#agent-}/2" ;;
+          *) make test-race RACE_SCOPE="$SCOPE" ;;
+          esac
 
-      # Agent race tests are unsharded, and the module log has full got/want.
-      - name: Keep failed agent race log
-        if: (failure() || cancelled()) && matrix.scope == 'agent'
+      # Race skips timing capture, so a failed shard's log stays in the
+      # scratch directory the runner keeps; the module log replays it.
+      - name: Keep failed agent race logs
+        if: (failure() || cancelled()) && startsWith(matrix.scope, 'agent-')
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-race-modules-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -626,6 +641,8 @@ jobs:
           path: |
             /dev/shm/evener-module-tests.*/agent.log
             /tmp/evener-module-tests.*/agent.log
+            /dev/shm/evener-module-tests.*/tmp/agent/agent-test-shards.*/shard[0-9]*.log
+            /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/shard[0-9]*.log
 
       - uses: ./.github/actions/go-cache-save
         if: ${{ !cancelled() }}

@@ -50,7 +50,8 @@ func isPackage(dirs ...string) func(string, string) bool {
 // web-browser runs the hub's tests under the browserguard tag through it;
 // static-build's make build compiles the frontend into the hub. The matrix
 // lanes mirror make test's TEST_SCOPE and make test-race's RACE_SCOPE and
-// RACE_ROOT_PART. make fuzz replays the seed corpus in every module.
+// RACE_ROOT_PART, and race-module-shards splits the agent module across two
+// cells by RACE_AGENT_PART. make fuzz replays the seed corpus in every module.
 var catalog = []lane{
 	{job: "web-unit", typeScript: true, runsPackage: isPackage(devBinaryPackage)},
 	{job: "web-browser", typeScript: true, runsPackage: isPackage(hubPackage, devBinaryPackage)},
@@ -62,7 +63,8 @@ var catalog = []lane{
 	{job: "fuzz-checks", goSource: true},
 	{job: "race-root-parts", cell: "hub", runsPackage: isPackage(hubPackage)},
 	{job: "race-root-parts", cell: "rest", runsPackage: func(dir, m string) bool { return m == "." && dir != hubPackage }},
-	{job: "race-module-shards", cell: "agent", runsPackage: inModule("agent")},
+	{job: "race-module-shards", cell: "agent-1", runsPackage: inModule("agent")},
+	{job: "race-module-shards", cell: "agent-2", runsPackage: inModule("agent")},
 	{job: "race-module-shards", cell: "nonagent", runsPackage: outsideModules(".", "agent")},
 	{job: "tests-parts", cell: "root", runsPackage: inModule(".")},
 	{job: "tests-parts", cell: "nonroot", runsPackage: outsideModules(".")},
