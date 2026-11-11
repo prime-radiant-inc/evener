@@ -51,12 +51,13 @@ func (e *TranscriptDisplayPostApplyError) Unwrap() error { return e.Err }
 // transcript-display defaults. Desktop and Mobile revisions advance
 // independently, while one mutex serializes each durable update.
 type TranscriptDisplayStore struct {
-	mu      sync.Mutex
-	fs      afero.Fs
-	root    string
-	state   transcriptDisplaySnapshot
-	loadErr error
-	faults  transcriptDisplayStoreFaults
+	mu          sync.Mutex
+	fs          afero.Fs
+	root        string
+	state       transcriptDisplaySnapshot
+	loadErr     error
+	faults      transcriptDisplayStoreFaults
+	onCommitted func(appwire.TranscriptDisplayChangedParams)
 }
 
 // NewTranscriptDisplayStore opens the transcript-display state below stateRoot.
@@ -99,6 +100,21 @@ func (s *TranscriptDisplayStore) Snapshot() appwire.TranscriptDisplayDefaults {
 	return transcriptDisplaySnapshotDefaults(s.state)
 }
 
+// OnCommitted registers the store's one post-commit sink. It runs after a
+// patch actually advanced a layout's published revision, with the new
+// canonical value, including the post-apply-failure case where the state
+// applied but a follow-up durable step failed. The callback runs after the
+// store unlocks, so it may broadcast. A handler cannot bypass it: the only
+// way to advance a layout is Patch.
+func (s *TranscriptDisplayStore) OnCommitted(fn func(appwire.TranscriptDisplayChangedParams)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onCommitted = fn
+}
+
 // Patch validates and durably updates one layout using optimistic revision
 // checking. A durable error before rename leaves the old state published; an
 // error after rename publishes the new canonical state in memory.
@@ -114,20 +130,27 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.loadErr != nil {
-		return appwire.TranscriptDisplayPatchResponse{}, fmt.Errorf("transcript display state is unavailable: %w", s.loadErr)
+		err := fmt.Errorf("transcript display state is unavailable: %w", s.loadErr)
+		s.mu.Unlock()
+		return appwire.TranscriptDisplayPatchResponse{}, err
 	}
 
 	current := transcriptDisplaySnapshotLayout(s.state, params.Layout)
 	if current.Revision != params.ExpectedRevision {
-		return appwire.TranscriptDisplayPatchResponse{}, transcriptDisplayConflict(params.Layout, current, params.ExpectedRevision)
+		err := transcriptDisplayConflict(params.Layout, current, params.ExpectedRevision)
+		s.mu.Unlock()
+		return appwire.TranscriptDisplayPatchResponse{}, err
 	}
 	if reflect.DeepEqual(current.Config, params.Config) {
-		return transcriptDisplayPatchResponse(params.Layout, current), nil
+		result := transcriptDisplayPatchResponse(params.Layout, current)
+		s.mu.Unlock()
+		return result, nil
 	}
 	if current.Revision == math.MaxUint64 {
-		return appwire.TranscriptDisplayPatchResponse{}, fmt.Errorf("transcript display %s revision overflow", params.Layout)
+		err := fmt.Errorf("transcript display %s revision overflow", params.Layout)
+		s.mu.Unlock()
+		return appwire.TranscriptDisplayPatchResponse{}, err
 	}
 
 	next := cloneTranscriptDisplaySnapshot(s.state)
@@ -135,8 +158,19 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 	updated.Revision++
 	updated.Config = cloneTranscriptDisplayConfig(params.Config)
 	renamed, err := saveTranscriptDisplaySnapshotFS(s.fs, s.root, next, s.faults)
+	var changed appwire.TranscriptDisplayChangedParams
 	if renamed {
 		s.state = next
+		changed = appwire.TranscriptDisplayChangedParams{
+			Layout:   params.Layout,
+			Revision: updated.Revision,
+			Config:   cloneTranscriptDisplayConfig(updated.Config),
+		}
+	}
+	onCommitted := s.onCommitted
+	s.mu.Unlock()
+	if renamed && onCommitted != nil {
+		onCommitted(changed)
 	}
 	if err != nil {
 		if renamed {
