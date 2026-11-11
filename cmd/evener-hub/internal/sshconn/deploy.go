@@ -723,6 +723,10 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 // A sentinel protects command output from shell substitution's removal of all
 // trailing LFs. Strip exactly the command's one framing LF, and refuse pathname
 // LFs before a later substitution could turn them into a different path.
+// evener_link supplies that framing LF itself: BSD readlink omits its trailing
+// LF when the link target already ends in one, which would let a target named
+// "evener<LF>" pass as "evener". A readlink without -n (a minimal busybox)
+// falls back to the plain form, whose LF it always appends.
 const pathValueScript = `evener_path_value() {
   evener_value=$("$@" && printf '.') || return 1
   evener_value=${evener_value%.}
@@ -736,6 +740,7 @@ const pathValueScript = `evener_path_value() {
   printf '%s\n' "$evener_value"
 }
 evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
+evener_link() { readlink -n "$1" 2>/dev/null && printf '\n' || readlink "$1"; }
 `
 
 const resolvePathPrefix = pathValueScript + `evener_resolve() {
@@ -746,7 +751,7 @@ const resolvePathPrefix = pathValueScript + `evener_resolve() {
     [ "$n" -le 40 ] || return 1
     d=$(evener_path_value dirname "$p") || return 1
     d=$(evener_path_value evener_directory "$d") || return 1
-    t=$(evener_path_value readlink "$p") || return 1
+    t=$(evener_path_value evener_link "$p") || return 1
     case $t in
       /*) p=$t ;;
       *) p=$d/$t ;;

@@ -388,7 +388,9 @@ for value in ['0','-1','x','1.5','999999999999999999999999']:
     cases.append(('timeout_'+value,{},['--timeout',value],False,(0,0)))
 failures=[]
 with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SCRATCH_DIR')) as root:
-    root=Path(root)
+    # The script reports physical working directories, so the fixture root is
+    # canonical; macOS temp dirs sit under the /var -> /private/var symlink.
+    root=Path(root).resolve()
     for name, facts, args, success, effects in cases:
         p=root/name; p.mkdir(); (p/'repo/scripts/ops').mkdir(parents=True); (p/'bin').mkdir(); (p/'home').mkdir(); (p/'state/evener').mkdir(parents=True); (p/'config/evener').mkdir(parents=True); (p/'other-state/evener').mkdir(parents=True)
         script=p/'repo/scripts/ops/deploy-hub.sh'; script.write_bytes(source)

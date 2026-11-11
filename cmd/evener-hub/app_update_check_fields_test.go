@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/selfupdate"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func TestHubUpdateCheckReportsOnDiskBuild(t *testing.T) {
@@ -280,7 +281,8 @@ func TestHubUpdateCheckAcceptsCopiedBinEntrypoint(t *testing.T) {
 			UpdateAvailable: true,
 		}, nil
 	})
-	root := t.TempDir()
+	// The install target is derived from the symlink-resolved executable.
+	root := testfs.CanonicalTempDir(t)
 	binDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)

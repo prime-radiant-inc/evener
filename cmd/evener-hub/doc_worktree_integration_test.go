@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
@@ -120,7 +121,9 @@ func newWorktreeDocumentFixture(t *testing.T, scripted ...llm.ProviderAdapter) *
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	t.Cleanup(cancel)
 
-	root := t.TempDir()
+	// A shell child reports its physical cwd, so the fixture root is canonical
+	// for comparing it with the projected working directory.
+	root := testfs.CanonicalTempDir(t)
 	runWorktreeDocumentGit(t, root, "init")
 	runWorktreeDocumentGit(t, root, "config", "user.name", "Evener Test")
 	runWorktreeDocumentGit(t, root, "config", "user.email", "evener-test@example.invalid")
