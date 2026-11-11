@@ -2,22 +2,21 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1440, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pane-body-composer-gap layoutguard harness</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-  /* overflow: hidden keeps the document itself unscrollable: a page scrollbar
-     would narrow the realized viewport and trip the runner's viewport check. */
+  *, *::before, *::after { transition: none !important; animation: none !important; box-sizing: border-box; }
+  /* overflow: hidden keeps the document unscrollable, so a clipped fixture
+     cannot fake a shorter page; the assertion below rejects a page whose
+     content does not fit the viewport either way. */
   html, body { margin: 0; overflow: hidden; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
-  .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 6px; }
+  .fixtures { display: flex; flex-direction: column; gap: 8px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
 
   /* A real PaneScaffold column: fixed header, flexing .body, docked .footer -
-     the same three-sibling shape PaneScaffold.tsx renders, with the card
-     surface the pane draws. Height is fixed so the body gets a real
-     remaining allocation instead of collapsing to its content. */
+     the same sibling shape PaneScaffold.tsx renders. */
   .pane {
     display: flex;
     flex-direction: column;
@@ -26,52 +25,36 @@
     background: var(--surface-0);
   }
 
-  /* The scrolling surface inside the body, the way a transcript fills one:
-     it takes the body's whole content box and scrolls its own rows. Anything
-     this box adds or loses below its last row shows up as a band between that
-     row and whatever docks under the body. */
-  .contentColumn { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .scrollport { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+  /* The transcript's essential contract inside the body: PaneScaffold's .body
+     is a plain block and the transcript fills it by height, then scrolls its
+     own rows (session.module.css .transcriptBody). Whatever the body adds or
+     loses below the last row shows up as a band above the docked footer. */
+  .scrollport { height: 100%; overflow-y: auto; }
   .row { height: 40px; border-bottom: 1px solid var(--edge); }
-  .lastRow {
-    height: 24px;
-    display: flex;
-    align-items: center;
-    color: var(--ink-mid);
-    font-size: var(--font-size-caption);
-  }
+  .lastRow { height: 24px; display: flex; align-items: center; color: var(--ink-mid); font-size: var(--font-size-caption); }
 
-  /* Stand-in for the docked composer; its own height is irrelevant, its top
-     edge is the reference the transcript's last row is measured against. */
+  /* Stand-in for the docked composer: only its top edge is measured. */
   .composerStandIn { height: 64px; }
 </style>
 </head>
 <body data-font-size="m">
-<!-- Reproduces PaneScaffold's rendered column against the REAL scaffold
-     stylesheet: .pane > .header + .body[data-pane-scaffold] + .footer. The
-     transcript is represented by its essential contract - a scroll port that
-     fills the body's content box and scrolls its rows - because the geometry
-     under test belongs to the scaffold, not to the transcript's internals.
-     One fixture docks a footer below the body (the session pane: composer +
-     status row); the other has none (welcome, settings, spawn, doc), which is
-     the case the body's end-of-scroll padding exists for. -->
+<!-- Two fixtures per width: one docks a footer below the body (the session
+     pane: composer + status row), the other has none (welcome, settings,
+     spawn, doc) - the case the body's end-of-scroll inset exists for. -->
 <main class="fixtures"></main>
 <script>
 const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
 
-function paneHtml(id, docked) {
-  const footer = docked
-    ? `<div class="footer" data-footer><div class="composerStandIn"></div></div>`
-    : "";
+function paneHtml(docked) {
+  const rows = '<div class="row"></div>'.repeat(40);
+  const footer = docked ? '<div class="footer" data-footer><div class="composerStandIn"></div></div>' : "";
   return `
     <div class="pane" data-pane="${docked ? "docked" : "footerless"}">
       <div class="header"><h2 class="title">Session</h2></div>
       <div class="body" data-pane-scaffold="session:local:frame">
-        <div class="contentColumn">
-          <div class="scrollport" data-scrollport>
-            <div data-rows></div>
-            <div class="lastRow" data-lastrow>Done in 27s</div>
-          </div>
+        <div class="scrollport" data-scrollport>
+          ${rows}
+          <div class="lastRow" data-lastrow>Done in 27s</div>
         </div>
       </div>
       ${footer}
@@ -87,47 +70,49 @@ for (const spec of fixtures) {
   label.className = "fixtureLabel";
   label.textContent = `${spec.width}px`;
   section.append(label);
-  section.insertAdjacentHTML("beforeend", paneHtml(`docked-${spec.width}`, true));
-  section.insertAdjacentHTML("beforeend", paneHtml(`footerless-${spec.width}`, false));
+  section.insertAdjacentHTML("beforeend", paneHtml(true));
+  section.insertAdjacentHTML("beforeend", paneHtml(false));
   root.append(section);
 }
 
-// Enough rows that every scroll port overflows several times over, so each
-// one settles at a true bottom rather than trivially at a 0px gap.
-for (const rows of document.querySelectorAll("[data-rows]")) {
-  rows.innerHTML = '<div class="row"></div>'.repeat(40);
-}
-for (const port of document.querySelectorAll("[data-scrollport]")) {
-  port.scrollTop = port.scrollHeight;
-}
+// Enough rows that every scroll port overflows several times over, so each one
+// settles at a true bottom rather than trivially at a 0px gap.
+for (const port of document.querySelectorAll("[data-scrollport]")) port.scrollTop = port.scrollHeight;
 
-window.measure = () =>
-  [...document.querySelectorAll(".fixture")].map((fixture) => {
-    const width = Number(fixture.style.width.replace("px", ""));
-    const docked = fixture.querySelector('[data-pane="docked"]');
-    const footerless = fixture.querySelector('[data-pane="footerless"]');
-
-    function read(pane) {
-      const port = pane.querySelector("[data-scrollport]");
-      const body = pane.querySelector("[data-pane-scaffold]");
-      const footer = pane.querySelector("[data-footer]");
-      const portBox = port.getBoundingClientRect();
-      const bodyBox = body.getBoundingClientRect();
-      const lastBox = pane.querySelector("[data-lastrow]").getBoundingClientRect();
-      return {
-        // The band the reader sees: empty space below the last row, up to the
-        // surface that follows the body.
-        gapToFollowing: (footer ? footer.getBoundingClientRect().top : bodyBox.bottom) - lastBox.bottom,
-        bodyPaddingBottom: parseFloat(getComputedStyle(body).paddingBottom),
-        bodyBottom: bodyBox.bottom,
-        portBottom: portBox.bottom,
-        footerTop: footer ? footer.getBoundingClientRect().top : null,
-        atBottom: Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) < 2,
-      };
-    }
-
-    return { width, docked: read(docked), footerless: read(footerless) };
-  });
+window.measure = () => {
+  const pane = (selector) => {
+    const root = document.querySelector(selector);
+    const scrollport = root.querySelector("[data-scrollport]");
+    const body = root.querySelector("[data-pane-scaffold]");
+    const footer = root.querySelector("[data-footer]");
+    const lastRow = root.querySelector("[data-lastrow]");
+    return {
+      // The band a reader sees: empty space below the last row, up to the
+      // surface that follows the body - the docked footer's top hairline, or
+      // the body's own bottom edge when nothing docks below it.
+      gapToFollowing:
+        (footer ? footer.getBoundingClientRect().top : body.getBoundingClientRect().bottom) -
+        lastRow.getBoundingClientRect().bottom,
+      bodyPaddingBottom: Number.parseFloat(getComputedStyle(body).paddingBottom),
+      atBottom: Math.abs(scrollport.scrollHeight - scrollport.clientHeight - scrollport.scrollTop) < 2,
+    };
+  };
+  return {
+    viewportHeight: document.documentElement.clientHeight,
+    // A clipped fixture would make every reading below meaningless.
+    documentHeight: document.documentElement.scrollHeight,
+    // The clearance the tokens declare for this breakpoint: --space-5 on
+    // desktop, --space-4 below 900px (panescaffold.module.css's mobile .body).
+    // Read from tokens.css, never from the scaffold rule under test.
+    expectedInset: Number.parseFloat(
+      getComputedStyle(document.body).getPropertyValue(
+        matchMedia("(max-width: 899px)").matches ? "--space-4" : "--space-5",
+      ),
+    ),
+    docked: pane('[data-pane="docked"]'),
+    footerless: pane('[data-pane="footerless"]'),
+  };
+};
 </script>
 </body>
 </html>

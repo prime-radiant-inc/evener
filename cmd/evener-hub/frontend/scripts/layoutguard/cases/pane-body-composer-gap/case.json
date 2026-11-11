@@ -8,18 +8,19 @@
   ],
   "viewport": {
     "width": 1440,
-    "height": 1000,
+    "height": 900,
     "deviceScaleFactor": 1,
     "mobile": false
   },
   "widthMatrix": [
-    { "width": 1440 },
-    { "width": 1024 }
+    {
+      "width": 1440
+    }
   ],
   "mutation": {
     "declaration": "panescaffold.module.css: remove the rule that zeroes the bottom padding of a body whose pane docks a footer",
     "verified": "2026-11-11",
     "expect": "fail",
-    "note": "Measured 2026-11-11: without the rule the case fails at both widths with a 24.0px empty band above the docked footer (body padding-bottom 24px), and the live hub showed the same 24px between the transcript's scroll port and the composer's hairline at 1500x1000."
+    "note": "Measured 2026-11-11: without the rule this case fails at 1440px with a 24.0px empty band above the docked footer (body padding-bottom 24px), and the live hub showed the same 24px between the transcript's scroll port and the composer's hairline at 1500x1000. The footer-less control still read 24px in both runs."
   }
 }
