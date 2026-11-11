@@ -2621,6 +2621,9 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Code = events.WarningCodePluginCompatibility
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	case "unverified_cache_root":
+		warning.Title = "Skill cache fallback"
+		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."
 	}
 	return warning
 }

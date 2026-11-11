@@ -25,6 +25,67 @@ func skillFSFixture(files map[string]string) fstest.MapFS {
 	return m
 }
 
+// resetSkillsFallback clears the recorded fallback for a test and restores the
+// previous diagnostic when it ends.
+func resetSkillsFallback(t *testing.T) {
+	t.Helper()
+	skillsFallbackMu.Lock()
+	saved := skillsFallback
+	skillsFallback = nil
+	skillsFallbackMu.Unlock()
+	t.Cleanup(func() {
+		skillsFallbackMu.Lock()
+		skillsFallback = saved
+		skillsFallbackMu.Unlock()
+	})
+}
+
+// pointSkillsFallbackAt points the fallback root at dir and clears any recorded
+// fallback diagnostic for the test.
+func pointSkillsFallbackAt(t *testing.T, dir string) {
+	t.Helper()
+	saved := skillsFallbackRoot
+	t.Cleanup(func() { skillsFallbackRoot = saved })
+	skillsFallbackRoot = func() string { return dir }
+	resetSkillsFallback(t)
+}
+
+// Issue #5809: a configured root this process refuses reaches the session
+// through the skill diagnostic channel, which session init turns into a
+// user-facing warning, and the verified fallback keeps bundled skills working.
+func TestEmbeddedSkillsDiagnosticsReportsAVerifiedFallback(t *testing.T) {
+	resetSkillsFallback(t)
+	if got := EmbeddedSkillsDiagnostics(); got != nil {
+		t.Fatalf("diagnostics before a fallback = %v, want none", got)
+	}
+	rememberSkillsFallback(&skillsRootFallback{configured: "/home/alice/tmp", resolved: "/tmp", cause: errors.New("skill cache ancestor /home can be replaced by other users")})
+	got := EmbeddedSkillsDiagnostics()
+	if len(got) != 1 {
+		t.Fatalf("diagnostics = %v, want one", got)
+	}
+	for _, want := range []string{"/home/alice/tmp", "/tmp"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Fatalf("diagnostic = %+v, want it to name %s", got[0], want)
+		}
+	}
+	if got[0].Source != "embedded" {
+		t.Fatalf("diagnostic = %+v, want source embedded", got[0])
+	}
+}
+
+// A configured root that verifies again must not keep an old fallback warning
+// alive in a long-lived process.
+func TestEmbeddedSkillsDiagnosticsClearsWhenTheConfiguredRootVerifies(t *testing.T) {
+	resetSkillsFallback(t)
+	rememberSkillsFallback(&skillsRootFallback{configured: "/bad", resolved: "/tmp", cause: errors.New("refused")})
+	if _, _, err := resolveSkillsRoot(t.TempDir(), ensureTrustedRoot); err != nil {
+		t.Fatalf("resolve a trusted root: %v", err)
+	}
+	if got := EmbeddedSkillsDiagnostics(); got != nil {
+		t.Fatalf("diagnostics after recovery = %+v, want none", got)
+	}
+}
+
 func sampleSkillFS() fstest.MapFS {
 	return skillFSFixture(map[string]string{
 		"sample/SKILL.md":               sampleSkillDocument,
