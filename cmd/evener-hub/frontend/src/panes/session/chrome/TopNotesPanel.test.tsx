@@ -2,11 +2,10 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
-import { escapeRegExp, readModuleCss } from "../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { TopNotesPanel } from "./TopNotesPanel";
 
@@ -64,6 +63,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // A dismissal test's outside target is a plain DOM node, not a React
+  // container: testing-library's cleanup() leaves it behind, so a failed
+  // assertion would otherwise leak an "elsewhere" button into the next test.
+  for (const stray of document.querySelectorAll('[data-testid="notes-outside-target"]')) stray.remove();
   // Typing leaves a dirty draft holding a 10s save timer; clear it so no
   // stale save can fire after its test ends.
   resetHumanNoteDrafts();
@@ -515,54 +518,191 @@ test("a request held from a read-only era does not steal focus after a remount",
   elsewhere.remove();
 });
 
-test("expanded root carries the card marker; no state carries an affordance hint", async () => {
+test("no state carries an affordance hint", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  // Collapsed: the root advertises the flat bar, and the bar carries no
-  // "Click to expand" invite - the disclosure affordance is the chevron and
-  // the row itself.
-  const root = screen.getByTestId("top-notes-panel");
-  expect(root.getAttribute("data-expanded")).toBe("false");
+  // Collapsed: the bar carries no "Click to expand" invite - the disclosure
+  // affordance is the chevron and the row itself.
   expect(screen.queryByText("Click to expand")).toBeNull();
   expect(screen.getByTestId("top-notes-summary").getAttribute("aria-describedby")).toBeNull();
 
   await user.click(screen.getByTestId("top-notes-summary"));
 
-  // Expanded: the stylesheet keys the floating-card treatment off the root
-  // marker, and the header row carries no hint either.
-  expect(root.getAttribute("data-expanded")).toBe("true");
+  // Expanded: the header row carries no hint either.
   expect(screen.queryByText("Click to collapse")).toBeNull();
   expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
 });
 
-test("the panel sits flush in both states, and the card's border cannot clip", () => {
-  // The transcript column keeps the pane body's side padding, but the notes
-  // panel claims the top edge back: PaneScaffold's .body pads --space-5
-  // (desktop) / --space-4 (phone), and the panel cancels exactly that.
+test("the panel is an inset card with a boundary that cannot clip", () => {
+  // The card sits INSIDE the pane body's padding. It must not cancel that
+  // padding: doing so parked the card's top edge on the scrollport's clip
+  // line, where the top border and both top corners were painted away.
   const css = readModuleCss(import.meta.url, "topnotespanel.module.css");
-  const root = css.match(/\.topNotesPanel\s*\{([^}]*)\}/);
-  expect(root?.[1]).toContain("margin-top: calc(-1 * var(--space-5))");
-  const mobile = css.match(
-    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}\\s*\\{\\s*\\.topNotesPanel\\s*\\{([^}]*)\\}`),
-  );
-  expect(mobile?.[1]).toContain("margin-top: calc(-1 * var(--space-4))");
+  const root = topRuleBlock(css, ".topNotesPanel");
+  expect(root).not.toMatch(/margin-top/);
 
-  // The expanded card draws its boundary as a real border, not
-  // --shadow-overlay's ring: the ring is a spread box-shadow, which paints
-  // outside the border box and gets shaved by the pane body's scrollport at
-  // the flush top edge; a border paints inside the box and cannot clip.
-  const expanded = css.match(/\.topNotesPanel\[data-expanded="true"\]\s*\{([^}]*)\}/);
-  expect(expanded?.[1]).toContain("border: 1px solid var(--edge-strong)");
-  expect(expanded?.[1]).toContain("box-shadow: 0 8px 28px var(--shadow-color)");
+  // One card boundary serves both states: the collapsed bar used to be a
+  // squared, borderless strip whose only edge was a hairline underneath, so
+  // it read as edgeless. The card draws that edge itself now.
+  expect(root).toContain("border: 1px solid var(--edge-strong)");
+  expect(root).toContain("border-radius: var(--radius-panel)");
+
+  // The boundary is a real border, not --shadow-overlay's ring: the ring is a
+  // spread box-shadow, which paints outside the border box and is shaved
+  // wherever a clipping ancestor cuts the card's edge (the pane body's
+  // scrollport, a cascade column's edge); a border paints inside the box.
+  expect(root).not.toContain("--shadow-overlay");
+  expect(root).toContain("box-shadow: 0 8px 28px var(--shadow-color)");
+
+  // The collapsed trigger must not add a bottom edge of its own: the card
+  // already draws that edge, and a second one doubles it.
+  expect(topRuleBlock(css, ".summary")).not.toMatch(/border-bottom/);
 
   // Keyboard focus must survive the clipping containers: the card's
   // overflow:hidden and the body's scrollport cut an outside outline, so
   // both trigger states carry the sanctioned inset ring (the same recipe
   // sessionchrome.module.css documents for controls flush inside a clip
   // boundary).
-  const focus = css.match(/\.summary:focus-visible\s*,\s*\.expandedHeader:focus-visible\s*\{([^}]*)\}/);
-  expect(focus?.[1]).toContain("outline: var(--focus-ring)");
-  expect(focus?.[1]).toContain("outline-offset: -2px");
+  const focus = topRuleBlock(css, ".summary:focus-visible,\n.expandedHeader:focus-visible");
+  expect(focus).toContain("outline: var(--focus-ring)");
+  expect(focus).toContain("outline-offset: -2px");
+});
+
+// --- dismissal: a press outside the panel collapses it ---------------------
+//
+// The panel is a disclosure, not a modal: it floats over the conversation, so
+// pressing anywhere else in the pane means the user has moved on. The press
+// that decides is where the gesture STARTED, matching the overlay family's
+// press-start rule (widgets/dialog/OverlayPanel.tsx): selecting note text and
+// releasing the pointer outside the panel must not collapse it mid-drag.
+
+/** A visible target outside the panel, standing in for the transcript. */
+function outsideTarget(): HTMLElement {
+  const target = document.createElement("button");
+  target.type = "button";
+  target.textContent = "elsewhere";
+  target.setAttribute("data-testid", "notes-outside-target");
+  document.body.append(target);
+  return target;
+}
+
+test("pressing outside the expanded panel collapses it", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+  expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
+
+  const outside = outsideTarget();
+  await user.click(outside);
+
+  expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
+  outside.remove();
+});
+
+test("pressing inside the expanded panel leaves it open", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+
+  await user.click(screen.getByRole("textbox", { name: "Human note" }));
+
+  expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
+});
+
+test("pressing inside a second panel for the same conversation leaves both open", async () => {
+  // One conversation can host two panels at once (an ordinary session pane and
+  // a cascade column), and they share one expanded flag per ref. A press inside
+  // either one is inside the surface the user is working in, so neither may
+  // collapse the shared state.
+  const model = makeModel({ humanNote: "Saved note" });
+  topNotesStore.getState().setExpanded(model.ref, true);
+  render(
+    <>
+      <TopNotesPanel sessionRef={model.ref} model={model} />
+      <TopNotesPanel sessionRef={model.ref} model={model} />
+    </>,
+  );
+  const editors = screen.getAllByRole("textbox", { name: "Human note" });
+  expect(editors).toHaveLength(2);
+  const user = userEvent.setup();
+
+  await user.click(editors[1]!);
+
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
+  expect(screen.getAllByTestId("top-notes-expanded-content")).toHaveLength(2);
+});
+
+test("a drag that starts inside the panel and releases outside does not collapse it", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+
+  const outside = outsideTarget();
+  await user.pointer([
+    { target: screen.getByRole("textbox", { name: "Human note" }), keys: "[MouseLeft>]" },
+    { target: outside },
+    { keys: "[/MouseLeft]" },
+  ]);
+
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
+  outside.remove();
+});
+
+test("Escape inside the expanded panel collapses it and returns focus to the trigger", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(screen.getByRole("textbox", { name: "Human note" }));
+
+  await user.keyboard("{Escape}");
+
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
+  // A keyboard dismissal must not drop focus onto the document body.
+  expect(document.activeElement).toBe(screen.getByTestId("top-notes-summary"));
+});
+
+test("a collapsed panel leaves Escape for an enclosing overlay", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  const summary = screen.getByTestId("top-notes-summary");
+  summary.focus();
+  const escaped = vi.fn();
+  document.addEventListener("keydown", escaped);
+  try {
+    await user.keyboard("{Escape}");
+  } finally {
+    document.removeEventListener("keydown", escaped);
+  }
+  // Collapsed, the panel must not preventDefault a key it has no use for.
+  expect(escaped).toHaveBeenCalledTimes(1);
+  expect(escaped.mock.calls[0]?.[0].defaultPrevented).toBe(false);
+});
+
+test("an unsaved draft survives an outside press and is not saved by it", async () => {
+  const model = makeModel({ humanNote: "Saved note" });
+  const setNote = vi.spyOn(threadsStore.getState(), "setHumanNote");
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("top-notes-summary"));
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await user.type(textarea, " plus edits");
+
+  const outside = outsideTarget();
+  await user.click(outside);
+
+  // Collapsing is not a save (docs/web-ui/shared-notes.md), and the edit is
+  // still there to reopen.
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
+  expect(screen.getByText("Saved note plus edits")).toBeTruthy();
+  expect(setNote).not.toHaveBeenCalled();
+  outside.remove();
 });

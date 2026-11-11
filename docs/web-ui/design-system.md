@@ -451,7 +451,9 @@ status row's percent/clock/queue figures, the rail's relative ages, and the turn
 Design System's own spacing progression, adopted because it's the only well-known scale that
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
 grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
-`--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
+`--radius-control` 4px, `--radius-pane` 4px, `--radius-panel` 8px for a floating
+disclosure card that sits inside a pane (the session notes card) and `--radius-pill`
+999px for switch tracks.
 Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
 

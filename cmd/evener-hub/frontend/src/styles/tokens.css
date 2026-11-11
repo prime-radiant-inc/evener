@@ -166,6 +166,7 @@
   --radius-chip: 3px; /* chips, badges, small tags */
   --radius-control: 4px; /* buttons, inputs */
   --radius-pane: 4px; /* panes, cards, dialogs */
+  --radius-panel: 8px; /* a floating disclosure card sitting INSIDE a pane */
   --radius-pill: 999px; /* pill geometry: switch track */
 
   /* --- focus ring ------------------------------------------------------
