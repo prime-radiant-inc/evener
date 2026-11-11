@@ -40,6 +40,13 @@ func (g *loopbackGuard) attempts() []string {
 	return slices.Clone(g.refused)
 }
 
+// guardsLoopbackOnly is the decision to install the guard: default runs reach
+// loopback servers only, while the explicit live opt-ins (-live-config, or
+// EVENER_LIVE_TESTS=1) may reach real providers.
+func guardsLoopbackOnly(liveConfigPath string, getenv func(string) string) bool {
+	return liveConfigPath == "" && !liveTestsEnabled(getenv)
+}
+
 // install makes every client built on http.DefaultTransport (the llm adapters
 // clone it) dial through the guard.
 func (g *loopbackGuard) install() {

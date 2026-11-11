@@ -106,7 +106,7 @@ func TestMain(m *testing.M) {
 	// A default test must not reach a real provider whatever credentials the
 	// environment holds; only the explicit live run (-live-config) may.
 	var guard *loopbackGuard
-	if *liveConfig == "" {
+	if guardsLoopbackOnly(*liveConfig, os.Getenv) {
 		guard = &loopbackGuard{}
 		guard.install()
 	}

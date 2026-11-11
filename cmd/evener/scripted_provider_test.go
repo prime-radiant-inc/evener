@@ -13,9 +13,14 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// liveTestsEnabled reports the repo's explicit opt-in to live model tests.
+func liveTestsEnabled(getenv func(string) string) bool {
+	return getenv("EVENER_LIVE_TESTS") == "1"
+}
+
 func requireLiveOpenAI(t *testing.T) {
 	t.Helper()
-	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+	if !liveTestsEnabled(os.Getenv) {
 		t.Skip("set EVENER_LIVE_TESTS=1 to run live model tests")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {

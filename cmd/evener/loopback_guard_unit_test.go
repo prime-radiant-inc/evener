@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+func TestGuardsLoopbackOnlyUnlessLiveOptIn(t *testing.T) {
+	env := func(live string) func(string) string {
+		return func(k string) string {
+			if k == "EVENER_LIVE_TESTS" {
+				return live
+			}
+			return ""
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		liveConfig string
+		live       string
+		want       bool
+	}{
+		{"default run", "", "", true},
+		{"EVENER_LIVE_TESTS=1", "", "1", false},
+		{"-live-config", "/some/providers.toml", "", false},
+		{"EVENER_LIVE_TESTS other value", "", "0", true},
+	} {
+		if got := guardsLoopbackOnly(tc.liveConfig, env(tc.live)); got != tc.want {
+			t.Errorf("%s: guard = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestLoopbackGuardRefusesAndRecordsOtherHosts(t *testing.T) {
 	g := &loopbackGuard{}
 	for _, addr := range []string{"gw.example.com:443", "203.0.113.7:80", "[2001:db8::1]:443"} {
