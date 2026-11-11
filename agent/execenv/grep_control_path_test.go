@@ -101,6 +101,91 @@ func TestQuoteControlPath(t *testing.T) {
 	}
 }
 
+// Issue #4526: a colon-bearing path is ambiguous in "path:line:text" output,
+// so the shared one-line rendering quotes it like a control-character path and
+// leaves ordinary paths unchanged.
+func TestOneLinePathQuotesColonPaths(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ path, want string }{
+		{"plain.md", "plain.md"},
+		{"a:1:b.md", `"a:1:b.md"`},
+		{"a\nb.md", `"a\nb.md"`},
+		{"é.md", "é.md"},
+	} {
+		if got := OneLinePath(tc.path); got != tc.want {
+			t.Errorf("OneLinePath(%q) = %s, want %s", tc.path, got, tc.want)
+		}
+	}
+}
+
+// writeColonPathTree lays out a file whose name holds a column-like colon run
+// beside an ordinary one, both holding a match between two context lines.
+func writeColonPathTree(t *testing.T, root string) {
+	t.Helper()
+	for _, name := range []string{"a:1:b.md", "ok.md"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("before\nneedle\nafter"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func checkColonPathGrep(t *testing.T, arm string, env *LocalExecutionEnvironment, dir string) {
+	t.Helper()
+	for _, tc := range []struct {
+		mode    string
+		context int
+		want    []string
+	}{
+		{mode: "files_with_matches", want: []string{`"a:1:b.md"`, "ok.md"}},
+		{mode: "content", want: []string{`"a:1:b.md":2:needle`, "ok.md:2:needle"}},
+		{mode: "count", want: []string{`"a:1:b.md":1`, "ok.md:1"}},
+		{mode: "content", context: 1, want: []string{
+			`"a:1:b.md"-1-before` + "\n" + `"a:1:b.md":2:needle` + "\n" + `"a:1:b.md"-3-after`,
+			"ok.md-1-before\nok.md:2:needle\nok.md-3-after",
+		}},
+	} {
+		got, err := env.Grep(t.Context(), "needle", dir, "", false, 100, tc.mode, tc.context)
+		if err != nil {
+			t.Fatalf("%s: grep %s (context %d): %v", arm, tc.mode, tc.context, err)
+		}
+		separator := "\n"
+		if tc.context > 0 {
+			separator = "\n--\n"
+		}
+		results := strings.Split(got, separator)
+		slices.Sort(results)
+		if !slices.Equal(results, tc.want) {
+			t.Errorf("%s: grep %s (context %d) results = %q, want %q", arm, tc.mode, tc.context, results, tc.want)
+		}
+	}
+}
+
+func TestGrepQuotesAColonPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeColonPathTree(t, root)
+	fallback := NewLocalExecutionEnvironment(root)
+	defer fallback.Cleanup()
+	fallback.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	checkColonPathGrep(t, "fallback", fallback, root)
+
+	rg, err := exec.LookPath("rg")
+	if err != nil {
+		t.Skip("ripgrep not installed; cannot check the rg arm")
+	}
+	withRg := NewLocalExecutionEnvironment(root)
+	defer withRg.Cleanup()
+	withRg.lookPath = func(string) (string, error) { return rg, nil }
+	checkColonPathGrep(t, "ripgrep", withRg, root)
+}
+
+func TestSandboxGrepQuotesAColonPath(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeRestricted)
+	writeColonPathTree(t, worktree)
+	checkColonPathGrep(t, "sandboxed", env, worktree)
+}
+
 func TestPathHasControl(t *testing.T) {
 	t.Parallel()
 	for path, want := range map[string]bool{"a\nb": true, "a\rb": true, "a\x7f": true, "a\x00": true, "a\tb": false, "plain.md": false, "é.md": false} {

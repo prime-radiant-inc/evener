@@ -17,7 +17,8 @@ func PathHasControl(p string) bool {
 
 // QuoteControlPath writes p on one line as a JSON string, the form a tool
 // call passes back as a path, without HTML escaping and with DEL escaped
-// (JSON leaves it bare). No JSON string holds invalid UTF-8, which JSON
+// (JSON leaves it bare). It also makes a colon-bearing path unambiguous in a
+// "path:line:text" result. No JSON string holds invalid UTF-8, which JSON
 // encoding would replace with U+FFFD, so such a name is Go-quoted with \x
 // escapes instead and each name keeps a form of its own.
 func QuoteControlPath(p string) string {
@@ -33,10 +34,12 @@ func QuoteControlPath(p string) string {
 
 // OneLinePath is how a tool's output names the path p on a line of its own
 // (a grep result, a glob match, a directory entry): p as it is, or, when p
-// holds a control character, quoted (QuoteControlPath), so a newline in a
-// name never splits a line and every tool names such a file the same way.
+// holds a control character or a colon, quoted (QuoteControlPath), so a
+// newline in a name never splits a line, a colon never blurs where the path
+// ends in a "path:line:text" result, and every tool names such a file the same
+// way. An ordinary path is returned unchanged.
 func OneLinePath(p string) string {
-	if PathHasControl(p) {
+	if PathHasControl(p) || strings.Contains(p, ":") {
 		return QuoteControlPath(p)
 	}
 	return p
