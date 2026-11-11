@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -440,14 +441,24 @@ func ensureTrustedProcessRoot(root string) error {
 // user namespace that does not map host root it appears owned by the overflow
 // uid, which the ownership rule must otherwise refuse (issue #4226). Its mode
 // still has to keep other users from replacing names inside it through a
-// writable host mount. An ordinary ancestor gets no exemption at all, even on a
-// read-only mount: the mount only refuses writes through this namespace, while
-// another user with a writable mount of the same host filesystem can rename the
-// directory and replace its subtree, which path lookup here then follows.
+// writable host mount.
+//
+// An ordinary ancestor whose owner cannot be verified gets the same acceptance
+// only when the mount covering it refuses writes and its mode grants no group or
+// other write, and each acceptance is reported once as a warning: that is the
+// TMPDIR-under-/home shape of issue #5809. Renaming an ordinary ancestor needs
+// write on its parent, so a broader-than-needed ancestor on a read-only mount is
+// accepted rather than refusing a legitimate configuration, but a group- or
+// other-writable ancestor is still replaceable and still refused.
 func ensureTrustedAncestors(root string) error {
+	var (
+		mounts     []mountPoint
+		mountsRead bool
+		broad      []string
+	)
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
-		info, err := os.Stat(dir)
+		info, err := statAncestor(dir)
 		if err != nil {
 			return fmt.Errorf("checking skill cache ancestor %s: %w", dir, err)
 		}
@@ -455,20 +466,47 @@ func ensureTrustedAncestors(root string) error {
 			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
 		trusted := ancestorDirTrusted(info)
-		if !trusted && parent == dir {
-			// Only the filesystem root consults the mount table, and only when
-			// its ownership check failed, so read it once there rather than on
-			// every chain that never needs it.
-			trusted = readOnlyFilesystemRoot(info, parseMountPoints(string(readMountInfo())), dir)
+		if !trusted {
+			// The mount table is consulted only when an ownership check failed,
+			// so read it once here rather than on every chain that never needs
+			// it.
+			if !mountsRead {
+				mounts = parseMountPoints(string(readMountInfo()))
+				mountsRead = true
+			}
+			if parent == dir {
+				trusted = readOnlyFilesystemRoot(info, mounts, dir)
+			} else {
+				trusted = readOnlyMountAncestor(info, mounts, dir)
+				if trusted {
+					broad = append(broad, dir)
+				}
+			}
 		}
 		if !trusted {
 			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
 		if parent == dir {
+			if len(broad) > 0 {
+				warnBroadAncestors(broad)
+			}
 			return nil
 		}
 		dir = parent
 	}
+}
+
+// statAncestor is the stat boundary for the ancestor chain. It is a seam so a
+// test can describe an ancestor owned by a user this process is not: ownership
+// of a real directory cannot be arranged without privilege.
+var statAncestor = os.Stat
+
+// warnBroadAncestors reports ancestors accepted by the read-only-mount rule
+// despite an owner the process cannot verify. A warning names them so the user
+// can narrow the configured path, which is broader than the private cache root
+// needs.
+var warnBroadAncestors = func(ancestors []string) {
+	slog.Warn("skill cache ancestors are broader than needed but accepted on a read-only mount", "ancestors", ancestors)
 }
 
 // readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
@@ -489,6 +527,20 @@ func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) b
 		return false
 	}
 	return info.Mode()&os.ModeSticky != 0 || info.Mode().Perm()&0o022 == 0
+}
+
+// readOnlyMountAncestor reports whether an ordinary ancestor that failed the
+// ownership check may still be accepted: the mount covering it refuses writes,
+// so this namespace cannot replace it, and its mode grants no group or other
+// write, so another user cannot rename the directories beneath it through a
+// writable mount of the same host filesystem. The owner is not verified because
+// a user namespace that does not map the ancestor's host owner reports the
+// overflow uid (issue #5809).
+func readOnlyMountAncestor(info fs.FileInfo, mounts []mountPoint, dir string) bool {
+	if info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	return readOnlyMountAt(mounts, dir)
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that

@@ -2,6 +2,7 @@ package skill
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -82,6 +83,42 @@ func mountRoot(mounts []mountPoint) (root mountPoint, ok bool) {
 		}
 	}
 	return root, ok
+}
+
+// readOnlyMountAt reports whether the mount covering dir refuses writes. The
+// covering mount is the one whose path is the longest component-boundary prefix
+// of dir, as path lookup resolves it. A table without a covering mount is no
+// evidence of confinement.
+func readOnlyMountAt(mounts []mountPoint, dir string) bool {
+	dir = filepath.Clean(dir)
+	var (
+		best  mountPoint
+		found bool
+	)
+	for _, mount := range mounts {
+		path := filepath.Clean(mount.path)
+		if !pathWithin(dir, path) {
+			continue
+		}
+		if !found || len(path) > len(best.path) {
+			best = mount
+			best.path = path
+			found = true
+		}
+	}
+	return found && best.readOnly
+}
+
+// pathWithin reports whether path is root itself or lies beneath it at a
+// component boundary, so /home/work is not treated as beneath /home/wor.
+func pathWithin(path, root string) bool {
+	if root == path {
+		return true
+	}
+	if root == string(filepath.Separator) {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // unescapeMountInfo decodes the octal escapes mountinfo applies to path fields

@@ -133,13 +133,11 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 }
 
-// A read-only mount refuses writes through this namespace, but it does not pin
-// the ordinary directories beneath it: another user with a writable mount of the
-// same host filesystem can rename one and replace its subtree, and path lookup
-// here follows the replacement. Only the filesystem root itself is pinned, so an
-// ordinary ancestor keeps every ownership and permission check whichever mount
-// it sits on. A writable mount boundary is no evidence of safety, and an
-// unreadable mount table is no evidence at all.
+// A read-only mount refuses writes through this namespace, but a writable
+// ancestor is still replaceable through the host filesystem, so the narrow
+// acceptance for an unverifiable owner does not extend to one other users can
+// write to. A group- or other-writable ancestor is refused whichever mount it
+// sits on, and an unreadable mount table is no evidence at all.
 func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "inner")
@@ -178,13 +176,110 @@ func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *t
 	}
 }
 
-// The read-only exemption belongs to the filesystem root alone: the mount pins
-// that inode and no parent directory holds its name. An ordinary ancestor on a
-// read-only mount is still replaceable through a writable mount of the same host
-// filesystem, so it keeps the ownership and permission checks. This is the shape
-// of the reviewer's scenario: a world-writable, non-sticky /shared/public on the
-// sandbox's read-only root bind must not let another user rename a directory
-// beneath it.
+// Issue #5809: an ordinary ancestor whose owner this namespace cannot verify,
+// such as a host-root-owned /home seen as the overflow uid, is accepted only on
+// a read-only mount whose mode grants no group or other write.
+func TestReadOnlyMountAncestor_AcceptsOnlyANonWritableAncestorOnAReadOnlyMount(t *testing.T) {
+	otherUser := uint32(os.Getuid()) + 1
+	unverifiableOwner := func(perm os.FileMode) fs.FileInfo {
+		return fakeFileInfo{mode: os.ModeDir | perm, uid: otherUser}
+	}
+	mounts := parseMountPoints("" +
+		"1 0 0:1 / / rw - tmpfs tmpfs rw\n" +
+		"2 1 0:2 / /work ro - tmpfs tmpfs rw\n" +
+		"3 2 0:3 / /work/tmp rw - tmpfs tmpfs rw\n" +
+		"4 1 0:4 / /home/alice ro - tmpfs tmpfs rw\n")
+	for _, tc := range []struct {
+		name string
+		dir  string
+		perm os.FileMode
+		want bool
+	}{
+		{"read-only mount", "/work/user", 0o755, true},
+		{"read-only mount with a writable mount beneath", "/work/tmp/user", 0o755, false},
+		{"writable root mount", "/srv/cache", 0o755, false},
+		{"nested read-only mount", "/home/alice/tmp", 0o755, true},
+		{"component boundary", "/home/alice2", 0o755, false},
+		{"group writable", "/work/user", 0o775, false},
+		{"other writable", "/home/alice/tmp", 0o757, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readOnlyMountAncestor(unverifiableOwner(tc.perm), mounts, tc.dir); got != tc.want {
+				t.Fatalf("readOnlyMountAncestor(%q, %o) = %v, want %v", tc.dir, tc.perm, got, tc.want)
+			}
+		})
+	}
+}
+
+// Issue #5809: the chain accepts a non-writable ancestor whose owner cannot be
+// verified on a read-only mount, and reports the broader-than-needed ancestor
+// once. A writable mount or a group- or other-writable ancestor is still refused
+// and reports nothing.
+func TestEnsureTrustedAncestors_AcceptsANonWritableAncestorOnAReadOnlyMountWithAWarning(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	savedStat := statAncestor
+	t.Cleanup(func() { statAncestor = savedStat })
+	savedWarn := warnBroadAncestors
+	t.Cleanup(func() { warnBroadAncestors = savedWarn })
+	savedMounts := readMountInfo
+	t.Cleanup(func() { readMountInfo = savedMounts })
+
+	otherUser := uint32(os.Getuid()) + 1
+	ancestorInfo := fs.FileInfo(fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser})
+	statAncestor = func(name string) (fs.FileInfo, error) {
+		if name == outer {
+			return ancestorInfo, nil
+		}
+		return os.Stat(name)
+	}
+	var warnings [][]string
+	warnBroadAncestors = func(ancestors []string) {
+		warnings = append(warnings, append([]string(nil), ancestors...))
+	}
+
+	readMountInfo = func() []byte {
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err != nil {
+		t.Fatalf("refused a non-writable ancestor on a read-only mount: %v", err)
+	}
+	if len(warnings) != 1 || len(warnings[0]) != 1 || warnings[0][0] != outer {
+		t.Fatalf("warnings = %v, want one naming %s", warnings, outer)
+	}
+
+	warnings = nil
+	readMountInfo = func() []byte {
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " rw,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a non-writable ancestor on a writable mount")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warned about a refused ancestor: %v", warnings)
+	}
+
+	readMountInfo = func() []byte {
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	}
+	ancestorInfo = fakeFileInfo{mode: os.ModeDir | 0o777, uid: otherUser}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor on a read-only mount")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warned about a refused ancestor: %v", warnings)
+	}
+}
+
+// The read-only filesystem-root rule belongs to the filesystem root alone: the
+// mount pins that inode and no parent directory holds its name. An ordinary
+// ancestor on a read-only mount is judged by readOnlyMountAncestor instead, so
+// this rule still refuses it. This is the shape of the reviewer's scenario: a
+// world-writable, non-sticky /shared/public on the sandbox's read-only root bind
+// must not let another user rename a directory beneath it.
 func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
 	otherUser := uint32(os.Getuid()) + 1
 	// The owner is the unmapped overflow uid, which reads as another user here,
