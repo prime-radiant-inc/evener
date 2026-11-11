@@ -476,6 +476,38 @@ test("a queue frame keeps the content of a consumed row this client never owned"
   expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));
 });
 
+test("a queue frame keeps the content of a row a promotion removed without naming it", async () => {
+  // An older daemon omits consumedClientMutationIds on promotion. The message
+  // is no longer queued and nothing records it here, so the disappearance is
+  // the only evidence it left the queue. Without carrying it the row vanishes
+  // for the rest of the delivery wait.
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+    },
+  });
+
+  expect(consumedQueueEntriesFor("ref_a")).toEqual([
+    expect.objectContaining({ entryId: "q1", text: "queued elsewhere" }),
+  ]);
+});
+
 test("an authoritative hydration retires an absent retained queue source", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
   await storage.enqueueIntent({

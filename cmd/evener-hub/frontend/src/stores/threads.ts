@@ -839,6 +839,7 @@ function createEntryTranscriptRepository(
       !fixture.cachedUnverified &&
       (!productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true),
     onHistoryReadAccepted: (response, model) => reconcileAcceptedReadRecovery(ref, response, model),
+    mutationGeneration: () => mutationStateGenerations.get(ref) ?? 0,
     readHistory: (held, signal) =>
       runEntryHistoryRequest(fixture, signal, () => {
         const client = getWiredClient();
@@ -6768,11 +6769,12 @@ function handleNotification(n: AnyNotification): void {
       // A queue frame proves the transition, not that the replacement is
       // visible. Keep the display copy and ask its hydration owner for the
       // authoritative snapshot that names the message it became.
-      consumeQueueRows(
-        settlementRef,
-        previousThreads.get(settlementRef) ?? threadsStore.getState().watchedThreads.get(settlementRef),
-        consumed,
-      );
+      const consumedFrom =
+        previousThreads.get(settlementRef) ?? threadsStore.getState().watchedThreads.get(settlementRef);
+      // A frame behind the snapshot the client already holds cannot prove a
+      // removal; only a forward revision moves the queue it describes.
+      const frameQueue = n.params.queue.revision > (consumedFrom?.queue?.revision ?? -1) ? n.params.queue : undefined;
+      const carried = consumeQueueRows(settlementRef, consumedFrom, consumed, frameQueue);
       noteMutationStateChange(settlementRef);
       threadsStore.setState((state) => {
         if (!state.mutationSnapshotRefs.has(settlementRef)) return state;
@@ -6780,7 +6782,10 @@ function handleNotification(n: AnyNotification): void {
         mutationSnapshotRefs.delete(settlementRef);
         return { mutationSnapshotRefs };
       });
-      if (consumed.length > 0) {
+      // A frame that named no consumed ids still needs the refresh when the
+      // carry found a vanished entry: the replacement that proves it landed
+      // comes from the authoritative read, not from this frame.
+      if (consumed.length > 0 || carried) {
         if (runtime) {
           const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
           for (const id of consumed) pending.add(id);
@@ -7546,24 +7551,47 @@ function invalidateConsumedQueueRows(ref: string): void {
   if (entry) entry.list = undefined;
 }
 
-function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consumed: readonly string[]): void {
+function consumeQueueRows(
+  ref: string,
+  previous: ThreadModel | undefined,
+  consumed: readonly string[],
+  nextQueue?: ThreadModel["queue"],
+): boolean {
   const queue = previous?.queue;
-  if (!queue || consumed.length === 0) return;
+  if (!queue) return false;
+  // A daemon that omits consumedClientMutationIds still removes the entry it
+  // promoted. The disappearance is then the only evidence the user's message
+  // left the queue, so carry it rather than let it vanish for the rest of the
+  // delivery wait. Retirement stays gated on a current authoritative snapshot,
+  // exactly as for an entry this frame named.
+  const disappeared = new Set<string>();
+  if (consumed.length === 0 && nextQueue) {
+    const stillQueued = new Set(nextQueue.ids ?? []);
+    for (const id of queue.ids ?? []) if (!stillQueued.has(id)) disappeared.add(id);
+    if (disappeared.size === 0) return false;
+  } else if (consumed.length === 0) return false;
   const consumedIds = new Set(consumed);
   let entry = consumedQueueRows.get(ref);
+  let added = false;
   for (let index = 0; index < (queue.ids?.length ?? 0); index += 1) {
     // Test membership on the raw id first: the shared reader canonicalizes the
     // selection arrays, which is wasted work for a row we do not carry.
     const clientMutationId = queue.clientMutationIds?.[index];
-    if (!clientMutationId || !consumedIds.has(clientMutationId)) continue;
     const queued = queueEntryAt(queue, index);
     const { entryId } = queued;
     if (!entryId) continue;
+    const carried = consumedIds.has(clientMutationId ?? "");
+    // A disappeared entry is carried only when it names the client mutation
+    // that produced it: retirement reads that identity, and a row nothing can
+    // retire is the permanent-Delivering bug this whole path exists to end.
+    const vanished = disappeared.has(entryId) && !!clientMutationId;
+    if (!carried && !vanished) continue;
+    if (!entry?.rows.has(entryId)) added = true;
     entry ??= { rows: new Map(), list: undefined };
     entry.list = undefined;
     entry.rows.set(entryId, {
       entryId,
-      clientMutationId,
+      clientMutationId: clientMutationId ?? "",
       text: queued.text,
       textComplete: queued.fullText !== undefined,
       imageCount: queued.imageCount,
@@ -7572,6 +7600,7 @@ function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consum
     });
   }
   if (entry && entry.rows.size > 0) consumedQueueRows.set(ref, entry);
+  return added;
 }
 
 // The consumed rows still awaiting an authoritative replacement. A published,

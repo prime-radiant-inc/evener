@@ -311,7 +311,17 @@ function countPositionReads(model: ThreadModel) {
 
 it.each(
   (["end", "final"] as const).flatMap((source) =>
-    (["accepted", "stale-generation", "wrong-identity", "suppressed", "disposed", "cancelled"] as const)
+    (
+      [
+        "accepted",
+        "stale-generation",
+        "stale-mutation-generation",
+        "wrong-identity",
+        "suppressed",
+        "disposed",
+        "cancelled",
+      ] as const
+    )
       .filter((outcome) => source === "final" || outcome !== "cancelled")
       .map((outcome) => ({ source, outcome })),
   ),
@@ -324,6 +334,9 @@ it.each(
   let suppressed = false;
   let reply = response.promise;
   let retry: (() => void) | undefined;
+  // The mutation state a read was issued under. A queue change here can make a
+  // message that is still in flight legitimately absent from the read.
+  let mutationGeneration = 0;
   const owner = new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
@@ -333,6 +346,7 @@ it.each(
     lifetime: 1,
     suppressed: () => suppressed,
     onHistoryReadAccepted: accepted,
+    mutationGeneration: () => mutationGeneration,
     retryScheduler: (_attempt, run) => {
       retry = run;
       return () => {
@@ -406,6 +420,9 @@ it.each(
   }
   if (outcome === "wrong-identity") recovery.thread.id = "other-thread";
   if (outcome === "suppressed") suppressed = true;
+  // A message queued while the read was in flight. The read cannot prove
+  // absence for the state that produced it.
+  if (outcome === "stale-mutation-generation") mutationGeneration += 1;
   if (outcome === "disposed") owner.dispose();
   if (outcome === "cancelled") owner.cancelRetirement();
   response.resolve(recovery);

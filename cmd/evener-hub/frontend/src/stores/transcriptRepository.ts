@@ -334,6 +334,13 @@ export interface TranscriptRepositoryBinding {
   readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
   /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
   onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
+  /**
+   * The owner's mutation-state generation. A read that predates a local
+   * mutation change - a message queued here, or one another client promoted -
+   * can omit both identities, so it cannot prove absence. The accepted-read
+   * callback is withheld when this has moved since the read was issued.
+   */
+  mutationGeneration?: () => number;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
@@ -2209,6 +2216,10 @@ export class TranscriptRepository {
     const work = (async (): Promise<TranscriptRetirementOutcome> => {
       const read = this.#binding.readHistory;
       if (!read || !current()) return { kind: "stale" };
+      // This read speaks for the mutation state it was issued under. A message
+      // queued or promoted since then can be legitimately absent from it, so
+      // its absence proves nothing and the owner must not replay from it.
+      const mutationGeneration = this.#binding.mutationGeneration?.();
       const response = await read(undefined, controller.signal);
       if (!current()) return { kind: "cancelled" };
       if (!response.snapshot || !this.#matchesRead(response)) throw new Error("final read has no authority");
@@ -2224,7 +2235,12 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
-      if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
+      if (
+        current() &&
+        this.#model &&
+        (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
+      )
+        this.#binding.onHistoryReadAccepted?.(response, this.#model);
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -2383,6 +2399,9 @@ export class TranscriptRepository {
     const held = model.history?.incarnation
       ? { incarnation: model.history.incarnation, length: model.history.length }
       : undefined;
+    // Same rule as the final read: absence proves delivery only for the
+    // mutation state the read was issued under.
+    const mutationGeneration = this.#binding.mutationGeneration?.();
     const response = await read(held, signal);
     if (!current()) return;
     if (!response.snapshot || !this.#matchesRead(response)) throw new Error("end disposition has no history authority");
@@ -2392,7 +2411,12 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
-    if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
+    if (
+      current() &&
+      this.#model &&
+      (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
+    )
+      this.#binding.onHistoryReadAccepted?.(response, this.#model);
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
