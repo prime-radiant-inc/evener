@@ -121,7 +121,9 @@ losing the conversation that made the evidence relevant.
   Phones keep one bottom surface: the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
   chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
-  where the desktop status bar puts them. The
+  where the desktop status bar puts them, and that line is the pane's bottom edge: on
+  the phone the chips fill the home-indicator band themselves, so the dock reserves no
+  space below them. The
   composer dock owns the home-indicator band; the inset yields when the on-screen
   keyboard covers that area. The working-directory strip stays desktop-only: a phone
   reads the session's working directory and branch through the session menu's Overview
@@ -137,8 +139,9 @@ losing the conversation that made the evidence relevant.
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
   picker. A desktop card under 620px keeps the stacked control row and the folded
-  one-line field. The phone's resting card sheds Attach and the model chrome; the
-  activity line below the card stays. At the 466px Duo cover width the control row
+  one-line field. The phone's resting card sheds Attach, the model chrome and the
+  activity line: the folded card is the phone's smallest surface, and the counts come
+  back with the expanded card. At the 466px Duo cover width the control row
   tightens; focus, drafts, attachments, and question/approval docks keep their writing
   and response space. The
   four activity counters stay in the

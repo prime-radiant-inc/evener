@@ -912,16 +912,17 @@ test("a mobile session pane keeps its activity chips on the composer's below-car
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
 
-  // Blurring the resting editor rests the row again: no attach. The
-  // activity line stays, and Send stays (the actions slot never sheds), so
-  // the resting card remains a usable one-line composer. A real blur() moves
-  // focus off the editor, which the engagement reconcile reads; a synthetic
-  // blur event alone would leave activeElement on the editor.
+  // Blurring the resting editor rests the row again: no attach and no
+  // activity line, which returns with the expanded card. Send stays (the
+  // actions slot never sheds), so the resting card remains a usable one-line
+  // composer. A real blur() moves focus off the editor, which the engagement
+  // reconcile reads; a synthetic blur event alone would leave activeElement
+  // on the editor.
   act(() => {
     editor.blur();
   });
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
 });

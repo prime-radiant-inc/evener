@@ -186,6 +186,16 @@
   :global(body):has([data-composer-editing]) .footerBeforeEdge {
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
+
+  /* The composer's activity line is the phone's bottom edge when it renders:
+   * its chips are already the tap-floor height, and reserving the
+   * home-indicator band below them spends that band twice. A phone pane
+   * renders no edge footer, so the composer sits in .footer itself - the
+   * session's flush-footer exemption above addresses the desktop status bar,
+   * not this one. */
+  .footer:has(:global([data-composer-activity-line="true"])) {
+    padding-bottom: 0;
+  }
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
@@ -196,6 +206,13 @@
 
   .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
     padding-bottom: var(--space-1);
+  }
+
+  /* The Duo cover's tighter dock already drops the band; the activity line
+   * repeats the rule so the two overrides cannot disagree about it. The
+   * specificity here must beat the cover rule above, hence the pane anchor. */
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer:has(:global([data-composer-activity-line="true"])) {
+    padding-bottom: 0;
   }
 }
 

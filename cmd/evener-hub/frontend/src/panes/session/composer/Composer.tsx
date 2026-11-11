@@ -763,6 +763,13 @@ export function Composer({
   // controls is pressed.
   const controlsCollapsed = isMobile && resting;
 
+  // The phone's activity counts are a glance line below the card. A folded
+  // resting card is the phone's smallest surface, so it shows no line; the
+  // counts return with the expanded card. The composer publishes the line's
+  // presence so the pane footer can drop the home-indicator band the chips
+  // already fill.
+  const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
+
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
@@ -1024,6 +1031,7 @@ export function Composer({
     <div
       className={CLASS.composer}
       ref={attachComposerRoot}
+      data-composer-activity-line={showActivityLine ? "true" : undefined}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
       onPointerDown={holdComposerPress}
@@ -1258,8 +1266,10 @@ export function Composer({
       )}
       {/* The phone's activity counts are a glance line below the card, the
           same place the desktop status bar puts them. They are not a control
-          in the writing row. */}
-      {isMobile && !ownsActivityCounts && (!ended || showFollowUpCard) && (
+          in the writing row. A folded resting card is the phone's smallest
+          surface, so it shows no line: the counts come back with the expanded
+          card, which is also when the transcript can spare the height. */}
+      {showActivityLine && (
         <div className={CLASS.activityRow} data-testid="composer-activity-line">
           <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>
