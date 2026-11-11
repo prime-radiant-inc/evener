@@ -489,6 +489,11 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               activityChipCount: activityChips.filter((chip) => visible(chip)).length,
               activityLine: rect(activityLine),
               activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
+              // The resting field must keep most of the card's width. A leading
+              // slot reserving width it cannot fill starves the field while
+              // looking like a rendering quirk rather than a clipped control.
+              card: rect(cards[0]),
+              field: rect(form?.querySelector('[class*="field"]')),
               modelTrigger: modelTrigger
                 ? {
                     visible: visible(modelTrigger),
@@ -559,8 +564,15 @@ function assertComposerFooter(measurement, width) {
     // their own line below the card, outside the form, in every focus state.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
-    if (measurement.rowChipCount !== 0)
-      failures.push("activity chips must not ride in the composer control row");
+    if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
+    if (measurement.focus !== "editor" && measurement.card !== null && measurement.field !== null) {
+      const fieldShare = measurement.field.width / measurement.card.width;
+      if (fieldShare < 0.5) {
+        failures.push(
+          `resting field takes ${Math.round(fieldShare * 100)}% of the card (${JSON.stringify(measurement.field)} in ${JSON.stringify(measurement.card)})`,
+        );
+      }
+    }
     if (measurement.activityChipCount === 0) failures.push("phone activity line is missing its chips");
     if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
     if (
