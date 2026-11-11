@@ -145,26 +145,29 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 		if !ok {
 			return err
 		}
+		wait := delay
 		var remaining time.Duration
 		if wallBudgeted {
 			remaining = rateLimitRemaining(ctx, opts.Policy, start, ownerBudget)
 			if remaining <= 0 {
 				return rateLimitBudgetExhausted(ctx, err)
 			}
-			if delay > remaining {
+			if wait > remaining {
 				// Wait only to the wall-budget boundary; do not start another
 				// attempt after the policy has expired.
-				delay = remaining
+				wait = remaining
 			}
 		}
 		if opts.Policy.OnRetry != nil {
-			opts.Policy.OnRetry(err, n+1, delay)
+			opts.Policy.OnRetry(err, n+1, wait)
 		}
 		var waitErr error
 		if wallBudgeted && opts.Policy.Quota != nil && opts.Policy.QuotaKey != "" {
 			waitErr = opts.Policy.Quota.Wait(ctx, QuotaWait{
-				Key:      opts.Policy.QuotaKey,
-				Lane:     opts.Policy.QuotaLane,
+				Key:  opts.Policy.QuotaKey,
+				Lane: opts.Policy.QuotaLane,
+				// Publish the provider's full retry delay; Budget bounds only
+				// this caller's wait.
 				Cooldown: delay,
 				Budget:   remaining,
 			}, sleep)
@@ -174,7 +177,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 				}
 			}
 		} else {
-			waitErr = sleep(ctx, delay)
+			waitErr = sleep(ctx, wait)
 		}
 		if waitErr != nil {
 			return waitErr

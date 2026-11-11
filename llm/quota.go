@@ -38,7 +38,9 @@ type QuotaWait struct {
 	// Lane is this session's priority; the zero value is root.
 	Lane QuotaLane
 	// Cooldown is the minimum wait this group asks for. A longer cooldown
-	// another session already recorded wins.
+	// another session already recorded wins. It is the full retry delay even
+	// when Budget is shorter, so other sessions learn the provider's real
+	// cooldown instead of this caller's clipped wait.
 	Cooldown time.Duration
 	// Budget bounds this wait. Callers pass the same remaining wall/run
 	// budget they use for local backoff, so a shared cooldown can never carry
@@ -66,9 +68,10 @@ const (
 var errQuotaWaitExhausted = errors.New("quota cooldown outlived the retry budget")
 
 // QuotaCoordinator shares one provider instance's rate-limit cooldown across
-// sessions and processes on this host. State lives in one JSON file per
-// provider under Dir, guarded by an advisory file lock; there is no daemon and
-// no in-process state to diverge from what another process sees.
+// sessions and processes on this host. State lives in one <provider>.json file
+// per provider under Dir, guarded by an advisory <provider>.json.lock file;
+// there is no daemon and no in-process state to diverge from what another
+// process sees.
 //
 // The coordinator is best effort. If Dir is unusable, Wait falls back to the
 // session's own cooldown, exactly the behavior a policy without a coordinator
@@ -121,49 +124,120 @@ func (c *QuotaCoordinator) Wait(ctx context.Context, req QuotaWait, sleep SleepF
 		return err
 	}
 	token := newQuotaToken()
-	if err := c.reportAndEnqueue(ctx, req, token); err != nil {
+	waited := time.Duration(0)
+	reportStart := c.clock()
+	reportCtx, cancelReport := quotaContext(ctx, req.Budget, waited)
+	err := c.reportAndEnqueue(reportCtx, req, token)
+	cancelReport()
+	waited += max(c.clock().Sub(reportStart), 0)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// Coordination is best effort: a state root that cannot be used keeps
 		// the per-session cooldown instead of failing the model call.
-		return quotaSleepWithin(ctx, sleep, req.Cooldown, req.Budget)
+		remaining, ok := quotaBudgetRemaining(req.Budget, waited)
+		if !ok {
+			return errQuotaWaitExhausted
+		}
+		return quotaSleepWithin(ctx, sleep, req.Cooldown, remaining)
 	}
 	claimed := false
 	defer func() {
 		if !claimed {
-			_ = c.dropWaiter(ctx, req.Key, token) // best-effort lease cleanup
+			// Cleanup is bound by what is left of the retry budget too, so a
+			// suspended lock holder cannot prolong a turn that is already done
+			// waiting.
+			cleanupCtx, cancelCleanup := quotaContext(ctx, req.Budget, waited)
+			defer cancelCleanup()
+			_ = c.dropWaiter(cleanupCtx, req.Key, token) // best-effort lease cleanup
 		}
 	}()
-	waited := time.Duration(0)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if req.Budget > 0 && waited >= req.Budget {
+		remaining, ok := quotaBudgetRemaining(req.Budget, waited)
+		if !ok {
 			return errQuotaWaitExhausted
 		}
-		remaining := time.Duration(0)
-		if req.Budget > 0 {
-			remaining = req.Budget - waited
-		}
-		claimedNow, next, err := c.step(ctx, req.Key, token, req.Lane, remaining)
+		stepStart := c.clock()
+		stepCtx, cancelStep := quotaContext(ctx, req.Budget, waited)
+		claimedNow, next, err := c.step(stepCtx, req.Key, token, req.Lane, remaining)
+		cancelStep()
+		waited += max(c.clock().Sub(stepStart), 0)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				// A canceled wait must not turn into a dispatch.
 				return ctxErr
 			}
-			// The state store became unusable mid-wait. The attempt has
-			// already announced its retry; dispatch it rather than blocking
-			// the caller on quota bookkeeping.
-			return nil
+			// The state store became unusable mid-wait. The attempt has already
+			// announced its retry, so wait out the rest of this session's own
+			// cooldown rather than dispatching immediately.
+			return waitOutCooldown(ctx, sleep, req, waited)
 		}
 		if claimedNow {
 			claimed = true
 			return nil
+		}
+		if req.Budget > 0 {
+			left, ok := quotaBudgetRemaining(req.Budget, waited)
+			if !ok {
+				return errQuotaWaitExhausted
+			}
+			if next > left {
+				next = left
+			}
 		}
 		if err := sleep(ctx, next); err != nil {
 			return err
 		}
 		waited += next
 	}
+}
+
+// quotaBudgetRemaining reports how much of budget is left after spent. An
+// unbounded budget always reports ok. A bounded budget that is fully spent
+// reports ok=false, which the caller maps to errQuotaWaitExhausted.
+func quotaBudgetRemaining(budget, spent time.Duration) (time.Duration, bool) {
+	if budget <= 0 {
+		return 0, true
+	}
+	if spent >= budget {
+		return 0, false
+	}
+	return budget - spent, true
+}
+
+// quotaContext bounds one coordination step -- a lock acquisition and its
+// state write -- by the part of budget still unspent. An unbounded budget
+// leaves the caller's context alone. A spent budget yields an already-expired
+// context, so even cleanup cannot block on a suspended lock holder.
+func quotaContext(ctx context.Context, budget, spent time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, max(budget-spent, 0))
+}
+
+// waitOutCooldown sleeps whatever remains of this group's own cooldown after a
+// state-store failure mid-wait, clipped to the budget left for the wait. A
+// retry must not dispatch before the backoff it already announced.
+func waitOutCooldown(ctx context.Context, sleep SleepFunc, req QuotaWait, waited time.Duration) error {
+	left := req.Cooldown - waited
+	if left <= 0 {
+		return nil
+	}
+	if req.Budget > 0 {
+		remaining, ok := quotaBudgetRemaining(req.Budget, waited)
+		if !ok {
+			return errQuotaWaitExhausted
+		}
+		if left > remaining {
+			left = remaining
+		}
+	}
+	return sleep(ctx, left)
 }
 
 // reportAndEnqueue pushes this group's cooldown and joins the waiter queue in
@@ -232,7 +306,7 @@ func (c *QuotaCoordinator) withState(ctx context.Context, key string, fn func(*q
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return err
 	}
-	path := filepath.Join(c.dir, quotaFileName(key))
+	path := c.statePath(key)
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
@@ -262,6 +336,13 @@ func (c *QuotaCoordinator) withState(ctx context.Context, key string, fn func(*q
 		return err
 	}
 	return fsatomic.WriteWithoutSync(path, data, 0o600)
+}
+
+// statePath names a provider instance's JSON state file. The .json suffix keeps
+// a state path from ever colliding with another key's ".lock" guard file:
+// without it, key "openai.lock"'s state would replace "openai"'s locked inode.
+func (c *QuotaCoordinator) statePath(key string) string {
+	return filepath.Join(c.dir, quotaFileName(key)+".json")
 }
 
 func pruneQuotaWaiters(st *quotaState, now time.Time) {
