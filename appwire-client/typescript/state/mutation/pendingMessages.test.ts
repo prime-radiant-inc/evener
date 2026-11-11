@@ -535,6 +535,33 @@ test("a confirmed queue entry joins a later promotion to the same row", () => {
   expect(rows[0]).toMatchObject({ id: "m1", method: "promote", state: "steering", text: "queued" });
 });
 
+test("a canceled promotion keeps its own row instead of merging with its expected queue entry", () => {
+  const promote = local("m2", "turn/promoteQueuedAsSteer", "steering", {
+    state: "canceled",
+    payload: {
+      ref: "ref_a",
+      input: textInput("steering"),
+      clientMutationId: "m2",
+      expectedEntryId: "q1",
+    },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["queued"],
+      preview: ["queued"],
+    },
+  });
+  const rows = project({ outbox: [promote], model });
+  expect(rows).toHaveLength(2);
+  expect(rows.find((row) => row.id === "m1")).toMatchObject({ state: "queued", queueEntryId: "q1" });
+  expect(rows.find((row) => row.id === "m2")).toMatchObject({ state: "canceled" });
+  expect(rows.find((row) => row.id === "m2")?.outbox).toBeDefined();
+});
+
 test("a refused queue cancellation stays visible as a control failure", () => {
   const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
     recoveryReason: "the queue moved",

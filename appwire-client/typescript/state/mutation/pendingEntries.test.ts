@@ -388,22 +388,27 @@ test("a promote's display input previews in the entry", () => {
   ]);
 });
 
-test("a promote names the queued entry it steers with; other methods name none", () => {
+test("only a confirmed queue entry, never a promote's expected entry, names lineage", () => {
   const promote = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
   const promoteRecord: MutationOutboxRecord = {
     ...promote,
     payload: { ...promote.payload, expectedEntryId: "queue_3" },
   };
-  const steer = outbox("mutation_2", "turn/steer", "hello");
-  const steerRecord: MutationOutboxRecord = { ...steer, payload: { ...steer.payload, expectedEntryId: "queue_4" } };
+  const confirmed: MutationOutboxRecord = {
+    ...outbox("mutation_2", "turn/promoteQueuedAsSteer", ""),
+    queueEntryIds: ["queue_4"],
+  };
   const entries = reconcilePendingEntries(
     "ref_a",
-    [promoteRecord, steerRecord],
+    [promoteRecord, confirmed],
     model(),
     NOTHING_SUBMITTED_HERE,
     UNATTRIBUTED_ONLY,
   );
-  expect(entries.map((entry) => entry.queueEntryId)).toEqual(["queue_3", undefined]);
+  expect(entries.map((entry) => [entry.id, entry.queueEntryId])).toEqual([
+    ["mutation_1", undefined],
+    ["mutation_2", "queue_4"],
+  ]);
 });
 
 test("a drain names the queue revision it steers with", () => {

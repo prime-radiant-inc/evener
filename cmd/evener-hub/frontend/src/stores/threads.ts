@@ -2481,8 +2481,8 @@ function getMutationRuntime(): MutationRuntime | null {
   // so a settle for a row this tab never registered still invalidates that
   // ref's in-flight reads (see noteMutationStateChange).
   const settleReceipt = storage.settleReceipt.bind(storage);
-  storage.settleReceipt = async (clientMutationId, projectionState) => {
-    const settled = await settleReceipt(clientMutationId, projectionState);
+  storage.settleReceipt = async (clientMutationId, projectionState, queueEntryIds) => {
+    const settled = await settleReceipt(clientMutationId, projectionState, queueEntryIds);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
@@ -5955,11 +5955,13 @@ async function publishAndReconcileThreadHydration(
   // other caller leaves this undefined for the ordinary target-wide reopen.
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
+  onPublished?: (model: ThreadModel) => void,
 ): Promise<ThreadModel | null> {
   if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  onPublished?.(published);
   // A published replace that adopted the outgoing repository's pending
   // recorded-range recovery needs the chain's successor against the NEW
   // display — armed here, after the publish, so the successor's
@@ -6672,7 +6674,9 @@ function handleNotification(n: AnyNotification): void {
     // when the projected model has not exposed the item yet. Only an ignored
     // or invalidated frame must leave the pending copy alone.
     const historyInvalid =
-      settledModel?.history?.invalidatedAtGeneration !== undefined || settledModel?.history?.awaited !== undefined;
+      settledModel?.history?.invalidatedAtGeneration !== undefined ||
+      settledModel?.history?.awaited !== undefined ||
+      settledModel?.history?.failed !== undefined;
     const frameEpoch =
       n.method === "history/updated" && typeof n.params.epoch === "number" ? n.params.epoch : undefined;
     const staleEpoch =
@@ -6706,11 +6710,23 @@ function handleNotification(n: AnyNotification): void {
       pendingConsumedSettlements.set(settlementRef, pending);
       const client = getWiredClient();
       if (client) {
-        void handleReady(client, getReadyEpoch(), settlementRef).finally(() => {
-          const ids = pendingConsumedSettlements.get(settlementRef);
-          pendingConsumedSettlements.delete(settlementRef);
-          if (ids && ids.size > 0) void runtime.dispatcher.reconcileIdentities(ids);
-        });
+        let published = false;
+        void handleReady(client, getReadyEpoch(), settlementRef, {
+          onTargetPublished: () => {
+            published = true;
+          },
+        })
+          .then(() => {
+            const ids = pendingConsumedSettlements.get(settlementRef);
+            pendingConsumedSettlements.delete(settlementRef);
+            // A superseded or failed read proves nothing about the replacement.
+            // Keep the consumed display copy until an authoritative hydration
+            // publishes the model that retires it.
+            if (published && ids && ids.size > 0) void runtime.dispatcher.reconcileIdentities(ids);
+          })
+          .catch(() => {
+            pendingConsumedSettlements.delete(settlementRef);
+          });
       }
     }
     if (runtime && retireIds.length > 0) {
@@ -6999,6 +7015,8 @@ interface TrackedRefreshOptions {
   intent?: HydrationIntent;
   /** False when the caller already holds a wider completion registration. */
   registerCompletion?: boolean;
+  /** Runs only when this refresh publishes a current authoritative model. */
+  onPublished?: (model: ThreadModel) => void;
 }
 
 async function refreshTrackedThread(
@@ -7079,7 +7097,14 @@ async function refreshTrackedThreadNow(
       throw error;
     }
     if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
-    return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId, intent);
+    return publishAndReconcileThreadHydration(
+      ref,
+      pending,
+      result,
+      reopenOnlyClientMutationId,
+      intent,
+      options.onPublished,
+    );
   });
   if (registerCompletion) registerHydrationSettlement(ref, hydration);
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
@@ -7178,6 +7203,7 @@ async function handleReady(
     suppressTargetDispatch?: () => boolean;
     reopenOnlyClientMutationId?: string;
     replayAcceptedCopies?: boolean;
+    onTargetPublished?: (model: ThreadModel) => void;
   },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -7203,6 +7229,9 @@ async function handleReady(
       refreshTrackedThread(client, epoch, ref, targetedResync, {
         reopenOnlyClientMutationId: options?.reopenOnlyClientMutationId,
         intent: hydrationIntentFor(ref),
+        ...(targetRef !== undefined && ref === targetRef && options?.onTargetPublished
+          ? { onPublished: options.onTargetPublished }
+          : {}),
       }),
     ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),

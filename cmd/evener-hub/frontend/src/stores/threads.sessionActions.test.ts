@@ -5,6 +5,7 @@ import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils
 import "fake-indexeddb/auto";
 import {
   type AnyNotification,
+  ErrorTranscriptHistoryFailed,
   hydrateThread,
   type NotesHumanSetResponse,
   RequestTimeoutError,
@@ -289,6 +290,57 @@ test("an ignored history frame keeps the accepted copy until a visible item sett
   fake.emitNotification(history(1));
   await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1")) === undefined);
   expect(await storage.getOptimistic("m1")).toBeUndefined();
+  storage.close();
+});
+
+test("a failed history read keeps the accepted copy when a frame names its identity", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("thread/read", () => {
+    throw new WireError("thread history failed", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+  });
+  await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow();
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBeDefined());
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  fake.emitNotification({
+    method: "history/updated",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_m1", status: "inProgress", itemsView: "full", version: 1 }],
+      items: [
+        {
+          id: "item_m1",
+          turnId: "turn_m1",
+          type: "userMessage",
+          text: "hello",
+          clientMutationId: "m1",
+          version: 1,
+        },
+      ],
+    },
+  });
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
   storage.close();
 });
 
@@ -1683,6 +1735,30 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
+  test("a queue receipt's confirmed lineage reaches the accepted copy", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        ...mutationReceipt(params.clientMutationId),
+        projectionState: "pending",
+        queueEntryIds: ["entry_1"],
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(async () => {
+      const [accepted] = await storage.listOptimistic("ref_a");
+      return accepted?.queueEntryIds?.includes("entry_1") === true;
+    });
+
+    const [accepted] = await storage.listOptimistic("ref_a");
+    expect(accepted?.queueEntryIds).toEqual(["entry_1"]);
+    storage.close();
+  });
+
   test("queue includes a base64 image attachment when provided", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -1835,6 +1911,47 @@ describe("useThreadsStore.drainAsSteer", () => {
       settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
     }
     expect(settled).toBe(true);
+    inspector.close();
+  });
+
+  test("a consumed queue row survives a failed authoritative read", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
+    }));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    const read = deferred<ThreadReadResponse>();
+    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+    fake.on("thread/read", () => read.promise);
+    const notification = {
+      method: "thread/queueChanged" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    };
+    fake.emitNotification(notification);
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > readsBefore);
+    read.reject(new Error("authoritative read failed"));
+    await flushIndexedDBUntil(() => false);
+
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+
+    fake.on("thread/read", () => readResponse("ref_a"));
+    fake.emitNotification(notification);
+    await flushIndexedDBUntil(async () => (await inspector.getOptimistic(record.clientMutationId)) === undefined);
+
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
     inspector.close();
   });
 

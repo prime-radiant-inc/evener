@@ -893,12 +893,18 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         await this.#discardSupersededNoteRecovery(transaction, subject);
         const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
         const retained = retainsAcceptedCopy(subject, projectionState);
-        if (retained) {
+        // The receipt's accepted copy must describe the composition the wire
+        // actually carried. An edited recovery's current payload is unsent
+        // work, so retain its frozen original input instead.
+        const retainedSource = retained ? retainedDisplaySource(subject) : undefined;
+        if (retainedSource) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
           await requestResult(
             optimistic.put(
-              acceptedRecord(queueEntryIds && queueEntryIds.length > 0 ? { ...subject, queueEntryIds } : subject),
+              acceptedRecord(
+                queueEntryIds && queueEntryIds.length > 0 ? { ...retainedSource, queueEntryIds } : retainedSource,
+              ),
             ),
           );
         } else if (optimisticRecord) {

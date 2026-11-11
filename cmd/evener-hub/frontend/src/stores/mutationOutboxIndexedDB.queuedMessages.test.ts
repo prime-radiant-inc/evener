@@ -1676,6 +1676,36 @@ test("a retained copy from an edited recovery keeps the frozen original input", 
   expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
 });
 
+test("a retained receipt from an edited recovery keeps the frozen original input", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  const originalInput = (queued.payload as { input: InputItem[] }).input;
+  const originalText = originalInput[0]?.text ?? "";
+  await f.storage.markAttempted(queued.clientMutationId);
+  await f.storage.transferToRecovery(queued.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  const edited = await f.storage.updateRecoveryInput(
+    queued.clientMutationId,
+    [{ type: "text", text: "edited after refusal" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+
+  expect(await f.storage.settleReceipt(queued.clientMutationId, "pending")).toBe(true);
+
+  const optimistic = await f.storage.getOptimistic(queued.clientMutationId);
+  if (!optimistic) throw new Error("retained display copy missing");
+  expect((optimistic.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((await f.storage.getRecovery(queued.clientMutationId))?.compositionRevision).toBe(1);
+});
+
 test("a queue receipt stores its confirmed lineage on the accepted copy", async () => {
   const f = fixture();
   const queued = await f.storage.enqueueIntent(queuedIntent());

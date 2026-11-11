@@ -38,8 +38,9 @@ export interface PendingTurnEntry {
   // sends, never the daemon's session-wide projection of every client's), and
   // that answer cannot change when a hydrate lands.
   fromThisClient: boolean;
-  // The queued message a promote steers with, while a durable record of
-  // the promote is unsettled: the queue row it will replace.
+  // A queue entry a confirmed receipt or pending projection says this
+  // command's message owns. A promotion's expected entry is only a
+  // precondition and never appears here.
   queueEntryId?: string;
   // The queue revision a drain steers with, likewise: the queue it takes.
   queueRevision?: number;
@@ -249,7 +250,10 @@ function outboxEntry(
   // any state.
   if (record.state === "superseded") return undefined;
   const preview = inputPreview(outboxInput(record));
-  const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
+  // Only a receipt or pending projection may name the entry a command owns. A
+  // promotion's expectedEntryId is a precondition, not confirmed lineage: a
+  // canceled promotion never consumed that entry and must keep its own row.
+  const queueEntryId = record.queueEntryIds?.[0];
   const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,
