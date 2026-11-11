@@ -735,21 +735,6 @@ type scriptedPostWriteAddr string
 
 func (*scriptedPostWriteReadError) Error() string { return "scripted post-write read failure" }
 
-func TestAPILogTransportUsesStandardCompression(t *testing.T) {
-	transport := &responseHeaderTimeoutTransport{base: &http.Transport{DisableCompression: false}}
-	if !transport.APILogTransportUsesStandardCompression() {
-		t.Fatal("transport with compression should return true")
-	}
-	transport2 := &responseHeaderTimeoutTransport{base: &http.Transport{DisableCompression: true}}
-	if transport2.APILogTransportUsesStandardCompression() {
-		t.Fatal("transport without compression should return false")
-	}
-	transport3 := &responseHeaderTimeoutTransport{}
-	if transport3.APILogTransportUsesStandardCompression() {
-		t.Fatal("nil-base transport should return false")
-	}
-}
-
 // CloseIdleConnections reaches the wrapped transport: a kept-alive connection
 // sitting idle in its pool is closed.
 func TestResponseHeaderTimeoutTransportCloseIdleConnections(t *testing.T) {

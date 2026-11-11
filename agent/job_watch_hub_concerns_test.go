@@ -39,9 +39,7 @@ func TestHubWatchEquivalentSelectorsPreserveDurableState(t *testing.T) {
 			if err := jm.onHubObservation(first.WatchID, question); err != nil {
 				t.Fatal(err)
 			}
-			if err := jm.suspendHubWatch(first.WatchID); err != nil {
-				t.Fatal(err)
-			}
+			jm.suspendHubWatch(first.WatchID)
 			before := loadWatchSendRecord(t, jm)
 			if len(before.Pending) != 2 {
 				t.Fatalf("pending=%d, want question and interruption", len(before.Pending))

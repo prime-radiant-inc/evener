@@ -555,7 +555,7 @@ func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *te
 		t.Fatalf("resolved anthropic image history = %d, want %d: the row's media family decides", got, want)
 	}
 	openai := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}
-	if got, want := EstimateMessagesInputTokensForResolved(openai, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openai, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("resolved openai image history = %d, want %d", got, want)
 	}
 	// Without a row there is no identity to key on, so the generic fallback stands.
@@ -590,7 +590,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *t
 	}
 	// No surface: the protocol is the next-best axis.
 	openaiChatRow := registry.Resolved{Instance: "custom", Protocol: registry.ProtocolOpenAIChat}
-	if got, want := EstimateMessagesInputTokensForResolved(openaiChatRow, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openaiChatRow, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("openai-chat image history = %d, want %d", got, want)
 	}
 }
@@ -620,7 +620,7 @@ func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(
 		Instance: "gateway", ModelID: "gpt-5.2", Protocol: registry.ProtocolAnthropic,
 		Model: registry.Model{Family: "gpt"},
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(anthropicProtocolGPT, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(anthropicProtocolGPT, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("anthropic-protocol gpt image history = %d, want %d: the family outranks the protocol", got, want)
 	}
 	// A family with no image-token rules of its own leaves the protocol in charge.
@@ -698,7 +698,7 @@ func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *tes
 	}
 	for _, modelID := range []string{"o", "o3", "o4-mini", "o-mini", "o-pro", "openai/o3", "openai.o4"} {
 		row := registry.Resolved{Instance: "gateway", ModelID: modelID, Protocol: registry.ProtocolAnthropic}
-		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 			t.Fatalf("o-series row %q image history = %d, want %d: the o-series is OpenAI's", modelID, got, want)
 		}
 	}
@@ -1124,7 +1124,7 @@ func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(
 		Instance: "anthropic", ModelID: "gateway-zz",
 		Protocol: registry.ProtocolOpenAIResponses,
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(aliased, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(aliased, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("aliased row image history = %d, want %d: the protocol decides, not the instance alias", got, want)
 	}
 }
@@ -1162,7 +1162,7 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 		Instance: "gateway", ModelID: "o4-mini",
 		Protocol: registry.ProtocolAnthropic, Model: registry.Model{Family: "o"},
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("o-series image history = %d, want %d: the o family is OpenAI's", got, want)
 	}
 	// gpt-oss is generic per §6.1, not an OpenAI claim, and the carve-out has to
@@ -1257,7 +1257,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceAndProtocolNameTheFamily(
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
 	}}}
 	openaiSurfaced := registry.Resolved{Instance: "gateway", ModelID: "zz", Surface: registry.SurfaceOpenAI}
-	if got, want := EstimateMessagesInputTokensForResolved(openaiSurfaced, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openaiSurfaced, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("openai-surfaced row image history = %d, want %d: the surface names the family", got, want)
 	}
 	googleProtocol := registry.Resolved{Instance: "gateway", ModelID: "mystery-zz", Protocol: registry.ProtocolGoogle}

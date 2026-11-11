@@ -61,7 +61,7 @@ func FuzzTokenEstimators(f *testing.F) {
 			if a := estimateAnthropicImageTokens(w, h); a < 0 {
 				t.Fatalf("anthropic estimate negative: %d (%dx%d)", a, w, h)
 			}
-			if o := estimateOpenAIImageTokens(w, h, detail); o < 0 {
+			if o := estimateOpenAIImageTokens(w, h); o < 0 {
 				t.Fatalf("openai estimate negative: %d (%dx%d, %q)", o, w, h, detail)
 			}
 		}
