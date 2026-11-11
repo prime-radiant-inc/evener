@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -87,24 +88,29 @@ func listModules(dir string) ([]module, error) {
 	// module cache, so its license file would be unavailable. Downloading the
 	// graph is best-effort: a failure leaves those licenses "unknown" while the
 	// version diff still decides the check.
-	download := exec.Command("go", "mod", "download", "all")
+	download := exec.CommandContext(context.Background(), "go", "mod", "download", "all")
 	download.Dir = dir
 	download.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
 	_ = download.Run()
 
-	cmd := exec.Command("go", "list", "-m", "-json", "all")
+	cmd := exec.CommandContext(context.Background(), "go", "list", "-m", "-json", "all")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
 	out, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
 		}
 		return nil, err
 	}
+	return decodeModules(bytes.NewReader(out))
+}
+
+// decodeModules decodes the stream of JSON objects `go list -m -json all`
+// prints.
+func decodeModules(reader io.Reader) ([]module, error) {
 	var modules []module
-	decoder := json.NewDecoder(bytes.NewReader(out))
+	decoder := json.NewDecoder(reader)
 	for {
 		var m module
 		if err := decoder.Decode(&m); errors.Is(err, io.EOF) {
@@ -123,13 +129,13 @@ func listModulesAt(revision string) ([]module, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
-	add := exec.Command("git", "worktree", "add", "--detach", dir, revision)
+	defer func() { _ = os.RemoveAll(dir) }()
+	add := exec.CommandContext(context.Background(), "git", "worktree", "add", "--detach", dir, revision)
 	if out, err := add.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add %s: %w: %s", revision, err, strings.TrimSpace(string(out)))
 	}
 	defer func() {
-		_ = exec.Command("git", "worktree", "remove", "--force", dir).Run()
+		_ = exec.CommandContext(context.Background(), "git", "worktree", "remove", "--force", dir).Run()
 	}()
 	return listModules(dir)
 }
