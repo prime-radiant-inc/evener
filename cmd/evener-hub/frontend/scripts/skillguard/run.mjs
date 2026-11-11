@@ -872,19 +872,28 @@ export class Driver {
     return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
   }
 
-  queueStripExpr(ref = null) {
+  // The queue strip's own section, or null. One DOM anchor for the reader,
+  // the failure dump and the presses: the strip's heading is the only stable
+  // marker the component gives it.
+  queueStripRootExpr(ref = null) {
     return `(() => {
       const root = ${this.paneOrDocumentExpr(ref)};
       if (!root) return null;
       const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
-      if (!header) return null;
-      const strip = header.closest("section");
+      return header?.closest("section") ?? null;
+    })()`;
+  }
+
+  queueStripExpr(ref = null) {
+    return `(() => {
+      const strip = ${this.queueStripRootExpr(ref)};
+      if (!strip) return null;
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
         kind: li.dataset.kind ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
-      return { header: header.textContent, rows };
+      return { header: strip.querySelector("h3")?.textContent ?? "", rows };
     })()`;
   }
 
@@ -1660,6 +1669,48 @@ export class Driver {
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
+  // clickQueueRowControl presses the named control on the queue strip row
+  // whose own text carries rowText. The strip renders one control per row kind
+  // and re-renders as its durable records settle, so a document-wide
+  // first-match lookup can press another row's (possibly disabled) control and
+  // then lose the target's control when the target row settles (#5788).
+  // Finding, hit-testing and pressing in one page turn keeps the pressed
+  // element the one that was checked.
+  async clickQueueRowControl({ rowText, label, ref = null }) {
+    const selector = `button[aria-label="${label}"]`;
+    const result = await evaluate(
+      this.send,
+      `(() => {
+        const strip = ${this.queueStripRootExpr(ref)};
+        if (!strip) return "missing";
+        const button = [...strip.querySelectorAll(${JSON.stringify(selector)})]
+          .find((candidate) => (candidate.closest("li")?.textContent ?? "").includes(${JSON.stringify(rowText)}));
+        if (!button) return "missing";
+        if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
+        if ((${uncoveredCenter})(button, "center") === null) return "covered";
+        button.click();
+        return "clicked";
+      })()`,
+    );
+    const where = `the queue row carrying ${JSON.stringify(rowText)}`;
+    if (result === "missing") throw new Error(`clickQueueRowControl: no ${label} control on ${where}`);
+    if (result === "disabled") throw new Error(`clickQueueRowControl: ${label} is disabled on ${where}`);
+    if (result === "covered") throw new Error(`clickQueueRowControl: ${label} is covered at its center on ${where}`);
+    if (result !== "clicked") throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
+  }
+
+  // True while the strip still holds a row carrying rowText. The queue edit
+  // restores the composer before its durable cancel removes the row; this
+  // predicate lets that removal be the awaited signal. Boolean, so each poll
+  // sends no row prose or button labels over CDP.
+  queueRowPresentExpr(rowText, ref = null) {
+    return `(() => {
+      const strip = ${this.queueStripRootExpr(ref)};
+      return strip !== null && [...strip.querySelectorAll("li")]
+        .some((li) => (li.textContent ?? "").includes(${JSON.stringify(rowText)}));
+    })()`;
+  }
+
   // turnTextsExpr evaluates to one session's mounted transcript text per turn:
   // the pane's turn-blocks that share a data-turn-id, concatenated, because a
   // turn can render as several segments (TranscriptBody's turnRow). Scoped to
@@ -2105,9 +2156,23 @@ async function runScenarios(driver) {
   // click is effect-verified and retried: the strip re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
-    locate: () => driver.click("button[aria-label='Edit message']"),
-    effectExpr: `(() => { const state = ${driver.composerStateExpr(driver.sessionA)};
-      return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
+    locate: () => driver.clickQueueRowControl({
+      rowText: PROSE.queue1,
+      label: "Edit message",
+      ref: driver.sessionA,
+    }),
+    // The press restores the text to the composer synchronously and then
+    // cancels the durable queue entry. Waiting only for the composer text
+    // released the guard while that cancel was still updating the entry, so a
+    // re-click could find the control gone (#5788) and the next submit could
+    // fence against a recovery row that changed underneath it (#4916). The
+    // awaited signal is the whole edit transition: the composer carries the
+    // text and the row has left the queue.
+    effectExpr: `(() => {
+      const state = ${driver.composerStateExpr(driver.sessionA)};
+      if (!state || !state.text.includes(${JSON.stringify(PROSE.queue1)})) return null;
+      return ${driver.queueRowPresentExpr(PROSE.queue1, driver.sessionA)} ? null : true;
+    })()`,
     label: "Edit message",
   });
   const returned = await driver.composerState(driver.sessionA);
