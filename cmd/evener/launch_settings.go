@@ -10,8 +10,8 @@ type launchSettings struct {
 }
 
 // resolveLaunchSettings validates the provider idle timeout, API-log and
-// compact-at-percent flags and resolves the OpenAI Responses continuation mode. A bad value fails the
-// launch before any state is created.
+// compact-at-percent flags and resolves the OpenAI Responses continuation
+// mode. A bad value fails the launch before any state is created.
 func resolveLaunchSettings(providerIdleTimeout, apiLog, openAIResponsesContinuation string, compactAtPercent int) (launchSettings, error) {
 	if _, err := agent.ParseProviderIdleTimeout(providerIdleTimeout); err != nil {
 		return launchSettings{}, err
