@@ -307,18 +307,15 @@ func TestListSessions_OutcomeHint_SkipsCompactionFoldCopies(t *testing.T) {
 		toolCall("read_file", `{"path":"a"}`),
 	}})
 	finalAssistant := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-		toolCall("communicate", `{"message":"done","end_turn":true}`),
+		communicateCall(true, ""),
 	}})
-	ord0 := uint64(0)
-	replayedEarlier := earlierAssistant
-	replayedEarlier.OriginalOrdinal = &ord0
 	writeSessionsFixtureSession(t, bucket, sid,
 		transcript.Header{CreatedAt: time.Now(), Model: "m"},
 		[]schema.Turn{
 			earlierAssistant,
 			finalAssistant,
 			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
-			replayedEarlier,
+			foldCopy(earlierAssistant, 0),
 		},
 		schema.SessionMeta{TurnCount: 2},
 		nil,

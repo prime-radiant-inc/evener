@@ -143,11 +143,6 @@ func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
 	results := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 		toolResult("update_goal", "ok", false),
 	}})
-	ord1, ord2 := uint64(1), uint64(2)
-	assistantCopy := assistant
-	assistantCopy.OriginalOrdinal = &ord1
-	resultsCopy := results
-	resultsCopy.OriginalOrdinal = &ord2
 
 	turns := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
@@ -155,8 +150,8 @@ func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
 		results,
 		schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
 		schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
-		assistantCopy,
-		resultsCopy,
+		foldCopy(assistant, 1),
+		foldCopy(results, 2),
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 

@@ -467,11 +467,6 @@ func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
 			healthToolResult("c2", "shell", "permission denied: /root/secret", true),
 		}})
 
-		withOrd := func(turn schema.Turn, ord uint64) schema.Turn {
-			turn.OriginalOrdinal = &ord
-			return turn
-		}
-
 		turns := []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("start")}}),
 			readCall,     // 1
@@ -484,13 +479,13 @@ func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
 			shellRes,     // 8
 			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
 			schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
-			withOrd(readCall, 1),
-			withOrd(readRes, 2),
-			withOrd(loopSteer, 3),
-			withOrd(staleNotif, 5),
-			withOrd(postDoneUser, 6),
-			withOrd(shellCall, 7),
-			withOrd(shellRes, 8),
+			foldCopy(readCall, 1),
+			foldCopy(readRes, 2),
+			foldCopy(loopSteer, 3),
+			foldCopy(staleNotif, 5),
+			foldCopy(postDoneUser, 6),
+			foldCopy(shellCall, 7),
+			foldCopy(shellRes, 8),
 		}
 		base, sid := rejectedSignatureFixture(t, turns)
 		h, err := TranscriptHealth(context.Background(), base, sid)
@@ -535,19 +530,14 @@ func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
 		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			communicateCall(true, ""),
 		}})
-		ord0, ord1 := uint64(0), uint64(1)
-		userCopy := userBeforeDone
-		userCopy.OriginalOrdinal = &ord0
-		notifCopy := notifBeforeDone
-		notifCopy.OriginalOrdinal = &ord1
 
 		turns := []schema.Turn{
 			userBeforeDone,
 			notifBeforeDone,
 			doneCall,
 			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
-			userCopy,
-			notifCopy,
+			foldCopy(userBeforeDone, 0),
+			foldCopy(notifBeforeDone, 1),
 		}
 		base, sid := rejectedSignatureFixture(t, turns)
 		h, err := TranscriptHealth(context.Background(), base, sid)
@@ -570,19 +560,14 @@ func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
 		shellRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 			healthToolResult("c1", "shell", "exit 1", true),
 		}})
-		ord1, ord2 := uint64(1), uint64(2)
-		callCopy := shellCall
-		callCopy.OriginalOrdinal = &ord1
-		resCopy := shellRes
-		resCopy.OriginalOrdinal = &ord2
 
 		turns := []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("run")}}),
 			shellCall,
 			shellRes,
 			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
-			callCopy,
-			resCopy,
+			foldCopy(shellCall, 1),
+			foldCopy(shellRes, 2),
 		}
 		base, sid := rejectedSignatureFixture(t, turns)
 		h, err := TranscriptHealth(context.Background(), base, sid)

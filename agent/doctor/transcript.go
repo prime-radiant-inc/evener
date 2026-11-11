@@ -33,6 +33,23 @@ func loadTranscript(path string) (transcriptDoc, error) {
 // loadTranscriptContext is loadTranscript that stops decoding, with ctx's
 // error, once ctx is cancelled.
 func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
+	return scanTranscriptContext(ctx, path, false)
+}
+
+// loadRecordedTranscript loads a session's recorded turns, omitting copies a
+// compaction fold re-appended after its markers (OriginalOrdinal != nil) whose
+// originals already appear earlier in the transcript. Callers that need
+// physical or read_transcript entry coordinates (Transcript, ScanTurnIDs) use
+// loadTranscript instead.
+func loadRecordedTranscript(path string) (transcriptDoc, error) {
+	return loadRecordedTranscriptContext(context.Background(), path)
+}
+
+func loadRecordedTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
+	return scanTranscriptContext(ctx, path, true)
+}
+
+func scanTranscriptContext(ctx context.Context, path string, skipFoldCopies bool) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
@@ -40,6 +57,9 @@ func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, err
 	defer file.Close() //nolint:errcheck // read-only file
 	var doc transcriptDoc
 	result, err := transcript.Scan(ctx, file, transcript.DefaultMaxLineBytes, func(_ []byte, entry transcript.Entry) error {
+		if skipFoldCopies && entry.Turn.OriginalOrdinal != nil {
+			return nil
+		}
 		doc.Entries = append(doc.Entries, entry)
 		return nil
 	})
@@ -48,12 +68,6 @@ func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, err
 	}
 	doc.Header = result.Header
 	return doc, nil
-}
-
-// isFoldCopy reports whether e is a copy a compaction fold re-appended after
-// its markers; its original entry already sits earlier in the transcript.
-func isFoldCopy(e transcript.Entry) bool {
-	return e.Turn.OriginalOrdinal != nil
 }
 
 // CountResult is the structural tool-invocation count plus the assistant-prose
@@ -74,15 +88,12 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 	if err != nil {
 		return CountResult{}, err
 	}
-	doc, err := loadTranscript(paths.TranscriptPath)
+	doc, err := loadRecordedTranscript(paths.TranscriptPath)
 	if err != nil {
 		return CountResult{}, err
 	}
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
 	for _, e := range doc.Entries {
-		if isFoldCopy(e) {
-			continue
-		}
 		for _, part := range e.Turn.Message.Content {
 			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == tool {
 				res.Calls++

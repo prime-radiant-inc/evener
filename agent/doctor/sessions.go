@@ -178,7 +178,7 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 // file's own size and mtime (bytes/last-activity), the meta (turn count,
 // subagent/observer facts), and the jobs fold (delegate count).
 func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
+	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -249,7 +249,7 @@ func sessionModels(headerModel, metaModel string) []string {
 // "none", not guessed at.
 func outcomeHint(doc transcriptDoc, resultTool string) string {
 	for _, e := range slices.Backward(doc.Entries) {
-		if isFoldCopy(e) || e.Turn.Kind != schema.TurnAssistant {
+		if e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
 		var resultCall *llm.ToolCallData
