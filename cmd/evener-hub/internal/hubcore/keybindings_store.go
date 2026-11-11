@@ -49,12 +49,13 @@ func (e *KeybindingsPostRenameError) Unwrap() []error { return []error{e.Err, Er
 // KeybindingsStore is the hub-authoritative store for user keybinding
 // overrides. One mutex serializes each durable update.
 type KeybindingsStore struct {
-	mu      sync.Mutex
-	fs      afero.Fs
-	root    string
-	state   keybindingsSnapshot
-	loadErr error
-	faults  keybindingsStoreFaults
+	mu          sync.Mutex
+	fs          afero.Fs
+	root        string
+	state       keybindingsSnapshot
+	loadErr     error
+	faults      keybindingsStoreFaults
+	onCommitted func(appwire.KeybindingsOverrides)
 }
 
 // NewKeybindingsStore opens the keybindings state below stateRoot. A malformed
@@ -108,6 +109,21 @@ func (s *KeybindingsStore) LoadErr() error {
 	return s.loadErr
 }
 
+// OnCommitted registers the store's one post-commit sink. It runs after a
+// patch actually advanced the published revision, with the new canonical
+// snapshot, including the post-rename-failure case where the state applied but
+// a follow-up durable step failed. The callback runs after the store unlocks,
+// so it may broadcast. A handler cannot bypass it: the only way to advance the
+// state is Patch.
+func (s *KeybindingsStore) OnCommitted(fn func(appwire.KeybindingsOverrides)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onCommitted = fn
+}
+
 // Patch validates and durably replaces the overrides using optimistic
 // revision checking. A durable error before rename leaves the old state
 // published; an error after rename publishes the new canonical state in
@@ -122,18 +138,24 @@ func (s *KeybindingsStore) Patch(params appwire.KeybindingsPatchParams) (appwire
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.loadErr != nil {
-		return appwire.KeybindingsOverrides{}, fmt.Errorf("keybindings state is unavailable: %w", s.loadErr)
+		err := fmt.Errorf("keybindings state is unavailable: %w", s.loadErr)
+		s.mu.Unlock()
+		return appwire.KeybindingsOverrides{}, err
 	}
 
 	if s.state.Revision != params.ExpectedRevision {
-		return appwire.KeybindingsOverrides{}, keybindingsConflict(s.state, params.ExpectedRevision)
+		err := keybindingsConflict(s.state, params.ExpectedRevision)
+		s.mu.Unlock()
+		return appwire.KeybindingsOverrides{}, err
 	}
 	if reflect.DeepEqual(s.state.Config, params.Config) {
-		return keybindingsSnapshotOverrides(s.state), nil
+		result := keybindingsSnapshotOverrides(s.state)
+		s.mu.Unlock()
+		return result, nil
 	}
 	if s.state.Revision == math.MaxUint64 {
+		s.mu.Unlock()
 		return appwire.KeybindingsOverrides{}, errors.New("keybindings revision overflow")
 	}
 
@@ -153,13 +175,20 @@ func (s *KeybindingsStore) Patch(params appwire.KeybindingsPatchParams) (appwire
 	if renamed {
 		s.state = next
 	}
+	result := keybindingsSnapshotOverrides(s.state)
+	committed := renamed
+	onCommitted := s.onCommitted
+	s.mu.Unlock()
+	if committed && onCommitted != nil {
+		onCommitted(result)
+	}
 	if err != nil {
 		if renamed {
 			return appwire.KeybindingsOverrides{}, &KeybindingsPostRenameError{Err: err}
 		}
 		return appwire.KeybindingsOverrides{}, err
 	}
-	return keybindingsSnapshotOverrides(s.state), nil
+	return result, nil
 }
 
 func keybindingsConflict(state keybindingsSnapshot, expected uint64) appwire.WireError {

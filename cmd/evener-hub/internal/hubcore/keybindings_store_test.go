@@ -50,6 +50,77 @@ func TestKeybindingsStorePatchIncrementsRevision(t *testing.T) {
 	}
 }
 
+// Issue #1634: the store owns the post-commit notification. A patch that
+// advances the published revision fires the sink once with the canonical
+// snapshot; a no-op, a conflict, and a pre-rename failure fire nothing.
+func TestKeybindingsStoreOnCommittedFiresOnlyForAnAppliedPatch(t *testing.T) {
+	store, err := NewKeybindingsStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed []appwire.KeybindingsOverrides
+	store.OnCommitted(func(overrides appwire.KeybindingsOverrides) {
+		committed = append(committed, overrides)
+	})
+	config := appwire.KeybindingsConfig{Version: 1, Rules: []appwire.KeybindingsRule{
+		{Action: "thread.new", Chord: new("ctrl+n")},
+	}}
+	if _, err := store.Patch(appwire.KeybindingsPatchParams{ExpectedRevision: 0, Config: config}); err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 1 || committed[0].Revision != 1 || !reflect.DeepEqual(committed[0].Rules, config.Rules) {
+		t.Fatalf("committed = %#v, want one revision-1 snapshot", committed)
+	}
+	// A no-op patch and a stale patch publish nothing, so they must not notify.
+	if _, err := store.Patch(appwire.KeybindingsPatchParams{ExpectedRevision: 1, Config: config}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(appwire.KeybindingsPatchParams{ExpectedRevision: 0, Config: config}); err == nil {
+		t.Fatal("stale patch succeeded")
+	}
+	if len(committed) != 1 {
+		t.Fatalf("committed = %#v, want no notification for a no-op or rejected patch", committed)
+	}
+}
+
+// A pre-rename failure leaves the old state published, so the sink must not
+// fire; a post-rename failure publishes the new state, so it must fire even
+// though Patch returns an error.
+func TestKeybindingsStoreOnCommittedFollowsThePublishedState(t *testing.T) {
+	config := appwire.KeybindingsConfig{Version: 1, Rules: []appwire.KeybindingsRule{
+		{Action: "thread.new", Chord: new("ctrl+n")},
+	}}
+	beforeRename, err := newKeybindingsStoreFS(afero.NewOsFs(), t.TempDir(), keybindingsStoreFaults{
+		BeforeRename: func() error { return errors.New("before rename failed") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	beforeRename.OnCommitted(func(appwire.KeybindingsOverrides) { before++ })
+	if _, err := beforeRename.Patch(appwire.KeybindingsPatchParams{ExpectedRevision: 0, Config: config}); err == nil {
+		t.Fatal("pre-rename failure returned no error")
+	}
+	if before != 0 {
+		t.Fatalf("commit sink fired %d times for an unapplied patch", before)
+	}
+
+	afterRename, err := NewKeybindingsStoreForTest(t.TempDir(), func() error { return errors.New("after rename failed") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after []appwire.KeybindingsOverrides
+	afterRename.OnCommitted(func(overrides appwire.KeybindingsOverrides) {
+		after = append(after, overrides)
+	})
+	if _, err := afterRename.Patch(appwire.KeybindingsPatchParams{ExpectedRevision: 0, Config: config}); err == nil {
+		t.Fatal("post-rename failure returned no error")
+	}
+	if len(after) != 1 || after[0].Revision != 1 {
+		t.Fatalf("committed = %#v, want the applied revision-1 snapshot", after)
+	}
+}
+
 func TestKeybindingsStorePersistsAndReloads(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewKeybindingsStore(root)

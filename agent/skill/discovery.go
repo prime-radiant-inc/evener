@@ -196,6 +196,7 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 	} else {
 		scan(dir, "", false)
 	}
+	c.Diagnostics = append(c.Diagnostics, EmbeddedSkillsDiagnostics()...)
 	if opts.HomeDir != "" {
 		scan(filepath.Join(opts.HomeDir, ".agents", "skills"), "", true)
 	}

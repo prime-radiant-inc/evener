@@ -218,14 +218,6 @@ func (t *responseHeaderTimeoutTransport) CloseIdleConnections() {
 	t.base.CloseIdleConnections()
 }
 
-// APILogTransportUsesStandardCompression reports whether the wrapped standard
-// transport would automatically request and decode gzip responses. The API
-// transport layer uses this to preserve raw response bytes while restoring the
-// same decoded response semantics for provider adapters.
-func (t *responseHeaderTimeoutTransport) APILogTransportUsesStandardCompression() bool {
-	return t != nil && t.base != nil && !t.base.DisableCompression
-}
-
 // ClientWithAdapterTimeout returns a copy of client configured with adapter
 // transport timeouts. Standard transports are cloned; opaque RoundTrippers and
 // caller client policy, including Timeout, remain authoritative.

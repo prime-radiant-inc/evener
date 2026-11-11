@@ -67,21 +67,38 @@ func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
 }
 
 // A temp root another user could replace entries in must not be trusted with the
-// per-user cache.
-func TestDefaultEmbeddedSkillsBaseDir_RefusesAnUntrustedTempRoot(t *testing.T) {
+// per-user cache; resolution moves to a verified fallback instead.
+func TestDefaultEmbeddedSkillsBaseDir_DoesNotUseAnUntrustedTempRoot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
+	fallback := t.TempDir()
+	pointSkillsFallbackAt(t, fallback)
 	if err := os.Chmod(root, 0o777); err != nil {
 		t.Fatalf("open up temp root: %v", err)
 	}
-	if _, err := defaultEmbeddedSkillsBaseDir(); err == nil {
-		t.Fatal("accepted a temp root without the sticky bit")
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir with an untrusted temp root: %v", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if strings.HasPrefix(dir, resolvedRoot+string(os.PathSeparator)) {
+		t.Fatalf("cache base %q landed in the untrusted temp root", dir)
+	}
+	if diagnostics := EmbeddedSkillsDiagnostics(); len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want one naming the refused root", diagnostics)
 	}
 	if err := os.Chmod(root, os.ModeSticky|0o777); err != nil {
 		t.Fatalf("make temp root sticky: %v", err)
 	}
-	if _, err := defaultEmbeddedSkillsBaseDir(); err != nil {
+	dir, err = defaultEmbeddedSkillsBaseDir()
+	if err != nil {
 		t.Fatalf("refused a sticky temp root: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedRoot+string(os.PathSeparator)) {
+		t.Fatalf("cache base %q is not under the now-trusted temp root %q", dir, resolvedRoot)
 	}
 }
 
@@ -133,13 +150,11 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 }
 
-// A read-only mount refuses writes through this namespace, but it does not pin
-// the ordinary directories beneath it: another user with a writable mount of the
-// same host filesystem can rename one and replace its subtree, and path lookup
-// here follows the replacement. Only the filesystem root itself is pinned, so an
-// ordinary ancestor keeps every ownership and permission check whichever mount
-// it sits on. A writable mount boundary is no evidence of safety, and an
-// unreadable mount table is no evidence at all.
+// A read-only mount refuses writes through this namespace, but a writable
+// ancestor is still replaceable through the host filesystem, so the narrow
+// acceptance for an unverifiable owner does not extend to one other users can
+// write to. A group- or other-writable ancestor is refused whichever mount it
+// sits on, and an unreadable mount table is no evidence at all.
 func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "inner")
@@ -178,13 +193,56 @@ func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *t
 	}
 }
 
-// The read-only exemption belongs to the filesystem root alone: the mount pins
-// that inode and no parent directory holds its name. An ordinary ancestor on a
-// read-only mount is still replaceable through a writable mount of the same host
-// filesystem, so it keeps the ownership and permission checks. This is the shape
-// of the reviewer's scenario: a world-writable, non-sticky /shared/public on the
-// sandbox's read-only root bind must not let another user rename a directory
-// beneath it.
+// Issue #5809 review: an unmapped owner is not evidence that host root owns an
+// ancestor. Every host user the namespace does not map appears as the same
+// overflow uid, so another user could own the directory and rename it through a
+// writable mount of the same host filesystem, substituting the cache tree after
+// verification. An ordinary ancestor whose owner this process cannot verify is
+// therefore refused even on a read-only mount; resolution falls back to a root
+// whose ownership it can verify instead.
+//
+// The red-first check against the previous exemption commit needs a narrow uid
+// map (the sandbox's map, where uid+1 is unmapped); on a full-range host map the
+// old code refused this owner for a different reason. The permanent assertion is
+// the boundary: any owner that is not this user or root is refused.
+func TestEnsureTrustedAncestors_RefusesAnUnverifiableOwnerOnAReadOnlyMount(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	savedStat := statAncestor
+	t.Cleanup(func() { statAncestor = savedStat })
+	savedMounts := readMountInfo
+	t.Cleanup(func() { readMountInfo = savedMounts })
+
+	// The seam is not broken: a fully trusted chain passes.
+	if err := ensureTrustedAncestors(inner); err != nil {
+		t.Fatalf("refused a trusted chain: %v", err)
+	}
+
+	otherUser := uint32(os.Getuid()) + 1
+	statAncestor = func(name string) (fs.FileInfo, error) {
+		if name == outer {
+			return fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser}, nil
+		}
+		return os.Stat(name)
+	}
+	// A complete read-only mount table is still not evidence of the owner.
+	readMountInfo = func() []byte {
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n2 1 0:2 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted an unverifiable owner on a read-only mount; an unmapped uid does not prove host root owns the ancestor")
+	}
+}
+
+// The read-only filesystem-root rule belongs to the filesystem root alone: the
+// mount pins that inode and no parent directory holds its name. An ordinary
+// ancestor gets no exemption at all, so this rule still refuses it. This is the
+// shape of the reviewer's scenario: a
+// world-writable, non-sticky /shared/public on the sandbox's read-only root bind
+// must not let another user rename a directory beneath it.
 func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
 	otherUser := uint32(os.Getuid()) + 1
 	// The owner is the unmapped overflow uid, which reads as another user here,
@@ -238,29 +296,107 @@ func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
 	}
 }
 
-// The degraded extraction must not land in a temp root the shared cache refuses.
-func TestEmbeddedSkillsDir_RefusesAnUntrustedTempRootForTheProcessCopy(t *testing.T) {
+// An untrusted configured temp root is refused rather than accepted on mount
+// evidence, and the base moves to a root whose ownership this process can
+// verify (issue #5809).
+func TestDefaultEmbeddedSkillsBaseDirFallsBackToAVerifiedRoot(t *testing.T) {
+	configured := t.TempDir()
+	if err := os.Chmod(configured, 0o777); err != nil {
+		t.Fatalf("open up configured root: %v", err)
+	}
+	fallback := t.TempDir()
+	savedBase := skillsBaseRoot
+	t.Cleanup(func() { skillsBaseRoot = savedBase })
+	skillsBaseRoot = func() (string, error) { return configured, nil }
+	pointSkillsFallbackAt(t, fallback)
+
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir with an untrusted configured root: %v", err)
+	}
+	resolvedFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
+		t.Fatalf("base dir = %q, want it under the verified fallback %q", dir, resolvedFallback)
+	}
+	diagnostics := EmbeddedSkillsDiagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, configured) || !strings.Contains(diagnostics[0].Message, resolvedFallback) {
+		t.Fatalf("diagnostics = %+v, want one naming %q and %q", diagnostics, configured, resolvedFallback)
+	}
+}
+
+// A fallback that cannot be written is not a fallback: report the configured
+// root's failure and do not claim a substitution that never served the cache.
+func TestDefaultEmbeddedSkillsBaseDirDoesNotClaimAnUnusableFallback(t *testing.T) {
+	configured := t.TempDir()
+	if err := os.Chmod(configured, 0o777); err != nil {
+		t.Fatalf("open up configured root: %v", err)
+	}
+	fallback := t.TempDir()
+	if err := os.Chmod(fallback, 0o500); err != nil {
+		t.Fatalf("lock the fallback: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fallback, 0o700) })
+	savedBase := skillsBaseRoot
+	t.Cleanup(func() { skillsBaseRoot = savedBase })
+	skillsBaseRoot = func() (string, error) { return configured, nil }
+	pointSkillsFallbackAt(t, fallback)
+
+	if _, err := defaultEmbeddedSkillsBaseDir(); err == nil {
+		t.Fatal("accepted a read-only fallback root")
+	}
+	if diagnostics := EmbeddedSkillsDiagnostics(); diagnostics != nil {
+		t.Fatalf("diagnostics = %+v, want none for a fallback that never served", diagnostics)
+	}
+}
+
+// The degraded extraction must not land in a temp root the shared cache refuses;
+// it moves to the verified fallback instead.
+func TestEmbeddedSkillsDir_ProcessCopyAvoidsAnUntrustedTempRoot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
+	fallback := t.TempDir()
+	pointSkillsFallbackAt(t, fallback)
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
 	t.Cleanup(resetProcessSkills)
 
 	if err := os.Chmod(root, 0o777); err != nil {
 		t.Fatalf("open up temp root: %v", err)
 	}
-	if _, err := EmbeddedSkillsDir(); err == nil {
-		t.Fatal("extracted a process copy into an untrusted temp root")
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir with an untrusted temp root: %v", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if strings.HasPrefix(dir, resolvedRoot+string(os.PathSeparator)) {
+		t.Fatalf("process copy %q landed in the untrusted temp root", dir)
+	}
+	resolvedFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
+		t.Fatalf("process copy %q is not under the verified fallback %q", dir, resolvedFallback)
 	}
 
+	resetProcessSkills()
 	if err := os.Chmod(root, os.ModeSticky|0o777); err != nil {
 		t.Fatalf("make temp root sticky: %v", err)
 	}
-	dir, err := EmbeddedSkillsDir()
+	dir, err = EmbeddedSkillsDir()
 	if err != nil {
 		t.Fatalf("refused a sticky temp root: %v", err)
 	}
 	if !strings.HasPrefix(filepath.Base(dir), embeddedSkillsPrefix+"process-") {
 		t.Fatalf("degraded copy = %q, want a process-lifetime extraction", dir)
+	}
+	if !strings.HasPrefix(dir, resolvedRoot+string(os.PathSeparator)) {
+		t.Fatalf("process copy %q is not under the now-trusted temp root %q", dir, resolvedRoot)
 	}
 }
 
@@ -273,6 +409,7 @@ func resetEmbeddedSkillsCache(t *testing.T) {
 	embeddedSkillsCache.mu.Lock()
 	forgetEmbeddedSkillsLocked()
 	embeddedSkillsCache.mu.Unlock()
+	resetSkillsFallback(t)
 	// forgetEmbeddedSkillsLocked released the lease the snapshot captured, so the
 	// restore must not reinstall it.
 	saved.lease = nil

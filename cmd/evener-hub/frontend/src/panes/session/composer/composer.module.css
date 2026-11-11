@@ -242,15 +242,23 @@
  * intrinsic width. The chrome's own contained body contributes none, and
  * contain-intrinsic-inline-size only applies under inline-size containment,
  * so the folded slot declares it here. The width is the 320px status rung plus
- * the session-menu trigger and the gap between them. */
-.leading[data-folded="true"] {
+ * the session-menu trigger and the gap between them.
+ *
+ * A compact resting row is excluded: it holds the menu alone, so the folded
+ * reservation's width is all gap there. WebKit sizes the control row from the
+ * reservation rather than the compact basis, which collapsed the writing
+ * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
+.leading[data-folded="true"]:not([data-compact="true"]) {
   container-type: inline-size;
   contain-intrinsic-inline-size: 356px;
 }
 
 /* The phone's compact resting row keeps only the menu in this slot; it must
- * hug that menu so the field keeps the line and Send stays at the far edge. */
+ * hug that menu so the field keeps the line and Send stays at the far edge.
+ * The explicit basis also overrides the folded reservation's contribution in
+ * engines that size the row from it. */
 .leading[data-compact="true"] {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
+  contain-intrinsic-inline-size: none;
 }
