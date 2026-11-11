@@ -5,16 +5,15 @@ import { afterEach, beforeAll, expect, test, vi } from "vitest";
 
 // The module graph's first transform is a setup cost, not the scenario: under
 // host load it can exceed the test's 5s deadline even though the import is
-// awaited (#5870). Warm it in a hook whose 60s ceiling is a hang tripwire,
-// then reset the module registry so the test still evaluates both modules
-// fresh against an already-ready client.
+// awaited (#5870). Warm it in a hook under the configured 60s hook ceiling
+// (a hang tripwire, not a performance budget); the test's own resetModules
+// then makes it evaluate both modules fresh against an already-ready client.
 let warmedConnectionStore: typeof import("./connection").connectionStore;
 let warmedExtensionsStore: typeof import("./extensions").extensionsStore;
 beforeAll(async () => {
   warmedConnectionStore = (await import("./connection")).connectionStore;
   warmedExtensionsStore = (await import("./extensions")).extensionsStore;
-  vi.resetModules();
-}, 60_000);
+});
 
 afterEach(() => {
   vi.resetModules();
