@@ -87,6 +87,11 @@ func NewRunner(ctx context.Context, pkgDir, cacheDir string, log io.Writer) (*Ru
 		}
 		cacheDir = filepath.Join(gocache, "evener-test-redundancy")
 	}
+	// Subprocesses run in the package directory, so every path handed to them
+	// must be absolute.
+	if cacheDir, err = filepath.Abs(cacheDir); err != nil {
+		return nil, err
+	}
 	return &Runner{pkgDir: pkgDir, absDir: absDir, importPath: importPath, cacheDir: cacheDir, log: log}, nil
 }
 

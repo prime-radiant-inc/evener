@@ -1,6 +1,8 @@
 package testredundancy
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,59 +72,71 @@ func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(original) {
+	if !bytes.Equal(after, original) {
 		t.Fatalf("source not restored after mutating:\n%s", after)
 	}
 }
 
-// Restoring is a file-scoped git restore, which would discard uncommitted work
-// in that file, so a mutation of a modified file is refused before any change.
-func TestMutateRefusesAModifiedFile(t *testing.T) {
-	r, dir := committedFixture(t)
-	src := filepath.Join(dir, "calc.go")
-	edited := []byte("// uncommitted edit\n")
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
+// Mutate restores with a file-scoped git restore, which would discard
+// uncommitted work, cannot bring back an untracked or ignored file, and puts
+// back a symlink rather than the file it points to. Each such target is
+// refused before any file changes.
+func TestMutateRefusesFilesGitCannotRestore(t *testing.T) {
+	cases := []struct {
+		name string
+		// prepare makes the target and returns the file whose content must
+		// survive the refused mutation.
+		prepare func(t *testing.T, dir string) (target, guarded string)
+	}{
+		{"modified", func(t *testing.T, dir string) (string, string) {
+			src := filepath.Join(dir, "calc.go")
+			data, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(src, append([]byte("// uncommitted edit\n"), data...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return "calc.go", src
+		}},
+		{"ignored", func(t *testing.T, dir string) (string, string) {
+			extra := filepath.Join(dir, "extra.go")
+			if err := os.WriteFile(extra, []byte("package calc\n\nfunc extra() int { return 0 }\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("extra.go\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return "extra.go", extra
+		}},
+		{"symlink", func(t *testing.T, dir string) (string, string) {
+			if err := os.Symlink("calc.go", filepath.Join(dir, "link.txt")); err != nil {
+				t.Fatal(err)
+			}
+			gittest.Run(t, dir, "add", "link.txt")
+			gittest.Run(t, dir, "commit", "-q", "-m", "link")
+			return "link.txt", filepath.Join(dir, "calc.go")
+		}},
 	}
-	edited = append(edited, data...)
-	if err := os.WriteFile(src, edited, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err = r.Mutate(t.Context(), []Mutation{{Name: "m", File: "calc.go", Old: "return 0", New: "return 2", Run: "^TestSignZero$"}})
-	if err == nil {
-		t.Fatal("Mutate accepted a file with uncommitted changes")
-	}
-	after, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(edited) {
-		t.Fatalf("the uncommitted edit was lost:\n%s", after)
-	}
-}
-
-// git restore cannot bring back a file git does not track, so a mutation of an
-// untracked or ignored file is refused before any change.
-func TestMutateRefusesAnUntrackedFile(t *testing.T) {
-	r, dir := committedFixture(t)
-	extra := filepath.Join(dir, "extra.go")
-	original := []byte("package calc\n\nfunc extra() int { return 0 }\n")
-	if err := os.WriteFile(extra, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("extra.go\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := r.Mutate(t.Context(), []Mutation{{Name: "m", File: "extra.go", Old: "return 0", New: "return 2", Run: "^TestSignZero$"}})
-	if err == nil {
-		t.Fatal("Mutate accepted a file git does not track")
-	}
-	after, err := os.ReadFile(extra)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(original) {
-		t.Fatalf("the untracked file was changed:\n%s", after)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, dir := committedFixture(t)
+			target, guarded := tc.prepare(t, dir)
+			before, err := os.ReadFile(guarded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = r.Mutate(t.Context(), []Mutation{{Name: "m", File: target, Old: "return 0", New: "return 2", Run: "^TestSignZero$"}})
+			if !errors.Is(err, ErrNotRestorable) {
+				t.Fatalf("Mutate of a %s file: %v, want ErrNotRestorable", tc.name, err)
+			}
+			after, err := os.ReadFile(guarded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("%s changed:\n%s", guarded, after)
+			}
+		})
 	}
 }

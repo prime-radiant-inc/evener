@@ -118,18 +118,31 @@ func (r *Runner) Mutate(ctx context.Context, muts []Mutation) ([]MutationResult,
 	return results, nil
 }
 
-// checkRestorable refuses a file git restore could not put back as it is.
+// ErrNotRestorable marks a mutation target that a file-scoped git restore
+// could not put back as it is.
+var ErrNotRestorable = errors.New("git restore cannot undo a mutation of this file")
+
+// checkRestorable refuses a file git restore could not put back as it is: an
+// untracked or ignored file, a modified one, or a symlink (restore puts back
+// the link, not the file it points to).
 func (r *Runner) checkRestorable(ctx context.Context, file string) error {
 	path := filepath.Join(r.absDir, file)
 	if _, err := r.git(ctx, "ls-files", "--error-unmatch", "--", path); err != nil {
-		return fmt.Errorf("%s is not tracked by git, so git restore cannot undo a mutation of it", file)
+		return fmt.Errorf("%s is not tracked by git: %w", file, ErrNotRestorable)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file: %w", file, ErrNotRestorable)
 	}
 	status, err := r.git(ctx, "status", "--porcelain", "--", path)
 	if err != nil {
 		return err
 	}
 	if status != "" {
-		return fmt.Errorf("%s has uncommitted changes; restoring it would discard them", file)
+		return fmt.Errorf("%s has uncommitted changes: %w", file, ErrNotRestorable)
 	}
 	return nil
 }

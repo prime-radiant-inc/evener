@@ -65,7 +65,7 @@ func WriteProof(w io.Writer, d CoverageDiff, muts []MutationResult, display func
 		if m.Detail != "" {
 			outcome += ": " + m.Detail
 		}
-		p("| %s | %s | `%s` → `%s` | `%s` | %s | %s |\n", m.Name, m.File, cell(m.Old), cell(m.New), m.Run, cell(outcome), strings.Join(m.Failed, ", "))
+		p("| %s | %s | `%s` → `%s` | `%s` | %s | %s |\n", cell(m.Name), cell(m.File), cell(m.Old), cell(m.New), cell(m.Run), cell(outcome), cell(strings.Join(m.Failed, ", ")))
 	}
 	p("\n%d caught, %d survived, %d invalid.\n", counts[OutcomeCaught], counts[OutcomeSurvived], counts[OutcomeInvalid])
 }

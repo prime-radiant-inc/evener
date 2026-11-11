@@ -36,7 +36,11 @@ func fixtureRunner(t *testing.T) (*Runner, string) {
 	if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "fixture"))); err != nil {
 		t.Fatalf("copying fixture: %v", err)
 	}
-	r, err := NewRunner(t.Context(), dir, filepath.Join(t.TempDir(), "cache"), io.Discard)
+	// A relative cache directory, as a developer passes it: the runner's
+	// subprocesses run in the package directory, so it must resolve the path
+	// against the caller's working directory first.
+	t.Chdir(t.TempDir())
+	r, err := NewRunner(t.Context(), dir, "cache", io.Discard)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
