@@ -202,10 +202,14 @@ func (r *Runner) mutateOne(ctx context.Context, bin string, m Mutation) (res Mut
 	if err != nil {
 		return res, err
 	}
-	res.Outcome = OutcomeSurvived
-	if run.exitErr {
+	switch {
+	case run.exitErr:
 		res.Outcome = OutcomeCaught
 		res.Failed = run.failed
+	case run.noTests:
+		res.Detail = "the mutation leaves no test matching " + m.Run
+	default:
+		res.Outcome = OutcomeSurvived
 	}
 	return res, nil
 }

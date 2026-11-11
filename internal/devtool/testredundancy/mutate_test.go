@@ -23,11 +23,10 @@ func committedFixture(t *testing.T) (*Runner, string) {
 }
 
 // Each mutation is applied alone, judged by the tests it names, and restored:
-// a mutation a named test fails on, or that hangs the binary, is caught, one
-// they all pass is survived,
-// and one that cannot be applied or built, selects no test or every test, or
-// whose tests already fail on the unmutated source is invalid rather than
-// caught.
+// a mutation a named test fails on, or that hangs the binary, is caught; one
+// they all pass is survived; and one that cannot be applied or built, selects
+// no test or every test (before or after the mutation), or whose tests already
+// fail on the unmutated source is invalid rather than caught.
 func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 	r, dir := committedFixture(t)
 	// Short enough that the init hang ends quickly, long enough for a
@@ -48,6 +47,7 @@ func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 		{Name: "fails-unmutated", File: "calc.go", Old: "return 0", New: "return 2", Run: "^(TestSignZero|TestFailsWhenAsked)$"},
 		{Name: "selects-everything", File: "calc.go", Old: "return 0", New: "return 2", Run: ""},
 		{Name: "hangs-in-init", File: "calc.go", Old: "// Abs returns", New: "func init() {\n\tfor {\n\t}\n}\n\n// Abs returns", Run: "^TestSignZero$"},
+		{Name: "renames-the-test", File: "calc_test.go", Old: "func TestSignZero(", New: "func signZero(", Run: "^TestSignZero$"},
 	}
 	results, err := r.Mutate(t.Context(), muts)
 	if err != nil {
@@ -62,6 +62,7 @@ func TestMutateJudgesEachMutationAndRestoresTheSource(t *testing.T) {
 		"fails-unmutated":    OutcomeInvalid,
 		"selects-everything": OutcomeInvalid,
 		"hangs-in-init":      OutcomeCaught,
+		"renames-the-test":   OutcomeInvalid,
 	}
 	for _, res := range results {
 		if res.Outcome != want[res.Name] {
