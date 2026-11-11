@@ -111,3 +111,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, outputRoot ...string) (string, error) {
 	return "", errSandboxUnsupported()
 }
+
+// grantFdRecheckRefuses has no fd-canonical recheck to run here: this platform
+// never builds a sandboxFS, so the card decision is unreachable.
+func (s *sandboxFS) grantFdRecheckRefuses(string, bool) bool { return false }

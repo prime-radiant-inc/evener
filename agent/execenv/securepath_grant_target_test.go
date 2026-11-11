@@ -206,3 +206,74 @@ func sbRead(s *sandboxFS, abs string) error {
 	_, err := s.readFile("read_file", abs)
 	return err
 }
+
+// TestDenial_ApprovalCardMatchesFdCanonicalRefusal covers #6115: a spelling
+// that passes the textual masked/protected checks but whose kernel canonical
+// path names a protected or masked surface must not offer an approval card,
+// because the grant refuses it after Allow. The alternate-spelling volumes
+// (case-insensitive APFS, macOS's /System/Volumes/Data firmlink) are not
+// reproducible on every test host, so the canonical seam itself is varied.
+func TestDenial_ApprovalCardMatchesFdCanonicalRefusal(t *testing.T) {
+	outDir := realTempDir(t)
+	worktree := filepath.Join(outDir, "wt")
+	plain := filepath.Join(outDir, "plain")
+	repoGit := filepath.Join(outDir, "repo", ".git")
+	masked := filepath.Join(outDir, "creds")
+	for _, dir := range []string{worktree, plain, repoGit, masked} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	protected := filepath.Join(repoGit, "config")
+	ordinary := filepath.Join(plain, "ordinary.txt")
+	plainKey := filepath.Join(plain, "key")
+	for _, file := range []string{protected, ordinary, plainKey} {
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rp := &sandbox.ResolvedPolicy{
+		Mode:        sandbox.ModeRestricted,
+		FileTool:    sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}, WriteRoots: []string{worktree}},
+		MaskedPaths: []string{masked},
+		Git:         sandbox.GitLayout{ProtectedPaths: []string{protected}},
+	}
+	orig := canonicalPathForFd
+	t.Cleanup(func() { canonicalPathForFd = orig })
+
+	cases := []struct {
+		name     string
+		write    bool
+		abs      string
+		canonDir string
+		wantCard bool
+	}{
+		{"write to a git-protected alias", true, filepath.Join(plain, "config"), repoGit, false},
+		{"write to a plain file", true, filepath.Join(plain, "new.txt"), plain, true},
+		{"read of a masked alias", false, plainKey, masked, false},
+		{"read of a plain file", false, ordinary, plain, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			canonicalPathForFd = func(int) (string, error) { return tc.canonDir, nil }
+			s := newSandboxFS(rp, "")
+			defer s.close()
+
+			var err error
+			if tc.write {
+				err = sbWrite(s, tc.abs)
+			} else {
+				err = sbRead(s, tc.abs)
+			}
+			var d *sandbox.DeniedError
+			if !asDenied(err, &d) {
+				t.Fatalf("expected an out-of-roots denial, got %v", err)
+			}
+			gotCard := d.GrantTarget != ""
+			if gotCard != tc.wantCard {
+				t.Fatalf("approval card offered = %v (target %q), want %v", gotCard, d.GrantTarget, tc.wantCard)
+			}
+		})
+	}
+}

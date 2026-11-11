@@ -254,6 +254,14 @@ func (s *sandboxFS) grantableTarget(abs string, write bool) string {
 	if write && (s.underProtected(abs) || s.underProtected(target)) {
 		return ""
 	}
+	// Match the card to the recheck a grant applies after Allow: a case variant
+	// on a case-insensitive volume, or the macOS data-volume firmlink, passes
+	// the textual checks above while the kernel's canonical path names a masked
+	// or git-protected surface. Offering that card would promise an operation
+	// the grant then refuses (#6115).
+	if s.grantFdRecheckRefuses(target, write) {
+		return ""
+	}
 	return target
 }
 
