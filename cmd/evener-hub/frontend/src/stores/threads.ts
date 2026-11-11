@@ -9193,6 +9193,8 @@ export function resetThreadsStoreForTests(): void {
   resumeRetries.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
+  replayAcceptedCopiesOnReady = false;
+  acceptedCopyReplayRefs.clear();
   resetThreadOwnersForTests();
   cacheLifetimeHeld.clear();
   // A pre-reset ensure may still await the cache. Do not reuse its generation
