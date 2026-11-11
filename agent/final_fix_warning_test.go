@@ -47,8 +47,11 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 // interferes, then estimating the captured request's input tokens the way
 // maybeWarnContextUsage does. Warning tests size their window or their history
 // from this measurement, so a prompt rewrite cannot move the request across a
-// threshold a hardcoded constant pinned.
-func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, input string) int {
+// threshold a hardcoded constant pinned. cfg is the measured session's
+// configuration, since settings such as StateDir add prompt sections. The probe
+// client also answers the test session namer, so a profile built with
+// withTestSessionNamer does not spend the probe's single scripted step.
+func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, cfg SessionConfig, input string) int {
 	t.Helper()
 	adapter := &fakeAdapter{
 		name: profile.ID(),
@@ -58,7 +61,8 @@ func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, 
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	registerTestSessionNamer(client)
+	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("probe NewSession: %v", err)
 	}
@@ -670,7 +674,7 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 	// between the fallback's 80% threshold and its window: a hardcoded history
 	// length drops under the threshold when the prompt shrinks. The midpoint of
 	// the band leaves margin on both sides.
-	standing := standingRequestTokens(t, dir, primary, "task")
+	standing := standingRequestTokens(t, dir, primary, SessionConfig{}, "task")
 	threshold := fallbackWindow * 8 / 10
 	target := (threshold + fallbackWindow) / 2
 	historyChars := (target - standing) * 4
