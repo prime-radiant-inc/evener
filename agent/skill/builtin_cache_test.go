@@ -25,34 +25,77 @@ func skillFSFixture(files map[string]string) fstest.MapFS {
 	return m
 }
 
-// Issue #5809: the broader-than-needed ancestor warning reaches the session
-// through the skill diagnostic channel, which session init turns into a
-// user-facing warning, rather than a package log line.
-func TestEmbeddedSkillsDiagnosticsReportsAcceptedBroadAncestors(t *testing.T) {
-	broadAncestorsMu.Lock()
-	saved := broadAncestors
-	broadAncestors = nil
-	broadAncestorsMu.Unlock()
+// resetSkillsFallback clears the recorded fallback for a test and restores the
+// previous diagnostic when it ends.
+func resetSkillsFallback(t *testing.T) {
+	t.Helper()
+	skillsFallbackMu.Lock()
+	saved := skillsFallback
+	skillsFallback = nil
+	skillsFallbackMu.Unlock()
 	t.Cleanup(func() {
-		broadAncestorsMu.Lock()
-		broadAncestors = saved
-		broadAncestorsMu.Unlock()
+		skillsFallbackMu.Lock()
+		skillsFallback = saved
+		skillsFallbackMu.Unlock()
 	})
+}
+
+// Issue #5809: a configured root this process refuses reaches the session
+// through the skill diagnostic channel, which session init turns into a
+// user-facing warning, and the verified fallback keeps bundled skills working.
+func TestEmbeddedSkillsDiagnosticsReportsAVerifiedFallback(t *testing.T) {
+	resetSkillsFallback(t)
 	if got := EmbeddedSkillsDiagnostics(); got != nil {
-		t.Fatalf("diagnostics before an acceptance = %v, want none", got)
+		t.Fatalf("diagnostics before a fallback = %v, want none", got)
 	}
-	rememberBroadAncestors([]string{"/home", "/home/user"})
+	rememberSkillsFallback("/home/alice/tmp", "/tmp", errors.New("skill cache ancestor /home can be replaced by other users"))
 	got := EmbeddedSkillsDiagnostics()
 	if len(got) != 1 {
 		t.Fatalf("diagnostics = %v, want one", got)
 	}
-	for _, ancestor := range []string{"/home", "/home/user"} {
-		if !strings.Contains(got[0].Message, ancestor) {
-			t.Fatalf("diagnostic = %+v, want it to name %s", got[0], ancestor)
+	for _, want := range []string{"/home/alice/tmp", "/tmp"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Fatalf("diagnostic = %+v, want it to name %s", got[0], want)
 		}
 	}
 	if got[0].Source != "embedded" {
 		t.Fatalf("diagnostic = %+v, want source embedded", got[0])
+	}
+}
+
+// An untrusted configured temp root is refused rather than accepted on mount
+// evidence, and the base moves to a root whose ownership this process can
+// verify (issue #5809).
+func TestDefaultEmbeddedSkillsBaseDirFallsBackToAVerifiedRoot(t *testing.T) {
+	configured := t.TempDir()
+	if err := os.Chmod(configured, 0o777); err != nil {
+		t.Fatalf("open up configured root: %v", err)
+	}
+	fallback := t.TempDir()
+	savedBase := skillsBaseRoot
+	savedFallback := skillsFallbackRoot
+	t.Cleanup(func() {
+		skillsBaseRoot = savedBase
+		skillsFallbackRoot = savedFallback
+	})
+	skillsBaseRoot = func() (string, error) { return configured, nil }
+	skillsFallbackRoot = func() string { return fallback }
+	resetSkillsFallback(t)
+
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir with an untrusted configured root: %v", err)
+	}
+	resolvedFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
+		t.Fatalf("base dir = %q, want it under the verified fallback %q", dir, resolvedFallback)
+	}
+	diagnostics := EmbeddedSkillsDiagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, configured) || !strings.Contains(diagnostics[0].Message, resolvedFallback) {
+		t.Fatalf("diagnostics = %+v, want one naming %q and %q", diagnostics, configured, resolvedFallback)
 	}
 }
 

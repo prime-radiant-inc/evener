@@ -29,7 +29,3 @@ func processCopyRootTrusted(fs.FileInfo) bool { return true }
 // ancestorDirTrusted cannot be checked portably on these platforms; their temp
 // directory is per-user, which is the accepted limit of the check.
 func ancestorDirTrusted(fs.FileInfo) bool { return true }
-
-// ancestorOwnerUnmapped cannot be checked portably on these platforms, so the
-// read-only-mount exemption never applies there.
-func ancestorOwnerUnmapped(fs.FileInfo) bool { return false }

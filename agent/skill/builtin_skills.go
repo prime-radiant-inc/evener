@@ -135,7 +135,7 @@ func embeddedProcessSkillsDir() (string, error) {
 	if processSkillsDir != "" && cacheDirUsable(processSkillsDir, digest) {
 		return processSkillsDir, nil
 	}
-	root, err := resolveTrustedRoot(os.TempDir(), ensureTrustedProcessRoot)
+	root, err := resolveSkillsRoot(os.TempDir(), ensureTrustedProcessRoot)
 	if err != nil {
 		return "", err
 	}
@@ -351,7 +351,7 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// The root is resolved before it is verified, so a temp root that is itself a
 	// symlink is served rather than refused, and the per-user base is created
 	// under the directory the link names rather than through the link.
-	resolved, err := resolveTrustedRoot(root, ensureTrustedRoot)
+	resolved, err := resolveSkillsRoot(root, ensureTrustedRoot)
 	if err != nil {
 		return "", err
 	}
@@ -427,12 +427,11 @@ func ensureTrustedProcessRoot(root string) error {
 
 // ensureTrustedAncestors verifies the chain above root, which must already have
 // been verified by the caller. A writable ancestor lets another user replace the
-// directories on the way to root, so each one carries the sticky bit, or is
-// owned by this user or by root with no group or other write, or qualifies for
-// the read-only-mount exception below; ownership by root is accepted, unlike for
-// the root itself, because the platform's temp chain above a user's own
-// directory is normally root-owned. Ancestors are resolved through symlinks the
-// way path lookup resolves them.
+// directories on the way to root, so each one must carry the sticky bit or be
+// owned by this user or by root with no group or other write; ownership by root
+// is accepted, unlike for the root itself, because the platform's temp chain
+// above a user's own directory is normally root-owned. Ancestors are resolved
+// through symlinks the way path lookup resolves them.
 //
 // The filesystem root is accepted when it is on a read-only mount, whatever its
 // owner: the mount pins that inode, no parent directory holds its name, and the
@@ -443,20 +442,14 @@ func ensureTrustedProcessRoot(root string) error {
 // still has to keep other users from replacing names inside it through a
 // writable host mount.
 //
-// An ordinary ancestor whose owner cannot be verified gets the same acceptance
-// only when the owner is unmapped, the mount covering it refuses writes, and its
-// mode grants no group or other write; the accepted ancestors are reported in
-// one warning per chain, which is the TMPDIR-under-/home shape of issue #5809.
-// Renaming an ordinary ancestor needs write on its parent, so a
-// broader-than-needed ancestor on a read-only mount is accepted rather than
-// refusing a legitimate configuration, but a group- or other-writable ancestor
-// is still replaceable and still refused.
+// An ordinary ancestor gets no exemption at all. An unmapped owner is not
+// evidence that host root owns the directory: every host user the namespace
+// does not map appears as the same overflow uid, so the ancestor could belong
+// to another user who can rename it through a writable mount of the same host
+// filesystem and substitute the cache tree after verification (#5809 review).
+// The configured root is therefore refused, and resolution falls back to a root
+// whose ownership this process can verify (see resolveSkillsRoot).
 func ensureTrustedAncestors(root string) error {
-	var (
-		mounts     []mountPoint
-		mountsRead bool
-		broad      []string
-	)
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
 		info, err := statAncestor(dir)
@@ -467,38 +460,16 @@ func ensureTrustedAncestors(root string) error {
 			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
 		trusted := ancestorDirTrusted(info)
-		if !trusted {
-			// The mount table is consulted only when an ownership check failed,
-			// so read it once here rather than on every chain that never needs
-			// it.
-			if !mountsRead {
-				mounts = parseMountPoints(string(readMountInfo()))
-				mountsRead = true
-			}
-			if parent == dir {
-				trusted = readOnlyFilesystemRoot(info, mounts, dir)
-			} else {
-				trusted = readOnlyMountAncestor(info, mounts, dir)
-				if trusted {
-					// The exemption judges the pathname's mount, so it applies
-					// only when the pathname reaches the directory with no link
-					// in between: otherwise os.Stat may describe a different
-					// object than the mount the path sits on.
-					if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved == dir {
-						broad = append(broad, dir)
-					} else {
-						trusted = false
-					}
-				}
-			}
+		if !trusted && parent == dir {
+			// Only the filesystem root consults the mount table, and only when
+			// its ownership check failed, so read it once there rather than on
+			// every chain that never needs it.
+			trusted = readOnlyFilesystemRoot(info, parseMountPoints(string(readMountInfo())), dir)
 		}
 		if !trusted {
 			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
 		if parent == dir {
-			if len(broad) > 0 {
-				warnBroadAncestors(broad)
-			}
 			return nil
 		}
 		dir = parent
@@ -510,47 +481,65 @@ func ensureTrustedAncestors(root string) error {
 // of a real directory cannot be arranged without privilege.
 var statAncestor = os.Stat
 
-// warnBroadAncestors records ancestors accepted by the read-only-mount rule
-// despite an owner the process cannot verify, so discovery can report them
-// through the same skill diagnostics the session shows the user. It is a seam
-// so a test can observe the one warning the chain emits.
-var warnBroadAncestors = rememberBroadAncestors
+// skillsFallbackRoot names the platform root resolution falls back to when the
+// configured temp root cannot be verified. It is a seam so tests can point the
+// fallback at a controlled directory.
+var skillsFallbackRoot = defaultSkillsFallbackRoot
 
-// broadAncestorsMu guards broadAncestors. The resolution paths that record an
-// acceptance already hold the cache or process lock, so this is a separate lock
+// skillsFallbackMu guards skillsFallback. The resolution paths that record a
+// fallback already hold the cache or process lock, so this is a separate lock
 // rather than a field on either.
 var (
-	broadAncestorsMu sync.Mutex
-	broadAncestors   []string
+	skillsFallbackMu sync.Mutex
+	skillsFallback   *Diagnostic
 )
 
-// rememberBroadAncestors keeps the ancestors accepted by the read-only-mount
-// rule for the base this process resolved.
-func rememberBroadAncestors(ancestors []string) {
-	if len(ancestors) == 0 {
-		return
+// resolveSkillsRoot verifies the configured root, and when that root cannot be
+// verified it falls back to the platform's verified fallback root. An
+// unverifiable configured root is refused rather than accepted on mount
+// evidence alone; the fallback keeps bundled skills available without weakening
+// the write boundary. The fallback is reported through the skill diagnostics.
+func resolveSkillsRoot(root string, verify func(string) error) (string, error) {
+	resolved, err := resolveTrustedRoot(root, verify)
+	if err == nil {
+		return resolved, nil
 	}
-	broadAncestorsMu.Lock()
-	broadAncestors = append([]string(nil), ancestors...)
-	broadAncestorsMu.Unlock()
+	fallback := skillsFallbackRoot()
+	if fallback == "" || filepath.Clean(fallback) == filepath.Clean(root) {
+		return "", err
+	}
+	resolvedFallback, fallbackErr := resolveTrustedRoot(fallback, verify)
+	if fallbackErr != nil {
+		return "", err
+	}
+	rememberSkillsFallback(root, resolvedFallback, err)
+	return resolvedFallback, nil
 }
 
-// EmbeddedSkillsDiagnostics reports the broader-than-needed ancestors the
-// read-only-mount rule accepted while resolving the bundled-skills base. It is
-// how the warning reaches a session: Discover appends these to the catalog
-// diagnostics, and session init turns each into a user-facing warning.
-func EmbeddedSkillsDiagnostics() []Diagnostic {
-	broadAncestorsMu.Lock()
-	defer broadAncestorsMu.Unlock()
-	if len(broadAncestors) == 0 {
-		return nil
-	}
-	return []Diagnostic{{
-		Category: "broad_ancestor",
+// rememberSkillsFallback keeps the diagnostic for a configured root this
+// process refused but replaced with a verified fallback.
+func rememberSkillsFallback(configured, fallback string, cause error) {
+	skillsFallbackMu.Lock()
+	skillsFallback = &Diagnostic{
+		Category: "unverified_cache_root",
 		Name:     "embedded",
 		Source:   "embedded",
-		Message:  "accepted broader-than-needed skill cache ancestors on a read-only mount: " + strings.Join(broadAncestors, ", "),
-	}}
+		Message:  fmt.Sprintf("configured skill cache root %s cannot be verified (%v); using %s", configured, cause, fallback),
+	}
+	skillsFallbackMu.Unlock()
+}
+
+// EmbeddedSkillsDiagnostics reports a configured skill cache root this process
+// refused and the verified fallback it used instead. It is how the warning
+// reaches a session: Discover appends these to the catalog diagnostics, and
+// session init turns each into a user-facing warning.
+func EmbeddedSkillsDiagnostics() []Diagnostic {
+	skillsFallbackMu.Lock()
+	defer skillsFallbackMu.Unlock()
+	if skillsFallback == nil {
+		return nil
+	}
+	return []Diagnostic{*skillsFallback}
 }
 
 // readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
@@ -571,24 +560,6 @@ func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) b
 		return false
 	}
 	return info.Mode()&os.ModeSticky != 0 || info.Mode().Perm()&0o022 == 0
-}
-
-// readOnlyMountAncestor reports whether an ordinary ancestor that failed the
-// ownership check may still be accepted: its owner is a uid this user namespace
-// does not map (host root appears as the overflow uid inside a sandbox that maps
-// only the session user), the mount covering it refuses writes, and its mode
-// grants no group or other write, so another user cannot rename the directories
-// beneath it through a writable mount of the same host filesystem. A mapped
-// foreign owner is deliberately not accepted: the process can name that user,
-// and that user could rename the ancestor through a writable host mount.
-func readOnlyMountAncestor(info fs.FileInfo, mounts []mountPoint, dir string) bool {
-	if info.Mode().Perm()&0o022 != 0 {
-		return false
-	}
-	if !ancestorOwnerUnmapped(info) {
-		return false
-	}
-	return readOnlyMountAt(mounts, dir)
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that

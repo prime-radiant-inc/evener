@@ -2,11 +2,8 @@ package skill
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-
-	"primeradiant.com/evener/identifier"
 )
 
 // readMountInfo is the /proc/self/mountinfo boundary. A platform without it
@@ -85,37 +82,6 @@ func mountRoot(mounts []mountPoint) (root mountPoint, ok bool) {
 		}
 	}
 	return root, ok
-}
-
-// readOnlyMountAt reports whether the mount covering dir refuses writes. The
-// covering mount is the one whose path is the longest component-boundary prefix
-// of dir, as path lookup resolves it. A table without exactly one root, or with
-// a root outside /, or with more than one mount at the covering path, is no
-// evidence of confinement: mount entries can be stacked, and the table is not
-// ordered so that the visible mount can be picked by position.
-func readOnlyMountAt(mounts []mountPoint, dir string) bool {
-	root, ok := mountRoot(mounts)
-	if !ok || filepath.Clean(root.path) != string(filepath.Separator) {
-		return false
-	}
-	bestLen := -1
-	readOnly := false
-	stacked := false
-	for _, mount := range mounts {
-		path := filepath.Clean(mount.path)
-		if !identifier.PathUnder(dir, path) {
-			continue
-		}
-		switch {
-		case len(path) > bestLen:
-			bestLen = len(path)
-			readOnly = mount.readOnly
-			stacked = false
-		case len(path) == bestLen:
-			stacked = true
-		}
-	}
-	return bestLen >= 0 && !stacked && readOnly
 }
 
 // unescapeMountInfo decodes the octal escapes mountinfo applies to path fields
