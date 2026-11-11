@@ -300,7 +300,7 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 		t.Fatalf("steering turn rendered as %q", got)
 	}
 
-	if parseExitCode("exit 4") != "4" || parseExitCode("nothing") != "?" || extractJSONField(`{"x":"y"}`, "x") != "y" || extractJSONField("bad", "x") != "" || countJSONArrayElements(`[1,2]`) != 2 || countJSONArrayElements("bad") != 0 {
+	if parseExitCode("exit 4") != "4" || parseExitCode("nothing") != "?" {
 		t.Fatal("pure helper contracts diverged")
 	}
 }

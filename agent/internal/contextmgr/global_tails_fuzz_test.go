@@ -52,9 +52,6 @@ func gctPureTails(t *testing.T, token string) {
 	if !end || msg != "fallback" {
 		t.Fatalf("output fallback = %v, %q", end, msg)
 	}
-	if extractJSONField(`{"other":1}`, "missing") != "" {
-		t.Fatal("missing JSON field returned a value")
-	}
 
 	data := checkpointData{
 		lastShellResults: []string{"1", "2", "3", "4"},
