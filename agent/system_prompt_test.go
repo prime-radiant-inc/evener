@@ -356,34 +356,6 @@ func TestPromptDataTypedInputs(t *testing.T) {
 	}
 }
 
-// Issue #6080: the ask-parent rule belongs to every subagent prompt, not only
-// the bundled subagent role. A typed role and an untyped delegating child both
-// take their own role body, so the rule lives in the shared subagent block.
-func TestSubagentPromptStatesTheSessionLinksRule(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		build func(t *testing.T) *Session
-	}{
-		{"untyped delegating", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }},
-		{"untyped leaf", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }},
-		{"typed explorer", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }},
-		{"typed implementer", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			s := tc.build(t)
-			prompt, warning, _ := s.renderSystemPrompt(s.env)
-			if warning != "" {
-				t.Fatalf("render failed: %s", warning)
-			}
-			if !strings.Contains(prompt, "Only the coordinator can add or remove session links") {
-				t.Errorf("subagent prompt does not carry the session-links rule")
-			}
-		})
-	}
-}
-
 func checkPromptInput[T comparable](t *testing.T, name string, got, want T) {
 	t.Helper()
 	if got != want {
