@@ -61,21 +61,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	// A shared child (no worktree isolation, no per-delegate sandbox) ran on its
-	// parent's own environment object; reconstruct it on that SAME parent object
-	// rather than a fresh clone. Plan 654: "shared consumers of one binding reuse
-	// one environment, not fresh scratch" — a clone would be a second owned
-	// environment carrying the parent's binding, and (for a parked root) would
-	// not be the root's restored worktreeRestoreEnv object.
-	var childEnv execenv.ExecutionEnvironment
-	var ownsFresh bool
-	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
-		childEnv = shared
-	} else {
-		childEnv, ownsFresh, err = s.prepareSubagentEnvironmentFor(descriptor.WorkingDir, policy, descriptor.ChildSessionID)
-		if err != nil {
-			return nil, false, err
-		}
+	childEnv, wantDir, ownsFresh, err := s.restoreDelegateEnvironmentFor(descriptor, meta, policy)
+	if err != nil {
+		return nil, false, err
 	}
 	discardEnv := true
 	defer func() {
@@ -87,8 +75,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			endEnvironmentScratch(childEnv)
 		}
 	}()
-	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
+	if childEnv == nil || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
 		return nil, false, errors.New("committed delegate environment is unavailable")
+	}
+	if wantDir != "" && filepath.Clean(childEnv.WorkingDirectory()) != filepath.Clean(wantDir) {
+		return nil, false, fmt.Errorf("committed delegate environment is rooted at %s, want %s", childEnv.WorkingDirectory(), wantDir)
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
 	if err != nil {
@@ -248,6 +239,35 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	}
 	return sub, true, nil
+}
+
+// restoreDelegateEnvironmentFor chooses the environment a cold delegate restore
+// starts on. A shared child with no persisted worktree reuses the parent's
+// environment object (plan 654). A child with a persisted worktree lane gets a
+// fresh owned clone rooted at its recorded restore root: re-entry will adopt
+// that clone's scratch, so the parent's scratch is never moved out from under
+// it. The returned directory is the root the environment must carry; an empty
+// value means the shared child had no committed working directory to check.
+func (s *Session) restoreDelegateEnvironmentFor(descriptor delegatestore.Descriptor, meta schema.SessionMeta, policy *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, string, bool, error) {
+	if worktreePath := strings.TrimSpace(meta.WorktreePath); worktreePath != "" {
+		envDir := strings.TrimSpace(meta.WorktreeRestoreRoot)
+		if envDir == "" {
+			envDir = strings.TrimSpace(descriptor.WorkingDir)
+		}
+		if envDir == "" {
+			return nil, "", false, errors.New("delegate has a persisted worktree but no restore root or working directory")
+		}
+		env, ownsFresh, err := s.prepareSubagentEnvironmentFor(envDir, policy, descriptor.ChildSessionID)
+		return env, envDir, ownsFresh, err
+	}
+	// A shared child (no worktree isolation, no per-delegate sandbox) ran on its
+	// parent's own environment object; reconstruct it on that SAME parent object
+	// rather than a fresh clone.
+	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
+		return shared, strings.TrimSpace(descriptor.WorkingDir), false, nil
+	}
+	env, ownsFresh, err := s.prepareSubagentEnvironmentFor(descriptor.WorkingDir, policy, descriptor.ChildSessionID)
+	return env, strings.TrimSpace(descriptor.WorkingDir), ownsFresh, err
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child

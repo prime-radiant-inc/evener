@@ -246,12 +246,21 @@ result, the completion notification frame, and `evener doctor tree` output. It
 never addresses anything — `delegate_send` and every other surface stay keyed to
 the `dlg_…` id — and nothing enforces uniqueness across siblings.
 
-A delegate that is itself a coordinator — spawned with a delegation allowance so it
-can fan out its *own* isolated sub-delegates — gets a **dispose-only** `manage_worktree`:
-the single `dispose` operation, nothing else. That lets it retire its sub-delegates'
-lanes as their work merges (the same automatic disposal a top-level session does at
-close, but reachable mid-life), while it still can't create, switch, or remove
-worktrees — including its own lane, which its parent owns and disposes.
+A delegate that is itself a **worktree-isolated** coordinator — spawned with both a
+delegation allowance and `isolation:"worktree"` so it can fan out its *own*
+isolated sub-delegates — gets a **dispose-only** `manage_worktree`: the single
+`dispose` operation, nothing else. That lets it retire its sub-delegates' lanes as
+their work merges (the same automatic disposal a top-level session does at close,
+but reachable mid-life), while it still can't create, switch, or remove
+worktrees — including its own lane, which its parent owns and disposes. A
+non-isolated coordinator keeps the full tool.
+
+A lane a non-isolated coordinator creates with `create` is the child's own. Its
+`SessionMeta` records the path, and a later `delegate_send` restores the child
+into that lane with an environment the child owns, so its files and work survive
+the pause; the parent's delegate-lane disposal does not own that lane. A lane
+locked by the child's own session marker also cannot be entered by the parent's
+`switch` while the child is live.
 
 Every job result from an isolated delegate reports the lane's path, its branch, how
 many commits it's ahead of where it started, and whether it's dirty. That's enough for

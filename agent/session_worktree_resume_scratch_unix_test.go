@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -109,59 +109,52 @@ func TestResumeWorktreeReentry_RejectedRestoreDropsTheLaunchEnvironmentScratch(t
 	}
 }
 
-// A child session restores onto whatever environment its parent hands it —
-// the delegate-resume path hands the parent's own — and re-entry adopts the
-// scratch of the environment it re-roots from. No child persists a worktree,
-// so a child meta naming one is a corrupted record, and re-entering on it
-// would take the parent's scratch out from under the parent. The restore has
-// to refuse loudly and leave the handed-in environment owning what it owned.
-func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
+// A child session may create its own native worktree lane. When the restore
+// hands it an environment it owns (the delegate path now builds one), re-entry
+// enters that lane and its scratch follows the session, like a root session.
+func TestResumeWorktreeReentry_ChildSessionReentersOwnLane(t *testing.T) {
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHCHILD000001")
 	cfg := sr.restoreConfig()
 	cfg.spawn.parentSessionID = "01PARENTSESSION00000000001"
 
 	sess, err := sr.restoreSessionOn(env, meta, cfg)
-	if err == nil {
-		sess.Close()
-		t.Fatal("a child session re-entered a persisted worktree, want a refusal")
+	if err != nil {
+		t.Fatalf("child re-entry: %v", err)
 	}
-	if !strings.Contains(err.Error(), "child") || !strings.Contains(err.Error(), meta.WorktreePath) {
-		t.Fatalf("refusal = %v, want it to name the child session and the worktree %s", err, meta.WorktreePath)
-	}
-	// The handed-in environment still owns its scratch: it is the caller's to
-	// dispose, and disposing it drops the directory.
-	if !scratchLeaseHeld(t, scratch) {
-		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
-	}
-	_ = env.DisposeSessionScratch()
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
-	}
+	t.Cleanup(sess.Close)
+	assertReenteredChildLane(t, sr, sess, meta, scratch)
 }
 
 // A bare `serve --resume <child-id>` restores a persisted child with an empty
-// spawn carrier; only the persisted meta says it is a subagent. The refusal
-// has to read that flag too, or a resumed child re-enters a parent-owned
-// worktree and adopts the scratch of the environment it was handed.
-func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *testing.T) {
+// spawn carrier; only the persisted meta says it is a subagent. That restore
+// already owns its environment, so it re-enters the child's own lane.
+func TestResumeWorktreeReentry_BareResumeOfAPersistedChildReentersOwnLane(t *testing.T) {
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHBARECHILD01")
 	meta.IsSubagent = true
 	meta.ParentSessionID = "01PARENTSESSION00000000002"
 
 	sess, err := sr.restoreSessionOn(env, meta, sr.restoreConfig())
-	if err == nil {
-		sess.Close()
-		t.Fatal("a bare resume of a persisted child re-entered a worktree, want a refusal")
+	if err != nil {
+		t.Fatalf("bare child resume: %v", err)
 	}
-	if !strings.Contains(err.Error(), "child") || !strings.Contains(err.Error(), meta.WorktreePath) {
-		t.Fatalf("refusal = %v, want it to name the child session and the worktree %s", err, meta.WorktreePath)
+	t.Cleanup(sess.Close)
+	assertReenteredChildLane(t, sr, sess, meta, scratch)
+}
+
+func assertReenteredChildLane(t *testing.T, sr *scriptedLaneRepo, sess *Session, meta schema.SessionMeta, scratch string) {
+	t.Helper()
+	if got := sess.currentEnv().WorkingDirectory(); got != meta.WorktreePath {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want the child lane %q", got, meta.WorktreePath)
 	}
-	if !scratchLeaseHeld(t, scratch) {
-		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
+	if _, locked, reason := sr.laneLocked(t, meta.WorktreePath); !locked || reason != worktree.FormatSessionMarker(meta.ID) {
+		t.Fatalf("child lane lock = locked=%t reason=%q, want its session marker", locked, reason)
 	}
-	_ = env.DisposeSessionScratch()
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
+	reentered, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("re-entered env = %T, want a local environment", sess.currentEnv())
+	}
+	if got := reentered.SessionScratchDir(); got != scratch {
+		t.Errorf("re-entered environment scratch = %q, want the handed-in environment's %q", got, scratch)
 	}
 }
 
