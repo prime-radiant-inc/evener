@@ -367,7 +367,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `google-vertex-express` | `GOOGLE_VERTEX_API_KEY` (a Google Cloud API key, `AQ.…`; sent as `x-goog-api-key`) | `GOOGLE_VERTEX_EXPRESS_BASE_URL` (`https://aiplatform.googleapis.com/v1`) | Vertex AI in express mode: `google`'s Gemini rows on the `vertex-gemini` endpoints, no project or location; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite`. Listing is catalog-only — API keys cannot call the publisher-model listing |
 | `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
-| `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; provider-level `context_window = 131072` |
+| `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; no curated window: a live-only model with no listed window budgets against the assumed window (see [`ollama.md`](ollama.md#context-length)) |
 
 A handful of other overlay-defined providers exist but are **not** implicit —
 they're usable only through an explicit `providers.toml` entry with
@@ -817,12 +817,21 @@ typo-guard error, not a silent no-op.
 `evener models inspect <ref>` prints the full `Resolved` record with
 provenance per field, the pruned-field list the protocol would apply, and
 the request skeleton (endpoint, auth scheme, headers with secrets masked).
-It works with no credential configured.
+It works with no credential configured. When the instance can answer, inspect
+first applies the instance's live model listing, so the record shows the window
+a session on it would budget against. `live_listing` (`applied` or
+`unavailable`) says whether that happened, and `context_window_verified` is true
+only when the live listing or `providers.toml` supplied the window; a catalog
+figure or an absent window is unverified. `provenance.ContextWindow` names the
+layer.
 
 ## Commands: `evener models` and `evener providers`
 
 - `evener models list [--provider X] [--all]` — resolved rows with protocol,
-  surface, context, output cap, cost, effort ladder, and warnings. Hidden
+  surface, context, where the context figure came from and whether it is
+  verified, output cap, cost, effort ladder, and warnings. `--provider` naming
+  an instance applies that instance's live listing first; the unscoped list is
+  registry-only and marks every unlisted window unverified. Hidden
   providers, hidden rows, and rows without `tool_call` need `--all`.
 - `evener models inspect <ref>` — see above.
 - `evener models refresh [--force]` — fetch models.dev into the runtime
