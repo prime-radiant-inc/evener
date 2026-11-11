@@ -145,7 +145,10 @@ export function LauncherPluginRow({
 }): ReactElement {
   const source = launcherSource(candidate);
   return (
-    <div className={CLASS.row} data-kind="plugin-row" data-mode="launcher">
+    // data-plugin names the row to the focus rehome (pluginRowFocus.ts): the
+    // row's switch survives the details collapsing, so the keyboard has a
+    // control to come back to.
+    <div className={CLASS.row} data-kind="plugin-row" data-mode="launcher" data-plugin={candidate.name}>
       <Switch
         checked={selected}
         label={candidate.name}

@@ -21,7 +21,7 @@ import {
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
-import { useCatalogRowFocusRehome } from "./catalogRowFocus";
+import { samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
@@ -48,7 +48,7 @@ export interface BrowseSectionProps {
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
   /** The one row whose details are expanded, owned by the section's parent. */
   expanded: PluginDetailTarget | null;
-  onToggle: (target: { plugin: string; marketplace: string }) => void;
+  onToggle: (target: PluginDetailTarget) => void;
   onSources?: () => void;
 }
 
@@ -76,7 +76,7 @@ export function BrowseSection({
   // An inline install's fresh list reshapes the confirmed row, and the
   // confirm's own focus restore then loses its opener: the hook returns
   // focus to the row when that happened.
-  useCatalogRowFocusRehome(pendingInstall, sectionRef);
+  usePluginRowFocusRehome(pendingInstall, sectionRef);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -287,7 +287,7 @@ function MarketplaceNode({
   isInstalled: (plugin: string, marketplace: string) => boolean;
   installDisabled: boolean;
   onToggle: () => void;
-  onToggleRow: (target: { plugin: string; marketplace: string }) => void;
+  onToggleRow: (target: PluginDetailTarget) => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
   const store = useExtensionsHostStore();
@@ -337,8 +337,7 @@ function MarketplaceNode({
           ) : (
             rows.map((p) => {
               const pair = { plugin: p.name, marketplace: marketplace.name };
-              const isRowExpanded =
-                expandedRow !== null && expandedRow.plugin === p.name && expandedRow.marketplace === marketplace.name;
+              const isRowExpanded = expandedRow !== null && samePluginTarget(expandedRow, pair);
               return (
                 // data-plugin/data-marketplace identify the row to focusCatalogRow:
                 // the row's own elements do not survive a reshape (split row and
@@ -353,9 +352,9 @@ function MarketplaceNode({
                     onOpen={() => onToggleRow(pair)}
                     onInstall={() => onInstall(p.name, marketplace.name)}
                   />
-                  {isRowExpanded && (
+                  {isRowExpanded && expandedRow !== null && (
                     <PluginDetailBody
-                      target={pair}
+                      target={expandedRow}
                       onCollapse={() => onToggleRow(pair)}
                       onInstall={(target) => onInstall(target.plugin, target.marketplace)}
                     />

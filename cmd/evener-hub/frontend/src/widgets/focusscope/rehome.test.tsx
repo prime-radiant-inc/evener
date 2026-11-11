@@ -49,6 +49,26 @@ test("rehomeFocus with nothing tabbable leaves focus where the browser put it", 
   expect(document.activeElement).toBe(document.body);
 });
 
+test("rehomeFocus with nothing tabbable falls back to a root that can hold focus", () => {
+  // The inline surfaces whose content can swap to nothing under the keyboard:
+  // the row a one-way expansion emptied, the block a retry turned to loading.
+  // Their catch is the root itself, programmatically focusable the way
+  // FocusScope's own wrapper div is - never a tab stop.
+  const root = document.createElement("div");
+  root.setAttribute("tabindex", "-1");
+  rootWith(root);
+  expect(document.activeElement).toBe(document.body);
+
+  rehomeFocus(root);
+  expect(document.activeElement).toBe(root);
+});
+
+test("rehomeFocus never falls back to a root that cannot hold focus", () => {
+  const root = rootWith(document.createElement("span"));
+  rehomeFocus(root, document.body);
+  expect(document.activeElement).toBe(document.body);
+});
+
 test("rehomeFocus without a root is a no-op", () => {
   expect(() => rehomeFocus(null)).not.toThrow();
   expect(document.activeElement).toBe(document.body);

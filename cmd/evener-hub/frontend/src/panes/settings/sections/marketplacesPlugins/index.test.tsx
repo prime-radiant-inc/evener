@@ -1171,6 +1171,17 @@ test("expanding one row collapses another row's details", async () => {
   expect(within(openDetails[0] as HTMLElement).getByText("Enabled by default")).toBeTruthy();
 });
 
+test("collapsing installed details from the body's action returns focus to the row", async () => {
+  const user = userEvent.setup();
+  connectSeededClient();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("button", { name: /linter/ }));
+  // The body's own exit is the focused control; collapsing unmounts it.
+  await user.click(screen.getByRole("button", { name: "Hide details" }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: /linter/ }));
+});
+
 test("an already-installed catalog row expands its details in installed mode", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({

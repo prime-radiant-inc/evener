@@ -26,12 +26,19 @@ import { tabbable } from "./tabbable";
  * themselves (jsdom), while Chrome has already moved it to `<body>`. Focus that
  * is anywhere else by now is the user's or another component's and is left where
  * it is.
+ *
+ * A root with no tabbable control left - a row a one-way expansion emptied, a
+ * block a retry swapped for loading - falls back to the root itself when the
+ * root can hold focus (an author-set tabindex, the same convention
+ * FocusScope's wrapper div set), so recovery never depends on a control
+ * surviving. A root that cannot hold focus stays a no-op: focusing it would
+ * silently do nothing anyway.
  */
 export function rehomeFocus(root: HTMLElement | null, lost: HTMLElement | null = null): void {
   if (root === null) return;
   const active = document.activeElement;
   if (active !== document.body && active !== lost) return;
-  const next = tabbable(root)[0];
+  const next = tabbable(root)[0] ?? (root.hasAttribute("tabindex") ? root : null);
   next?.focus();
 }
 

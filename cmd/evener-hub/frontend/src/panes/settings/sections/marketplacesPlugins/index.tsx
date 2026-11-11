@@ -7,10 +7,10 @@ import { useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
 import { BrowseSection } from "./BrowseSection";
-import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
@@ -97,7 +97,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   // details were open, unmounting the control that held the keyboard, and
   // the modal confirm's own focus restore then loses its opener: the hook
   // returns focus to the row when that happened.
-  useCatalogRowFocusRehome(expandedPair, sectionRef);
+  usePluginRowFocusRehome(expandedPair, sectionRef);
 
   function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
@@ -136,9 +136,9 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   // Both lists toggle the same accordion state: the tapped pair opens
   // unless it is the pair already open, which collapses. The body derives
   // its own mode from the installed list, so no resolution happens here.
-  function toggleDetail(pair: { plugin: string; marketplace: string }): void {
+  function toggleDetail(pair: PluginDetailTarget): void {
     setExpandedPair((current) =>
-      current !== null && current.plugin === pair.plugin && current.marketplace === pair.marketplace
+      current !== null && samePluginTarget(current, pair)
         ? null
         : { plugin: pair.plugin, marketplace: pair.marketplace },
     );

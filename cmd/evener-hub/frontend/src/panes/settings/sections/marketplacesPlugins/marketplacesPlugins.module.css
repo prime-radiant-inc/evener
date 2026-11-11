@@ -177,12 +177,6 @@
   border-top: 1px solid var(--edge);
 }
 
-/* The sheet's focus-rehome root: a box for the hook's ref that adds no
-   layout of its own. */
-.focusRoot {
-  display: contents;
-}
-
 /* The inline detail body a row's expansion mounts under it (the slide-out
    sheet is gone), indented to read as that row's details. */
 .detail {

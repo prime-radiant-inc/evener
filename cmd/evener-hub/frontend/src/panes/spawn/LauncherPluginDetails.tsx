@@ -13,7 +13,7 @@
 import type { AppwireClientLike, PluginComponentsReadArgs, PluginLaunchCandidate } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import { type ReactElement, useRef } from "react";
-import { Button, Switch, useFocusRehome } from "../../widgets";
+import { Switch, useFocusRehome } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../plugins/PluginContents";
 import { PluginDetail, type PluginMetadataRow } from "../plugins/PluginDetail";
@@ -83,7 +83,13 @@ export function LauncherPluginDetails({
 
   return (
     <div ref={focusRoot} className={CLASS.detailBody}>
-      <PluginDetail mode="launcher" description={candidate.description} contents={contentsBlock} metadata={metaRows}>
+      <PluginDetail
+        mode="launcher"
+        description={candidate.description}
+        contents={contentsBlock}
+        metadata={metaRows}
+        onCollapse={onCollapse}
+      >
         <Switch
           checked={selected}
           disabled={selectionDisabled}
@@ -91,12 +97,6 @@ export function LauncherPluginDetails({
           label="Included in this session"
           description="Turn off to start this session without this plugin. Only this launch's plugin selection changes."
         />
-        {/* The body's own way out: the row above collapses it too, but the
-         * body needs a control no remove-only selection state can disable -
-         * both for the keyboard and as the focus rehome's target. */}
-        <Button variant="link" size="xs" type="button" onClick={onCollapse}>
-          Hide details
-        </Button>
       </PluginDetail>
     </div>
   );

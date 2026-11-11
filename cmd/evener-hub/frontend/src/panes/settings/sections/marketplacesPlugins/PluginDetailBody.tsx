@@ -191,6 +191,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
         chips={chips.length > 0 ? chips : undefined}
         contents={contentsBlock}
         metadata={metaRows}
+        onCollapse={onCollapse}
       >
         {mode === "installed" && entry !== undefined ? (
           <>
@@ -227,13 +228,6 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
             Install
           </Button>
         )}
-        {/* The body's own way out: the row above collapses it too, but a
-         * long body should not make the keyboard scroll back up - and the
-         * focus rehome needs a control that no selection or mutation state
-         * can disable. */}
-        <Button variant="link" size="xs" type="button" onClick={onCollapse}>
-          Hide details
-        </Button>
       </PluginDetail>
       <ConfirmDialog
         open={pendingRemove}

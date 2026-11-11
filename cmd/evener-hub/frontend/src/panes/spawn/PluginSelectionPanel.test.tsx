@@ -175,6 +175,20 @@ test("Details expands the candidate's details inline under its row, and again co
   expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
 });
 
+test("collapsing the details from the body's action returns focus to the row", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const detailsAction = screen.getAllByRole("button", { name: "Details" })[0];
+  if (!(detailsAction instanceof HTMLElement)) throw new Error("no Details action renders");
+  await user.click(detailsAction);
+  const body = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(body instanceof HTMLElement)) throw new Error("no detail body expanded");
+  // The body's own exit is the focused control; collapsing unmounts it.
+  await user.click(within(body).getByRole("button", { name: "Hide details" }));
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("switch", { name: "alpha" }));
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();

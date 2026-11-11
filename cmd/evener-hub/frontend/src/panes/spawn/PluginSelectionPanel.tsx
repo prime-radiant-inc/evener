@@ -8,10 +8,11 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import { Fragment, type ReactElement, useEffect, useState } from "react";
+import { Fragment, type ReactElement, useEffect, useRef, useState } from "react";
 import { Button, Card, Disclosure, EmptyState, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { LauncherPluginRow } from "../plugins/PluginRow";
+import { usePluginRowFocusRehome } from "../plugins/pluginRowFocus";
 import { LauncherPluginDetails } from "./LauncherPluginDetails";
 import styles from "./pluginSelection.module.css";
 
@@ -54,6 +55,10 @@ export function PluginSelectionPanel({
   // so its read starts when it does.
   const [expandedName, setExpandedName] = useState<string | null>(null);
   const expandedCandidate = preview.plugins.find((plugin) => plugin.name === expandedName);
+  // The list rows' focus-rehome root: collapsing a candidate's details
+  // unmounts the body's focused control, and the keyboard returns to the row.
+  const listRef = useRef<HTMLDivElement>(null);
+  usePluginRowFocusRehome(expandedName === null ? null : { plugin: expandedName }, listRef);
   useEffect(() => {
     if (expandedName !== null && expandedCandidate === undefined) setExpandedName(null);
   }, [expandedName, expandedCandidate]);
@@ -118,7 +123,7 @@ export function PluginSelectionPanel({
           </div>
         )}
 
-        <div className={CLASS.list} data-testid="plugin-selection-list">
+        <div ref={listRef} className={CLASS.list} data-testid="plugin-selection-list">
           {preview.plugins.map((plugin) => {
             const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
             const isExpanded = expandedName === plugin.name;

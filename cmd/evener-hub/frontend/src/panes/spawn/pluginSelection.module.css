@@ -114,27 +114,6 @@
   margin: 0 0 var(--space-2) var(--space-5);
 }
 
-/* LauncherPluginSheet body layout: the same rhythm the settings detail sheet
- * gives its description, metadata and switches. */
-.sheetDesc {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-}
-
-.metaList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-4) 0;
-}
-
-.switchRows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
 .diagnostics {
   padding: var(--space-2);
   border: 1px solid var(--edge);

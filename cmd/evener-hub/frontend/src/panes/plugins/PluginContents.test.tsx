@@ -4,7 +4,6 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
-import { Sheet } from "../../widgets";
 import { PluginContents, PluginContentsBlock } from "./PluginContents";
 import { PluginDetail } from "./PluginDetail";
 
@@ -45,34 +44,27 @@ test("a kind with more than eight names shows the first eight and expands the re
   expect(screen.queryByRole("button", { name: "+1 more" })).toBeNull();
 });
 
-test("keyboard expansion keeps focus inside the sheet and Escape dismisses it", async () => {
+test("keyboard expansion keeps focus inside the detail body", async () => {
   const user = userEvent.setup();
-  function Harness() {
-    const [open, setOpen] = useState(true);
-    return (
-      <Sheet open={open} onClose={() => setOpen(false)} title="plugin-focus-sentinel" side="right">
-        <PluginDetail
-          mode="launcher"
-          metadata={[]}
-          contents={<PluginContents components={{ mcpServers: NINE_SERVERS }} />}
-        />
-      </Sheet>
-    );
-  }
-  render(<Harness />);
-  const sheet = screen.getByRole("dialog");
+  render(
+    <PluginDetail
+      mode="launcher"
+      metadata={[]}
+      contents={<PluginContents components={{ mcpServers: NINE_SERVERS }} />}
+    />,
+  );
+  const detail = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(detail instanceof HTMLElement)) throw new Error("no detail body renders");
   const expander = within(rowFor("mcpServers")).getByRole("button");
-  expect(document.activeElement).toBe(expander);
+  expander.focus();
   await user.keyboard("{Enter}");
   expect(expander.isConnected).toBe(false);
   for (const name of NINE_SERVERS) expect(namesOf(rowFor("mcpServers"))).toContain(name);
-  expect(sheet.contains(document.activeElement)).toBe(true);
-  await user.keyboard("{Escape}");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(detail.contains(document.activeElement)).toBe(true);
 });
 
 test.each([undefined, { status: "loading" as const }])(
-  "the shared block rehomes keyboard Retry without a sheet owner rerender: %j",
+  "the shared block rehomes keyboard Retry without an owner rerender: %j",
   async (loading) => {
     const user = userEvent.setup();
     function Contents() {
@@ -83,24 +75,15 @@ test.each([undefined, { status: "loading" as const }])(
       });
       return <PluginContentsBlock entry={entry} onRetry={() => setEntry(loading)} />;
     }
-    function Harness() {
-      const [open, setOpen] = useState(true);
-      return (
-        <Sheet open={open} onClose={() => setOpen(false)} title="retry-focus-sentinel" side="right">
-          <PluginDetail mode="launcher" metadata={[]} contents={<Contents />} />
-        </Sheet>
-      );
-    }
-    render(<Harness />);
-    const sheet = screen.getByRole("dialog");
-    const retry = within(within(sheet).getByRole("status")).getByRole("button");
+    render(<PluginDetail mode="launcher" metadata={[]} contents={<Contents />} />);
+    const detail = document.querySelector('[data-kind="plugin-detail"]');
+    if (!(detail instanceof HTMLElement)) throw new Error("no detail body renders");
+    const retry = within(within(detail).getByRole("status")).getByRole("button");
     for (let i = 0; i < 5 && document.activeElement !== retry; i++) await user.tab();
     expect(document.activeElement).toBe(retry);
     await user.keyboard("{Enter}");
     expect(retry.isConnected).toBe(false);
-    expect(sheet.contains(document.activeElement)).toBe(true);
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(detail.contains(document.activeElement)).toBe(true);
   },
 );
 

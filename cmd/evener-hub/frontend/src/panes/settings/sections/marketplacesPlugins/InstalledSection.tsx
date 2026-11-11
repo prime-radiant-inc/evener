@@ -15,6 +15,7 @@ import { useState } from "react";
 import { Button, EmptyState, Input } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstalledPluginRow } from "../../../plugins/PluginRow";
+import { samePluginTarget } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
@@ -28,7 +29,7 @@ const CLASS = {
 export interface InstalledSectionProps {
   /** The one row whose details are expanded, owned by the section's parent. */
   expanded: PluginDetailTarget | null;
-  onToggle: (target: { plugin: string; marketplace: string }) => void;
+  onToggle: (target: PluginDetailTarget) => void;
   onBrowse?: () => void;
 }
 
@@ -73,12 +74,17 @@ export function InstalledSection({ expanded, onToggle, onBrowse }: InstalledSect
           visible.map((p) => {
             const key = pluginComponentsKey({ plugin: p.plugin, marketplace: p.marketplace });
             const pair = { plugin: p.plugin, marketplace: p.marketplace };
-            const isExpanded =
-              expanded !== null && expanded.plugin === p.plugin && expanded.marketplace === p.marketplace;
+            const isExpanded = expanded !== null && samePluginTarget(expanded, pair);
             return (
-              <li key={key}>
+              // data-plugin/data-marketplace identify the row to the focus
+              // rehome: the row's own elements do not survive a reshape (the
+              // split row and the whole-row button remount), but this <li>
+              // does.
+              <li key={key} data-plugin={p.plugin} data-marketplace={p.marketplace}>
                 <InstalledPluginRow entry={p} components={pluginComponents.get(key)} onOpen={() => onToggle(pair)} />
-                {isExpanded && <PluginDetailBody target={pair} onCollapse={() => onToggle(pair)} />}
+                {isExpanded && expanded !== null && (
+                  <PluginDetailBody target={expanded} onCollapse={() => onToggle(pair)} />
+                )}
               </li>
             );
           })
