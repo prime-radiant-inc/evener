@@ -445,7 +445,7 @@ func (s *Session) delegateLaneLiveWork(op, action, id string, state delegateWork
 		return nil, fmt.Errorf("manage_worktree %s: %s has a resident runtime that is not tracked in the subagent registry; refusing: %w", op, id, errWorktreeLaneRuntimeUntracked)
 	}
 	if sub != nil && sub.sess != nil {
-		if !(allowSpentTeardown && sub.sess.retirementTeardownSpent()) {
+		if !allowSpentTeardown || !sub.sess.retirementTeardownSpent() {
 			outstanding, outstandingErr := sub.sess.treeHasOutstandingWork()
 			if outstandingErr != nil {
 				return nil, fmt.Errorf("manage_worktree %s: %s subtree check: %w", op, id, outstandingErr)
