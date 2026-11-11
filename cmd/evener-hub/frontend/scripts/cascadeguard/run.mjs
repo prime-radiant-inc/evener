@@ -100,6 +100,7 @@ async function capture(name) {
   writeFileSync(path.join(fixture.artifactDir, `${name}-paint.json`), JSON.stringify(paint, null, 2));
   writeFileSync(path.join(fixture.artifactDir, `${name}-native-hits.json`), JSON.stringify(await read('window.__cascadeNativeHits'), null, 2));
   writeFileSync(path.join(fixture.artifactDir, `${name}-scroll-writers.json`), JSON.stringify(await read('window.__cascadeStartupTrace'), null, 2));
+  writeFileSync(path.join(fixture.artifactDir, `${name}-frames.json`), JSON.stringify(await read('window.__cascadeFrameTrace ?? []'), null, 2));
   writeFileSync(path.join(fixture.artifactDir, `${name}.html`), await read("document.documentElement.outerHTML"));
   const screenshot = await driver.send("Page.captureScreenshot", { format: "png" });
   writeFileSync(path.join(fixture.artifactDir, `${name}.png`), Buffer.from(screenshot.result.data, "base64"));
@@ -1873,6 +1874,30 @@ try {
         return result;
       }
     });
+    const nativeElementScroll = Element.prototype.scroll;
+    Element.prototype.scroll = function(...args) {
+      const source = this === ${sourcePortExpr};
+      if (source) window.__cascadeTraceStartup('scroll-call-before', { args, stack:new Error().stack });
+      const result = nativeElementScroll.apply(this, args);
+      if (source) window.__cascadeTraceStartup('scroll-call-after');
+      return result;
+    };
+    // One compact sample per rendering frame whose port geometry changed, in
+    // its own bounded buffer: a move with no traced writer shows here as the
+    // frame where it lands, without crowding the writer trace's stacks.
+    window.__cascadeFrameTrace = [];
+    let lastFrame = '';
+    const sampleFrame = () => {
+      const port = ${sourcePortExpr};
+      if (port) {
+        const sample = { scrollTop:port.scrollTop, scrollHeight:port.scrollHeight, clientHeight:port.clientHeight,
+          clientWidth:port.clientWidth, sizer:port.firstElementChild?.getAttribute('style') };
+        const key = JSON.stringify(sample);
+        if (key !== lastFrame) { lastFrame = key; window.__cascadeFrameTrace.push({ at:performance.now(), ...sample }); }
+      }
+      if (window.__cascadeFrameTrace.length < 1500) requestAnimationFrame(sampleFrame);
+    };
+    requestAnimationFrame(sampleFrame);
     for (const type of ['scroll', 'scrollend']) document.addEventListener(type, event => {
       if (event.target === ${sourcePortExpr}) window.__cascadeTraceStartup(type);
     }, { capture:true, passive:true });
