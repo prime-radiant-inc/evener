@@ -778,15 +778,7 @@ async function measureOverview(send) {
       const r = element.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
-    // The phone's activity counts live in the composer's own control row,
-    // which rests until the editor is engaged: focus the editor so the row
-    // carries its chips where this measurement can see them.
     const mobile = matchMedia('(max-width: 899px)').matches;
-    if (mobile) {
-      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
-      editor?.focus();
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    }
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
       text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
       label: measure(element.querySelector('span'), element.textContent)
@@ -797,10 +789,11 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
-    // The activity surface: the pane's status bar on desktop, the engaged
-    // composer row on a phone (the phone pane renders no footer strip).
+    // The activity surface: the pane's status bar on desktop, the quiet line
+    // below the composer card on a phone (the phone pane renders no footer
+    // strip).
     const surface = mobile
-      ? document.querySelector('[data-testid="composer-form"]')
+      ? document.querySelector('[data-testid="composer-activity-line"]')
       : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
           .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
@@ -968,10 +961,9 @@ function assertOverview(result, viewport, theme) {
     if (!footer) {
       failures.push("phone composer activity row is not rendered");
     } else {
-      // The phone pane renders no footer strip: the engaged composer row
-      // carries the same four activity tabs, each at the tap floor and
-      // never clipped - the strip wraps to another line rather than
-      // crushing the status chrome beside it.
+      // The phone pane renders no footer strip: the quiet line below the
+      // composer card carries the same four activity tabs, each at the tap
+      // floor and never clipped.
       if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
       for (const chip of footer.chips) {
         if (

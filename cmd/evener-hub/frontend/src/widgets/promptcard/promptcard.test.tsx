@@ -1,11 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { blockBody, readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
+
+const motionMock = vi.hoisted(() => ({
+  animate: vi.fn((_element: Element, _target: Record<string, string>, _transition: unknown) => ({
+    finished: Promise.resolve(),
+    stop: vi.fn(),
+  })),
+  reduced: false,
+}));
+
+vi.mock("../../motion", () => ({
+  animate: motionMock.animate,
+  spatialTransition: () => ({ duration: 0.24, ease: "easeOut" }),
+  useReducedMotion: () => motionMock.reduced,
+}));
 
 function moduleCss(): string {
   return readModuleCss(import.meta.url, "promptcard.module.css");
@@ -17,6 +31,8 @@ function LiveCard(props: {
   leading?: React.ReactNode;
   actions?: React.ReactNode;
   hidden?: boolean;
+  folded?: boolean;
+  foldedCompact?: boolean;
   controlsTestId?: string;
 }) {
   const [value, setValue] = useState("");
@@ -24,6 +40,8 @@ function LiveCard(props: {
     <PromptCard
       data-testid="card"
       hidden={props.hidden}
+      folded={props.folded}
+      foldedCompact={props.foldedCompact}
       controlsTestId={props.controlsTestId}
       leading={props.leading}
       actions={props.actions}
@@ -150,6 +168,12 @@ test("the card draws exactly one hairline border, so a seamless field inside is 
   expect(rule).toMatch(/border:\s*1px solid var\(--edge\)/);
 });
 
+test("the field slot stretches the caller's field across the card", () => {
+  const rule = /\.field\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toMatch(/display:\s*flex/);
+  expect(rule).toMatch(/flex-direction:\s*column/);
+});
+
 test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
   const css = moduleCss();
   const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");
@@ -158,4 +182,89 @@ test("the card owns compact spacing for an empty, unfocused Duo composer", () =>
   expect(compact).toMatch(
     /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
   );
+});
+
+// The folded shape is the caller's signal: an empty, resting composer asks
+// for it, and every other state renders the stacked card.
+test("folded marks the card for the one-line layout", () => {
+  render(<LiveCard folded />);
+  expect(screen.getByTestId("card").getAttribute("data-folded")).toBe("true");
+});
+
+test("an expanded card carries no folded marker", () => {
+  render(<LiveCard />);
+  expect(screen.getByTestId("card").hasAttribute("data-folded")).toBe(false);
+});
+
+// The width container exists so a spread-out composer gets the one-line
+// shape while a narrow pane keeps the stacked one, regardless of the
+// viewport. jsdom applies no layout, so the rule itself is the assertion.
+test("the folded card goes one line only when the card has room", () => {
+  const css = moduleCss();
+  expect(css).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size;/);
+  const queryStart = css.indexOf("@container (min-width: 620px)");
+  expect(queryStart).toBeGreaterThanOrEqual(0);
+  const oneLine = blockBody(css, css.indexOf("{", queryStart));
+  expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
+  expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+});
+
+test("a compact folded card goes one line below the normal width threshold", () => {
+  const css = moduleCss();
+  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\]\s*\{[^}]*flex-direction:\s*row;/);
+  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+});
+
+test("foldedCompact marks the card for the narrow one-line row", () => {
+  render(<LiveCard folded foldedCompact />);
+  expect(screen.getByTestId("card").getAttribute("data-folded-compact")).toBe("true");
+});
+
+// jsdom has no layout, so the height measurement that drives the transition
+// is stubbed at the browser boundary. The widget's own logic still runs.
+let originalOffsetHeight: PropertyDescriptor | undefined;
+beforeEach(() => {
+  motionMock.reduced = false;
+  motionMock.animate.mockClear();
+  originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.hasAttribute("hidden")) return 0;
+      return this.getAttribute("data-folded") === "true" ? 38 : 90;
+    },
+  });
+});
+
+afterEach(() => {
+  if (originalOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+});
+
+test("folding animates from the card's previous height", () => {
+  const { rerender } = render(<LiveCard />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).toHaveBeenCalledTimes(1);
+  expect(motionMock.animate.mock.calls[0]?.[1]).toEqual({ height: "38px" });
+});
+
+test("the animating card carries the marker that anchors its controls", () => {
+  const { rerender } = render(<LiveCard />);
+  motionMock.animate.mockImplementationOnce(() => ({ finished: new Promise<void>(() => {}), stop: vi.fn() }));
+  rerender(<LiveCard folded />);
+  expect(screen.getByTestId("card").getAttribute("data-animating")).toBe("true");
+});
+
+test("a card returning from ask-pending appears without animating", () => {
+  const { rerender } = render(<LiveCard hidden />);
+  motionMock.animate.mockClear();
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
+});
+
+test("reduced motion applies the folded shape without animating", () => {
+  motionMock.reduced = true;
+  const { rerender } = render(<LiveCard />);
+  rerender(<LiveCard folded />);
+  expect(motionMock.animate).not.toHaveBeenCalled();
 });

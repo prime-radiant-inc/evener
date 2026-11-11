@@ -12,10 +12,17 @@ import { isMobileViewport } from "./useIsMobile";
 // and on desktop (mobile must never pop the on-screen keyboard on load). The
 // mobile gate reads the viewport snapshot, not the useIsMobile subscription:
 // a mount-only decision needs the value once, not a listener.
+/** Whether a pane mount will move focus into the referenced field. The
+ * composer reads the same gate to start its card in the expanded shape
+ * instead of painting folded and then animating open. */
+export function mountAutofocusEnabled(enabled: boolean): boolean {
+  return enabled && !isMobileViewport();
+}
+
 export function useMountAutofocus(targetRef: RefObject<{ focus(): void } | null>, enabled: boolean): void {
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only by design - later enabled flips are pane switches, not loads
   useEffect(() => {
-    if (!enabled || isMobileViewport()) return;
+    if (!mountAutofocusEnabled(enabled)) return;
     targetRef.current?.focus();
   }, []);
 }

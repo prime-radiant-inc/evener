@@ -12,6 +12,7 @@
 // interpolates (pinned by motion.test.tsx's interpolation test).
 import {
   AnimatePresence,
+  animate,
   domAnimation,
   LazyMotion,
   MotionConfig,
@@ -21,7 +22,7 @@ import {
 } from "motion/react";
 import type { ReactNode } from "react";
 
-export { AnimatePresence, m, useReducedMotion };
+export { AnimatePresence, animate, m, useReducedMotion };
 
 export function MotionProvider({ children }: { children: ReactNode }) {
   return (

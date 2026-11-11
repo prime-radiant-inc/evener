@@ -1700,6 +1700,16 @@ async function measure() {
   if (matchMedia("(max-width: 899px)").matches && !openOverlay) {
     pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.focus();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // Focusing the editor expands the resting composer through a height
+    // transition; measuring the mid-transition box would read controls that
+    // are still moving outside the card.
+    for (
+      let frame = 0;
+      frame < 30 && pane.querySelector('[data-testid="composer-input-card"][data-animating]');
+      frame += 1
+    ) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');

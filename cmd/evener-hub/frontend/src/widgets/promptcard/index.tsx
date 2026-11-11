@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { animate, spatialTransition, useReducedMotion } from "../../motion";
 import { requireClass } from "../internal/requireClass";
 import styles from "./promptcard.module.css";
 
@@ -14,6 +15,14 @@ export interface PromptCardProps {
   actions?: ReactNode;
   /** Optional stable hook for a caller-owned control-row behavior test. */
   controlsTestId?: string;
+  /** The empty, resting shape: the field and the control row share one line
+   * instead of stacking, and the card animates the height between the two
+   * shapes. Callers own what the row contains; the card only lays it out. */
+  folded?: boolean;
+  /** Use the folded one-line row even when the card is narrower than its
+   * normal width threshold. The caller guarantees its control row fits; the
+   * composer uses it for the phone's menu-only resting row. */
+  foldedCompact?: boolean;
   /** Forwarded to the card element so a test can address it by a stable hook
    * (the composer's `composer-input-card`, spawn's `spawn-prompt-card`). */
   "data-testid"?: string;
@@ -24,7 +33,9 @@ export interface PromptCardProps {
 }
 
 const CLASS = {
+  root: requireClass(styles.root, "promptcard.module.css", "root"),
   card: requireClass(styles.card, "promptcard.module.css", "card"),
+  field: requireClass(styles.field, "promptcard.module.css", "field"),
   controls: requireClass(styles.controls, "promptcard.module.css", "controls"),
   actions: requireClass(styles.actions, "promptcard.module.css", "actions"),
 };
@@ -38,26 +49,87 @@ const CLASS = {
  *
  * The card owns the border, the radius, the padding, the control-row layout,
  * and the focus ring (via :focus-within, since the seamless field inside draws
- * none of its own). Callers own the field's props and their own buttons - this
- * widget has no opinion about verbs, and no state at all.
+ * none of its own). Callers own the field's props and their own buttons; this
+ * widget has no opinion about verbs and holds no content state - only the
+ * geometry of the shape it can animate between.
  */
 export function PromptCard({
   field,
   leading,
   actions,
+  folded = false,
+  foldedCompact = false,
   hidden,
   controlsTestId,
   "data-testid": testId,
 }: PromptCardProps) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // The shape whose height the card is leaving. A fold swaps the layout, so
+  // the natural height steps; capture the old height during the render that
+  // changes the shape, while the DOM still holds it, for the effect below to
+  // interpolate between two real measurements rather than guess.
+  const priorShape = useRef<{ folded: boolean; height: number | null }>({ folded, height: null });
+  const shapeChanged = useRef(false);
+  const hiddenBefore = useRef(hidden);
+  const reducedMotion = useReducedMotion();
+
+  if (priorShape.current.folded !== folded) {
+    priorShape.current = { folded, height: cardRef.current?.offsetHeight ?? null };
+    shapeChanged.current = true;
+  }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the fold flag is the shape-change trigger; the measured heights live in refs.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    const wasHidden = hiddenBefore.current;
+    hiddenBefore.current = hidden;
+    const changed = shapeChanged.current;
+    shapeChanged.current = false;
+    if (!card) return undefined;
+    // Height stays auto at rest: the field's own autogrow and any control
+    // change reflow normally. Only the fold switch interpolates.
+    card.style.removeProperty("height");
+    card.removeAttribute("data-animating");
+    const from = wasHidden ? null : priorShape.current.height;
+    if (!changed || hidden || reducedMotion || from === null) return undefined;
+    const to = card.offsetHeight;
+    if (Math.abs(to - from) < 1) return undefined;
+    card.style.height = `${from}px`;
+    card.dataset.animating = "true";
+    const animation = animate(card, { height: `${to}px` }, spatialTransition());
+    animation.finished
+      .then(() => {
+        card.style.removeProperty("height");
+        card.removeAttribute("data-animating");
+      })
+      .catch(() => {
+        // A newer fold stopped this animation and owns the height now.
+      });
+    return () => {
+      animation.stop();
+      card.removeAttribute("data-animating");
+    };
+  }, [folded, hidden, reducedMotion]);
+
   return (
-    <div className={CLASS.card} data-testid={testId} hidden={hidden} inert={hidden}>
-      {field}
-      {(leading !== undefined || actions !== undefined) && (
-        <div className={CLASS.controls} data-testid={controlsTestId}>
-          {leading}
-          <div className={CLASS.actions}>{actions}</div>
-        </div>
-      )}
+    <div className={CLASS.root}>
+      <div
+        ref={cardRef}
+        className={CLASS.card}
+        data-testid={testId}
+        data-folded={folded ? "true" : undefined}
+        data-folded-compact={foldedCompact ? "true" : undefined}
+        hidden={hidden}
+        inert={hidden}
+      >
+        <div className={CLASS.field}>{field}</div>
+        {(leading !== undefined || actions !== undefined) && (
+          <div className={CLASS.controls} data-testid={controlsTestId}>
+            {leading}
+            <div className={CLASS.actions}>{actions}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

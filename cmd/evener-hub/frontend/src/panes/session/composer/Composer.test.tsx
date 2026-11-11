@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Thread } from "@evener/appwire-client";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -26,9 +23,11 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import statusRowStyles from "../chrome/statusrow.module.css";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -113,15 +112,56 @@ test("the Duo cover composer expands on focus and retains its two-line draft hei
   await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
 });
 
-test("a narrow desktop pane keeps its two-line resting height", async () => {
+test("a narrow desktop pane folds its resting field to one line", async () => {
   installNarrowComposer(382);
   await mountComposerWithHandle("ref_a");
-  expect(textarea().style.minHeight).toBe("2lh");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
 });
 
-test("the wide empty composer keeps its two-line resting height", async () => {
+test("the wide empty composer folds to one line and unfolds on focus", async () => {
   await mountComposerWithHandle("ref_a");
-  expect(textarea().style.minHeight).toBe("2lh");
+  const editor = textarea();
+  const card = screen.getByTestId("composer-input-card");
+  expect(editor.style.minHeight).toBe("1lh");
+  expect(card.getAttribute("data-folded")).toBe("true");
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  act(() => editor.focus());
+  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+  expect(editor.style.minHeight).toBe("2lh");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  act(() => editor.blur());
+  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+  expect(editor.style.minHeight).toBe("1lh");
+});
+
+test("a phone's folded composer is compact, and focus reveals the full row", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    await mountComposerWithHandle("ref_a");
+    const card = screen.getByTestId("composer-input-card");
+    expect(card.getAttribute("data-folded")).toBe("true");
+    expect(card.getAttribute("data-folded-compact")).toBe("true");
+    expect(screen.queryByTestId("composer-attach")).toBeNull();
+    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+    expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+    act(() => textarea().focus());
+    await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
+    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+    expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
+test("the composer's inline status row packs its facts to the far end", async () => {
+  await mountComposerWithHandle("ref_a");
+  act(() => textarea().focus());
+  await waitFor(() => expect(screen.getByTestId("status-row").className.split(" ")).toContain(statusRowStyles.rowEnd));
 });
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
@@ -514,7 +554,7 @@ test("clicking the current task opens the existing mobile tasks sheet for this s
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(css).toContain("flex: 1 1 auto");
   expect(css).toContain("min-height: 0");
   expect(css).toContain("justify-content: flex-end");
@@ -526,9 +566,19 @@ test("the composer region fills pane height and bottom-anchors the replacement s
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
 test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.composer\s*\{[^}]*container-type:\s*inline-size/);
+  const css = readModuleCss(import.meta.url, "composer.module.css");
+  expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+});
+
+// The model and effort are the session's facts about the next turn, so they
+// sit beside the verbs rather than immediately after the paperclip. The slot
+// reserves the compact chrome rung for the leading's wrap calculation and
+// grows into the expanded row; the row's own `align="end"` places the facts
+// at its far end.
+test("the session chrome reserves its compact rung and fills the expanded row", () => {
+  const css = readModuleCss(import.meta.url, "composer.module.css");
+  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
 });
 
 beforeEach(() => {
@@ -634,7 +684,9 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
 // and Send stay, so a landscape phone spends its height on the transcript
 // and session actions stay reachable without focusing first. Focus engages
 // the full row again.
-test("a resting phone composer sheds chips and attach until focus engages the full row", async ({ onTestFinished }) => {
+test("a resting phone composer sheds attach and status chrome but keeps its activity line", async ({
+  onTestFinished,
+}) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -647,11 +699,14 @@ test("a resting phone composer sheds chips and attach until focus engages the fu
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // At rest: no attach, no status chips, no activity chips. The menu-only
-  // chrome keeps the session actions reachable, and Send stays.
+  // At rest: no attach and no status chrome. The activity line stays below
+  // the card, outside the form; the menu-only chrome keeps the session
+  // actions reachable, and Send stays.
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  const form = screen.getByTestId("composer-form");
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
@@ -660,15 +715,17 @@ test("a resting phone composer sheds chips and attach until focus engages the fu
   fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
   await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-activity-line")).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeTruthy();
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
 });
 
 // A cascade column's chrome renders the conversation's activity controls
 // below the footer (CascadeColumn's ScopeActivityControls), so its seat
-// declares that ownership and the phone composer row keeps no second set of
-// chips beside the status chrome, even engaged.
+// declares that ownership and the phone composer renders no second activity
+// line below its card.
 test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
@@ -692,6 +749,7 @@ test("a composer whose seat owns the activity counts never mounts chips", async 
   await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
 });
 
 // A turn in flight keeps its Stop control even while the editor rests

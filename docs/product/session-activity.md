@@ -879,8 +879,8 @@ shares a store by actual client object, requested ref and scope. A committed vie
 acquires its holder; an abandoned render starts no read. Every visible ordinary
 session pane observes that pane's
 summary and its subtree summary (for the Agents count) by explicit ref on both
-viewports, through its flush status footer on desktop and through the activity
-chips in the composer's control row on the phone, which renders no footer
+viewports, through its flush status footer on desktop and through the persistent
+activity line below the composer card on the phone, which renders no footer
 strip, so side-by-side panes retain independent counts while duplicate consumers of one
 ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own

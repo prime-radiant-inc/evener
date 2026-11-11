@@ -213,13 +213,13 @@ test("the folded-run summary meets the phone tap floor", () => {
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
 
-// A phone mounts no status bar: the session's activity counts ride the
-// composer's engaged control row instead, sharing that row's width with the
-// status chrome and Send. The wrap contract is what keeps every control
-// tappable there: the chip strip yields before the chrome compresses
-// (shrink 999 beside the chrome's 1) and wraps to a second line rather than
-// scrolling sideways or crushing a target below the tap floor.
-test("the phone composer's activity chips yield to the row and wrap at the tap floor", () => {
+// A phone mounts no status bar: the session's activity counts sit on their
+// own line below the composer card, where the desktop strip puts them, and
+// the writing row carries only its controls. The line stays a flex strip at
+// the phone tap floor and drops the category names rather than scrolling
+// sideways: four named chips do not fit a card line, so each chip keeps its
+// glyph and count and its accessible name carries the label.
+test("the phone's activity line keeps every chip a tappable glyph", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
@@ -228,15 +228,18 @@ test("the phone composer's activity chips yield to the row and wrap at the tap f
   expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
   const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
   expect(phone, "statusbar.module.css must have a mobile block").toBeDefined();
-  // The phone's chips are the composer's wrapped row, and the narrow-pane
-  // grid below (two max-content columns, ~130px) overflows a leading slot
-  // the open Overview can squeeze under that; the phone must stay a
-  // wrapping flex row. mediaBlocks strips comments, so this reads rules only.
+  // The narrow-pane grid below (two max-content columns) belongs to the
+  // desktop strip; the phone's own line stays a flex row. mediaBlocks strips
+  // comments, so this reads rules only.
   expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
-  const chipsWrap = /\.chipsWrap\s*\{[^}]*margin-left:\s*0[^}]*flex:\s*0 999 auto[^}]*flex-wrap:\s*wrap/.exec(
-    css.replace(/\/\*[\s\S]*?\*\//g, " "),
+  expect(phone!.body).toMatch(/\.chipName\s*\{[^}]*display:\s*none/);
+  expect(phone!.body).toMatch(/\.chipGlyph\s*\{[^}]*display:\s*inline-flex/);
+  const composerCss = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
   );
-  expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
+  const activityRow = /\.activityRow\s*\{[^}]*display:\s*flex[^}]*min-height:\s*var\(--tap-min\)/.exec(composerCss);
+  expect(activityRow, "composer.module.css must give the phone's activity line the tap floor").not.toBeNull();
   // The line break itself is decided by honest bases, not a threshold query:
   // the chrome's .body container containment hides its status content from
   // the flex algorithm, so the composer placement's .inline must carry its

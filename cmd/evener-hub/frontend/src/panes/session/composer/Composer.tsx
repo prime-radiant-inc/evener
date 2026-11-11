@@ -45,7 +45,7 @@ import { activitySidebarStore } from "../../../shell/activitybar/activitySidebar
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { useMountAutofocus } from "../../../shell/useMountAutofocus";
+import { mountAutofocusEnabled, useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
   controlsFor,
   isRecoveryFenced,
@@ -120,6 +120,8 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
+  chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
+  activityRow: requireClass(styles.activityRow, "composer.module.css", "activityRow"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -266,7 +268,11 @@ export function Composer({
   // on a resting row's own controls - the session menu, Send - never counts
   // as editor engagement. The phone collapse below keys on it, so pressing
   // a resting control cannot expand the row out from under that press.
-  const [editorEngaged, setEditorEngaged] = useState(false);
+  // A focused pane's mount autofocus puts the caret in this editor after
+  // paint. Start engaged so the card does not paint folded and then animate
+  // open on every session load; the DOM attribute still follows the real
+  // focus event.
+  const [editorEngaged, setEditorEngaged] = useState(() => mountAutofocusEnabled(focused && !!mountAutofocus));
   const followUpFocusSequenceRef = useRef(0);
 
   // Steer moves into the menu below the phone-width boundary.
@@ -729,34 +735,33 @@ export function Composer({
   // wire shape is notLoaded + send:false, which the capability alone would not
   // render a card for.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
-  // Only the editor shrinks at rest; on the desktop the full row stays
-  // available without typing. Drafts, attachments and recovery keep enough
-  // writing space after blur.
+  // A resting composer folds to one line below; a draft or attachment keeps
+  // the writing space it needs after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+  // The resting shape: an empty composer whose editor is not engaged folds
+  // its field and control row onto one line, giving the transcript back the
+  // height without hiding the model that the next turn will use. Focus in
+  // the editor, a draft, a staged attachment or a pending question restores
+  // the full card. Focus on the row's own controls does not: the folded row
+  // is usable as it stands.
+  const resting = !editorEngaged && !hasContent && !mutationWriteStalled;
+  const folded = !askPending && resting;
   let minLines = 2;
-  if (ended) minLines = followUpEngaged ? 3 : 1;
+  if (folded) minLines = 1;
+  else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
   // The phone layout's one bottom surface is this card's own control row,
   // and a resting card sheds what an empty editor does not need: no attach,
-  // no status chips, no activity chips. The session menu and Send stay -
+  // no status chrome, no activity chips. The session menu and Send stay -
   // both remain useful with nothing drafted, and the menu is a phone's one
-  // surface for session actions. Editor engagement (a draft, the editor's
-  // own focus, a send in flight, a stalled storage write) brings the full
-  // row back; the actions slot never sheds, so Stop stays reachable while a
+  // surface for session actions. That resting card is one line; editor
+  // engagement (a draft, the editor's own focus, a send in flight, a stalled
+  // storage write) brings the full row back, including the model picker and
+  // Attach. The actions slot never sheds, so Stop stays reachable while a
   // turn runs, and the resting leading never swaps while one of its own
-  // controls is pressed. The exited follow-up keeps its full row at rest:
-  // that surface is the one place on a phone the model picker is directly
-  // reachable without engaging the editor. The desktop layout always keeps
-  // the full row.
-  const controlsCollapsed =
-    isMobile &&
-    !ended &&
-    !fence.fencedLocal &&
-    !fence.sendDriven &&
-    !editorEngaged &&
-    !hasContent &&
-    !mutationWriteStalled;
+  // controls is pressed.
+  const controlsCollapsed = isMobile && resting;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -985,27 +990,32 @@ export function Composer({
   // shrinks to the menu-only chrome: the session menu stays reachable, and
   // that placement's hidden panel keeps initial activity discovery
   // following the pane on screen (issue #1335) with no status chips.
+  // The attach control is a resting-card affordance, so the folded row drops
+  // it: focusing the editor brings it back with the rest of the full row.
   const leadingControls = (
-    <div className={CLASS.leading}>
+    <div
+      className={CLASS.leading}
+      data-folded={folded ? "true" : undefined}
+      data-compact={controlsCollapsed ? "true" : undefined}
+    >
       {controlsCollapsed ? (
         <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
         <>
-          <Tooltip label="Attach an image">
-            <IconButton
-              label="Attach image"
-              icon={<AttachIcon />}
-              variant="quiet"
-              size="xs"
-              type="button"
-              data-testid="composer-attach"
-              onClick={() => fileInputRef.current?.click()}
-            />
-          </Tooltip>
-          {!askPending && leadingChrome}
-          {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
-              this row is where the activity counts live on a phone. */}
-          {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
+          {!folded && (
+            <Tooltip label="Attach an image">
+              <IconButton
+                label="Attach image"
+                icon={<AttachIcon />}
+                variant="quiet"
+                size="xs"
+                type="button"
+                data-testid="composer-attach"
+                onClick={() => fileInputRef.current?.click()}
+              />
+            </Tooltip>
+          )}
+          {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
         </>
       )}
     </div>
@@ -1135,6 +1145,8 @@ export function Composer({
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
+                folded={folded}
+                foldedCompact={controlsCollapsed}
                 field={
                   <SkillEditor
                     ref={editorRef}
@@ -1242,6 +1254,14 @@ export function Composer({
             </Dropzone>
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
           </form>
+        </div>
+      )}
+      {/* The phone's activity counts are a glance line below the card, the
+          same place the desktop status bar puts them. They are not a control
+          in the writing row. */}
+      {isMobile && !ownsActivityCounts && (!ended || showFollowUpCard) && (
+        <div className={CLASS.activityRow} data-testid="composer-activity-line">
+          <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>
       )}
     </div>
