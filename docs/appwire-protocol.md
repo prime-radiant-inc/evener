@@ -4656,6 +4656,7 @@ Underlying Go kind: `string` (no struct fields).
 | `source` | string | yes |  |
 | `steeringKind` | string | yes |  |
 | `clientMutationId` | string | yes |  |
+| `conversationInputIds` | []string | yes |  |
 | `version` | uint64 | yes |  |
 | `roundId` | string | yes |  |
 | `completedAtEntry` | uint64 | yes |  |

@@ -39,6 +39,7 @@ export {
   pendingEntryPreview,
   queueEntryAt,
   reconcilePendingEntries,
+  recordedInputLineage,
   reflectedMutationIds,
   skillMarkers,
 } from "./pendingEntries";

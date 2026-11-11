@@ -4719,6 +4719,13 @@ export interface ThreadItem {
   steeringKind?: string;
   clientMutationId?: string;
   /**
+   * ConversationInputIDs names the conversation inputs this recorded item
+   * speaks for. A promotion or drain records ITS OWN clientMutationId but
+   * inherits the consumed entry's input ids, so this is the lineage that ties
+   * a recorded message back to the queue entry another client consumed.
+   */
+  conversationInputIds?: string[];
+  /**
    * Version is the highest entry ordinal (below) among the entries that
    * contributed to this item, stored and sent as ordinal + 1 so 0 means "no
    * history version" (an overlay item). The higher version wins.
@@ -6243,7 +6250,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "conversationInputIds", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],

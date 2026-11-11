@@ -5,6 +5,7 @@
 
 import type {
   CommandDescriptor,
+  ConversationProvenanceState,
   EvenerDelegateInfo,
   EvenerSkillInfo,
   EvenerTurnSlots,
@@ -63,6 +64,12 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  // Wire ThreadItem.conversationInputIds: the conversation inputs a recorded
+  // user item speaks for. A promotion or drain records its own
+  // clientMutationId but inherits the consumed entry's input ids, so this is
+  // what ties a delivered message back to the queue entry another client
+  // consumed (see recordedInputLineage).
+  conversationInputIds?: string[];
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
@@ -363,6 +370,11 @@ export interface ThreadModel {
   runningTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
+  // The daemon's materialized conversation provenance. `retiredInputs` names
+  // inputs that ended before reaching canonical history (a canceled or
+  // failed-before-recording message), which is the only durable evidence a
+  // pending row has that its message will never arrive.
+  conversationProvenance?: ConversationProvenanceState;
   tasks: TaskAggregate | null;
   // Snapshot-only catalogs from the owning thread/read. Live completion uses
   // commands directly, the separate palette still scopes its global plugins.

@@ -393,6 +393,75 @@ test("a carried row stays while its recorded owner is still only pending", () =>
   expect(rows).toHaveLength(1);
 });
 
+// A canceled message is never recorded. The daemon reports it in the
+// provenance state's retiredInputs, which is the only durable evidence the
+// row has that nothing more will arrive.
+test("a carried row leaves once the daemon retires its input", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    conversationProvenance: {
+      version: 1,
+      authoritative: true,
+      revision: 2,
+      instanceId: "inc-1",
+      admittedInputs: [],
+      retiredInputs: ["client:m9"],
+      frontiers: [],
+    },
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "canceled elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+test("a carried row stays while the daemon has retired a different input", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    conversationProvenance: {
+      version: 1,
+      authoritative: true,
+      revision: 2,
+      instanceId: "inc-1",
+      admittedInputs: [],
+      retiredInputs: ["client:other"],
+      frontiers: [],
+    },
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
 test("an accepted source stays while the daemon still projects its queue entry", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 5, ids: [] },

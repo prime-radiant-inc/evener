@@ -74,6 +74,7 @@ import {
   notificationMutationIdentities,
   type PendingTurnEntry,
   queueEntryAt,
+  recordedInputLineage,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -7603,9 +7604,19 @@ function pruneConsumedQueueRows(ref: string, model: ThreadModel | undefined): vo
     if (!recorded.has(mutation.clientMutationId)) continue;
     for (const id of mutation.queueEntryIds ?? []) owners.add(id);
   }
+  // A recorded item that inherited the consumed entry's conversation input is
+  // the same proof once the consuming pending mutation has settled.
+  for (const id of recordedInputLineage(model)) {
+    owners.add(id.startsWith("client:") ? id.slice("client:".length) : id);
+  }
+  // A retired input will never be recorded, so it is the other way a carried
+  // row ends. The daemon prefixes its own input ids with "client:".
+  for (const id of model?.conversationProvenance?.retiredInputs ?? []) {
+    owners.add(id.startsWith("client:") ? id.slice("client:".length) : id);
+  }
   let changed = false;
   for (const [entryId, row] of entry.rows) {
-    if (!recorded.has(row.clientMutationId) && !owners.has(entryId)) continue;
+    if (!recorded.has(row.clientMutationId) && !owners.has(entryId) && !owners.has(row.clientMutationId)) continue;
     entry.rows.delete(entryId);
     changed = true;
   }

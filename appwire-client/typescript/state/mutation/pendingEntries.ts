@@ -268,6 +268,23 @@ export function transcriptMutationIds(model: ThreadModel | undefined): Set<strin
   return ids;
 }
 
+// The conversation input ids a recorded user item speaks for. A promotion or
+// drain records its own client mutation id but inherits the consumed queue
+// entry's input ids, so this is what ties a delivered message back to the
+// queue entry another client consumed. A daemon that does not send the field
+// yields nothing, and callers fall back to identity matching.
+export function recordedInputLineage(model: ThreadModel | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items) {
+      for (const id of item.conversationInputIds ?? []) {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
 // The ONE home of the reflected-identity rule - which client mutation ids
 // have landed in the live model (queue rows or transcript items). Both the
 // pending reconciliation below and the held-steer announcements region

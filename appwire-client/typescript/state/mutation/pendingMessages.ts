@@ -24,6 +24,7 @@ import {
   parseImagePlaceholder,
   pendingEntryPreview,
   reconcilePendingEntries,
+  recordedInputLineage,
   skillMarkers,
   textualInput,
   transcriptMutationIds,
@@ -546,6 +547,15 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     for (const id of mutation.queueEntryIds ?? []) pendingEntryIds.add(id);
   }
   const pendingKnown = model?.pendingMutations !== undefined;
+  // Inputs the daemon retired before they reached canonical history: a
+  // canceled message, or one whose preparation failed. Nothing will ever
+  // record them, so they are positive evidence that a pending row is done.
+  const retiredInputs = new Set(
+    (model?.conversationProvenance?.retiredInputs ?? []).map((id) =>
+      id.startsWith("client:") ? id.slice("client:".length) : id,
+    ),
+  );
+  const recordedLineage = recordedInputLineage(model);
   // A drain, promotion or delivery that consumed an entry records ITS OWN
   // mutation id in the transcript, never the consumed entry's. The daemon does
   // name the lineage: a pending mutation carries the queueEntryIds it owns. So
@@ -554,7 +564,10 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const recordedOwnerOf = (entryId: string): boolean =>
     (model?.pendingMutations ?? []).some(
       (mutation) => (mutation.queueEntryIds ?? []).includes(entryId) && transcriptIds.has(mutation.clientMutationId),
-    );
+    ) ||
+    // A recorded item that inherited this entry's conversation input is the
+    // same proof for a promotion or drain whose pending owner already settled.
+    recordedLineage.has(`client:${entryId}`);
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
   const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
@@ -564,6 +577,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     (entry) =>
       !queuedEntryIds.has(entry.entryId) &&
       !pendingEntryIds.has(entry.entryId) &&
+      !(mutationStateAuthoritative && mutationSnapshotCurrent && retiredInputs.has(entry.clientMutationId)) &&
       !(
         mutationStateAuthoritative &&
         mutationSnapshotCurrent &&
