@@ -2527,6 +2527,8 @@ function getMutationRuntime(): MutationRuntime | null {
     isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
+    getReplayClient: (targetRef, method) =>
+      isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method, false) : null,
     onStorageChange: (targetRefs, cause) => {
       // The dispatcher's own state changes - a settle, a recovery transfer, a
       // blocked reclassification - invalidate in-flight reads for every ref it

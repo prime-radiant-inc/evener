@@ -28,6 +28,9 @@ export function pendingMessageCaption(
       if (row.controlFailure === "cancel") {
         return row.reason ? `Couldn't remove from queue: ${row.reason}` : "Couldn't remove from queue";
       }
+      if (row.interrupt === true) {
+        return row.reason ? `Stop didn't reach the session: ${row.reason}` : "Stop didn't reach the session";
+      }
       return row.reason ? `Couldn't send: ${row.reason}` : "Couldn't send";
     case "orphaned":
       return "Destination deleted";

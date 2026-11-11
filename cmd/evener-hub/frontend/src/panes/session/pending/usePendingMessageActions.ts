@@ -82,7 +82,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
       release?.();
       return;
     }
-    setBusy(id, true);
+    setBusy(row.id, true);
     try {
       const target = record.targetRef;
       if (action === "edit") {
@@ -100,7 +100,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
     } catch (error) {
       toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
     } finally {
-      setBusy(id, false);
+      setBusy(row.id, false);
       release?.();
     }
   }

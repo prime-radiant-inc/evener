@@ -71,6 +71,11 @@ export interface MutationStorageChangeCause {
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
+  // Reconnect replay asks the daemon about an accepted copy, not about
+  // dispatching outbox work. It keeps the connection and recovery fences but
+  // does not require the ref's dispatch arm, which a multi-ref reconnect can
+  // clear while another ref is still hydrating.
+  getReplayClient?: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   // Fired when the hub refused an attempt in band as transient
@@ -94,6 +99,7 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
 export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttachmentRef> {
   readonly #storage: MutationOutboxStorage<A>;
   readonly #getClient: MutationDispatcherOptions<A>["getClient"];
+  readonly #getReplayClient: MutationDispatchClientLookup;
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions<A>["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions<A>["onBlockedMutation"]>;
   readonly #onTransientRefusal: NonNullable<MutationDispatcherOptions<A>["onTransientRefusal"]>;
@@ -106,6 +112,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   constructor(storage: MutationOutboxStorage<A>, options: MutationDispatcherOptions<A>) {
     this.#storage = storage;
     this.#getClient = options.getClient;
+    this.#getReplayClient = options.getReplayClient ?? options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onTransientRefusal = options.onTransientRefusal ?? (() => undefined);
@@ -164,7 +171,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
           (record) => !authoritativeIds.has(record.clientMutationId) && PENDING_TURN_METHODS.includes(record.method),
         )
         .map(async (record) => {
-          const client = this.#getClient(targetRef, record.method);
+          const client = this.#getReplayClient(targetRef, record.method);
           if (!client || !isClientReady(client)) return;
           try {
             const method = mutationMethod(record.method);
