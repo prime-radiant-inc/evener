@@ -57,11 +57,11 @@ func tempDirResolverFunc(fn *ast.FuncDecl) bool {
 	return mints && resolves
 }
 
-// noCommandTestMintsItsOwnCanonicalTempDir keeps the canonical temp-dir
-// helper singular. Every command test that needs a resolved temp dir calls
+// noTestMintsItsOwnCanonicalTempDir keeps the canonical temp-dir helper
+// singular. Every test in these roots that needs a resolved temp dir calls
 // internal/testfs.CanonicalTempDir; a local helper is the copy #4426 collapsed,
 // and a second one would drift the moment the rule changes.
-func noCommandTestMintsItsOwnCanonicalTempDir(a *audit) {
+func noTestMintsItsOwnCanonicalTempDir(a *audit) {
 	var offenders []string
 	for _, root := range tempDirRoots {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

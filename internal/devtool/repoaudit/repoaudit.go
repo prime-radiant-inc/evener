@@ -29,7 +29,7 @@ var checks = []check{
 	{"custom-content-selection-one-rule", customContentSelectionHasOneRule},
 	{"projection-work-policy-in-host", projectionWorkPolicyLivesInTheHost},
 	{"effort-vocabulary-one-source", effortVocabularyHasOneSource},
-	{"canonical-temp-dir-one-helper", noCommandTestMintsItsOwnCanonicalTempDir},
+	{"canonical-temp-dir-one-helper", noTestMintsItsOwnCanonicalTempDir},
 	{"e2e-providers-toml-one-writer", e2eProvidersTOMLHasOneWriter},
 	{"e2e-scripts-pin-providers-config", e2eScriptsPinProvidersConfig},
 	{"coverage-scripts-use-covstmt", coverageScriptsUseGoCovstmt},

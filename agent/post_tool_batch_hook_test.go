@@ -117,6 +117,43 @@ func batchShellCall(id string) llm.ToolCallData {
 	return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 }
 
+// capturedBatchCall is one tool_calls entry decoded from a fixture hook's
+// captured batch input.
+type capturedBatchCall struct {
+	ToolName     string         `json:"tool_name"`
+	ToolInput    map[string]any `json:"tool_input"`
+	ToolUseID    string         `json:"tool_use_id"`
+	ToolResponse string         `json:"tool_response"`
+}
+
+// newPostToolBatchCaptureFixture builds the fixture whose hook appends every
+// batch input to a capture file, and returns a reader for the first captured
+// batch. It is the shared capture protocol for tests that assert what the
+// session rendered into PostToolBatch.
+func newPostToolBatchCaptureFixture(t *testing.T, respond func(round int, req llm.Request) llm.Response) (postToolBatchFixture, func() []capturedBatchCall) {
+	t.Helper()
+	capture := filepath.Join(t.TempDir(), "batch-input.jsonl")
+	captureCmd := fmt.Sprintf("cat >> %[1]s; echo >> %[1]s", shellquote.Literal(capture))
+	mats := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": captureCmd}}}}
+	f := newPostToolBatchFixture(t, mats, respond)
+	read := func() []capturedBatchCall {
+		t.Helper()
+		raw, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatalf("read captured hook input: %v", err)
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
+		var decoded struct {
+			ToolCalls []capturedBatchCall `json:"tool_calls"`
+		}
+		if err := json.Unmarshal([]byte(first), &decoded); err != nil {
+			t.Fatalf("decode captured hook input: %v (raw: %s)", err, first)
+		}
+		return decoded.ToolCalls
+	}
+	return f, read
+}
+
 // TestPostToolBatch_ContextReachesTheSameNextRequest proves the hook's
 // additionalContext is in the model request that follows the batch, not the one
 // after it.
@@ -351,13 +388,7 @@ func TestPostToolBatch_RunnerIsWired(t *testing.T) {
 // for the other here fails. It also proves the round's batch hook saw both calls.
 func TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	capture := filepath.Join(dir, "batch-input.jsonl")
-	captureCmd := fmt.Sprintf("cat >> %s; echo >> %s",
-		shellquote.Literal(capture), shellquote.Literal(capture))
-	mats := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": captureCmd}}}}
-
-	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
+	f, capturedCalls := newPostToolBatchCaptureFixture(t, func(round int, req llm.Request) llm.Response {
 		if round == 0 {
 			return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 		}
@@ -396,26 +427,11 @@ func TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput(t *testing.T) {
 		t.Fatalf("capture hook produced output: %+v", batchRes)
 	}
 
-	raw, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatalf("read captured hook input: %v", err)
+	captured := capturedCalls()
+	if len(captured) != 1 {
+		t.Fatalf("tool_calls = %+v, want one entry", captured)
 	}
-	first, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
-	var captured struct {
-		ToolCalls []struct {
-			ToolName     string         `json:"tool_name"`
-			ToolInput    map[string]any `json:"tool_input"`
-			ToolUseID    string         `json:"tool_use_id"`
-			ToolResponse string         `json:"tool_response"`
-		} `json:"tool_calls"`
-	}
-	if err := json.Unmarshal([]byte(first), &captured); err != nil {
-		t.Fatalf("decode captured hook input: %v (raw: %s)", err, first)
-	}
-	if len(captured.ToolCalls) != 1 {
-		t.Fatalf("tool_calls = %+v, want one entry", captured.ToolCalls)
-	}
-	call := captured.ToolCalls[0]
+	call := captured[0]
 	if call.ToolName != "Read" {
 		t.Errorf("tool_calls[0].tool_name = %q, want the Claude name %q", call.ToolName, "Read")
 	}
@@ -439,22 +455,16 @@ func TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput(t *testing.T) {
 // hook input is asserted, so a regression fails where the hook sees it.
 func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	capture := filepath.Join(dir, "batch-input.jsonl")
-	captureCmd := fmt.Sprintf("cat >> %s; echo >> %s",
-		shellquote.Literal(capture), shellquote.Literal(capture))
-	mats := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": captureCmd}}}}
-
-	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
+	f, capturedCalls := newPostToolBatchCaptureFixture(t, func(round int, req llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	})
 
 	const synthesized = "batch-synthesized-1"
-	valid := json.RawMessage(`{"command":"echo ok","description":"batch test"}`)
+	valid := batchShellCall("batch-valid-0")
 	calls := []llm.ToolCallData{
-		{ID: "batch-valid-0", Name: "exec_command", Arguments: valid},
-		{ID: "batch-invalid-1", Name: "exec_command", Arguments: json.RawMessage(`{"command":`)},
-		{ID: "", Name: "exec_command", Arguments: valid},
+		valid,
+		{ID: "batch-invalid-1", Name: "exec_command", Type: "function", Arguments: json.RawMessage(`{"command":`)},
+		{Name: "exec_command", Type: "function", Arguments: valid.Arguments},
 	}
 	results := []tool.ExecResult{
 		{CallID: "batch-valid-0", Output: "ok"},
@@ -483,27 +493,14 @@ func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 		t.Fatalf("capture hook produced output: %+v", batchRes)
 	}
 
-	raw, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatalf("read captured hook input: %v", err)
+	captured := capturedCalls()
+	if len(captured) != len(calls) {
+		t.Fatalf("captured tool_calls = %+v, want %d entries", captured, len(calls))
 	}
-	first, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
-	var captured struct {
-		ToolCalls []struct {
-			ToolInput map[string]any `json:"tool_input"`
-			ToolUseID string         `json:"tool_use_id"`
-		} `json:"tool_calls"`
+	if captured[1].ToolInput != nil {
+		t.Errorf("captured rejected call tool_input = %v, want nil", captured[1].ToolInput)
 	}
-	if err := json.Unmarshal([]byte(first), &captured); err != nil {
-		t.Fatalf("decode captured hook input: %v (raw: %s)", err, first)
-	}
-	if len(captured.ToolCalls) != len(calls) {
-		t.Fatalf("captured tool_calls = %+v, want %d entries", captured.ToolCalls, len(calls))
-	}
-	if captured.ToolCalls[1].ToolInput != nil {
-		t.Errorf("captured rejected call tool_input = %v, want nil", captured.ToolCalls[1].ToolInput)
-	}
-	if captured.ToolCalls[2].ToolUseID != synthesized {
-		t.Errorf("captured id-less call tool_use_id = %q, want %q", captured.ToolCalls[2].ToolUseID, synthesized)
+	if captured[2].ToolUseID != synthesized {
+		t.Errorf("captured id-less call tool_use_id = %q, want %q", captured[2].ToolUseID, synthesized)
 	}
 }
