@@ -51,3 +51,31 @@ func TestBuildResumeArgsPassesExplicitCommitProvenance(t *testing.T) {
 		t.Fatalf("args = %v, want the explicit --commit-provenance off", args)
 	}
 }
+
+func TestBuildResumeArgsKeepsSavedCompactAtPercent(t *testing.T) {
+	for _, layer := range []launchconfig.LayerName{launchconfig.LayerGlobal, launchconfig.LayerProject, ""} {
+		args := buildResumeArgs(hubcore.ResumeRequest{
+			SessionID: "sess",
+			Resolved: launchconfig.Resolved{
+				Effective:  launchconfig.Layer{CompactAtPercent: new(90)},
+				Provenance: map[string]launchconfig.LayerName{"compact_at_percent": layer},
+			},
+		})
+		if slices.Contains(args, "--compact-at-percent") {
+			t.Fatalf("layer %q: default or inherited percent leaked into resume args: %v", layer, args)
+		}
+	}
+}
+
+func TestBuildResumeArgsPassesExplicitCompactAtPercent(t *testing.T) {
+	args := buildResumeArgs(hubcore.ResumeRequest{
+		SessionID: "sess",
+		Resolved: launchconfig.Resolved{
+			Effective:  launchconfig.Layer{CompactAtPercent: new(60)},
+			Provenance: map[string]launchconfig.LayerName{"compact_at_percent": launchconfig.LayerLaunch},
+		},
+	})
+	if got, ok := provenanceArgValue(args, "--compact-at-percent"); !ok || got != "60" {
+		t.Fatalf("args = %v, want the explicit --compact-at-percent 60", args)
+	}
+}
