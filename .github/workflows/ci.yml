@@ -473,6 +473,9 @@ jobs:
           EVENER_GITLEAKS_REQUIRED: "1"
         run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
+      - name: Prove each module's go.mod is complete for an out-of-workspace consumer
+        run: make lint-go-module-consumer
+
       - uses: ./.github/actions/go-cache-save
         if: ${{ !cancelled() }}
         with:
