@@ -1954,6 +1954,47 @@ Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, an
 it goes in the PR description beside the proof. A test folded into a table as
 a subtest appears in that diff as removed; name the subtest that replaces it.
 
+### Finding candidates and building the proof
+
+`go run ./cmd/evener-dev/bin dev test-redundancy` (run with no command for the
+full help) finds the candidates and produces that proof for one package. It
+builds the package's cover test binary, runs each named test alone with
+`-test.coverprofile`, and caches every profile by the binary's content, so a
+rerun on an unchanged package profiles nothing. The key is the binary alone:
+after changing testdata or the environment the tests read, pass a fresh
+`-cache`. Export `GOFLAGS=-trimpath` so worktrees share build-cache entries,
+and set `GOMAXPROCS` to bound the load.
+
+```sh
+export GOFLAGS=-trimpath
+dev="go run ./cmd/evener-dev/bin dev test-redundancy"
+$dev unique -pkg agent -tests batch.txt   # statements only each test reaches
+$dev pairs  -pkg agent -tests batch.txt   # duplicate pairs: containment, then assertions
+$dev cover  -pkg agent -o before.cov      # before the batch
+# ...delete or fold the tests...
+$dev cover  -pkg agent -o after.cov
+$dev mutate -pkg agent -spec mutations.json -o mutations.out.json
+$dev proof  -pkg agent -before before.cov -after after.cov -mutations mutations.out.json
+```
+
+- `unique` runs the package once without the named tests and reports, for each
+  one, the statements neither that run nor another named test reaches, and the
+  statements only other named tests also reach. Deleting every named test
+  loses both kinds, so a batch can delete all of its tests without lowering
+  coverage only when every row is zero in both columns.
+- `mutate` applies each seeded mutation alone, runs the tests its `run` pattern
+  selects, and restores the file with a file-scoped `git restore`. It refuses a
+  file git does not track or reports modified, which the restore could not put
+  back. A mutation the selected tests fail on is `caught`. One that does not
+  apply or build, selects no test or every test, or whose tests already fail
+  on the unmutated source is `invalid`, never caught.
+- `proof` prints the coverage table, every statement lost or gained, and the
+  mutation results as Markdown for the PR description. It exits 1 when the
+  batch lost more statements than `-noise` (default 4, the agent package's
+  run-to-run variation). Measure the band with two `cover` runs into separate
+  `-cache` directories, since a second run into the same cache returns the
+  first profile.
+
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
