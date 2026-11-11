@@ -159,6 +159,19 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	} else {
 		b.WriteString("(no entries)")
 	}
+	// The checkpoint carries the partner's messages it folds verbatim, in the
+	// shared conversation format. The session log is navigation, not authority:
+	// without this section a later compaction or summary has nothing to recover
+	// a permission or hold from once this checkpoint folds the original turns
+	// (#4181).
+	resultToolName := ""
+	if s.cm != nil {
+		resultToolName = s.cm.resultToolName()
+	}
+	if partner, _ := partnerMessagesMarkdown(history, cutoff, resultToolName, meta.hasTranscript(), 0); partner != "" {
+		b.WriteString("\n")
+		b.WriteString(partner)
+	}
 	b.WriteString("\n[END CHECKPOINT]\n")
 
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(b.String()))

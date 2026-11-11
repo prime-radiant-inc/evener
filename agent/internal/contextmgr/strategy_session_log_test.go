@@ -545,3 +545,39 @@ func TestSessionLogStrategy_ManageContext_SummaryKeepsPartnerMessagesTheCheckpoi
 	}
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }
+
+// A compaction after a session-log checkpoint must still see the permissions
+// and holds that checkpoint folded. The checkpoint now carries the partner's
+// messages verbatim in the shared conversation format, so a later summary can
+// recover them from the checkpoint itself (#4181).
+func TestSessionLogStrategy_CheckpointCarriesPartnerMessagesForLaterCompaction(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2 // checkpoint only on the first pass
+	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
+	history := partnerHoldHistory()
+	// The hold is not the first message, so the checkpoint's original-prompt
+	// line does not carry it.
+	history = append([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("start the release notes"))}, history...)
+	emit := func(events.EventKind, events.EventData) {}
+
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("checkpoint pass: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the session-log checkpoint dropped the hold it folded:\n%s", history[0].Message.Text())
+	}
+
+	// A later compaction folds this checkpoint and nothing else still holds the
+	// hold verbatim: the summary must recover it from the checkpoint.
+	history = append(history, moreTurns()...)
+	cm.CheckpointThreshold = 2 // no second checkpoint
+	cm.SummarizeThreshold = 0.0001
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("summary pass: %v", err)
+	}
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
