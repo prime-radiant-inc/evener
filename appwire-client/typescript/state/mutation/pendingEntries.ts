@@ -250,10 +250,13 @@ function outboxEntry(
   // any state.
   if (record.state === "superseded") return undefined;
   const preview = inputPreview(outboxInput(record));
-  // Only a receipt or pending projection may name the entry a command owns. A
-  // promotion's expectedEntryId is a precondition, not confirmed lineage: a
-  // canceled promotion never consumed that entry and must keep its own row.
-  const queueEntryId = record.queueEntryIds?.[0];
+  // A receipt or pending projection names the entry a command owns. An active
+  // promotion also names the entry it is replacing so the queue row hides
+  // behind it while the command is in flight. A canceled promotion never
+  // consumed the entry and must keep its own row.
+  const queueEntryId =
+    record.queueEntryIds?.[0] ??
+    (method === "promote" && record.state !== "canceled" ? record.payload.expectedEntryId : undefined);
   const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,

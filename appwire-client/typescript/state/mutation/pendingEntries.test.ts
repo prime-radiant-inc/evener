@@ -388,26 +388,32 @@ test("a promote's display input previews in the entry", () => {
   ]);
 });
 
-test("only a confirmed queue entry, never a promote's expected entry, names lineage", () => {
-  const promote = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
-  const promoteRecord: MutationOutboxRecord = {
-    ...promote,
-    payload: { ...promote.payload, expectedEntryId: "queue_3" },
+test("an active promotion names its expected entry, while a canceled one names only confirmed lineage", () => {
+  const activeBase = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
+  const active: MutationOutboxRecord = {
+    ...activeBase,
+    payload: { ...activeBase.payload, expectedEntryId: "queue_3" },
+  };
+  const canceledBase = outbox("mutation_2", "turn/promoteQueuedAsSteer", "", "canceled");
+  const canceled: MutationOutboxRecord = {
+    ...canceledBase,
+    payload: { ...canceledBase.payload, expectedEntryId: "queue_4" },
   };
   const confirmed: MutationOutboxRecord = {
-    ...outbox("mutation_2", "turn/promoteQueuedAsSteer", ""),
-    queueEntryIds: ["queue_4"],
+    ...outbox("mutation_3", "turn/promoteQueuedAsSteer", "", "canceled"),
+    queueEntryIds: ["queue_5"],
   };
   const entries = reconcilePendingEntries(
     "ref_a",
-    [promoteRecord, confirmed],
+    [active, canceled, confirmed],
     model(),
     NOTHING_SUBMITTED_HERE,
     UNATTRIBUTED_ONLY,
   );
   expect(entries.map((entry) => [entry.id, entry.queueEntryId])).toEqual([
-    ["mutation_1", undefined],
-    ["mutation_2", "queue_4"],
+    ["mutation_1", "queue_3"],
+    ["mutation_2", undefined],
+    ["mutation_3", "queue_5"],
   ]);
 });
 
