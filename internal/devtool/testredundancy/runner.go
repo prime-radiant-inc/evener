@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
@@ -284,21 +285,6 @@ func profileWritten(path string) bool {
 	return err == nil && string(head) == "mode:"
 }
 
-// writeFileAtomic writes data to a unique temporary file and renames it over
-// path, so a concurrent reader sees the old content or the new, never a part.
-func writeFileAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	_, werr := f.Write(data)
-	if err := errors.Join(werr, f.Close()); err != nil {
-		_ = os.Remove(f.Name())
-		return err
-	}
-	return os.Rename(f.Name(), path)
-}
-
 // tail is the last n lines of out.
 func tail(out []byte, n int) string {
 	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
@@ -392,7 +378,7 @@ func (r *Runner) profileRest(ctx context.Context, bin testBinary, skip []string)
 	if res.crashed() {
 		return RestRun{}, fmt.Errorf("the package run crashed (a panic, timeout or exit), so its profile is incomplete:\n%s", tail(res.out, 40))
 	}
-	if err := writeFileAtomic(failedFile, []byte(strings.Join(res.failed, "\n"))); err != nil {
+	if err := fsatomic.WriteWithoutSync(failedFile, []byte(strings.Join(res.failed, "\n")), 0o644); err != nil {
 		return RestRun{}, err
 	}
 	if err := os.Rename(res.profile, profile); err != nil {
