@@ -293,7 +293,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
         if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState, receipt.queueEntryIds);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {

@@ -323,6 +323,11 @@ function rowFromBase<A extends MutationAttachmentRef>(
   const method = entry.method;
   const state = durableState(baseFamily, pending, method) ?? entryState(entry.state, method);
   const queueEntryIds = pending?.queueEntryIds ?? (entry.queueEntryId ? [entry.queueEntryId] : []);
+  const localQueueEntryIds =
+    baseFamily?.optimistic?.queueEntryIds ??
+    baseFamily?.outbox?.queueEntryIds ??
+    baseFamily?.recovery?.queueEntryIds ??
+    [];
   return {
     id: entry.id,
     ref: entry.ref,
@@ -340,7 +345,7 @@ function rowFromBase<A extends MutationAttachmentRef>(
     ...(familyEntry?.intentSequence !== undefined ? { intentSequence: familyEntry.intentSequence } : {}),
     fromThisClient: entry.fromThisClient,
     ...(entry.queueEntryId ? { queueEntryId: entry.queueEntryId } : {}),
-    queueEntryIds: [...queueEntryIds],
+    queueEntryIds: [...new Set([...queueEntryIds, ...localQueueEntryIds])],
     ...(entry.queueRevision !== undefined ? { queueRevision: entry.queueRevision } : {}),
     ...(baseFamily?.recovery
       ? {
@@ -394,6 +399,66 @@ function compareRows(left: PendingMessage, right: PendingMessage): number {
 
 function drainFallback<A extends MutationAttachmentRef>(row: PendingMessage<A>): PendingMessage<A> {
   return row.method === "drain" && row.displayText === "" ? { ...row, displayText: "[queued messages]" } : row;
+}
+
+function isSteeringRow(row: PendingMessage): boolean {
+  return (
+    (row.method === "steer" || row.method === "drain" || row.method === "promote") &&
+    (row.state === "steering" || row.state === "delivering" || row.state === "sending")
+  );
+}
+
+// A confirmed queue entry is the durable lineage shared by the original queue
+// command and the promotion, drain or delivery that consumes it. Join those
+// commands before rendering so the message keeps one row and one identity
+// across the transition.
+function mergeLineageRows<A extends MutationAttachmentRef>(rows: PendingMessage<A>[]): PendingMessage<A>[] {
+  const byEntryId = new Map<string, PendingMessage<A>>();
+  const out: PendingMessage<A>[] = [];
+  for (const row of rows) {
+    const existing = row.queueEntryIds.map((id) => byEntryId.get(id)).find((candidate) => candidate !== undefined);
+    if (!existing) {
+      out.push(row);
+      for (const id of row.queueEntryIds) byEntryId.set(id, row);
+      continue;
+    }
+    const incomingSteering = isSteeringRow(row);
+    const merged: PendingMessage<A> = {
+      ...existing,
+      ...(incomingSteering
+        ? {
+            method: row.method,
+            state: row.state,
+            text: row.text,
+            displayText: row.displayText,
+            textComplete: row.textComplete,
+            images: row.images,
+            imageCount: row.imageCount,
+            skillNames: row.skillNames,
+            commandNames: row.commandNames,
+            ...(row.mentions !== undefined ? { mentions: row.mentions } : {}),
+          }
+        : {}),
+      ...(row.queueEntryId !== undefined ? { queueEntryId: row.queueEntryId } : {}),
+      ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
+      ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),
+      queueEntryIds: [...new Set([...existing.queueEntryIds, ...row.queueEntryIds])],
+      fromThisClient: existing.fromThisClient || row.fromThisClient,
+      ...(row.outbox !== undefined ? { outbox: row.outbox } : {}),
+      ...(row.optimistic !== undefined ? { optimistic: row.optimistic } : {}),
+      ...(row.recovery !== undefined
+        ? {
+            recovery: row.recovery,
+            recoveryKind: row.recoveryKind,
+            ...(row.reason !== undefined ? { reason: row.reason } : {}),
+          }
+        : {}),
+    };
+    const index = out.indexOf(existing);
+    if (index >= 0) out[index] = merged;
+    for (const id of merged.queueEntryIds) byEntryId.set(id, merged);
+  }
+  return out;
 }
 
 export function projectPendingMessages<A extends MutationAttachmentRef = MutationAttachmentRef>(
@@ -602,7 +667,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         !matchedLocalIds.has(candidate.id) &&
         candidate.method === "queue" &&
         !candidate.queueEntryId &&
-        !(candidate.outbox?.state === "canceled" && candidate.outbox.attempted === false) &&
+        candidate.outbox?.attempted !== false &&
         candidate.textComplete &&
         normalizedText.get(candidate.id) === rowText &&
         candidate.imageCount === row.imageCount &&
@@ -634,7 +699,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     rows.delete(match.id);
   }
 
-  const all = [...queueRows, ...rows.values()].map(drainFallback);
+  const all = mergeLineageRows([...queueRows, ...rows.values()]).map(drainFallback);
 
   return all.sort(compareRows);
 }
