@@ -247,6 +247,44 @@ test("an accepted source stays until the snapshot is current again", () => {
   expect(rows).toHaveLength(1);
 });
 
+test("a consumed queue row this client never owned stays visible", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+  });
+  const rows = project({
+    model,
+    consumedQueueEntries: [
+      { entryId: "q1", text: "queued elsewhere", imageCount: 0, skillNames: [], commandNames: [] },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "queue:q1", text: "queued elsewhere", state: "delivering" });
+});
+
+test("a carried consumed row leaves once a current snapshot records the delivery", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued elsewhere", clientMutationId: "m9" }],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      { entryId: "q1", text: "queued elsewhere", imageCount: 0, skillNames: [], commandNames: [] },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
 test("an accepted source stays while the daemon still projects its queue entry", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 5, ids: [] },

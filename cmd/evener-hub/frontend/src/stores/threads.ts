@@ -66,12 +66,14 @@ import {
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
+  type ConsumedQueueEntry,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
   MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
+  parseImagePlaceholder,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -5943,12 +5945,26 @@ function publishThreadHydration(
 // Clearing an obligation still requires tracked mutation reconciliation below;
 // a repository end/final read cannot prove uncertain outbox rows absent.
 function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse, model: ThreadModel): void {
+  const authoritative = response.thread.evener.mutationStateAuthoritative === true;
   threadsStore.setState((state) => {
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
-    if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
+    if (authoritative) mutationAuthorityRefs.add(ref);
     else mutationAuthorityRefs.delete(ref);
+    // Snapshot freshness stays owned by the generation-checked publication
+    // path: a repository read cannot prove no queue frame landed after it.
     return { mutationAuthorityRefs };
   });
+  const runtime = getMutationRuntime();
+  const snapshotFresh = threadsStore.getState().mutationSnapshotRefs.has(ref);
+  if (runtime && authoritative && snapshotFresh) {
+    const recorded = transcriptMutationIds(model);
+    // An older daemon can omit consumed ids for a promotion. These reads are
+    // accepted history, so they are the same boundary as a tracked hydration:
+    // ask the journal whether an absent retained source was delivered.
+    if (recorded.size > 0) {
+      void runtime.dispatcher.reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(response));
+    }
+  }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
@@ -6726,6 +6742,7 @@ function handleNotification(n: AnyNotification): void {
       // A queue frame proves the transition, not that the replacement is
       // visible. Keep the display copy and ask its hydration owner for the
       // authoritative snapshot that names the message it became.
+      consumeQueueRows(settlementRef, previousThreads.get(settlementRef), consumed);
       noteMutationStateChange(settlementRef);
       threadsStore.setState((state) => {
         if (!state.mutationSnapshotRefs.has(settlementRef)) return state;
@@ -7483,6 +7500,49 @@ function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
 let replayAcceptedCopiesOnReady = false;
 const acceptedCopyReplayRefs = new Set<string>();
 const pendingConsumedSettlements = new Map<string, Set<string>>();
+// Queue rows another client's transition consumed, kept visible here because
+// this client never held a local copy of them. Keyed by ref, then entry id.
+const consumedQueueRows = new Map<string, Map<string, ConsumedQueueEntry>>();
+
+function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consumed: readonly string[]): void {
+  const queue = previous?.queue;
+  if (!queue || consumed.length === 0) return;
+  const consumedIds = new Set(consumed);
+  let rows = consumedQueueRows.get(ref);
+  for (let index = 0; index < (queue.ids?.length ?? 0); index += 1) {
+    const entryId = queue.ids?.[index];
+    const mutationId = queue.clientMutationIds?.[index];
+    if (!entryId || !mutationId || !consumedIds.has(mutationId)) continue;
+    rows ??= new Map();
+    rows.set(entryId, {
+      entryId,
+      text: queue.texts?.[index] ?? queue.preview?.[index] ?? "",
+      imageCount: parseImagePlaceholder(queue.preview?.[index]),
+      skillNames: queue.skillNames?.[index] ?? [],
+      commandNames: queue.commandNames?.[index] ?? [],
+    });
+  }
+  if (rows && rows.size > 0) consumedQueueRows.set(ref, rows);
+}
+
+// The consumed rows still awaiting an authoritative replacement. A published,
+// current, mutation-authoritative snapshot that already records a user item
+// settles them: the projection hides them from then on.
+export function consumedQueueEntriesFor(ref: string): ConsumedQueueEntry[] {
+  const rows = consumedQueueRows.get(ref);
+  if (!rows) return [];
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  const settled =
+    state.mutationSnapshotRefs.has(ref) &&
+    state.mutationAuthorityRefs.has(ref) &&
+    transcriptMutationIds(model).size > 0;
+  if (settled) {
+    consumedQueueRows.delete(ref);
+    return [];
+  }
+  return [...rows.values()];
+}
 
 // A consumed queue identity retires only when an accepted authoritative
 // snapshot shows the message is no longer queued, pending, or recorded. The

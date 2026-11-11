@@ -35,6 +35,7 @@ import {
   scheduledHydrationRetries,
 } from "./threadHydrationTestUtils";
 import {
+  consumedQueueEntriesFor,
   installHydrationRetrySchedulerForTests,
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -424,6 +425,54 @@ test("a queue frame during a read keeps the published snapshot stale", async () 
   await reading;
 
   expect(threadsStore.getState().mutationSnapshotRefs.has("ref_a")).toBe(false);
+});
+
+test("a queue frame keeps the content of a consumed row this client never owned", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const read = deferred<ThreadReadResponse>();
+  const started = deferred<void>();
+  fake.on("thread/read", () => {
+    started.resolve();
+    return read.promise;
+  });
+  const reading = threadsStore.getState().refreshThread("ref_a");
+  await started.promise;
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+      consumedClientMutationIds: ["m9"],
+    },
+  });
+  read.resolve(
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2, depth: 0, ids: [] },
+      },
+    }),
+  );
+  await reading;
+
+  expect(consumedQueueEntriesFor("ref_a")).toEqual([
+    expect.objectContaining({ entryId: "q1", text: "queued elsewhere" }),
+  ]);
 });
 
 test("an authoritative hydration retires an absent retained queue source", async () => {

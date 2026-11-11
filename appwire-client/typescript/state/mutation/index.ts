@@ -35,12 +35,14 @@ export {
   normalizeText,
   ownPendingSend,
   ownPendingTurnInput,
+  parseImagePlaceholder,
   pendingEntryPreview,
   reconcilePendingEntries,
   reflectedMutationIds,
   skillMarkers,
 } from "./pendingEntries";
 export type {
+  ConsumedQueueEntry,
   PendingMessage,
   PendingMessageImage,
   PendingMessageState,

@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  type ConsumedQueueEntry,
   canceledEntries,
   createMutationProjectionFence,
   createPendingTurnsStore,
@@ -34,6 +35,7 @@ import type {
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
+  consumedQueueEntriesFor,
   discardRecoveryMutation,
   editQueuedMutation,
   type InputAttachment,
@@ -393,7 +395,12 @@ function transcriptIdsFor(model: ThreadsPortModel): ReadonlySet<string> {
 function subscribePendingInputs(ref: string, onStoreChange: () => void): () => void {
   const unsubscribePending = pendingTurnsStore.subscribe(() => onStoreChange());
   const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
-    if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
+    if (
+      state.threads.get(ref) !== previous.threads.get(ref) ||
+      state.mutationAuthorityRefs !== previous.mutationAuthorityRefs ||
+      state.mutationSnapshotRefs !== previous.mutationSnapshotRefs
+    )
+      onStoreChange();
   });
   return () => {
     unsubscribePending();
@@ -506,11 +513,13 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     ref: string;
     mutationStateAuthoritative: boolean;
     mutationSnapshotCurrent: boolean;
+    consumedQueueEntries: readonly ConsumedQueueEntry[];
     rows: PendingMessage[];
   } | null>(null);
   const getSnapshot = useCallback((): PendingMessage[] => {
     const { outbox, optimistic, recovery, submittedHere } = pendingTurnsStore.getState();
     const model = threadsPort.getThreadModel(ref);
+    const consumedQueueEntries = consumedQueueEntriesFor(ref);
     const cached = cacheRef.current;
     if (
       cached &&
@@ -521,7 +530,8 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       cached.model === model &&
       cached.ref === ref &&
       cached.mutationStateAuthoritative === mutationStateAuthoritative &&
-      cached.mutationSnapshotCurrent === mutationSnapshotCurrent
+      cached.mutationSnapshotCurrent === mutationSnapshotCurrent &&
+      cached.consumedQueueEntries === consumedQueueEntries
     ) {
       return cached.rows;
     }
@@ -531,6 +541,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       outbox: [...outbox.values()],
       optimistic: [...optimistic.values()],
       recovery: [...recovery.values()],
+      consumedQueueEntries,
       model,
       deliveredHere,
       transcriptIds,
@@ -549,6 +560,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       ref,
       mutationStateAuthoritative,
       mutationSnapshotCurrent,
+      consumedQueueEntries,
       rows: result,
     };
     return result;

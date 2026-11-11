@@ -107,6 +107,10 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   outbox: readonly MutationOutboxRecord<A>[];
   optimistic: readonly MutationOptimisticRecord<A>[];
   recovery: readonly MutationRecoveryRecord<A>[];
+  // Queue entries this client saw consumed by another client's transition but
+  // never owned locally. Their content has no other durable copy here, so they
+  // stay visible until an authoritative snapshot names their replacement.
+  consumedQueueEntries?: readonly ConsumedQueueEntry[];
   model: ThreadModel | undefined;
   // Ids the client has already seen as delivered. A later bounded read that
   // drops the item cannot resurrect the row.
@@ -122,6 +126,15 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   mutationSnapshotCurrent?: boolean;
   submittedHere?: ReadonlyMap<string, number>;
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean;
+}
+
+export interface ConsumedQueueEntry {
+  entryId: string;
+  text: string;
+  imageCount: number;
+  skillNames: readonly string[];
+  commandNames: readonly string[];
+  createdAt?: number;
 }
 
 export { transcriptMutationIds };
@@ -532,6 +545,14 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
   const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
+  // A consumed row this client never owned stays until a current snapshot
+  // proves the replacement landed, or names it again in the queue.
+  const carriedConsumed = (input.consumedQueueEntries ?? []).filter(
+    (entry) =>
+      !queuedEntryIds.has(entry.entryId) &&
+      !pendingEntryIds.has(entry.entryId) &&
+      !(mutationStateAuthoritative && mutationSnapshotCurrent && deliveredAny),
+  );
 
   const families = new Map<string, LocalFamily<A>>();
   const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
@@ -781,5 +802,27 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     )
     .map(drainFallback);
 
-  return all.sort(compareRows);
+  const carriedRows: PendingMessage<A>[] = carriedConsumed.map((entry) => ({
+    id: `queue:${entry.entryId}`,
+    ref,
+    method: "queue",
+    state: "delivering",
+    text: entry.text,
+    displayText: pendingEntryPreview({
+      text: entry.text,
+      imageCount: entry.imageCount,
+      skillNames: entry.skillNames,
+      commandNames: entry.commandNames,
+    }),
+    textComplete: true,
+    images: [],
+    imageCount: entry.imageCount,
+    skillNames: [...entry.skillNames],
+    commandNames: [...entry.commandNames],
+    ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    fromThisClient: false,
+    queueEntryIds: [entry.entryId],
+  }));
+
+  return [...all, ...carriedRows].sort(compareRows);
 }
