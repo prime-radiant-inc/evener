@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -330,9 +329,8 @@ func runJobOutputPagingJourney(ctx context.Context, t *testing.T, stack *hubStac
 		t.Fatal(err)
 	}
 	defer log.Close()
-	driver := exec.CommandContext(ctx, "node", "frontend/scripts/backgroundjobsguard/run.mjs")
+	driver := backgroundJobsDriverCommand(ctx)
 	driver.Stdin, driver.Stdout, driver.Stderr = bytes.NewReader(body), log, log
-	driver.WaitDelay = 15 * time.Second
 	if err := driver.Run(); err != nil {
 		skillGuardLogDriverTail(t, log.Name())
 		t.Fatalf("real output paging journey: %v, evidence: %s", err, artifacts)

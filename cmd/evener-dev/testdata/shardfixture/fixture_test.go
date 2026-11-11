@@ -27,12 +27,31 @@ func TestMain(m *testing.M) {
 		_, _ = fmt.Fprintf(os.Stderr, "shardfixture TestMain: %v\n", err)
 		os.Exit(2)
 	}
+	recordTestTimeout()
 	done := announceLiveShard()
 	code := m.Run()
 	if done != nil {
 		done()
 	}
 	os.Exit(code)
+}
+
+// recordTestTimeout, when SHARD_FIXTURE_TIMEOUT_DIR is set, records the
+// -test.timeout this invocation runs under as <role>.<pid>: "shard" for an
+// invocation carrying the run file, "survey" for any other that runs tests.
+// The listing runs no test, so it records nothing. Inert unless the test asks
+// for it.
+func recordTestTimeout() {
+	dir := os.Getenv("SHARD_FIXTURE_TIMEOUT_DIR")
+	if dir == "" || flag.Lookup("test.list").Value.String() != "" {
+		return
+	}
+	role := "survey"
+	if os.Getenv("EVENER_SHARD_RUN_FILE") != "" {
+		role = "shard"
+	}
+	timeout := flag.Lookup("test.timeout").Value.String()
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%d", role, os.Getpid())), []byte(timeout), 0o644)
 }
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run
@@ -214,6 +233,34 @@ func TestFixtureSlow(t *testing.T) {
 	if os.Getenv("SHARD_FIXTURE_SLOW") != "" {
 		time.Sleep(400 * time.Millisecond)
 	}
+}
+
+// TestFixtureBurn spends SHARD_FIXTURE_BURN (a Go duration) of this process's
+// own CPU time when armed, so a CPU measurement of the binary has a known
+// floor. It counts CPU, not wall time, so a busy host cannot shorten the work.
+func TestFixtureBurn(t *testing.T) {
+	want, err := time.ParseDuration(os.Getenv("SHARD_FIXTURE_BURN"))
+	if err != nil {
+		return
+	}
+	start := processCPU(t)
+	for processCPU(t)-start < want {
+		for i := 0; i < 1_000_000; i++ {
+			fixtureSink += i
+		}
+	}
+}
+
+// fixtureSink keeps TestFixtureBurn's loop from being optimized away.
+var fixtureSink int
+
+func processCPU(t *testing.T) time.Duration {
+	t.Helper()
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		t.Fatalf("getrusage: %v", err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // TestFixtureLiveStackBin is how the hub-shards harness sees the directory of

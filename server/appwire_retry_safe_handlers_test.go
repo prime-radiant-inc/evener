@@ -10,6 +10,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -218,6 +219,50 @@ func TestRetrySafeHandlersRefuseWhileThreadClearHoldsTheGate(t *testing.T) {
 				t.Fatal("callback ran while thread clear held the gate")
 			}
 		})
+	}
+}
+
+// TestWithMutationReadWaitsForThreadClear pins the input-loop side of clear:
+// an automatic turn admitted while clear prepares the replacement waits until
+// clear has published it, then runs against whatever session clear installed.
+func TestWithMutationReadWaitsForThreadClear(t *testing.T) {
+	srv := newRetrySafeTestServer()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		close(entered)
+		<-release
+		prepared, err := PrepareAppIdentityForRef("local", "th_2", params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+		return nil
+	})
+	clearResult := make(chan error, 1)
+	go func() {
+		_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+			Ref: "local:th_1", ClientMutationID: "clear-1", ExpectedInstanceID: "th_1",
+		})
+		clearResult <- err
+	}()
+	<-entered
+
+	ranAgainst := make(chan string, 1)
+	go func() {
+		srv.WithMutationRead(func() { ranAgainst <- srv.appThread().ID })
+	}()
+	select {
+	case id := <-ranAgainst:
+		t.Fatalf("automatic input ran against %q while thread/clear was preparing the replacement", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-clearResult; err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if id := <-ranAgainst; id != "th_2" {
+		t.Fatalf("automatic input ran against %q, want the replacement", id)
 	}
 }
 

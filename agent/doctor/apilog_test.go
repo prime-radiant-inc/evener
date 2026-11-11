@@ -1101,3 +1101,44 @@ func TestAPIHealthQuotaClassCountsExplicitQuotaExceeded(t *testing.T) {
 		t.Fatalf("retryable errors = %d, want 0", res.ErrorsByClass[apiErrorClassRetryable])
 	}
 }
+
+// classifyAPIErrorClass sorts a failed attempt into quota, permanent or
+// retryable: a quota class first, a caller cancel as permanent, then the status
+// code, then the error kind, and retryable when nothing says otherwise.
+func TestClassifyAPIErrorClass_AllBranches(t *testing.T) {
+	sc400 := 400
+	sc429 := 429
+	sc500 := 500
+	sc200 := 200 // unknown status code
+
+	tests := []struct {
+		name       string
+		outcome    apilog.AttemptOutcomeClass
+		statusCode *int
+		errorClass string
+		want       string
+	}{
+		{"quota class", apilog.AttemptProviderReject, &sc429, llm.KindQuotaExceeded.String(), apiErrorClassQuota},
+		{"caller cancel", apilog.AttemptCallerCancel, nil, "", apiErrorClassPermanent},
+		{"400 permanent", apilog.AttemptProviderReject, &sc400, "", apiErrorClassPermanent},
+		{"429 retryable by status", apilog.AttemptProviderReject, &sc429, "", apiErrorClassRetryable},
+		{"500 retryable by status", apilog.AttemptProviderReject, &sc500, "", apiErrorClassRetryable},
+		{"invalid_request class", apilog.AttemptProviderReject, nil, llm.KindInvalidRequest.String(), apiErrorClassPermanent},
+		{"authentication class", apilog.AttemptProviderReject, nil, llm.KindAuthentication.String(), apiErrorClassPermanent},
+		{"access_denied class", apilog.AttemptProviderReject, nil, llm.KindAccessDenied.String(), apiErrorClassPermanent},
+		{"not_found class", apilog.AttemptProviderReject, nil, llm.KindNotFound.String(), apiErrorClassPermanent},
+		{"context_length class", apilog.AttemptProviderReject, nil, llm.KindContextLength.String(), apiErrorClassPermanent},
+		{"content_filter class", apilog.AttemptProviderReject, nil, llm.KindContentFilter.String(), apiErrorClassPermanent},
+		{"timeout class", apilog.AttemptProviderReject, nil, llm.KindTimeout.String(), apiErrorClassRetryable},
+		{"rate_limit class", apilog.AttemptProviderReject, nil, llm.KindRateLimit.String(), apiErrorClassRetryable},
+		{"server class", apilog.AttemptProviderReject, nil, llm.KindServer.String(), apiErrorClassRetryable},
+		{"unknown fallback", apilog.AttemptProviderReject, &sc200, "unknown_class", apiErrorClassRetryable},
+		{"empty fallback", apilog.AttemptProviderReject, nil, "", apiErrorClassRetryable},
+	}
+	for _, tc := range tests {
+		if got := classifyAPIErrorClass(tc.outcome, tc.statusCode, tc.errorClass); got != tc.want {
+			t.Errorf("%s: classifyAPIErrorClass(%v, %v, %q) = %q, want %q",
+				tc.name, tc.outcome, tc.statusCode, tc.errorClass, got, tc.want)
+		}
+	}
+}

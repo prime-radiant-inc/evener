@@ -122,8 +122,9 @@ func TestBuildTreeClearReplacementNeedsYouUsesStableWorkspaceRef(t *testing.T) {
 			WorkspaceRef: "local:old-instance",
 			WorkingDir:   "/workspace",
 		},
-		SessionID: "new-instance",
-		Status:    appwire.ThreadStatusAwaiting,
+		SessionID:  "new-instance",
+		Status:     appwire.ThreadStatusAwaiting,
+		PendingAsk: true,
 	}}
 	projects := map[string]identifier.Project{
 		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
@@ -570,7 +571,7 @@ func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 	}
 	live := []LiveEntry{
 		{PID: 1, SessionID: "01IDLE", Status: "idle"},
-		{PID: 2, SessionID: "01AWAIT", Status: "awaiting"},
+		{PID: 2, SessionID: "01AWAIT", Status: "awaiting", PendingAsk: true},
 		{PID: 3, SessionID: "01PROC", Status: appwire.ThreadStatusActive},
 	}
 
@@ -613,7 +614,7 @@ func fuzzScenarioLiveTier_ApprovalRanksWithAwaiting(t *testing.T) {
 	live := []LiveEntry{
 		{PID: 1, SessionID: "01WORKING", Status: appwire.ThreadStatusActive},
 		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
-		{PID: 3, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{PID: 3, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError, PendingEscalation: true},
 	}
 	tree := buildTree(metas, live)
@@ -1152,7 +1153,7 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	live := []LiveEntry{
 		{PID: 1, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
 		{PID: 2, SessionID: "01WORK2", Status: appwire.ThreadStatusActive},
-		{PID: 3, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+		{PID: 3, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 		{PID: 4, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
 		{PID: 5, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
@@ -1209,8 +1210,8 @@ func fuzzScenarioBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting},
-		{PID: 2, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 2, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 		{PID: 3, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
 	tree := buildTree(metas, live)
@@ -1244,6 +1245,36 @@ func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	}
 	if got := len(buildTree(metas, live).NeedsYou); got != 0 {
 		t.Errorf("NeedsYou should be empty when nothing awaits, got %d", got)
+	}
+}
+
+// A session whose turn merely finished is not a triage row: it stays in Live
+// (as Idle), while a pending question keeps its Needs-you row. #2629.
+func TestBuildTree_PlainAwaitingLeavesNeedsYou(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01FIN", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01ASK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01FIN", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+	}
+	tree := buildTree(metas, live)
+	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01ASK" {
+		t.Fatalf("NeedsYou = %v, want only the pending question 01ASK", tree.NeedsYou)
+	}
+	var finishedLive bool
+	for _, node := range tree.Live {
+		if node.ID == "01FIN" {
+			finishedLive = true
+			if node.State != appwire.ThreadStatusAwaiting {
+				t.Errorf("finished Live row State = %q, want the daemon's awaiting", node.State)
+			}
+		}
+	}
+	if !finishedLive {
+		t.Error("finished session left Live; it belongs there as Idle")
 	}
 }
 
@@ -1458,7 +1489,7 @@ func fuzzScenarioBuildTree_ExpandedForAwaitingProject(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/asking"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 	}
 	proj := projectByName(t, buildTree(metas, live), "asking")
 	if !proj.Expanded {
@@ -1676,28 +1707,45 @@ func fuzzScenarioNormalizeState(t *testing.T) {
 
 func fuzzScenarioAttentionRank(t *testing.T) {
 	cases := []struct {
-		in   string
-		want int
+		in            string
+		ask, approval bool
+		want          int
 	}{
-		{"awaiting", 4}, {"active", 3}, {"warning", 2}, {"idle", 1}, {"ended", 0}, {"unknown", 0},
+		{"awaiting", true, false, 4},
+		{"active", false, true, 4},
+		{"active", false, false, 3},
+		{"warning", false, false, 2},
+		// Finished turns rest with idle, not at the old awaiting rank.
+		{"awaiting", false, false, 1},
+		{"idle", false, false, 1},
+		{"ended", false, false, 0},
+		{"unknown", false, false, 0},
 	}
 	for _, c := range cases {
-		if got := hubapi.AttentionRank(c.in); got != c.want {
-			t.Errorf("hubapi.AttentionRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := hubapi.AttentionRank(c.in, c.ask, c.approval); got != c.want {
+			t.Errorf("hubapi.AttentionRank(%q, %v, %v) = %d, want %d", c.in, c.ask, c.approval, got, c.want)
 		}
 	}
 }
 
 func fuzzScenarioRollupRank(t *testing.T) {
 	cases := []struct {
-		in   string
-		want int
+		in            string
+		ask, approval bool
+		want          int
 	}{
-		{"awaiting", 4}, {"warning", 3}, {"active", 2}, {"idle", 1}, {"ended", 0}, {"unknown", 0},
+		{"awaiting", true, false, 4},
+		{"active", false, true, 4},
+		{"warning", false, false, 3},
+		{"active", false, false, 2},
+		{"awaiting", false, false, 1},
+		{"idle", false, false, 1},
+		{"ended", false, false, 0},
+		{"unknown", false, false, 0},
 	}
 	for _, c := range cases {
-		if got := hubapi.RollupRank(c.in); got != c.want {
-			t.Errorf("hubapi.RollupRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := hubapi.RollupRank(c.in, c.ask, c.approval); got != c.want {
+			t.Errorf("hubapi.RollupRank(%q, %v, %v) = %d, want %d", c.in, c.ask, c.approval, got, c.want)
 		}
 	}
 }
@@ -1905,10 +1953,10 @@ func fuzzScenarioOrderCreatedAt(t *testing.T) {
 }
 
 func fuzzScenarioAttentionRanks_Errored(t *testing.T) {
-	if hubapi.AttentionRank("errored") <= hubapi.AttentionRank("awaiting") {
+	if hubapi.AttentionRank("errored", false, false) <= hubapi.AttentionRank("awaiting", true, false) {
 		t.Fatal("errored must outrank awaiting")
 	}
-	if hubapi.RollupRank("errored") <= hubapi.RollupRank("awaiting") {
+	if hubapi.RollupRank("errored", false, false) <= hubapi.RollupRank("awaiting", true, false) {
 		t.Fatal("RollupRank: errored must outrank awaiting")
 	}
 }
@@ -1921,7 +1969,7 @@ func fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T
 		{ID: "01WARN", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 		{PID: 2, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
 		{PID: 3, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
 	}
@@ -2167,7 +2215,10 @@ func fuzzScenarioProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
-func fuzzScenarioNeedsYou_AskPendingSharesTheNeedsResponseBand(t *testing.T) {
+// A pending question is the only awaiting condition that earns a Needs-you
+// row: a turn that merely ended on needs_response is finished and stays in
+// Live, out of the triage tier and its bands (#2629).
+func fuzzScenarioNeedsYou_PlainAwaitingLeavesTheNeedsResponseBand(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
@@ -2180,39 +2231,43 @@ func fuzzScenarioNeedsYou_AskPendingSharesTheNeedsResponseBand(t *testing.T) {
 		{PID: 3, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
 	}
 	tree := buildTree(metas, live)
-	if len(tree.NeedsYou) != 3 {
-		t.Fatalf("NeedsYou len = %d, want 3", len(tree.NeedsYou))
+	if len(tree.NeedsYou) != 2 {
+		t.Fatalf("NeedsYou len = %d, want 2 (the failure and the question)", len(tree.NeedsYou))
 	}
-	// errored first, then the question and the needs_response row together
-	// in one band (#4093), oldest waiting first.
-	got := []string{tree.NeedsYou[0].ID, tree.NeedsYou[1].ID, tree.NeedsYou[2].ID}
-	want := []string{"01ERR", "01OLD_YOURMOVE", "01ASK"}
+	got := []string{tree.NeedsYou[0].ID, tree.NeedsYou[1].ID}
+	want := []string{"01ERR", "01ASK"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("band order = %v, want %v", got, want)
 		}
 	}
+	inLive := false
+	for _, node := range tree.Live {
+		if node.ID == "01OLD_YOURMOVE" {
+			inLive = true
+		}
+	}
+	if !inLive {
+		t.Error("finished session left Live; it belongs there as Idle")
+	}
 }
 
 // fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
 // ordering (principle 1, section 7.1): failed first, then the sessions blocked
-// on a person, questions, approvals and needs_response rows together and
-// oldest waiting first (#4093). The approval's session keeps reporting
-// "active" (the escalation blocks mid-turn), so only its ApprovalPending can
-// place it.
+// on a person, questions and approvals together and oldest waiting first
+// (#4093). The approval's session keeps reporting "active" (the escalation
+// blocks mid-turn), so only its ApprovalPending can place it.
 func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
-		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-4 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 		{ID: "01APPROVAL", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting},
-		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
-		{PID: 3, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
-		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+		{PID: 1, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
 	}
 	tree := buildTree(metas, live)
 	got := make([]string, 0, len(tree.NeedsYou))
@@ -2220,7 +2275,7 @@ func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
 		got = append(got, node.ID)
 	}
 	// One shared band, oldest waiting first.
-	want := []string{"01ERR", "01OLD_YOURMOVE", "01APPROVAL", "01ASK"}
+	want := []string{"01ERR", "01APPROVAL", "01ASK"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("band order = %v, want %v", got, want)
 	}

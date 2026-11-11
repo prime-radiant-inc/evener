@@ -3059,7 +3059,12 @@ describe("the needs-you upgrade", () => {
       expect(result.current.pillNeedsYou).toBe(false);
 
       // Same content, later render: status alone requires attention.
-      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: statusType } }) });
+      rerender({
+        m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], {
+          status: { type: statusType },
+          askPending: statusType === "awaiting",
+        }),
+      });
 
       expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
       expect(result.current.pillNeedsYou).toBe(true);

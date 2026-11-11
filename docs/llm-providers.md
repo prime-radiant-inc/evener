@@ -162,6 +162,11 @@ bytes travel to the vision model as a base64 document part
 - On the `openai-chat` protocol the document part is a gateway extension; a
   backend that ignores it sees no image at all, and the model honestly reports
   an empty view.
+- A PDF a **tool** returns reaches an Anthropic model natively: the request
+  builder puts a `document` block inside `tool_result` content, and the
+  describing side-channel is skipped for a row that declares pdf input
+  (`llm.DeliversToolResultMedia`). The Responses, Google and chat tool-result
+  shapes carry no document, so those routes keep the side-channel (#4465).
 - When a task needs visual PDF reading on a provider without document support,
   rasterize the pages to JPEG before reading them — that is the supported path,
   not a workaround for a defect.
@@ -495,12 +500,18 @@ no catalog entry). Either shape carries `includeThoughts: true`. Clearing
 `fields."generationConfig.thinkingConfig"` on a row prunes the object
 entirely, for a model that takes no thinking fields at all.
 
-**Replay.** Prior thinking on the openai-chat protocol writes back to
-whichever field it arrived on — `reasoning_content`, `reasoning`, or
-`reasoning_text` as a plain string field, or `reasoning_details` as
-OpenRouter's array form. The value comes from models.dev's
-`interleaved.field` when the catalog states one, else the field the text
-actually arrived on, else `reasoning_content`.
+**Replay.** An openai-chat target carries no reasoning as continuation state:
+`reasoning_content` is display output, so request assembly drops prior
+assistant thinking from every replayed message, including the current turn's
+earlier rounds, and the transcript keeps it (#4563). A row that declares
+`thinking_as_text` is the deliberate exception: its adapter merges the
+thinking into assistant text because that gateway wants it there. When
+thinking does reach the chat builder (a `thinking_as_text` row, or a caller
+that builds a request directly), it writes back to whichever field it arrived
+on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
+field, or `reasoning_details` as OpenRouter's array form. The value comes from
+models.dev's `interleaved.field` when the catalog states one, else the field
+the text actually arrived on, else `reasoning_content`.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

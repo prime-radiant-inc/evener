@@ -7,6 +7,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -261,7 +263,7 @@ func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal
 		s.jobManager.onSessionEvent(ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
-		s.fireNotificationHook(warningHookMessage(data))
+		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -568,7 +570,7 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // timeout. A close that has already published its budget supersedes that, and an
 // exhausted deadline of either kind declines the hook rather than launching one
 // nothing is left to wait for.
-func (s *Session) fireNotificationHook(message string) {
+func (s *Session) fireNotificationHook(message, title string) {
 	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
@@ -579,23 +581,56 @@ func (s *Session) fireNotificationHook(message string) {
 	if ctx.Err() != nil {
 		return
 	}
-	s.runNotificationHook(ctx, message)
+	s.runNotificationHook(ctx, message, title)
 }
 
+// warningData is the warning payload an event carries, and whether it carries
+// one at all. A nil *WarningData is "no payload": both readers treat it as not a
+// warning.
+func warningData(data events.EventData) (events.WarningData, bool) {
+	switch v := data.(type) {
+	case events.WarningData:
+		return v, true
+	case *events.WarningData:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return events.WarningData{}, false
+}
+
+// warningHookMessage is the warning's message text, or the event's own printing
+// when the event is not a warning. It is the Notification hook's "message" field.
 func warningHookMessage(data events.EventData) string {
-	if v, ok := data.(events.WarningData); ok {
+	if v, ok := warningData(data); ok {
 		return v.Message
 	}
 	return fmt.Sprint(data)
 }
 
-func (s *Session) runNotificationHook(ctx context.Context, message string) {
+// warningHookTitle is the warning's own title, empty when it carries none. It is
+// the Notification hook's "title" field, so a hook renders the same heading the
+// user sees.
+func warningHookTitle(data events.EventData) string {
+	v, _ := warningData(data)
+	return v.Title
+}
+
+// notificationHookType is the Claude notification_type evener emits. Evener has
+// exactly one user-visible notification kind — a diagnostic warning — so this is
+// evener-native rather than Claude's permission_prompt/idle_prompt vocabulary,
+// and the runner matches on the value the input carries.
+const notificationHookType = "warning"
+
+func (s *Session) runNotificationHook(ctx context.Context, message, title string) {
 	if s.hookRunner == nil {
 		return
 	}
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
+	input.NotificationType = notificationHookType
+	input.Title = title
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
@@ -620,13 +655,46 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	// Effort is empty when no effort has been configured; omitempty silences it.
 	s.mu.Lock()
 	effort := s.cfg.ReasoningEffort
+	// A subagent's hook reports the child's own identity, never the parent's.
+	// Root sessions leave both empty, as Claude does.
+	parentSessionID := s.cfg.spawn.parentSessionID
+	agentType := s.cfg.spawn.agentType
 	s.mu.Unlock()
 	if effort != "" {
-		input.Effort = effort
+		input.Effort = &hooks.Effort{Level: effort}
+	}
+	if parentSessionID != "" {
+		input.AgentID = s.id
+		input.AgentType = agentType
 	}
 	// PermissionMode is intentionally left unset: evener has no permission-mode field
 	// on Session today. Do NOT fabricate a value the hook would act on.
 	return input
+}
+
+// toolHookInput starts an event's hook input with the fields every tool event
+// carries: the Claude tool name, the call id, and the parsed tool_input. A call
+// whose raw arguments were refused keeps its unvalidated bytes out of
+// tool_input, exactly as the event it describes never had them applied. Each
+// caller then sets only its own event-specific fields (tool_response, error,
+// duration_ms, and so on).
+func (s *Session) toolHookInput(event plugin.HookEvent, call llm.ToolCallData, rawRejected bool) hooks.Input {
+	hi := s.hookInput(event)
+	hi.ToolName = toolname.EvenerToClaude(call.Name)
+	hi.ToolUseID = call.ID
+	if !rawRejected && len(call.Arguments) > 0 {
+		// Decode through the registered tool's own decoder, exactly as dispatch
+		// does: a tool that preserves exact integers (uint64 ids, int64 bounds)
+		// must hand the hook the same values it hands the tool, not the float64
+		// a plain json.Unmarshal produces.
+		registered := s.reg.Get(call.Name)
+		if registered == nil {
+			registered = &tool.RegisteredTool{}
+		}
+		hi.UnmarshalToolArguments = registered.UnmarshalArguments
+		_ = registered.UnmarshalArguments(call.Arguments, &hi.ToolInput)
+	}
+	return hi
 }
 
 // settleFailedRound persists what a terminally failed round produced, so the

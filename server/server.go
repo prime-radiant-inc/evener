@@ -305,6 +305,11 @@ type Server struct {
 	// on no row. An ID the answer omits keeps its cached projection, which is the
 	// historical behavior when no watch source is wired.
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
+	// appDescendantQuotaWaitsFunc resolves the descendant row IDs of one thread
+	// LIST page to the usage-limit summary of each whose model call is waiting
+	// out a usage limit. A descendant projection samples no envelope, so this
+	// is how a waiting delegate's row carries the wait and its resume time.
+	appDescendantQuotaWaitsFunc func(threadIDs []string) map[string]*appwire.ThreadFailure
 	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
 	// for the thread list's root row (S3); nil disables it.
 	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
@@ -365,6 +370,15 @@ type Server struct {
 	// callback is still admitted, and a delayed turn must not enter after clear
 	// has acquired the write side of this gate.
 	appMutationGate sync.RWMutex
+	// inputSteps counts serve input steps in flight (WithMutationRead) and
+	// clearHoldsInput is set while thread/clear prepares and publishes a
+	// replacement. A step does not start while clear holds input, and clear
+	// takes the hold only once no step is in flight. inputGateChanged is closed
+	// and cleared whenever either changes or a turn starts, waking whoever
+	// waits on it. All three are guarded by mu.
+	inputSteps       int
+	clearHoldsInput  bool
+	inputGateChanged chan struct{}
 	// notifyWakeRearmed is true while a goroutine is parked on the send of a
 	// notification kick that found the input slot full. It coalesces further
 	// drops into that one parked send. See SubmitNotification.
@@ -771,6 +785,7 @@ func (s *Server) SetProcessing(processing bool) {
 	}
 	s.mu.Lock()
 	s.processing = true
+	s.signalInputGateLocked()
 	s.mu.Unlock()
 }
 
@@ -782,6 +797,7 @@ func (s *Server) SetProcessingTurn(turnID string) {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		s.processing = true
+		s.signalInputGateLocked()
 		s.appActiveTurnID = turnID
 		// A new turn's end has not been stated yet, whatever the turn before
 		// it stated.
@@ -819,15 +835,15 @@ func (s *Server) InputCh() <-chan InputMessage {
 }
 
 // SubmitContinuation feeds a goal continuation prompt into the input channel as
-// an EntryContinuation-kind message. The send is non-blocking: if the 1-slot
-// buffer is full a turn is already pending, whose drain-loop gate is the
-// reliable backstop for the goal, so dropping the kick is safe (spec §7). It is
-// the send-side counterpart to InputCh, used by the idle-kick callback wired
-// from serve.go (the agent module must not import server, so the kick is a
-// callback that lands here).
-func (s *Server) SubmitContinuation(prompt string) {
+// an EntryContinuation-kind message tagged with the session whose goal produced
+// it. The send is non-blocking: if the 1-slot buffer is full a turn is already
+// pending, whose drain-loop gate is the reliable backstop for the goal, so
+// dropping the kick is safe (spec §7). It is the send-side counterpart to
+// InputCh, used by the idle-kick callback wired from serve.go (the agent module
+// must not import server, so the kick is a callback that lands here).
+func (s *Server) SubmitContinuation(sessionID, prompt string) {
 	select {
-	case s.inputCh <- InputMessage{Kind: agent.EntryContinuation, Text: prompt}:
+	case s.inputCh <- InputMessage{Kind: agent.EntryContinuation, Text: prompt, SessionID: sessionID}:
 	default:
 	}
 }

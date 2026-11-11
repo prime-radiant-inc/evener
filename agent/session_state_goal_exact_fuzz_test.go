@@ -31,7 +31,7 @@ func FuzzSessionStateGoalExactCoverage(f *testing.F) {
 		fuzzExactState(t)
 		fuzzExactRepair(t)
 		fuzzExactNamer(t)
-		if predictionMessage(true) == predictionMessage(false) {
+		if predictionMessage(true, 0.1) == predictionMessage(false, 0.9) {
 			t.Fatal("compact predictions collapsed")
 		}
 	})

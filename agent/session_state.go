@@ -29,8 +29,10 @@ const (
 	// turn ended on a communicate that said needs_response and no autonomous
 	// work (goal kick, pending notifications, queued input, a pending
 	// delegate report, working child subagents) is in flight. A plain reply
-	// rests idle. It is the daemon-truth source for the hub's "needs you"
-	// attention state.
+	// rests idle. It is the daemon-truth source for the session's raw state;
+	// only an actionable condition (a pending question or approval, a warning,
+	// or a restart) puts a session in the hub's "needs you" attention state
+	// (#2629). A turn that merely ended on needs_response is Idle.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
@@ -114,9 +116,16 @@ func (s *Session) restingWireState() string {
 // failure the live one did. It is nil when the session rests on no failed
 // turn, or when the failure recorded no diagnostic (a legacy entry): the row
 // still reads Failed, and there is nothing more to say.
+//
+// While a model call waits out a usage limit (session_quota_wait.go) the
+// session is busy in its turn, not resting, and this is that limit's summary
+// instead: the failure the call met, and when it resumes by itself.
 func (s *Session) RestingFailure() *appwire.ThreadFailure {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.quotaWait != nil {
+		return appwire.CloneThreadFailure(&s.quotaWait.failure)
+	}
 	turn, failed := s.restingFailureLocked()
 	if !failed || turn.Error == nil {
 		return nil

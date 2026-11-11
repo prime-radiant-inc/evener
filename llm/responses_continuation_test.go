@@ -346,3 +346,45 @@ func enabledResponsesContinuationSupport() ResponsesContinuationSupport {
 		ProductionPathProofID: "phase-12a-public",
 	}
 }
+
+func TestCloneProviderOptions_DeepIndependence(t *testing.T) {
+	if got := cloneProviderOptions(nil); got != nil {
+		t.Fatalf("cloneProviderOptions(nil) = %v, want nil", got)
+	}
+
+	in := map[string]any{
+		"nested":   map[string]any{"inner": "v"},
+		"strmap":   map[string]string{"a": "b"},
+		"anyslice": []any{"x", map[string]any{"deep": "y"}},
+		"strslice": []string{"one", "two"},
+		"scalar":   42,
+	}
+
+	out := cloneProviderOptions(in)
+
+	// Mutate the clone's nested containers; the source must stay intact.
+	out["nested"].(map[string]any)["inner"] = "MUTATED"
+	out["strmap"].(map[string]string)["a"] = "MUTATED"
+	out["anyslice"].([]any)[0] = "MUTATED"
+	out["anyslice"].([]any)[1].(map[string]any)["deep"] = "MUTATED"
+	out["strslice"].([]string)[0] = "MUTATED"
+
+	if in["nested"].(map[string]any)["inner"] != "v" {
+		t.Error("nested map aliased between source and clone")
+	}
+	if in["strmap"].(map[string]string)["a"] != "b" {
+		t.Error("string map aliased between source and clone")
+	}
+	if in["anyslice"].([]any)[0] != "x" {
+		t.Error("any slice aliased between source and clone")
+	}
+	if in["anyslice"].([]any)[1].(map[string]any)["deep"] != "y" {
+		t.Error("nested map inside slice aliased between source and clone")
+	}
+	if in["strslice"].([]string)[0] != "one" {
+		t.Error("string slice aliased between source and clone")
+	}
+	if out["scalar"] != 42 {
+		t.Errorf("scalar clone = %v, want 42", out["scalar"])
+	}
+}

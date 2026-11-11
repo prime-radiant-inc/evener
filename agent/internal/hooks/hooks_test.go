@@ -3,12 +3,15 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -176,7 +179,7 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 		PluginDir: "/pd",
 		Command:   "echo EFFORT=$CLAUDE_EFFORT PLUGIN=$PLUGIN_ROOT CR=$CLAUDE_PLUGIN_ROOT",
 	}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: "high"}, newSystemCommandHookRuntime())
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: &Effort{Level: "high"}}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,6 +433,82 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 	}
 	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindClear); len(got.ModelContext) != 1 {
 		t.Fatalf("clear SessionStart model context = %d, want 1", len(got.ModelContext))
+	}
+}
+
+// TestRunSubagentStartFor_MatchesAgentType proves SubagentStart hooks match on
+// the child's agent type, the same value its agent_type input carries.
+func TestRunSubagentStartFor_MatchesAgentType(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Matcher: "^toolsmith:toolsmith$", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"injected"}}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "toolsmith:toolsmith")
+	if len(got.ModelContext) != 1 || got.ModelContext[0] != "injected" {
+		t.Fatalf("ModelContext = %v, want the injected context", got.ModelContext)
+	}
+	miss := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "other")
+	if len(miss.ModelContext) != 0 {
+		t.Fatalf("another agent type must not match, got %v", miss.ModelContext)
+	}
+}
+
+// TestRunSubagentStartFor_MatchesAnAgentTypeThatLooksLikeAToolName proves a
+// non-tool matcher target is never rewritten into Claude's tool vocabulary. An
+// agent type named "shell" is not a tool name: translating it would match "Bash"
+// while the input's agent_type stayed "shell", so the hook aimed at the agent
+// would silently never fire.
+func TestRunSubagentStartFor_MatchesAnAgentTypeThatLooksLikeAToolName(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Matcher: "^shell$", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"shell injected"}}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart", AgentType: "shell"}, "shell")
+	if len(got.ModelContext) != 1 || got.ModelContext[0] != "shell injected" {
+		t.Fatalf("ModelContext = %v, want the context for an agent type named \"shell\"", got.ModelContext)
+	}
+	// The translated spelling must NOT be what the matcher sees, or the hook would
+	// fire for a differently-named agent.
+	if wrong := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart", AgentType: "Bash"}, "Bash"); len(wrong.ModelContext) != 0 {
+		t.Fatalf("an agent type named \"Bash\" matched ^shell$: %v", wrong.ModelContext)
+	}
+}
+
+// TestRunSubagentStartFor_Exit2IsUserOnly proves a spawn warning reaches the
+// operator and never the child's model, as one summarized line.
+func TestRunSubagentStartFor_Exit2IsUserOnly(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo "spawn warning" >&2; exit 2`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent")
+	if len(got.ModelContext) != 0 {
+		t.Fatalf("exit 2 must not reach the model, got %v", got.ModelContext)
+	}
+	if len(got.UserMessages) != 1 {
+		t.Fatalf("exit 2 stderr must reach the user, got %v", got.UserMessages)
+	}
+	if !strings.Contains(got.UserMessages[0], "SubagentStart") {
+		t.Fatalf("a failed SubagentStart hook must warn with the event, hook, and exit code; got %q", got.UserMessages[0])
+	}
+
+	// SubagentStart has no decision control in Claude, so decision:"block" must
+	// not stop the child either: the exit-2 warning above is the only effect.
+	blocked := newRunner(nil, "")
+	blocked.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"decision":"block","reason":"no spawn"}'`})
+	if res := blocked.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent"); res.Stopped {
+		t.Fatalf("SubagentStart decision:block must be dropped, got Stopped with %q", res.StopReason)
+	}
+}
+
+// TestRunSubagentStartFor_HonorsContinueFalse covers Claude's universal continue
+// field on the new event: the runner reports the stop and its reason, and the
+// dispatch site decides how to end the launch.
+func TestRunSubagentStartFor_HonorsContinueFalse(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"no spawn"}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent")
+	if !got.Stopped || got.StopReason != "no spawn" {
+		t.Fatalf("Stopped/StopReason = %t/%q, want true/%q", got.Stopped, got.StopReason, "no spawn")
 	}
 }
 
@@ -1049,7 +1128,7 @@ func TestRunPreCompact_Routing(t *testing.T) {
 		Matcher: "*", Type: "command", Timeout: 5,
 		Command: `echo '{"hookSpecificOutput":{"additionalContext":"to-model"}}'`,
 	})
-	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	r := runner.RunPreCompactFor(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"}, "auto")
 	if len(r.ModelContext) != 1 || r.ModelContext[0] != "to-model" {
 		t.Fatalf("PreCompact additionalContext must reach the model; ModelContext = %v", r.ModelContext)
 	}
@@ -1060,7 +1139,7 @@ func TestRunPreCompact_PlainStdoutToUser(t *testing.T) {
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*", Type: "command", Timeout: 5, Command: `echo compacting`,
 	})
-	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	r := runner.RunPreCompactFor(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"}, "auto")
 	if len(r.UserMessages) != 1 || r.UserMessages[0] != "compacting" {
 		t.Fatalf("PreCompact plain stdout must go to the user; UserMessages = %v", r.UserMessages)
 	}
@@ -1413,5 +1492,738 @@ func TestToolEventFailureStillFeedsTheModel(t *testing.T) {
 	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "shell"})
 	if len(r.ModelContext) != 1 || !strings.Contains(r.ModelContext[0], "raw stderr for the model") {
 		t.Fatalf("PostToolUse exit-2 stderr must still reach the model; ModelContext = %q", r.ModelContext)
+	}
+}
+
+// --- Claude hook lifecycle compat: shared input layer ---
+
+func TestInput_EffortSerializesAsLevelObject(t *testing.T) {
+	b, err := json.Marshal(Input{Effort: &Effort{Level: "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	eff, ok := m["effort"].(map[string]any)
+	if !ok || eff["level"] != "high" {
+		t.Fatalf("effort = %v, want {\"level\":\"high\"}", m["effort"])
+	}
+}
+
+func TestInput_EffortAbsentWhenUnset(t *testing.T) {
+	b, _ := json.Marshal(Input{})
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if _, present := m["effort"]; present {
+		t.Fatalf("effort must be absent, got %v", m["effort"])
+	}
+}
+
+// TestInput_EventFieldsJSONNames pins the Claude field names the later event
+// tasks fill. A rename here silently breaks every hook that reads them.
+func TestInput_EventFieldsJSONNames(t *testing.T) {
+	zero := false
+	var dur int64
+	b, err := json.Marshal(Input{
+		Trigger:              "manual",
+		CustomInstructions:   new("condense"),
+		CompactSummary:       "summary",
+		StopHookActive:       &zero,
+		LastAssistantMessage: "last",
+		Error:                "boom",
+		ErrorDetails:         "429",
+		IsInterrupt:          &zero,
+		DurationMS:           &dur,
+		ToolCalls:            []BatchToolCall{{ToolName: "Bash", ToolUseID: "id-1", ToolResponse: "ok"}},
+		NotificationType:     "warning",
+		Title:                "title",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"trigger":"manual"`, `"custom_instructions":"condense"`, `"compact_summary":"summary"`,
+		`"stop_hook_active":false`, `"last_assistant_message":"last"`, `"error":"boom"`,
+		`"error_details":"429"`, `"is_interrupt":false`, `"duration_ms":0`,
+		`"tool_calls":[{"tool_name":"Bash","tool_use_id":"id-1","tool_response":"ok"}]`,
+		`"notification_type":"warning"`, `"title":"title"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s in %s", want, b)
+		}
+	}
+
+	// Every event field is omitempty, so an Input carrying none of them emits
+	// none of their keys. Claude hooks distinguish absent from zero.
+	empty, err := json.Marshal(Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		`"trigger"`, `"custom_instructions"`, `"compact_summary"`, `"stop_hook_active"`,
+		`"last_assistant_message"`, `"error"`, `"error_details"`, `"is_interrupt"`,
+		`"duration_ms"`, `"tool_calls"`, `"notification_type"`, `"title"`,
+	} {
+		if strings.Contains(string(empty), key) {
+			t.Errorf("%s must be omitted from an empty Input, got %s", key, empty)
+		}
+	}
+}
+
+// TestHonorsContinue names the five events where Claude discards
+// continue/stopReason, and proves every other event honors it.
+func TestHonorsContinue(t *testing.T) {
+	for _, event := range []plugin.HookEvent{
+		plugin.HookStopFailure, plugin.HookNotification, plugin.HookPreCompact,
+		plugin.HookPostCompact, plugin.HookSessionEnd,
+	} {
+		if HonorsContinue(event) {
+			t.Errorf("%s must discard continue:false", event)
+		}
+	}
+	for _, event := range []plugin.HookEvent{
+		plugin.HookPreToolUse, plugin.HookPostToolUse, plugin.HookPostToolBatch,
+		plugin.HookPostToolUseFailure, plugin.HookUserPromptSubmit, plugin.HookSessionStart,
+		plugin.HookStop, plugin.HookSubagentStop, plugin.HookSubagentStart,
+	} {
+		if !HonorsContinue(event) {
+			t.Errorf("%s must honor continue:false", event)
+		}
+	}
+}
+
+func TestRunNotification_ContinueFalseIsDiscarded(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"no more"}'`})
+	out := r.RunNotification(context.Background(), Input{HookEventName: "Notification"})
+	if out.Stopped {
+		t.Fatalf("Notification must discard continue:false")
+	}
+}
+
+func TestRunPostToolUse_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop here"}'`})
+	out := r.RunPostToolUse(context.Background(), Input{HookEventName: "PostToolUse"})
+	if !out.Stopped {
+		t.Fatalf("PostToolUse must honor continue:false")
+	}
+	if out.StopReason == "" {
+		t.Fatalf("StopReason must be carried")
+	}
+}
+
+// TestRunPreToolUse_ContinueFalseStops covers the PreToolUse aggregation site:
+// a stop is recorded there independently of the event's own deny decision.
+func TestRunPreToolUse_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunPreToolUse(context.Background(), Input{HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !out.Stopped {
+		t.Fatalf("PreToolUse must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunStop_ContinueFalseStops covers the Stop aggregation site.
+func TestRunStop_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunStop(context.Background(), Input{HookEventName: "Stop"})
+	if !out.Stopped {
+		t.Fatalf("Stop must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunStopFailureFor_MatchesErrorName proves the event's matcher target is
+// the error name: a hook matched on "rate_limit" fires for a rate limit and not
+// for another name.
+func TestRunStopFailureFor_MatchesErrorName(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "failure-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "rate_limit", Type: "command", Timeout: 5,
+		Command: "cat >> " + shellquote.Literal(marker),
+	})
+
+	if got := r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "server_error"); !zeroRunResult(got) {
+		t.Fatalf("RunStopFailureFor(server_error) = %+v, want a zero result", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a rate_limit matcher must not fire for server_error; stat err = %v", err)
+	}
+
+	_ = r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "rate_limit")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("rate_limit matcher did not fire: %v", err)
+	}
+	if !strings.Contains(string(data), `"hook_event_name":"StopFailure"`) {
+		t.Fatalf("hook input = %s, want the StopFailure event name", data)
+	}
+}
+
+// TestRunStopFailureFor_DiscardsOutputAndNeverStops proves the event is
+// fire-and-discard: a hook's continue:false, systemMessage, additionalContext,
+// and exit 2 all leave the run result free of stops, model context, and user
+// messages. Only terminalSequence is carried, parsed for a delivery site it
+// does not yet have.
+func TestRunStopFailureFor_DiscardsOutputAndNeverStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `printf '%s' '{"continue":false,"stopReason":"stop","systemMessage":"user","hookSpecificOutput":{"additionalContext":"model"},"terminalSequence":"done"}'`,
+	})
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo "failure-hook-stderr" >&2; exit 2`,
+	})
+
+	got := r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "rate_limit")
+	if got.Stopped || got.StopReason != "" {
+		t.Fatalf("Stopped = %v (%q), want no stop: continue:false and exit 2 are discarded", got.Stopped, got.StopReason)
+	}
+	if len(got.ModelContext) != 0 || len(got.UserMessages) != 0 {
+		t.Fatalf("ModelContext = %q, UserMessages = %q, want all output discarded", got.ModelContext, got.UserMessages)
+	}
+	if len(got.TerminalSequences) != 1 || got.TerminalSequences[0] != "done" {
+		t.Fatalf("TerminalSequences = %q, want the parsed terminal sequence", got.TerminalSequences)
+	}
+}
+
+func zeroRunResult(r RunResult) bool {
+	return !r.Stopped && r.StopReason == "" && len(r.TerminalSequences) == 0 &&
+		len(r.ModelContext) == 0 && len(r.UserMessages) == 0
+}
+
+// TestRunPostToolUseFailure_DispatchesAndRoutes proves the failure event has a
+// runner that dispatches its own hooks (never PostToolUse's), matches the
+// Bash-style name, and routes additionalContext to the model and a JSON
+// systemMessage to the user — the same routing PostToolUse uses.
+func TestRunPostToolUseFailure_DispatchesAndRoutes(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{
+		Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"failure-to-user","hookSpecificOutput":{"hookEventName":"PostToolUseFailure","additionalContext":"failure-to-model"}}'`,
+	})
+	// A PostToolUse hook in the same runner must not fire for the failure event.
+	r.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo '{"systemMessage":"success-hook-fired"}'`,
+	})
+
+	out := r.RunPostToolUseFailure(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUseFailure", ToolName: "Bash"})
+	if len(out.ModelContext) != 1 || out.ModelContext[0] != "failure-to-model" {
+		t.Fatalf("ModelContext = %v, want [failure-to-model]", out.ModelContext)
+	}
+	if len(out.UserMessages) != 1 || out.UserMessages[0] != "failure-to-user" {
+		t.Fatalf("UserMessages = %v, want [failure-to-user]", out.UserMessages)
+	}
+	for _, msg := range append(out.ModelContext, out.UserMessages...) {
+		if strings.Contains(msg, "success-hook-fired") {
+			t.Fatalf("RunPostToolUseFailure dispatched a PostToolUse hook: %v", msg)
+		}
+	}
+}
+
+// TestRunPostToolUseFailure_HonorsContinueFalse keeps the failure event in the
+// honored-continue set, matching Claude's table.
+func TestRunPostToolUseFailure_HonorsContinueFalse(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop after failure"}'`})
+	out := r.RunPostToolUseFailure(context.Background(), Input{HookEventName: "PostToolUseFailure", ToolName: "Bash"})
+	if !out.Stopped {
+		t.Fatal("PostToolUseFailure must honor continue:false")
+	}
+	if out.StopReason != "stop after failure" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop after failure")
+	}
+}
+
+// TestRunSubagentStop_ContinueFalseStops covers the SubagentStop aggregation
+// site, which shares runStopEvent but has its own event key and block row.
+func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunSubagentStopFor(context.Background(), Input{HookEventName: "SubagentStop"}, "subagent")
+	if !out.Stopped {
+		t.Fatalf("SubagentStop must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunSubagentStopFor_MatchesAgentType proves SubagentStop's matcher target is
+// the child's agent type, the same value SubagentStart matches on: a hook for one
+// type fires and a hook for another does not.
+func TestRunSubagentStopFor_MatchesAgentType(t *testing.T) {
+	r := newRunner(nil, "")
+	hit := filepath.Join(t.TempDir(), "agent-type-hit")
+	miss := filepath.Join(t.TempDir(), "agent-type-miss")
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+		Matcher: "toolsmith:toolsmith", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(hit),
+	})
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+		Matcher: "subagent", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(miss),
+	})
+	out := r.RunSubagentStopFor(context.Background(), Input{HookEventName: "SubagentStop"}, "toolsmith:toolsmith")
+	if out.Blocked || out.Stopped {
+		t.Fatalf("a plain touch hook must not block or stop: %+v", out)
+	}
+	if _, err := os.Stat(hit); err != nil {
+		t.Fatalf("the toolsmith:toolsmith hook did not fire: %v", err)
+	}
+	if _, err := os.Stat(miss); !os.IsNotExist(err) {
+		t.Fatalf("a subagent-matched hook fired for a plugin agent; stat err = %v", err)
+	}
+}
+
+// TestRunSessionEndFor_MatchesReason proves SessionEnd's matcher target is the
+// Claude session end reason: a clear close fires only the clear hook, a plain
+// close only the other hook.
+func TestRunSessionEndFor_MatchesReason(t *testing.T) {
+	dir := t.TempDir()
+	clearMarker := filepath.Join(dir, "clear")
+	otherMarker := filepath.Join(dir, "other")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "clear", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(clearMarker),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "other", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(otherMarker),
+	})
+
+	r.RunSessionEndFor(context.Background(), Input{HookEventName: "SessionEnd", Reason: "clear"}, "clear")
+	if _, err := os.Stat(clearMarker); err != nil {
+		t.Fatalf("the clear-matched hook did not fire for reason clear: %v", err)
+	}
+	if _, err := os.Stat(otherMarker); !os.IsNotExist(err) {
+		t.Fatalf("the other-matched hook fired for reason clear; stat err = %v", err)
+	}
+}
+
+// TestRunSessionEndFor_MatchesPromptInputExit proves the shutdown close's reason
+// is a matcher target too, and that the never-sent words stay separate from it.
+func TestRunSessionEndFor_MatchesPromptInputExit(t *testing.T) {
+	dir := t.TempDir()
+	promptExit := filepath.Join(dir, "prompt-input-exit")
+	resume := filepath.Join(dir, "resume")
+	logout := filepath.Join(dir, "logout")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "prompt_input_exit", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(promptExit),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "resume", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(resume),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "logout", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(logout),
+	})
+
+	r.RunSessionEndFor(context.Background(), Input{HookEventName: "SessionEnd", Reason: "prompt_input_exit"}, "prompt_input_exit")
+	if _, err := os.Stat(promptExit); err != nil {
+		t.Fatalf("the prompt_input_exit-matched hook did not fire: %v", err)
+	}
+	for name, path := range map[string]string{"resume": resume, "logout": logout} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("a %s-matched hook fired for prompt_input_exit; stat err = %v", name, err)
+		}
+	}
+}
+
+// TestRunStop_IgnoresConfiguredMatcher proves Claude's "no matcher" for Stop: a
+// hook configured with an exact tool matcher still fires, because there is no
+// tool to match against at a turn boundary. Consulting the matcher would skip
+// every such hook silently, which is what the old target did.
+func TestRunStop_IgnoresConfiguredMatcher(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stop-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(marker),
+	})
+	out := r.RunStop(context.Background(), Input{HookEventName: "Stop"})
+	if out.Blocked || out.Stopped {
+		t.Fatalf("a plain touch hook must not block or stop: %+v", out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a Bash-matched Stop hook did not fire at a turn boundary: %v", err)
+	}
+}
+
+// TestRunNotification_MatchesNotificationType proves Notification's matcher
+// target is the input's notification_type: a hook for the emitted type fires and
+// one for a Claude type evener never emits does not.
+func TestRunNotification_MatchesNotificationType(t *testing.T) {
+	dir := t.TempDir()
+	warningMarker := filepath.Join(dir, "warning")
+	idleMarker := filepath.Join(dir, "idle")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "warning", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(warningMarker),
+	})
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "idle_prompt", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(idleMarker),
+	})
+
+	r.RunNotification(context.Background(), Input{HookEventName: "Notification", NotificationType: "warning"})
+	if _, err := os.Stat(warningMarker); err != nil {
+		t.Fatalf("the warning-matched hook did not fire: %v", err)
+	}
+	if _, err := os.Stat(idleMarker); !os.IsNotExist(err) {
+		t.Fatalf("an idle_prompt-matched hook fired for a warning; stat err = %v", err)
+	}
+}
+
+// TestRunPostToolBatch_IgnoresConfiguredMatcher proves Claude's "There is no
+// matcher for this event": a configured matcher naming one tool must not skip
+// a PostToolBatch hook, because the event describes a whole batch.
+func TestRunPostToolBatch_IgnoresConfiguredMatcher(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PostToolBatch","additionalContext":"batch-note"}}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if len(got.ModelContext) != 1 {
+		t.Fatalf("a matcher must not skip PostToolBatch; ModelContext = %v", got.ModelContext)
+	}
+}
+
+// TestRunPostToolBatch_ToolCallsMarshal pins the event's input: the batch's
+// tool_calls array carries each call's Claude tool name, id, and the
+// model-facing tool_response, and an exit-2 hook blocks the round.
+func TestRunPostToolBatch_ToolCallsMarshal(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "batch-input.json")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `cat > ` + shellquote.Literal(capture) + `; printf 'stop the loop\n' >&2; exit 2`})
+
+	got := r.RunPostToolBatch(context.Background(), Input{
+		CWD:           dir,
+		HookEventName: "PostToolBatch",
+		ToolCalls: []BatchToolCall{{
+			ToolName:     "Read",
+			ToolInput:    map[string]any{"file_path": "/tmp/x"},
+			ToolUseID:    "call_1",
+			ToolResponse: "file text",
+		}},
+	})
+	if !got.Stopped {
+		t.Fatalf("exit 2 marks the batch blocked, got %+v", got)
+	}
+	if got.StopReason != "stop the loop" {
+		t.Fatalf("StopReason = %q, want the exit-2 stderr", got.StopReason)
+	}
+	for _, msg := range got.ModelContext {
+		if strings.Contains(msg, "stop the loop") {
+			t.Fatalf("the exit-2 stderr is the block reason, not model context: %v", got.ModelContext)
+		}
+	}
+
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured hook input: %v", err)
+	}
+	var captured struct {
+		HookEventName string `json:"hook_event_name"`
+		ToolCalls     []struct {
+			ToolName     string         `json:"tool_name"`
+			ToolInput    map[string]any `json:"tool_input"`
+			ToolUseID    string         `json:"tool_use_id"`
+			ToolResponse string         `json:"tool_response"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(raw, &captured); err != nil {
+		t.Fatalf("decode captured hook input: %v (raw: %s)", err, raw)
+	}
+	if captured.HookEventName != "PostToolBatch" {
+		t.Errorf("hook_event_name = %q, want PostToolBatch", captured.HookEventName)
+	}
+	if len(captured.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %+v, want one entry", captured.ToolCalls)
+	}
+	call := captured.ToolCalls[0]
+	if call.ToolName != "Read" || call.ToolUseID != "call_1" || call.ToolResponse != "file text" {
+		t.Errorf("tool_calls[0] = %+v, want Read/call_1/file text", call)
+	}
+	if got := call.ToolInput["file_path"]; got != "/tmp/x" {
+		t.Errorf("tool_calls[0].tool_input.file_path = %v, want /tmp/x", got)
+	}
+}
+
+// TestRunPostToolBatch_Exit2Blocks keeps the runner's exit-2 contract pinned at
+// the runner rather than only through the exitBehavior table.
+func TestRunPostToolBatch_Exit2Blocks(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo "stop the loop" >&2; exit 2`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("exit 2 must stop the loop, got %+v", got)
+	}
+}
+
+// TestRunPostToolBatch_DecisionBlockStops covers the JSON block form, whose
+// reason is the top-level reason field rather than exit-2 stderr.
+func TestRunPostToolBatch_DecisionBlockStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"decision":"block","reason":"batch says stop"}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped || got.StopReason != "batch says stop" {
+		t.Fatalf("decision:block = %+v, want Stopped with the reason", got)
+	}
+}
+
+// TestRunPostToolBatch_ContinueFalseCarriesReason covers continue:false with a
+// top-level reason but no stopReason: spec §4.4 says the block message comes
+// from JSON reason/stopReason, so the reason must reach StopReason rather than
+// falling back to the dispatch site's generic line.
+func TestRunPostToolBatch_ContinueFalseCarriesReason(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"reason":"batch says stop"}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("continue:false must stop the loop, got %+v", got)
+	}
+	if got.StopReason != "batch says stop" {
+		t.Fatalf("StopReason = %q, want the JSON reason %q", got.StopReason, "batch says stop")
+	}
+}
+
+// TestRunPostToolBatch_ReasonIsOneLine bounds the reason: multi-line shell
+// stderr must not dump a wall of text into the user warning and the steering
+// turn it becomes downstream.
+func TestRunPostToolBatch_ReasonIsOneLine(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `printf 'first line\nsecond line\nthird line\n' >&2; exit 2`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("exit 2 must stop the loop, got %+v", got)
+	}
+	if got.StopReason != "first line" {
+		t.Fatalf("StopReason = %q, want just the first line %q", got.StopReason, "first line")
+	}
+}
+
+// TestSupportedSummary_PostToolBatchMatcherIsRunnable proves the runnable-hook
+// count does not probe a matcher that PostToolBatch never consults: a hook whose
+// matcher names no tool still fires, so it must be counted.
+func TestSupportedSummary_PostToolBatchMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	// "(" is the only value the old matchTarget(matcher, "") probe rejected, so
+	// this is a real red-before-green: "Bash" was always runnable.
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo batch"})
+	if got := r.SupportedSummary()[plugin.HookPostToolBatch]; got != 1 {
+		t.Fatalf("SupportedSummary[PostToolBatch] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestValidate_PostToolBatchMatcherIsNotDiagnosed proves the load-time warning
+// agrees with dispatch: a PostToolBatch matcher that is not a valid regex never
+// skips the hook, so it must not be reported as one that "will not fire".
+func TestValidate_PostToolBatchMatcherIsNotDiagnosed(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo batch", PluginName: "batch-plugin"})
+	if diags := r.Validate(); len(diags) != 0 {
+		t.Fatalf("Validate() = %+v, want none: no matcher can skip PostToolBatch", diags)
+	}
+}
+
+// TestValidate_StopMatcherIsNotDiagnosed proves the load-time warning agrees with
+// dispatch for Stop too: RunStop bypasses matching, so an uncompilable matcher
+// never skips the hook and "will not fire" would be a false alarm. This is the
+// exact regression the review found — Validate and hookCanRun probed a matcher
+// that dispatch never consulted.
+func TestValidate_StopMatcherIsNotDiagnosed(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo stop", PluginName: "stop-plugin"})
+	if diags := r.Validate(); len(diags) != 0 {
+		t.Fatalf("Validate() = %+v, want none: no matcher can skip Stop", diags)
+	}
+}
+
+// TestSupportedSummary_StopMatcherIsRunnable proves the runnable-hook count (the
+// /status number) agrees with dispatch for Stop: a "(" matcher still fires, so
+// the hook is counted rather than omitted.
+func TestSupportedSummary_StopMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo stop"})
+	if got := r.SupportedSummary()[plugin.HookStop]; got != 1 {
+		t.Fatalf("SupportedSummary[Stop] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestSupportedSummary_UserPromptSubmitMatcherIsRunnable is the same statement
+// for UserPromptSubmit, whose matcher dispatch also ignores.
+func TestSupportedSummary_UserPromptSubmitMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookUserPromptSubmit, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo prompt"})
+	if got := r.SupportedSummary()[plugin.HookUserPromptSubmit]; got != 1 {
+		t.Fatalf("SupportedSummary[UserPromptSubmit] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestRunUserPromptSubmit_IgnoresConfiguredMatcher proves Claude's "no matcher"
+// for UserPromptSubmit: a hook with an exact, non-empty matcher ("startup") still
+// fires, because there is no value to match it against. Before this, the runner
+// matched against an empty target, so an exact matcher never fired.
+func TestRunUserPromptSubmit_IgnoresConfiguredMatcher(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "user-prompt-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookUserPromptSubmit, plugin.RegisteredHook{
+		Matcher: "startup", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(marker),
+	})
+	out := r.RunUserPromptSubmit(context.Background(), Input{HookEventName: "UserPromptSubmit", Prompt: "hello"})
+	if out.Stopped {
+		t.Fatalf("a plain touch hook must not stop the prompt: %+v", out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a startup-matched UserPromptSubmit hook did not fire: %v", err)
+	}
+}
+
+// TestRunPostToolBatch_EmitsHookLifecycleEvents keeps the HOOK_START/HOOK_END
+// announcements on the bypass path; runMatched owns them for every event.
+func TestRunPostToolBatch_EmitsHookLifecycleEvents(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5, Command: "true"})
+	var starts, ends int
+	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		switch kind {
+		case events.EventHookStart:
+			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostToolBatch) {
+				starts++
+			}
+		case events.EventHookEnd:
+			if end, ok := data.(events.HookEndData); ok && end.Event == string(plugin.HookPostToolBatch) {
+				ends++
+			}
+		}
+	})
+	r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if starts != 1 || ends != 1 {
+		t.Fatalf("hook lifecycle events = %d start / %d end, want 1/1", starts, ends)
+	}
+}
+
+// TestRunPreCompactFor_MatchesTrigger proves PreCompact's matcher target is the
+// fold's trigger: a "manual" hook fires for /compact and not for a pressure
+// fold.
+func TestRunPreCompactFor_MatchesTrigger(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "manual", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"manual-note"}}'`})
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "manual"); len(got.ModelContext) != 1 {
+		t.Fatalf("manual must match, got %v", got.ModelContext)
+	}
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "auto"); len(got.ModelContext) != 0 {
+		t.Fatalf("auto must not match a manual hook, got %v", got.ModelContext)
+	}
+}
+
+// TestRunPreCompactFor_MatchesTriggerWithoutJSONEventName proves the trigger
+// alone decides the match, independent of any input field.
+func TestRunPreCompactFor_MatchesTriggerWithoutJSONEventName(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "auto|manual", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"either-note"}}'`})
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "auto"); len(got.ModelContext) != 1 {
+		t.Fatalf("auto must match an either-trigger hook, got %v", got.ModelContext)
+	}
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "manual"); len(got.ModelContext) != 1 {
+		t.Fatalf("manual must match an either-trigger hook, got %v", got.ModelContext)
+	}
+}
+
+// TestRunPostCompactFor_DiscardsOutputAndContinue pins PostCompact's contract:
+// it has no decision control, and systemMessage, additionalContext, and
+// continue:false are all discarded.
+func TestRunPostCompactFor_DiscardsOutputAndContinue(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"x","continue":false,"hookSpecificOutput":{"hookEventName":"PostCompact","additionalContext":"y"}}'`})
+	got := r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if len(got.ModelContext) != 0 || len(got.UserMessages) != 0 || got.Stopped {
+		t.Fatalf("PostCompact output must be discarded, got %+v", got)
+	}
+}
+
+// TestRunPostCompactFor_MatchesTrigger proves PostCompact matches the trigger
+// the same way PreCompact does, so a hook pair with one matcher stays
+// consistent.
+func TestRunPostCompactFor_MatchesTrigger(t *testing.T) {
+	r := newRunner(nil, "")
+	var runs int
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Matcher: "^manual$", Type: "command", Timeout: 5,
+		Command: "true"})
+	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventHookStart {
+			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostCompact) {
+				runs++
+			}
+		}
+	})
+	r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if runs != 0 {
+		t.Fatalf("an auto fold ran a manual PostCompact %d time(s)", runs)
+	}
+	r.RunPostCompactFor(context.Background(), Input{}, "manual")
+	if runs != 1 {
+		t.Fatalf("a manual fold ran the manual PostCompact %d time(s), want 1", runs)
+	}
+}
+
+// TestRunPostCompactFor_FailureIsUserOnly proves the one output PostCompact
+// keeps: a failed hook's summarized warning — which names the event, the hook,
+// and its exit code before the first stderr line — reaches the operator, and
+// never the model.
+func TestRunPostCompactFor_FailureIsUserOnly(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5, PluginName: "compact-plugin",
+		Command: `printf 'first line\nsecond line\n' >&2; exit 2`})
+	got := r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if len(got.ModelContext) != 0 {
+		t.Fatalf("PostCompact failure must not reach the model, got %v", got.ModelContext)
+	}
+	if len(got.UserMessages) != 1 {
+		t.Fatalf("PostCompact failure must reach the user as one line, got %v", got.UserMessages)
+	}
+	line := got.UserMessages[0]
+	for _, want := range []string{"PostCompact", "compact-plugin", "first line"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("failure line %q must name the event, hook, exit code, and stderr; missing %q", line, want)
+		}
+	}
+	if strings.Contains(line, "second line") {
+		t.Fatalf("failure line %q must be bounded to the first output line", line)
+	}
+	if got.Stopped {
+		t.Fatalf("PostCompact has no decision control, got Stopped")
 	}
 }

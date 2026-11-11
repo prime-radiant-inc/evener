@@ -141,6 +141,23 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
+	// roundFallbackMessages is the round's unprojected request messages (system
+	// plus expanded history) kept for the fallback chain, whose targets apply
+	// their own thinking-replay and tool-result media policy.
+	// prepareModelRequestWithError writes it and callModelWithFallback takes and
+	// clears it on the same turn goroutine; mu guards the exchange (#4563, #4217).
+	roundFallbackMessages []llm.Message
+	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
+	// provider rejected. Request assembly omits those bytes for the rest of the
+	// session (the transcript keeps them); the rejection recovery adds the IDs
+	// and retries once. Guarded by mu.
+	rejectedToolResultDocuments map[string]struct{}
+	// pendingToolResultDocuments holds tool-call IDs a speculative document
+	// recovery stripped from the retry before the provider named a document.
+	// A successful retry promotes them to rejectedToolResultDocuments; a failed
+	// retry rolls them back, so an unrelated invalid request cannot suppress a
+	// document the provider accepted (#4465). Guarded by mu.
+	pendingToolResultDocuments map[string]struct{}
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.
@@ -443,11 +460,6 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren map[string]drainGraceChild
-	// drainParkMu guards drainParked, the channel nextDrainPark hands out and
-	// the job-tree drain closes when it parks.
-	// LOCK ORDER: leaf.
-	drainParkMu sync.Mutex
-	drainParked chan struct{}
 	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
 	// its own — nothing is acquired under it — and is deliberately separate from
 	// drainAbandonedMu so the send-start claim never couples to drain state.
@@ -694,6 +706,67 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// stopHookActive is the Stop hook's stop_hook_active, per TURN rather than
+	// per process: it is false at a turn's first Stop dispatch and true on any
+	// dispatch that follows a Stop hook's block in the same turn, and a tool call
+	// clears it (execTool), because the work the block asked for has been done.
+	// Cleared with comm when the next turn starts. Atomic rather than mu-guarded:
+	// a tool call clears it, and a parallel read-only tool batch must not
+	// serialize on the session-wide lock to do so.
+	stopHookActive atomic.Bool
+	// toolHookStop carries a PostToolUse or PostToolUseFailure hook's
+	// continue:false out of execTool to the round loop, which ends the turn the
+	// same way PostToolBatch's block does -- after the tool results are already
+	// persisted. The FACT and the REASON are separate fields because
+	// `{"continue":false}` with no stopReason is legal Claude: a bare string
+	// would make "stopped, no reason" indistinguishable from "not stopped".
+	// execTool runs one call at a time on the round's goroutine (or several in
+	// parallel), so the first stop wins and later ones do not overwrite it.
+	// Consumed and cleared each tool-executing round. Guarded by mu.
+	toolHookStop       bool
+	toolHookStopReason string
+	// promptHookStop carries a UserPromptSubmit hook's continue:false out of
+	// acceptUserInput to the turn loop, which ends the turn before the first
+	// model request: the prompt never reaches the model. The reason is already
+	// delivered to the user. Consumed and cleared when the turn starts. Guarded
+	// by mu.
+	promptHookStop string
+	// sessionStartHookStop carries a SessionStart hook's continue:false to the
+	// first turn. A startup dispatch runs during session init, before any turn
+	// exists, and a deferred resume dispatch runs inside the turn that triggered
+	// it, so this is kept separately from promptHookStop and is NOT cleared at
+	// turn start: it must survive until the turn it stops consumes it. The
+	// reason is already delivered to the user. Guarded by mu.
+	sessionStartHookStop string
+	// hookStoppedInput records that a UserPromptSubmit or SessionStart
+	// continue:false ended the whole input, not just the turn. The stop returns
+	// ordinary success, so without this the drain would fold the goal gate and
+	// schedule a continuation, which runs without those hooks and sends the
+	// stopped prompt to the model. Set where the stop is consumed and cleared at
+	// the start of every input. Guarded by mu.
+	hookStoppedInput bool
+	// hookStopReason is the reason a prompt stop recorded, kept for a delegate's
+	// terminal packet so it explains why no work ran. Guarded by mu.
+	hookStopReason string
+	// stopHookReplacedReply records that a Stop hook's continue:false replaced
+	// the reply this turn would have delivered. A delegate's terminal packet must
+	// carry the hook's text, not the communicated reply it vetoed. Cleared at the
+	// start of every turn. Guarded by mu.
+	stopHookReplacedReply bool
+	// dispatchedToolArgs holds each call's arguments as they were dispatched,
+	// after the repair step and any PreToolUse updatedInput. PostToolBatch
+	// renders these, so a hook sees the arguments the tool actually ran with
+	// rather than the model's original bytes. Replaced each round and guarded
+	// by mu.
+	dispatchedToolArgs map[string][]byte
+	// turnInterrupted records that the turn which just ran ended on a
+	// cancellation (an interrupt, a signal, a shutdown). It is set in the
+	// interrupt branch before the turn settles idle, because that settle would
+	// otherwise make a killed working turn look like an idle prompt: the state
+	// becomes SessionIdle and the pending ask is cleared, so the close could
+	// not tell them apart afterwards. Monotonic within a turn and cleared at
+	// the next turn's start. Guarded by mu.
+	turnInterrupted bool
 	// latestReport is the most recent terminal communicate this session
 	// accepted. Unlike comm it survives the next input's reset, so a drain
 	// can restore the report that input erased.
@@ -744,6 +817,23 @@ type Session struct {
 	// notifications queued before it are cut when the drain starts (#865).
 	// Guarded by mu.
 	terminalCommunicateAccepted bool
+
+	// inputsInFlight counts the inputs processInputKindWithProvenance is
+	// running. Lock-free, so the delegate controller can read it under its
+	// own mutex: a runtime with an input in flight (a drive turn waiting out a
+	// usage limit, say) is not quiescent and is never reclaimed.
+	inputsInFlight atomic.Int32
+
+	// quotaWait is the model call waiting out a provider usage limit, nil
+	// while none waits (session_quota_wait.go). quotaWakes counts the asks
+	// (a user message, a model switch) for such a wait to retry now.
+	// steerArrivals counts accepted user steering and steerArrivalsDrained is
+	// its value as the latest steering drain began, so a wait can tell a
+	// steer that may not be in its request. Guarded by mu.
+	quotaWait            *quotaWait
+	quotaWakes           uint64
+	steerArrivals        uint64
+	steerArrivalsDrained uint64
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -1874,6 +1964,9 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	if s.modelPickAccepted <= pickSeq {
 		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
 		s.modelPickAccepted = pickSeq
+		// A call waiting out the old model's usage limit retries on this
+		// one now rather than at the turn boundary it is waiting to reach.
+		s.wakeQuotaWaitLocked()
 	}
 	s.mu.Unlock()
 	return nil
@@ -1891,9 +1984,19 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 // pick may have been accepted while the superseded one was still fetching,
 // and it must still land before the turn the caller is about to admit.
 func (s *Session) applyPendingModelSwitch() {
+	s.applyQueuedModelSwitches(false)
+}
+
+// applyQueuedModelSwitches is the shared pending applier. inWaitingCall is
+// its one caller that applies while the state is still processing: a model
+// call that waited out a usage limit (waitOutUsageLimit). The switch is what
+// lets that call retry on a model the spent allowance may not limit; the
+// call owns the input, and its round has started nothing the new profile
+// could be swapped under.
+func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	for {
 		s.mu.Lock()
-		if s.state == SessionProcessing {
+		if s.state == SessionProcessing && !inWaitingCall {
 			s.mu.Unlock()
 			return
 		}
@@ -2005,6 +2108,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		if s.modelPickAccepted < fence.pickSeq {
 			s.modelPickAccepted = fence.pickSeq
 		}
+		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		return nil
 	}
@@ -2068,16 +2172,22 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 			}
 		}
 	}
-	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:           commitPrev,
-		nextProfile:          nextProfile,
-		contextWarning:       contextWarning,
-		contextWarningPct:    contextWarningPct,
-		contextWindowAssumed: contextWindowAssumed,
-		assumedWindowTokens:  assumedWindowTokens,
-		droppedFallbacks:     s.lastDroppedModelFallbacks,
-	})
+	// Snapshot the facts the marker needs and leave the lock before the
+	// history scan: the count walks every turn, and the lock is shared with
+	// turn processing.
+	markerHistory := append([]schema.Turn(nil), s.history...)
+	droppedFallbacks := append([]string(nil), s.lastDroppedModelFallbacks...)
 	s.mu.Unlock()
+	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
+		oldProfile:              commitPrev,
+		nextProfile:             nextProfile,
+		contextWarning:          contextWarning,
+		contextWarningPct:       contextWarningPct,
+		contextWindowAssumed:    contextWindowAssumed,
+		assumedWindowTokens:     assumedWindowTokens,
+		droppedFallbacks:        droppedFallbacks,
+		orphanedToolResultMedia: orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
+	})
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
 	}
@@ -2248,6 +2358,11 @@ type modelSwitchMarkerParams struct {
 	contextWindowAssumed bool
 	assumedWindowTokens  int
 	droppedFallbacks     []string
+	// orphanedToolResultMedia counts tool-result media payloads already in the
+	// transcript that the new target cannot see. Request assembly drops their
+	// bytes (#4217); the marker makes that drop visible instead of silent. The
+	// same count covers images and documents once a protocol carries one.
+	orphanedToolResultMedia int
 }
 
 func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
@@ -2262,7 +2377,33 @@ func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	if len(p.droppedFallbacks) > 0 {
 		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
 	}
+	if p.orphanedToolResultMedia > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: %s read earlier in this session cannot be seen by %s; they stay in the transcript but are omitted from requests.", pluralizedUnit(p.orphanedToolResultMedia, "tool-result media item"), p.nextProfile.ID()))
+	}
 	return strings.Join(lines, "\n")
+}
+
+// orphanedToolResultMediaCount counts the tool-result media payloads already in
+// history that from saw and to cannot: those are the attachments this switch
+// puts out of the model's view. The delivery predicates decide per media type,
+// so the count covers images and, on a protocol that carries one, documents.
+func orphanedToolResultMediaCount(history []schema.Turn, from, to *provider.Profile) int {
+	if from == nil || to == nil {
+		return 0
+	}
+	count := 0
+	for _, t := range history {
+		for _, p := range t.Message.Content {
+			if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
+				continue
+			}
+			mt := p.ToolResult.ImageMediaType
+			if llm.RowSeesToolResultMedia(from.Resolved(), mt) && !llm.RowSeesToolResultMedia(to.Resolved(), mt) {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // Rename sets a user-chosen session title. It records NameSource="user" so the

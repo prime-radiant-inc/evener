@@ -5,19 +5,11 @@ import (
 	"fmt"
 )
 
-// Reasons the generator rejects a family file or a doc. Each rejection's
-// message names the line, target or file involved; its reason lets a caller
-// tell the rejections apart with errors.Is.
+// Reasons the generator rejects a doc. Each rejection's message names the file
+// involved; its reason lets a caller tell the rejections apart with errors.Is.
+// The reasons for rejecting a FAMILY FILE live with the parser, in
+// maketargetsdoc/makefile, which is where ParseFamily returns them.
 var (
-	errBlockDetached            = errors.New("## block separated from its rule")
-	errBlockOnDirective         = errors.New("## block above a directive")
-	errBlockOnTargetVariable    = errors.New("## block above a target-specific variable line")
-	errTargetUnannotated        = errors.New("target has no ## block")
-	errBlockWithoutSummary      = errors.New("## block has no summary line")
-	errBlockUnattached          = errors.New("## block never attached to a rule")
-	errMalformedAnnotationLine  = errors.New("malformed ## line")
-	errContinuationWithoutBlock = errors.New("continuation line outside a ## block")
-
 	errEndBeforeBegin       = errors.New("END marker before its BEGIN marker")
 	errMalformedBeginMarker = errors.New("malformed BEGIN marker")
 	errRegionCount          = errors.New("doc does not have exactly one GENERATED region")

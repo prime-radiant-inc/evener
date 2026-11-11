@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -81,7 +82,7 @@ func reverseSessionError(t *testing.T, ownerError error) WireError {
 }
 
 func TestSessionToolsClosedOperationUnion(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"discover":{},"read":{"ref":"local:a"}}`, `{"method":"thread/read"}`, `{"discover":{},"caller":"local:forged"}`, `{"read":{"ref":"local:a","includeTurns":true}}`, `{"read":{"ref":"local:a","subscribe":true}}`} {
+	for _, raw := range []string{`{}`, `{"discover":{},"read":{"ref":"local:a"}}`, `{"fetch":{"ref":"local:a","fetchCursor":"item"},"turns":{"ref":"local:a"}}`, `{"fetch":{"ref":"local:a","fetchCursor":"item"},"jobOutput":{"jobId":"job"}}`, `{"method":"thread/read"}`, `{"discover":{},"caller":"local:forged"}`, `{"read":{"ref":"local:a","includeTurns":true}}`, `{"read":{"ref":"local:a","subscribe":true}}`} {
 		t.Run(raw, func(t *testing.T) {
 			var request SessionOperationRequest
 			if err := json.Unmarshal([]byte(raw), &request); err == nil {
@@ -89,11 +90,144 @@ func TestSessionToolsClosedOperationUnion(t *testing.T) {
 			}
 		})
 	}
-	for _, raw := range []string{`{"discover":{"sourceIds":["local"],"limit":5}}`, `{"read":{"ref":"local:a"}}`} {
+	for _, raw := range []string{
+		`{"discover":{"sourceIds":["local"],"limit":5}}`,
+		`{"read":{"ref":"local:a"}}`,
+		`{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["messages"]}}`,
+		`{"fetch":{"ref":"local:a","fetchCursor":"item"}}`,
+	} {
 		var request SessionOperationRequest
 		if err := json.Unmarshal([]byte(raw), &request); err != nil {
 			t.Fatalf("rejected %s: %v", raw, err)
 		}
+	}
+}
+
+func TestSessionFetchResponseCarriesRangedCanonicalItem(t *testing.T) {
+	want := SessionOperationResponse{Fetch: &SessionFetchResponse{
+		Position:    ThreadItemPosition{Entry: 7, Item: 2},
+		Version:     4,
+		TotalLength: 260_000,
+		Offset:      180_000,
+		Data:        "Y2Fub25pY2Fs",
+		FetchCursor: "next-range",
+	}}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionOperationResponse
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Fetch == nil || *got.Fetch != *want.Fetch {
+		t.Fatalf("fetch response = %+v, want %+v", got.Fetch, want.Fetch)
+	}
+}
+
+func TestSessionOperationRequestAcceptsOnlyMessagesShapedWindowContentSelection(t *testing.T) {
+	yes, no := true, false
+	for _, test := range []struct {
+		name    string
+		content ThreadContentParams
+		valid   bool
+	}{
+		{
+			name: "messages only",
+			content: ThreadContentParams{
+				IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
+				IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+			valid: true,
+		},
+		{
+			name: "explicit conversation",
+			content: ThreadContentParams{
+				IncludeConversation: &yes, IncludeThinking: &no, IncludeToolCalls: &no,
+				IncludeToolCallIntents: &no, IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+			valid: true,
+		},
+		{name: "thinking only exclusion", content: ThreadContentParams{IncludeThinking: &no}},
+		{
+			name: "conversation excluded",
+			content: ThreadContentParams{
+				IncludeConversation: &no, IncludeThinking: &no, IncludeToolCalls: &no,
+				IncludeToolCallIntents: &no, IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+		},
+		{
+			name: "tool calls included",
+			content: ThreadContentParams{
+				IncludeThinking: &no, IncludeToolCalls: &yes, IncludeToolCallIntents: &no,
+				IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := SessionOperationRequest{Turns: &ThreadTurnsListParams{
+				ThreadContentParams: test.content,
+				Ref:                 "local:session",
+				ItemLimit:           10,
+				TurnWindow:          &ThreadTurnWindow{Latest: 2},
+			}}
+			err := request.Validate()
+			if (err == nil) != test.valid {
+				t.Fatalf("Validate error = %v, valid = %t", err, test.valid)
+			}
+			if err != nil {
+				var wire WireError
+				if !errors.As(err, &wire) {
+					t.Fatalf("Validate error = %T %v, want typed wire error", err, err)
+				}
+				data, ok := DecodedErrorData(wire.Data)
+				if !ok || data.EvenerErrorInfo != ErrorInvalidParams {
+					t.Fatalf("Validate error data = %#v, want invalid params", wire.Data)
+				}
+				return
+			}
+			normalized, err := NormalizeSessionOperationRequest(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if normalized.Turns.ThreadContentParams != (ThreadContentParams{}) || !slices.Equal(normalized.Turns.ItemTypes, []string{"messages"}) {
+				t.Fatalf("normalized turns = %+v, want exact messages selector", normalized.Turns)
+			}
+		})
+	}
+}
+
+func TestSessionOperationRequestWindowGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		raw   string
+		valid bool
+	}{
+		{"legacy", `{"turns":{"ref":"local:a"}}`, true},
+		{"latest", `{"turns":{"ref":"local:a","turnWindow":{"latest":2}}}`, true},
+		{"turn", `{"turns":{"ref":"local:a","turnWindow":{"turn":"turn_m2"}}}`, true},
+		{"since", `{"turns":{"ref":"local:a","turnWindow":{"since":"turn_m2","limit":3}}}`, true},
+		{"before", `{"turns":{"ref":"local:a","turnWindow":{"before":{"turnId":"turn_m2","limit":3}}}}`, true},
+		{"selectors", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true},
+		{"empty_window", `{"turns":{"ref":"local:a","turnWindow":{}}}`, false},
+		{"zero_latest", `{"turns":{"ref":"local:a","turnWindow":{"latest":0}}}`, false},
+		{"mixed_window", `{"turns":{"ref":"local:a","turnWindow":{"latest":1,"turn":"turn_m2"}}}`, false},
+		{"since_without_limit", `{"turns":{"ref":"local:a","turnWindow":{"since":"turn_m2"}}}`, false},
+		{"before_without_turn", `{"turns":{"ref":"local:a","turnWindow":{"before":{"limit":3}}}}`, false},
+		{"before_without_limit", `{"turns":{"ref":"local:a","turnWindow":{"before":{"turnId":"turn_m2"}}}}`, false},
+		{"types_without_window", `{"turns":{"ref":"local:a","itemTypes":["messages"]}}`, false},
+		{"bounds_without_window", `{"turns":{"ref":"local:a","previewBytes":256}}`, false},
+		{"negative_bound", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"messageBytes":-1}}`, false},
+		{"item_limit_over_max", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemLimit":41}}`, false},
+		{"unknown_item_type", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["unknown"]}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var request SessionOperationRequest
+			err := json.Unmarshal([]byte(tc.raw), &request)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v, want %v: %v", err == nil, tc.valid, err)
+			}
+		})
 	}
 }
 

@@ -307,12 +307,12 @@ func runExtensionsCLI(t *testing.T, out string) {
 	env := append(tutorialChildEnvironment(t, home), "EVENER_EXAMPLE_MCP_SERVER="+server)
 	examples := filepath.Join(repo, "docs", "examples", "extensions")
 	var records []commandRecord
-	for _, copy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
-		dst := filepath.Join(stack.workDir, copy[1])
+	for _, extensionCopy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
+		dst := filepath.Join(stack.workDir, extensionCopy[1])
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 			t.Fatal(err)
 		}
-		r := recordCommand(t, repo, env, "cp", filepath.Join("docs", "examples", "extensions", copy[0]), dst)
+		r := recordCommand(t, repo, env, "cp", filepath.Join("docs", "examples", "extensions", extensionCopy[0]), dst)
 		if r.ExitCode != 0 {
 			t.Fatal("copy example failed")
 		}
@@ -437,12 +437,12 @@ func runExtensionsWeb(t *testing.T, out string) {
 		t.Fatal(err)
 	}
 	examples := filepath.Join(repo, "docs", "examples", "extensions")
-	for _, copy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
-		dst := filepath.Join(stack.workDir, copy[1])
+	for _, extensionCopy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
+		dst := filepath.Join(stack.workDir, extensionCopy[1])
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 			t.Fatal(err)
 		}
-		if r := recordCommand(t, stack.workDir, env, "cp", filepath.Join(examples, copy[0]), dst); r.ExitCode != 0 {
+		if r := recordCommand(t, stack.workDir, env, "cp", filepath.Join(examples, extensionCopy[0]), dst); r.ExitCode != 0 {
 			t.Fatal("install example")
 		}
 	}

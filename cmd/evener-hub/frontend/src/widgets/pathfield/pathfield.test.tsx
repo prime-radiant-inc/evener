@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
 import { PathField, type PathFieldProps } from "./index";
 
 afterEach(() => {
@@ -14,6 +15,11 @@ afterEach(() => {
 // on fake timers and advance by exactly this much: the debounced request is
 // the completion they wait for.
 const COMPLETE_DEBOUNCE_MS = 150;
+
+// Fakes the debounce's setTimeout so only the test's own advances cross it.
+function useFakeDebounceClock() {
+  useTestDrivenFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+}
 
 async function elapseCompletionDebounce() {
   await act(() => vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS));
@@ -131,7 +137,7 @@ test("file browsing retains directory keyboard navigation", async () => {
 });
 
 test("file typing filters entries and relists for dotfiles", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useFakeDebounceClock();
   const complete = vi.fn(async (prefix: string) =>
     prefix.endsWith("/.") ? ["/etc/.secret"] : ["/etc/hosts", "/etc/passwd"],
   );
@@ -141,12 +147,12 @@ test("file typing filters entries and relists for dotfiles", async () => {
   await user.clear(input);
   await user.type(input, "/etc/ho");
   await elapseCompletionDebounce();
-  await screen.findByRole("option", { name: /hosts/ });
+  screen.getByRole("option", { name: /hosts/ });
   expect(screen.queryByRole("option", { name: /passwd/ })).toBeNull();
   await user.clear(input);
   await user.type(input, "/etc/.");
   await elapseCompletionDebounce();
-  await screen.findByRole("option", { name: /.secret/ });
+  screen.getByRole("option", { name: /.secret/ });
 });
 
 test("file listing failures are visible", async () => {
@@ -162,7 +168,7 @@ test("file listing failures are visible", async () => {
 });
 
 test("late file listings cannot replace newer navigation", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useFakeDebounceClock();
   let resolveOld: (paths: string[]) => void = () => {};
   const old = new Promise<string[]>((resolve) => {
     resolveOld = resolve;
@@ -176,7 +182,7 @@ test("late file listings cannot replace newer navigation", async () => {
   await user.clear(input);
   await user.type(input, "/new/");
   await elapseCompletionDebounce();
-  await screen.findByRole("option", { name: /current/ });
+  screen.getByRole("option", { name: /current/ });
   await act(async () => resolveOld(["/old/stale"]));
   expect(screen.queryByRole("option", { name: /stale/ })).toBeNull();
 });
@@ -210,18 +216,18 @@ test("directory navigation and creation never submit the enclosing form", async 
 });
 
 test("file typing past a slash keeps the directory listing within one debounce window", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useFakeDebounceClock();
   const complete = vi.fn(async (prefix: string) => (prefix === "/var/" ? ["/var/log.txt"] : []));
   const { user } = setup({ kind: "file", value: "/home/file", complete });
   await open(user);
   await user.keyboard("/var/lo");
   await elapseCompletionDebounce();
-  await waitFor(() => expect(complete).toHaveBeenCalledWith("/var/", true));
-  await screen.findByRole("option", { name: /log.txt/ });
+  expect(complete).toHaveBeenCalledWith("/var/", true);
+  screen.getByRole("option", { name: /log.txt/ });
 });
 
 test("file dot-prefix typing and narrowing inside one debounce window still relists", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useFakeDebounceClock();
   const complete = vi.fn(async (prefix: string) => (prefix === "/home/.co" ? ["/home/.config"] : []));
   const { user } = setup({ kind: "file", value: "/home/file", complete });
   const input = await open(user);
@@ -229,6 +235,6 @@ test("file dot-prefix typing and narrowing inside one debounce window still reli
   fireEvent.change(input, { target: { value: "/home/." } });
   fireEvent.change(input, { target: { value: "/home/.co" } });
   await elapseCompletionDebounce();
-  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/.co", true));
-  await screen.findByRole("option", { name: /.config/ });
+  expect(complete).toHaveBeenCalledWith("/home/.co", true);
+  screen.getByRole("option", { name: /.config/ });
 });

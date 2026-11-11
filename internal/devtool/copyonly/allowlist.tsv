@@ -1,4 +1,5 @@
 file	test	reason
+agent/cov_s3_communicate_test.go	TestS3Cov_PredictionMessage	Compact tool result shown to the model (deferred model-facing text; #4415, #4424).
 internal/appwirets/emit_test.go	TestTypeExprNavigationArrayRendersAsSlice	False positive: a generated TypeScript type expression, a machine contract (#4424).
 llm/providers/chatcompletions/recompute_test.go	TestExtractRecordedResponse_SSE	False positive: scripted SSE deltas reassemble into the response text (#4424).
 test/e2e/fakellm/fakellm_coverage_test.go	TestContentTextArray	False positive: fixture parts concatenate into the text (#4424).

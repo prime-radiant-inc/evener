@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -57,7 +58,9 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git unavailable")
 	}
-	root := t.TempDir()
+	// Skill descriptors carry canonical paths, so the fixture root is
+	// canonical for the exact-directory comparisons below.
+	root := testfs.CanonicalTempDir(t)
 	stateDir := filepath.Join(root, "nondefault-state")
 	workspace := filepath.Join(root, "work")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {

@@ -29,10 +29,19 @@ package dev
 //	                       the test the operator asked to skip. Pinned by
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
+//	AGENT_SHARD_PART       k/m = run only every m-th shard, starting at shard
+//	                       k-1, so m CI runners split one package between
+//	                       them. Every part packs the same shards, which
+//	                       needs AGENT_SHARD_NO_SURVEY: survey caches are
+//	                       per runner and would pack each part differently.
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
-// plus pass-through `go test` flags. Every test lands in exactly one shard,
+// plus pass-through `go test` flags. The survey and every shard run under a
+// test timeout: the caller's -timeout, or `go test`'s own 10m default when the
+// caller gives none, since a binary run directly has no timeout at all. A test
+// that hangs past it panics with the names of the tests still running, and its
+// shard fails like any other. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
 // time; logs are deleted only on normal green completion and pointed at
 // otherwise; the exit is nonzero on any shard failure or partition
@@ -98,6 +107,8 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// part selects the shards this run starts; the zero value runs them all.
+	part shardPart
 	// liveStack builds ./cmd/evener once, before any child runs, and exports
 	// the directory to every process through shardrun.PrebuiltBinDirEnv. The
 	// hub package's TestMain warms the same binaries otherwise, once per shard
@@ -174,6 +185,11 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
+	part, err := envShardPart(env("PART"), count, envFlag(env("NO_SURVEY")), env("NO_SURVEY"))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
+		return 1
+	}
 	// Two deep, because a second signal must be waiting when the first is
 	// still being handled.
 	signals := make(chan os.Signal, 2)
@@ -191,6 +207,7 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		skip:           os.Getenv(env("SKIP")),
 		noSurvey:       envFlag(env("NO_SURVEY")),
 		resurvey:       envFlag(env("RESURVEY")),
+		part:           part,
 		cacheDir:       os.Getenv(env("CACHE_DIR")),
 		flags:          args,
 		stdout:         os.Stdout,
@@ -224,13 +241,13 @@ func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
 // the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
 // changing the shard split.
 //
-// The caller's -timeout comes here too, and for the same reason it was raised:
-// the survey is the longest single run of the lot, one binary over the whole
-// suite, so a timeout that the shards need is a timeout the survey needed
-// first. -failfast stays with the shards: a survey that stops at the first
-// failure has measured part of the suite, and a partial measurement is worse
-// than none, since the shards would be packed from it as though it were
-// complete.
+// The run's -timeout comes here too, the caller's or the default, and for the
+// same reason a caller raises it: the survey is the longest single run of the
+// lot, one binary over the whole suite, so a timeout that the shards need is a
+// timeout the survey needed first. -failfast stays with the shards: a survey
+// that stops at the first failure has measured part of the suite, and a
+// partial measurement is worse than none, since the shards would be packed
+// from it as though it were complete.
 func surveyArgs(parallel int, skip string, short bool, testFlags []string) []string {
 	// A config built without runAgentShards leaves the field zero; never hand
 	// the test binary "-test.parallel 0".
@@ -250,6 +267,26 @@ func surveyArgs(parallel int, skip string, short bool, testFlags []string) []str
 		args = append(args, "-test.short")
 	}
 	return args
+}
+
+// defaultTestTimeout is `go test`'s own default -timeout, which a package's
+// test binary gets when go test runs it and does not get when this runner
+// runs it directly: a compiled binary's -test.timeout defaults to none.
+const defaultTestTimeout = 10 * time.Minute
+
+// withTestTimeout returns the test-binary flags with a -test.timeout among
+// them: the caller's own when it passed one, otherwise defaultTestTimeout. The
+// timeout is a tripwire, not a speed limit (the timing budget is that): a test
+// that never returns panics at it with the names of the tests still running,
+// where without it the process holds its shard until something outside kills
+// it and the log names nothing.
+func withTestTimeout(testFlags []string) []string {
+	for _, f := range testFlags {
+		if strings.HasPrefix(f, "-test.timeout=") {
+			return testFlags
+		}
+	}
+	return append(slices.Clone(testFlags), "-test.timeout="+defaultTestTimeout.String())
 }
 
 func envPositiveInt(name string, def int) (int, error) {
@@ -277,6 +314,41 @@ func envNonNegativeInt(name string, def int) (int, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer (got %q)", name, raw)
 	}
 	return n, nil
+}
+
+// shardPart is one of several runs that split a single packing's shards:
+// part index of count, zero-based, runs shards index, index+count, and so on.
+// The zero value is the whole run.
+type shardPart struct {
+	index, count int
+}
+
+// runs reports whether the part starts shard i.
+func (p shardPart) runs(i int) bool {
+	return p.count == 0 || i%p.count == p.index
+}
+
+// envShardPart reads a k/m part (1 <= k <= m) from name. Unset is the whole
+// run. Each part must have a shard to run, and every part must pack the same
+// shards, which only the survey-free equal weighting guarantees.
+func envShardPart(name string, shards int, noSurvey bool, noSurveyName string) (shardPart, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return shardPart{}, nil
+	}
+	k, m, found := strings.Cut(raw, "/")
+	index, errK := strconv.Atoi(k)
+	count, errM := strconv.Atoi(m)
+	if !found || errK != nil || errM != nil || count < 1 || index < 1 || index > count {
+		return shardPart{}, fmt.Errorf("%s must be k/m with 1 <= k <= m (got %q)", name, raw)
+	}
+	if count > shards {
+		return shardPart{}, fmt.Errorf("%s=%s splits %d shards into more parts than there are shards", name, raw, shards)
+	}
+	if !noSurvey {
+		return shardPart{}, fmt.Errorf("%s needs %s=1: a survey is per-runner state, and parts packed from different surveys would run some tests twice and others never", name, noSurveyName)
+	}
+	return shardPart{index: index - 1, count: count}, nil
 }
 
 // envFlag reads the script's `-eq 0` convention: unset and "0" are off,
@@ -413,7 +485,7 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	extraFlags := parsed.test
+	extraFlags := withTestTimeout(parsed.test)
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
 	buildDir, buildTarget, err := cfg.buildLocation()
 	if err != nil {
@@ -487,7 +559,7 @@ func runShards(cfg shardsConfig) int {
 			borrowed = true
 		default:
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, extraFlags)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
@@ -535,6 +607,15 @@ func runShards(cfg shardsConfig) int {
 		}
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: %d shards, -parallel %d each\n", cfg.label, len(bins), cfg.parallel)
+	selected := 0
+	for i := range bins {
+		if cfg.part.runs(i) {
+			selected++
+		}
+	}
+	if selected < len(bins) {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: part %d/%d runs %d of the %d shards\n", cfg.label, cfg.part.index+1, cfg.part.count, selected, len(bins))
+	}
 
 	// A shard is one OS process, so cfg.parallel bounds only the tests inside
 	// it. limit bounds the processes themselves: on a busy host or a
@@ -543,11 +624,11 @@ func runShards(cfg shardsConfig) int {
 	// or one at least the shard count, starts every shard at once: the
 	// historical behavior and what an idle run still gets.
 	limit := cfg.concurrency
-	if limit < 1 || limit > len(bins) {
-		limit = len(bins)
+	if limit < 1 || limit > selected {
+		limit = selected
 	}
-	if limit < len(bins) {
-		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, len(bins))
+	if limit < selected {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, selected)
 	}
 	slots := make(chan struct{}, limit)
 
@@ -580,10 +661,16 @@ func runShards(cfg shardsConfig) int {
 	type shardResult struct {
 		err     error
 		seconds float64
+		// cpu is the shard process's user+system CPU, children it waited for
+		// included.
+		cpu float64
 	}
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
+		if !cfg.part.runs(i) {
+			continue
+		}
 		select {
 		case slots <- struct{}{}:
 		default:
@@ -652,16 +739,22 @@ func runShards(cfg shardsConfig) int {
 		go func() {
 			err := cmd.Wait()
 			<-slots
-			result <- shardResult{err: err, seconds: time.Since(started).Seconds()}
+			r := shardResult{err: err, seconds: time.Since(started).Seconds()}
+			if state := cmd.ProcessState; state != nil {
+				r.cpu = processCPUSeconds(state)
+			}
+			result <- r
 		}()
 	}
 
 	var failed []int
+	shardCPU := 0.0
 	for i, result := range results {
 		if result == nil {
 			continue
 		}
 		r := <-result
+		shardCPU += r.cpu
 		if r.err == nil {
 			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
@@ -677,10 +770,13 @@ func runShards(cfg shardsConfig) int {
 	// The package's own wall time under the sharded surface is the shard
 	// phase, not the sum of overlapping shards (issue #172's contention trap):
 	// the shards run concurrently, so one SUM row for the phase is the honest
-	// number. A failed phase is no measurement, so it is not written.
+	// number. Its CPU row is the shards' CPU summed: they split the one
+	// package's work between them. A failed phase is no measurement, so it is
+	// not written.
 	if jsonShards && cfg.jsonPackage != "" && !fail {
 		phase := time.Since(phaseStart).Seconds()
-		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase))
+		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\nCPU\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase),
+			cfg.jsonPackage, formatSeconds(shardCPU))
 		if err := os.WriteFile(filepath.Join(cfg.jsonDir, cfg.label+".package.tsv"), []byte(row), 0o644); err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
@@ -1019,6 +1115,15 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			start--
 		}
 		end := i + 1
+		// A panic's message continues on tab-indented lines, and a test
+		// timeout's lists every test still running there, one line each: the
+		// only lines naming a hung test. They are carried whole, ahead of the
+		// ordinary after-context, which their count would otherwise exhaust.
+		if strings.HasPrefix(lines[i], "panic:") {
+			for end < len(lines) && strings.HasPrefix(lines[end], "\t") {
+				end++
+			}
+		}
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}

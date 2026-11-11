@@ -367,3 +367,13 @@ func TestLocate_ColonNamedBucketOmitsRefButSelectorAddresses(t *testing.T) {
 		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
 	}
 }
+
+// A proj: ref naming a bucket that is not among the enumerated ones is an
+// explicit not-found error, not a silent empty result.
+func TestLocate_ProjRefUnknownHash(t *testing.T) {
+	base := t.TempDir()
+	writeSession(t, stateHomeBucket(base, hash1), sidA) // projects/ exists, but hash2 does not
+	if _, err := Locate(base, "proj:"+hash2+":"+sidA); err == nil {
+		t.Fatal("proj ref to an unenumerated/missing bucket should error")
+	}
+}

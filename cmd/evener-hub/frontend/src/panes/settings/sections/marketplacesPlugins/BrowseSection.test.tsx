@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../../testing/fakeTimers";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { BrowseSection } from "./BrowseSection";
 import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
@@ -98,6 +99,44 @@ test("expanding a node lazily fetches its catalog once; re-expanding does not re
   await user.click(toggle); // re-expand
   expect(screen.getByText("linter")).toBeTruthy();
   expect(browseSpy).toHaveBeenCalledTimes(1);
+});
+
+test("an inline install returns focus to the row it reshaped", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: MARKETPLACE_A.name,
+    plugins: [{ name: "formatter", description: "Formats code" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      {
+        plugin: "formatter",
+        marketplace: MARKETPLACE_A.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByRole("list", { name: "acme-plugins plugins" });
+  // Confirm from the trailing Install control, so the confirm's FocusScope
+  // remembers that button as its opener.
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // The install's fresh list reshapes the row - the split row with its
+  // trailing Install becomes the whole-row button.
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
 });
 
 // A marketplace change from another client retires every cached catalog,
@@ -198,8 +237,37 @@ test("an already-installed plugin shows an Installed badge instead of an Install
   const linterRow = screen.getByText("linter").closest("li") as HTMLElement;
   expect(chipKinds(linterRow)).toEqual(["installed"]);
   expect(within(linterRow).queryByRole("button", { name: "Install" })).toBeNull();
+  // The shared row with no trailing control: the whole row is one button.
+  expect(within(linterRow).getAllByRole("button")).toHaveLength(1);
   const formatterRow = screen.getByText("formatter").closest("li") as HTMLElement;
   expect(within(formatterRow).getByRole("button", { name: "Install" })).toBeTruthy();
+});
+
+test("rows are the shared shape: the plugin name is the row's main button, Install rides the trailing slot", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    plugins: [{ name: "linter", description: "Lints code" }],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByText("linter");
+  const main = screen.getByRole("button", { name: /linter/ });
+  const install = screen.getByRole("button", { name: "Install" });
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
+  // No nested buttons: the shared row's split shape.
+  expect(main.closest("button")).toBe(main);
+  expect(install.closest("button")).toBe(install);
+  // Only the trailing Install opens the install confirm; the main area is
+  // the row's own target and does not install.
+  await user.click(main);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+  await user.click(install);
+  expect(screen.getByRole("dialog", { name: "Install plugin" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
 });
 
 test("Install opens a non-destructive confirm; confirming installs and toasts success", async () => {
@@ -282,7 +350,7 @@ test("the install confirm's buttons disable while the install is in flight", asy
 });
 
 test("typing a filter query auto-expands (after the debounce) a marketplace with a matching plugin and hides a successfully-loaded, zero-match one entirely", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
@@ -294,7 +362,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "lint");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  await waitFor(() => expect(isExpanded("acme-plugins")).toBe(true));
+  expect(isExpanded("acme-plugins")).toBe(true);
   // other-plugins' catalog resolved with zero matches for "lint" - per the
   // floor doc ("only a successfully-loaded, zero-match catalog is hidden
   // entirely"), it's not merely collapsed, it's absent from the tree.
@@ -303,7 +371,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
 });
 
 test("clearing the filter immediately collapses every node with no debounce", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -321,7 +389,7 @@ test("clearing the filter immediately collapses every node with no debounce", as
 // expands its matches, and the outrun query returns without clearing a flag
 // that is no longer its to clear.
 test("a filter query outrun by a newer one leaves the tree loading no longer than the newer one", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -347,7 +415,7 @@ test("a filter query outrun by a newer one leaves the tree loading no longer tha
     await gate;
   });
 
-  await waitFor(() => expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull());
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
   expect(isExpanded("acme-plugins")).toBe(true);
   expect(screen.getByText("linter")).toBeTruthy();
 });
@@ -359,7 +427,7 @@ test("a filter query outrun by a newer one leaves the tree loading no longer tha
 // match while its plugins are still on the wire, and nothing reruns the
 // filter afterwards.
 test("the filter waits for a catalog that was already loading when the query ran", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -375,22 +443,20 @@ test("the filter waits for a catalog that was already loading when the query ran
   await user.click(marketplaceToggle("acme-plugins"));
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "lin");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  // findByText, not getByText: this query starts no request of its own, so
-  // no store update comes along to flush the filterLoading render with it.
-  expect(await screen.findByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
 
   await act(async () => {
     release();
     await gate;
   });
 
-  await waitFor(() => expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull());
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
   expect(isExpanded("acme-plugins")).toBe(true);
   expect(screen.getByText("linter")).toBeTruthy();
 });
 
 test("zero matches anywhere shows a not-found message quoting the query", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -398,5 +464,5 @@ test("zero matches anywhere shows a not-found message quoting the query", async 
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "zzz");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  expect(await screen.findByText('No plugins match "zzz".')).toBeTruthy();
+  expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
 });

@@ -44,6 +44,11 @@ const (
 	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
+	ErrorTranscriptItemChanged       ErrorInfo = "item-changed"
+	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
+	ErrorWindowUnsupportedOnDaemon   ErrorInfo = "window-unsupported-on-daemon"
+	ErrorItemUnreachableOnCompat     ErrorInfo = "item-unreachable-on-compat"
+	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
 	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
 	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
 	ErrorInternal                    ErrorInfo = "internal"
@@ -533,6 +538,16 @@ type ErrorData struct {
 	Cause            string           `json:"cause,omitempty"`
 }
 
+// TranscriptTurnNotFoundErrorData names the unresolved turn and the complete
+// turn frontier searched at one transcript snapshot.
+type TranscriptTurnNotFoundErrorData struct {
+	ErrorData
+	TurnID       string `json:"turnId"`
+	OldestTurnID string `json:"oldestTurnId,omitempty"`
+	NewestTurnID string `json:"newestTurnId,omitempty"`
+	TurnCount    int    `json:"turnCount"`
+}
+
 // ThreadStartPartialErrorData names a session that a failed thread/start
 // already spawned. It retains the original refusal's classification and any
 // additional data, so the caller can reconcile the created session rather
@@ -682,6 +697,60 @@ func TranscriptItemCursorStale() WireError {
 		Data: ErrorData{
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+type TranscriptItemChangedErrorData struct {
+	ErrorData
+	NewVersion uint64 `json:"newVersion"`
+}
+
+func TranscriptItemChanged(newVersion uint64) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: "transcript item changed; re-read the window",
+		Data: TranscriptItemChangedErrorData{
+			ErrorData:  ErrorData{EvenerErrorInfo: ErrorTranscriptItemChanged},
+			NewVersion: newVersion,
+		},
+	}
+}
+
+func FetchUnavailableRemote() WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "remote transcript item is unavailable; re-read the window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorFetchUnavailableRemote},
+	}
+}
+
+func WindowUnsupportedOnDaemon() WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: "this daemon does not support the requested transcript window; upgrade it or use a latest window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorWindowUnsupportedOnDaemon},
+	}
+}
+
+func ItemUnreachableOnCompat() WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "transcript item is beyond this daemon's compatibility reach; re-read the window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorItemUnreachableOnCompat},
+	}
+}
+
+func TranscriptTurnNotFound(turnID, oldestTurnID, newestTurnID string, turnCount int) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: fmt.Sprintf("turn %q is outside the current transcript frontier", turnID),
+		Data: TranscriptTurnNotFoundErrorData{
+			ErrorData:    ErrorData{EvenerErrorInfo: ErrorTranscriptTurnNotFound},
+			TurnID:       turnID,
+			OldestTurnID: oldestTurnID,
+			NewestTurnID: newestTurnID,
+			TurnCount:    turnCount,
 		},
 	}
 }

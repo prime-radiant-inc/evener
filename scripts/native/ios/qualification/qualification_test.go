@@ -71,6 +71,63 @@ func TestMatchingLockStillRetainsEvidence(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("matching resolution evidence lost: %q, %v", got, err)
 	}
+	diff, err := os.ReadFile(filepath.Join(dir, "Podfile.lock.diff"))
+	if err != nil || len(diff) != 0 {
+		t.Fatalf("matching resolution diff = %q, %v; want empty", diff, err)
+	}
+}
+
+// A byte-identical, nonempty lock is proved without Git: the equal result must
+// not depend on an installed executable or a live context, and the retained
+// diff is the empty one a real diff would have produced.
+func TestMatchingNonemptyLockNeedsNoGitOrLiveContext(t *testing.T) {
+	dir := t.TempDir()
+	old, resolved := filepath.Join(dir, "old"), filepath.Join(dir, "resolved")
+	data := []byte("PODS:\n  - Expo (58.0.23)\n")
+	writeTestFile(t, old, data)
+	writeTestFile(t, resolved, data)
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "git-ran")
+	script := "#!/bin/sh\necho ran > " + marker + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := filepath.Join(dir, "evidence")
+	if err := checkLock(ctx, old, resolved, out); err != nil {
+		t.Fatalf("equal lock with a cancelled context: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("equal lock launched git: %v", err)
+	}
+	diff, err := os.ReadFile(filepath.Join(out, "Podfile.lock.diff"))
+	if err != nil || len(diff) != 0 {
+		t.Fatalf("equal lock diff = %q, %v; want empty", diff, err)
+	}
+}
+
+// An empty committed lock is never accepted, even when the candidate is also
+// empty, and its review diff stays Git's: the empty-input rejection and its
+// evidence are unchanged.
+func TestEmptyCommittedLockStillRejectedWithDiff(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	old, resolved := filepath.Join(dir, "old"), filepath.Join(dir, "resolved")
+	writeTestFile(t, old, nil)
+	writeTestFile(t, resolved, []byte("PODS:\n  - Expo (58.0.23)\n"))
+	out := filepath.Join(dir, "evidence")
+	if err := checkLock(context.Background(), old, resolved, out); !errors.Is(err, errLockMismatch) {
+		t.Fatalf("empty committed lock: got %v, want lock mismatch", err)
+	}
+	diff, err := os.ReadFile(filepath.Join(out, "Podfile.lock.diff"))
+	if err != nil || len(diff) == 0 {
+		t.Fatalf("empty committed lock lost its review diff: %q, %v", diff, err)
+	}
 }
 
 func TestSimulatorRequiresAvailableCompatibleIPhone(t *testing.T) {
@@ -491,6 +548,43 @@ func TestPodUnlockKeepsRepoFlagOrder(t *testing.T) {
 	}
 }
 
+// The invocation is captured through a stub xcodebuild on PATH so this checks
+// what the runner executes, not what a constant says.
+func TestReleaseBuildUsesOnlyActiveArchitecture(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "argv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$XCODEBUILD_ARGV_RECORD\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "xcodebuild"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XCODEBUILD_ARGV_RECORD", record)
+	r := &runner{native: dir, output: dir}
+	udid := "00000000-0000-0000-0000-000000000000"
+	derived := filepath.Join(dir, "DerivedData")
+	if _, err := r.commandOutput(context.Background(), "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+		t.Fatalf("release build invocation: %v", err)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("stub xcodebuild recorded no argv: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	want := []string{
+		"-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener",
+		"-configuration", "Release", "-sdk", "iphonesimulator",
+		"-destination", "platform=iOS Simulator,id=" + udid,
+		"-derivedDataPath", derived, "build", "ONLY_ACTIVE_ARCH=YES",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("release build argv = %v, want %v", got, want)
+	}
+}
+
 func TestEmbeddedSectionDumpDecodes(t *testing.T) {
 	t.Parallel()
 	// otool -X -s __TEXT __entitlements prints the section as lines of hex
@@ -506,6 +600,20 @@ func TestEmbeddedSectionDumpDecodes(t *testing.T) {
 	}
 	if _, err := decodeSectionDump([]byte("not hex")); err == nil {
 		t.Fatal("a dump with no valid bytes must error, not pass silently")
+	}
+}
+
+func TestEmbeddedSectionDumpDecodesArm64Words(t *testing.T) {
+	t.Parallel()
+	// A thin arm64 binary makes otool print little-endian four-byte words
+	// instead of byte pairs. Run 42769642647 failed verification because the
+	// decoder read no bytes from this shape.
+	dump := []byte("Contents of (__TEXT,__entitlements) section\n" +
+		"000000010212a142\t6d783f3c 6576206c 6f697372 31223d6e \n")
+	want := []byte(`<?xml version="1`)
+	got, err := decodeSectionDump(dump)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("decodeSectionDump = %q, %v; want %q", got, err, want)
 	}
 }
 

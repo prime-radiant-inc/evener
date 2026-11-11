@@ -36,7 +36,8 @@ export function blockBody(css: string, openBraceIndex: number): string {
   throw new Error("cssBlock: unterminated block");
 }
 
-function escapeRegExp(text: string): string {
+/** Escape text for literal use inside a RegExp source. */
+export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 

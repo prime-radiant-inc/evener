@@ -297,8 +297,8 @@ func requireSessionDeps(client *llm.Client, profile *provider.Profile, env exece
 // bindSpawnCounters returns the delegation allowance and tree-wide counters a
 // session starts with and mirrors the counters onto cfg.spawn, so
 // s.cfg.spawn.treeCounter always reflects the live counter. Root sessions
-// derive their allowance from MaxSubagentDepth (already defaulted to 1 by
-// applyDefaults) and mint the counters; children inherit the spawn carrier's.
+// derive their allowance from the resolved MaxSubagentDepth and mint the
+// counters; children inherit the spawn carrier's.
 // prepareSubagentRun threads the pointers to children via subCfg := s.cfg, so
 // the mirror is what carries the root's minted counters down the tree.
 func (cfg *SessionConfig) bindSpawnCounters() (delegationAllowance int, tc, dc *treeCounter) {
@@ -1642,7 +1642,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
+		inRepo, branch, mod, untracked, commits, statusKnown, probeFailed := snapshotGit(s.sessionContext(), env, ei.WorkingDir)
+		ei.GitSnapshotFailed = probeFailed
+		if inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
@@ -1668,7 +1670,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
 	// established occupancy tracking above. The function decides repo-ness
 	// structurally, not from ei.IsGitRepo (#4132).
-	s.applyInitInsideWorktreeLock()
+	if lane := s.cfg.AdoptWorktreeLane; lane != nil {
+		if err := s.adoptWorktreeLane(env, *lane); err != nil {
+			return nil, fmt.Errorf("adopt worktree lane: %w", err)
+		}
+	} else {
+		s.applyInitInsideWorktreeLock()
+	}
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
@@ -1792,7 +1800,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	if s.delegationAllowance <= 0 {
+		rootSession := s.cfg.spawn.parentSessionID == ""
 		for _, name := range rootOnlySubagentTools() {
+			// manage_worktree is the root session's own worktree lifecycle,
+			// independent of delegation: a root that turned subagents off
+			// still creates, switches and exits its lane. Children keep the
+			// denial.
+			if rootSession && name == "manage_worktree" {
+				continue
+			}
 			s.reg.Remove(name)
 		}
 	}
@@ -2267,6 +2283,7 @@ func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResul
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+	s.recordSessionStartStop(result)
 }
 
 func (s *Session) runPendingSessionStartHooksForRestoreSideEffects(ctx context.Context) {
@@ -2321,6 +2338,22 @@ func (s *Session) deliverSessionStartHookResult(result hooks.RunResult) {
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+	s.recordSessionStartStop(result)
+}
+
+// recordSessionStartStop carries a SessionStart hook's continue:false to the
+// first turn, which ends before its model request. Sessions still exist without
+// one: the startup dispatch runs during init, before any turn, so the reason is
+// delivered here and the flag is read by the next turn to start.
+func (s *Session) recordSessionStartStop(result hooks.RunResult) {
+	if !result.Stopped {
+		return
+	}
+	reason := s.hookStopText(result.StopReason, "SessionStart hook stopped this session")
+	s.deliverHookUserMessage(reason)
+	s.mu.Lock()
+	s.sessionStartHookStop = reason
+	s.mu.Unlock()
 }
 
 func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionStartKind plugin.SessionStartKind) hooks.RunResult {

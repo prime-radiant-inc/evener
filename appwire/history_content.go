@@ -1,6 +1,14 @@
 package appwire
 
-import "strconv"
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"slices"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+)
 
 // ThreadContentParams selects transcript content for reads, backfill and the
 // subscription established by a read. Omitted fields include their category.
@@ -51,7 +59,114 @@ func (s ThreadContentSelection) Key() string {
 	return strconv.FormatUint(uint64(s), 16)
 }
 
+// ViewKey names the candidate-shaping parts of a windowed transcript read.
+// Budget only changes how much of that view fits in one response, so it is not
+// part of the identity. A zero window is the legacy view and keeps its empty key.
+func (p ThreadWindowParams) ViewKey(itemLimit int) string {
+	if p.TurnWindow == nil {
+		return ""
+	}
+	itemTypes := slices.Clone(p.ItemTypes)
+	slices.Sort(itemTypes)
+	itemTypes = slices.Compact(itemTypes)
+	previewBytes := p.PreviewBytes
+	if previewBytes == 0 {
+		previewBytes = ThreadWindowPreviewBytesDefault
+	}
+	messageBytes := p.MessageBytes
+	if messageBytes == 0 {
+		messageBytes = ThreadWindowMessageBytesDefault
+	}
+	if itemLimit == 0 {
+		itemLimit = ThreadWindowItemLimitDefault
+	}
+	normalized := struct {
+		Window       ThreadTurnWindow `json:"window"`
+		ItemTypes    []string         `json:"itemTypes,omitempty"`
+		Preview      int              `json:"previewBytes"`
+		Message      int              `json:"messageBytes"`
+		PerTurnItems int              `json:"itemLimit"`
+	}{
+		Window: *p.TurnWindow, ItemTypes: itemTypes,
+		Preview: previewBytes, Message: messageBytes, PerTurnItems: itemLimit,
+	}
+	encoded, _ := json.Marshal(normalized)
+	digest := sha256.Sum256(encoded)
+	return "window1." + base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+// ViewIncarnation binds a source incarnation to the normalized window view.
+// The legacy view remains byte-for-byte unchanged.
+func (p ThreadWindowParams) ViewIncarnation(incarnation string, itemLimit int) string {
+	key := p.ViewKey(itemLimit)
+	if key == "" {
+		return incarnation
+	}
+	return key + ":" + base64.RawURLEncoding.EncodeToString([]byte(incarnation))
+}
+
+// SourceIncarnation removes this normalized window's view fence. A fence from
+// another view is refused so callers can mint a fresh latest read instead of
+// spending a held snapshot under changed parameters.
+func (p ThreadWindowParams) SourceIncarnation(incarnation string, itemLimit int) (string, bool) {
+	key := p.ViewKey(itemLimit)
+	if key == "" {
+		return incarnation, !strings.HasPrefix(incarnation, "window1.")
+	}
+	prefix := key + ":"
+	if !strings.HasPrefix(incarnation, prefix) {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(incarnation, prefix))
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// ThreadWindowSourceIncarnation recovers the source fence from a normalized
+// window identity when a fetch-only request no longer carries window options.
+func ThreadWindowSourceIncarnation(incarnation string) (string, bool) {
+	key, encoded, ok := strings.Cut(incarnation, ":")
+	if !ok || !strings.HasPrefix(key, "window1.") {
+		return "", false
+	}
+	digest, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "window1."))
+	if err != nil || len(digest) != sha256.Size {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(raw) == 0 || !utf8.Valid(raw) {
+		return "", false
+	}
+	return string(raw), true
+}
+
 func (s ThreadContentSelection) Diagnostics() bool { return s&excludeDiagnostics == 0 }
+
+// NormalizeWindowContent translates the one coarse window selection with an
+// exact-type equivalent — the messages shape — into itemTypes and clears the
+// coarse flags. A windowed request carries exactly one content filter: the
+// exact-type predicate its view identity names. Any other coarse selection is
+// refused typed rather than silently dropped before the elision pass.
+func NormalizeWindowContent(window *ThreadTurnWindow, params ThreadContentParams, itemTypes []string) (ThreadContentParams, []string, error) {
+	if window == nil || params == (ThreadContentParams{}) {
+		return params, itemTypes, nil
+	}
+	no := false
+	messagesOnly := ThreadContentParams{
+		IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
+		IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+	}
+	if params.Selection() != messagesOnly.Selection() {
+		return ThreadContentParams{}, nil, InvalidParams("window content selection must use exact itemTypes")
+	}
+	types := slices.Clone(itemTypes)
+	if !slices.Contains(types, "messages") {
+		types = append(types, "messages")
+	}
+	return ThreadContentParams{}, types, nil
+}
 
 func (s ThreadContentSelection) ToolCalls() bool { return s&excludeToolCalls == 0 }
 

@@ -21,7 +21,7 @@ agent`) appends to that same `SessionLog`, which is why the log is its own share
 substrate rather than living inside `contextmgr`.
 
 Inside `contextmgr`, the `Manager` is split by concern. Only `manager.go`,
-`pressure.go` and `compact.go` hold `cm.mu`.
+`pressure.go`, `compact.go` and `summary_failure.go` hold `cm.mu`.
 
 | File | Owns |
 |---|---|
@@ -34,6 +34,7 @@ Inside `contextmgr`, the `Manager` is split by concern. Only `manager.go`,
 | `partner_carry.go` | partner-message fitting, condensing and carry |
 | `summarize_fold.go` | `summarizeFold`, `foldCutoff`, `safeCutoff` |
 | `summarize_route.go`, `summary_prompt.go` | summarizer model routing, prompt text and reply validation |
+| `summary_failure.go` | summary-failure repeat latch |
 | `elicit.go` | `ElicitNote` |
 | `tool_output.go` | tool-output parsing helpers |
 
@@ -62,7 +63,10 @@ flowchart LR
 
 ## Pressure Estimation
 
-Context pressure is the fraction of the context window currently in use (0.0-1.0).
+Context pressure is estimated used tokens divided by the context window. It is
+deliberately unclamped, so it can exceed 1.0 when the estimate overflows the window;
+`ContextMetrics.Remaining` is floored at 0, and consumers must tolerate pressure above
+1.0.
 
 **Primary signal: API-reported input tokens.** After each LLM response, the session
 records `InputTokens + CacheReadTokens + CacheWriteTokens` as the exact token count.
@@ -101,9 +105,7 @@ tool, rather than waiting for the automatic pressure-triggered layers.
 `compact_context` schedules no compaction only when `note_to_self` is empty,
 `compaction_instructions` is empty or absent, and `reload_skills` is absent or `null`;
 that call clears the note. Any other call that passes argument validation requests a
-compaction, except below the pressure floor (0.30): there the call is a no-op that
-schedules nothing, pins no note, and returns a structured "not needed" result carrying
-the current pressure. An accepted request queues a force-compaction at the tool-round tail and
+compaction. An accepted request queues a force-compaction at the tool-round tail and
 the tool returns a prediction (not past-tense confirmation, since the compaction
 hasn't happened yet). A request rejected because a forced compaction is already
 pending or any compaction operation is still being delivered changes nothing.
@@ -111,7 +113,7 @@ pending or any compaction operation is still being delivered changes nothing.
 ### The note: a one-shot handoff across the compaction boundary
 
 The note is a message from the agent's *pre-compaction* self to its *post-compaction*
-self — not a sticky pin re-stamped forever. It is stored on the `Session` (`pinnedNote`
+self — not a sticky pin re-stamped forever. It is stored on the `Session` (`pinnedNoteText`
 field), persisted in `SessionMeta.PinnedNote` (`"pinned_note"` JSON key) so an
 un-consumed note survives resume, and restored on resume.
 
@@ -123,10 +125,13 @@ Here's your note to yourself from before compaction:
 <note text>
 ```
 
-and then **clears** the slot (`clearPinnedNote`). It is not re-stamped at future
-compactions: after injection it is ordinary context that folds naturally on the next
-cycle, like everything else. The slot reopening is what lets the next cycle capture a
-*fresh* note (see *Forced-note elicitation* below).
+and then **clears** the slot (`claimPinnedNoteLocked`) only when the captured note
+generation still matches, so a note set since the capture belongs to the next cycle and
+survives this fold. The claim runs inside the winning publish's critical section, so a
+fold that loses the publication race does not consume the note. It is not re-stamped at
+future compactions: after injection it is ordinary context that folds naturally on the
+next cycle, like everything else. The slot reopening is what lets the next cycle
+capture a *fresh* note (see *Forced-note elicitation* below).
 
 The handoff turn is inserted after plugin `PreCompact` output and **before** the goal
 objective, so the goal objective remains the trailing (strongest-recency) steering turn
@@ -209,8 +214,10 @@ note is already set**, `maybeElicitNoteBeforeCompaction` (in
 asks the model, via `Manager.ElicitNote`, to enumerate everything that must survive
 verbatim, with the prompt explicitly targeting the classes a lossy summary erodes:
 opaque tokens, IDs, hashes, version tags, exact numbers and thresholds,
-file/column/endpoint names. The reply is set as the note (`setPinnedNote`), so the same
-compaction's `runPreCompactHook` hands it off (and then clears it).
+file/column/endpoint names. The reply is accepted through
+`acceptAutomaticSkillCompaction`, which pins the note and records the pending automatic
+operation, so the same compaction's `runPreCompactHook` hands it off (and then clears
+it).
 
 **Scope — only what is about to be lost.** The elicitor renders just the prefix the
 compaction will fold (`history[:len-PreserveRecentTurns]`); the most-recent preserved
@@ -363,16 +370,21 @@ The `instructions` parameter (empty string for default behavior) is forwarded to
 `summarizeFold`, which replaces the default mandatory-sections prompt with
 the caller's directive. This is how agent-invoked self-compaction steers the summary.
 
-`ForceCompact` is used by two callers:
+Two production paths call `ForceCompact` through `foldWithForceCompact`:
 - **`/compact` user command** (`Session.Compact`): passes `instructions = ""`.
 - **`compact_context` tool** (`applyPendingForceCompact`): passes the agent's
   `compaction_instructions` string (may be empty).
 
+The **model-recovery fold** (`forceCompactForModelRecovery`) shares
+`foldWithForceCompact` but calls `ForceCompactAutomatic`, which also suppresses an
+identical consecutive summary failure. It passes `instructions = ""`.
+
 **Transcript callbacks**: Both `MaybeCompact` and `ForceCompact` fire
 `OnCompactionTurn` for checkpoint and summary turns. The session wires this to
-`TranscriptWriter.Append` so compaction turns are persisted. Without this, resumed
-sessions would load the entire pre-compaction history from the transcript because the
-compaction boundary wouldn't be recorded.
+`handleCompactionTurn`, which records the turn through `transcript.Writer.Record`
+(behind `writeTranscriptLocked`), so compaction turns are persisted. Without this,
+resumed sessions would load the entire pre-compaction history from the transcript
+because the compaction boundary wouldn't be recorded.
 
 ## safeCutoff
 

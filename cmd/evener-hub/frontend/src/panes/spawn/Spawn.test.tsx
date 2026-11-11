@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss } from "../../styles/cssBlock";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -202,12 +203,12 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
   expect(spawnCss).toContain(".promptIntro");
   expect(spawnCss).not.toContain(".mobilePromptIntro");
   expect(spawnCss).toContain(".mobileConfig");
-  expect(spawnCss).toContain("@media (max-width: 899px)");
+  expect(spawnCss).toContain(`@media ${MOBILE_QUERY}`);
   expect(rowsCss).toContain("min-height: 48px");
   expect(rowsCss).toContain("font-size: var(--font-size-body)");
   expect(paneCss).toContain(".desktopTitle");
   expect(paneCss).toContain(".mobileTitle");
-  expect(paneCss).toContain("@media (max-width: 899px)");
+  expect(paneCss).toContain(`@media ${MOBILE_QUERY}`);
 });
 
 // Harness moves into Advanced options: most installs have exactly one, so a

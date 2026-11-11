@@ -436,11 +436,11 @@ func TestCreateRefusesRecordsOutsideTheStoreSchema(t *testing.T) {
 		"zero generation":   {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 0, IncarnationID: "inc"},
 		"empty incarnation": {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: ""},
 	}
-	for name, new := range cases {
+	for name, record := range cases {
 		t.Run(name, func(t *testing.T) {
 			store, path := openTestStore(t)
-			if _, err := store.Create(new); !errors.Is(err, ErrInvalidRecord) {
-				t.Fatalf("Create(%+v): err = %v, want ErrInvalidRecord", new, err)
+			if _, err := store.Create(record); !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("Create(%+v): err = %v, want ErrInvalidRecord", record, err)
 			}
 			if got := len(store.Records()); got != 0 {
 				t.Fatalf("a refused Create left %d records in the store", got)

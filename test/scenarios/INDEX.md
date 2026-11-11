@@ -572,6 +572,15 @@ model to do the right thing, so they are also where model tiers separate.
   not substring) on evener's shell tool (Claude name `Bash`), runs
   in exec-form (`args`, no shell), and exits 0 without blocking; a
   `"Bas"` matcher does NOT fire (commits `a4685d3d`, `28bd828e`).
+- `hooks-toolsmith-subagent-start.md` — the real installed `toolsmith`
+  plugin loaded via `--plugin-dir` for a live delegate: its
+  `SubagentStart` hook RUNS (matcher `.*`, exit 0), the old
+  `declares a hook for the reserved event "SubagentStart"` warning is
+  gone from both the event stream and the session log, and the hook's
+  `additionalContext` is in the child session's first model request
+  (isolation control: a `SubagentStart`-only copy of the plugin still
+  delivers it). Commits `d454bcfeaf` (events registered),
+  `8a2c8128c9` (fire site).
 
 ## Native app (device only)
 

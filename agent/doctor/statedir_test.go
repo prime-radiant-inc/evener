@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/envvars/userdirs"
@@ -34,5 +35,18 @@ func TestResolveStateBase_NoStateHomeIsAnError(t *testing.T) {
 	}
 	if got, err := ResolveStateBase("/flag/dir"); err != nil || got != "/flag/dir" {
 		t.Errorf("an explicit --state-dir needs no home: got %q, %v", got, err)
+	}
+}
+
+// With no flag and neither env knob set, the state base falls back to
+// ~/.local/state.
+func TestResolveStateBase_DefaultFallback(t *testing.T) {
+	t.Setenv("EVENER_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := ResolveStateBase("")
+	if want := filepath.Join(home, ".local", "state"); err != nil || got != want {
+		t.Errorf("default = %q, %v, want %q", got, err, want)
 	}
 }

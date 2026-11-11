@@ -135,6 +135,53 @@ func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	}
 }
 
+// TestAgentShardsRunsEveryTestBinaryUnderATestTimeout pins the tripwire every
+// invocation that runs tests carries. A compiled test binary run directly has
+// no -test.timeout at all, so a hung test held its shard until something
+// outside killed it, and nothing named the test. `go test` gives a package
+// binary 10m by default; the survey and every shard get the same, and a
+// caller's -timeout replaces it. The fixture records the timeout each
+// invocation actually parsed.
+func TestAgentShardsRunsEveryTestBinaryUnderATestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		want  string
+	}{
+		{name: "default", want: "10m0s"},
+		{name: "caller", flags: []string{"-timeout", "7m"}, want: "7m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.flags = tc.flags
+			dir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_TIMEOUT_DIR", dir)
+			if rc := runShards(cfg); rc != 0 {
+				t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+			}
+			seen := map[string][]string{}
+			records, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("reading recorded timeouts: %v", err)
+			}
+			for _, record := range records {
+				data, err := os.ReadFile(filepath.Join(dir, record.Name()))
+				if err != nil {
+					t.Fatalf("reading %s: %v", record.Name(), err)
+				}
+				role, _, _ := strings.Cut(record.Name(), ".")
+				seen[role] = append(seen[role], string(data))
+			}
+			if got := seen["survey"]; !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("survey ran under -test.timeout %q, want [%s]", got, tc.want)
+			}
+			if got := seen["shard"]; !slices.Equal(got, []string{tc.want, tc.want}) {
+				t.Fatalf("shards ran under -test.timeout %q, want %s for each of 2", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAgentShardsCaptureKeepsPerTestVerdictsUnderQuietForwardedFlags pins issue
 // #144 review finding 3. The capture appends -test.v so `go tool test2json` can
 // recover each test's duration from the shard logs, but the caller's own flags
@@ -699,16 +746,32 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "agent")); err != nil {
 		t.Fatalf("linking fixture: %v", err)
 	}
-	for _, tc := range []struct{ name, value string }{
-		{"AGENT_SHARD_COUNT", "banana"},
-		{"AGENT_SHARD_COUNT", "0"},
-		{"AGENT_SHARD_PARALLEL", "-3"},
-		{"AGENT_SHARD_CONCURRENCY", "banana"},
-		{"AGENT_SHARD_CONCURRENCY", "-1"},
+	noSurvey := []string{"AGENT_SHARD_NO_SURVEY=1"}
+	for _, tc := range []struct {
+		name, value string
+		// extra is the rest of the environment the refusal needs.
+		extra []string
+	}{
+		{"AGENT_SHARD_COUNT", "banana", nil},
+		{"AGENT_SHARD_COUNT", "0", nil},
+		{"AGENT_SHARD_PARALLEL", "-3", nil},
+		{"AGENT_SHARD_CONCURRENCY", "banana", nil},
+		{"AGENT_SHARD_CONCURRENCY", "-1", nil},
+		{"AGENT_SHARD_PART", "banana", noSurvey},
+		{"AGENT_SHARD_PART", "2", noSurvey},
+		{"AGENT_SHARD_PART", "0/2", noSurvey},
+		{"AGENT_SHARD_PART", "3/2", noSurvey},
+		{"AGENT_SHARD_PART", "1/0", noSurvey},
+		// More parts than shards leaves a part with nothing to run.
+		{"AGENT_SHARD_PART", "1/3", append([]string{"AGENT_SHARD_COUNT=2"}, noSurvey...)},
+		// Every part must pack the same shards, and a survey is per-runner
+		// state: two runners with different caches would pack differently,
+		// running some tests twice and others never.
+		{"AGENT_SHARD_NO_SURVEY", "", []string{"AGENT_SHARD_PART=1/2"}},
 	} {
 		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot
-		cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), tc.name+"="+tc.value)
+		cmd.Env = append(append(os.Environ(), "TMPDIR="+t.TempDir(), "AGENT_SHARD_NO_SURVEY=", tc.name+"="+tc.value), tc.extra...)
 		out, err := cmd.CombinedOutput()
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
@@ -717,6 +780,56 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		if !strings.Contains(string(out), tc.name) {
 			t.Fatalf("%s=%s not named in error:\n%s", tc.name, tc.value, out)
 		}
+	}
+}
+
+// TestAgentShardsPartRunsItsShareOfTheShards pins AGENT_SHARD_PART, which
+// splits one package's shards across CI runners: every part packs the same
+// shards and runs every m-th of them, so the parts together run each test
+// exactly once. Shard numbers stay those of the whole packing, so two parts'
+// logs never share a name.
+func TestAgentShardsPartRunsItsShareOfTheShards(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := t.TempDir()
+	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "agent")); err != nil {
+		t.Fatalf("linking fixture: %v", err)
+	}
+	run := func(env ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, "dev", "agent-shards")
+		cmd.Dir = workRoot
+		cmd.Env = append(os.Environ(), append([]string{
+			"TMPDIR=" + t.TempDir(), "AGENT_SHARD_CACHE_DIR=" + t.TempDir(),
+			"GOWORK=off", "GOENV=off", "GOFLAGS=",
+			"AGENT_SHARD_COUNT=4", "AGENT_SHARD_NO_SURVEY=1", "AGENT_SHARD_PART=",
+		}, env...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("agent-shards %v: %v\n%s", env, err, out)
+		}
+		return string(out)
+	}
+
+	whole := shardedTestCount(t, run())
+	if whole == 0 {
+		t.Fatal("the whole run placed no tests")
+	}
+	parted := 0
+	for _, tc := range []struct {
+		part string
+		want []int
+	}{
+		{"1/2", []int{0, 2}},
+		{"2/2", []int{1, 3}},
+	} {
+		out := run("AGENT_SHARD_PART=" + tc.part)
+		if got := verdictShards(t, out, "PASS"); !slices.Equal(got, tc.want) {
+			t.Fatalf("part %s ran shards %v, want %v:\n%s", tc.part, got, tc.want, out)
+		}
+		parted += shardedTestCount(t, out)
+	}
+	if parted != whole {
+		t.Fatalf("the parts ran %d tests between them, the whole run %d", parted, whole)
 	}
 }
 

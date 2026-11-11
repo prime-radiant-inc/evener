@@ -197,6 +197,12 @@ type rootDelegateIndex struct {
 type historicalActivityCache struct {
 	ctx           context.Context
 	delegateIndex map[string]*rootDelegateIndex // rootSessionID -> index, lazy
+	// rootID is the delegate-journal root this traversal learned from the
+	// first session whose meta loaded, so a required child whose own meta is
+	// missing can still find the rows the shared journal attributes to it.
+	// Without it the meta fallback below would name the child's own session
+	// ID and scan a per-child journal that does not exist.
+	rootID string
 	// budget bounds the LOAD-phase traversal's breadth and depth — how many
 	// distinct sessions and delegates get VISITED at all — across this
 	// whole cache's lifetime. It reuses activityBudget/
@@ -390,6 +396,13 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	}
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
+	if metaErr != nil {
+		if cache.rootID != "" {
+			rootID = cache.rootID
+		}
+	} else if cache.rootID == "" {
+		cache.rootID = rootID
+	}
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	// This session's COMPLETE job history loads unconditionally here —
 	// historicalJobFoldCache makes that O(events appended since the
@@ -405,32 +418,55 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	// journal was there at all, from the same stat it reads through, so
 	// nothing here can see the file appear or vanish between a presence
 	// check and the read.
-	jobs, jobsEpoch, jobsAbsent, err := loadCachedJobRecords(cache.ctx, jobsPath)
-	if err != nil {
-		return activityLoadedBase{}, err
+	jobs, jobsEpoch, jobsAbsent, jobErr := loadCachedJobRecords(cache.ctx, jobsPath)
+	if jobErr != nil && !required {
+		return activityLoadedBase{}, jobErr
 	}
-	if jobsAbsent && required {
-		return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+	if cache.ctx.Err() != nil {
+		return activityLoadedBase{}, cache.ctx.Err()
 	}
 	stable, delegates, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
+	degradedJobHistory := false
+	if required && (jobErr != nil || jobsAbsent) {
+		if len(stable) == 0 {
+			if jobErr != nil {
+				return activityLoadedBase{}, jobErr
+			}
+			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+		}
+		// #5643: this session's own jobs journal is missing or unreadable, but
+		// the shared root journal still attributes delegate rows to it. Degrade
+		// to those rows instead of dropping the branch: #5012 keeps nested
+		// delegates out of the root roster, so this branch is the only place
+		// they can be loaded. The diagnostic keeps the failure visible on the
+		// degraded session rather than silently presenting it as healthy.
+		reason := "unavailable in state directory"
+		if jobErr != nil {
+			reason = fmt.Sprintf("unreadable: %v", jobErr)
+		}
+		diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal %s; showing delegates from the root journal", sessionID, reason))
+		degradedJobHistory = true
+	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID:      sessionID,
-		Ref:            encodeRef("", sessionID),
-		Label:          activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:         rootID,
-		Revision:       activityRevisionFromMeta(meta),
-		Jobs:           jobs,
-		LiveJobs:       map[string]*jobstore.JobRecord{},
-		Delegates:      stable,
-		Usage:          historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:    diagnostics,
-		JobsEpoch:      jobsEpoch,
-		DelegatesEpoch: delegates.epoch,
+		SessionID:          sessionID,
+		Ref:                encodeRef("", sessionID),
+		Label:              activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:             rootID,
+		Revision:           activityRevisionFromMeta(meta),
+		Jobs:               jobs,
+		LiveJobs:           map[string]*jobstore.JobRecord{},
+		Delegates:          stable,
+		Usage:              historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:        diagnostics,
+		DegradedJobHistory: degradedJobHistory,
+		JobsEpoch:          jobsEpoch,
+		DelegatesEpoch:     delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
+		JobsJournalUnreadable:      jobErr != nil,
 		DelegatesJournalAbsent:     delegates.absent,
 		DelegatesJournalUnreadable: delegates.unreadable,
 	}}, nil

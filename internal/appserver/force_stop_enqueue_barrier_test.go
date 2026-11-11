@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // parkSendLoopLeavingRoom mirrors parkSendLoopWithFullBuffer (which fills the
@@ -293,7 +294,7 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 	frames := collectFrames(transport)
 
 	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
-	waitUntil(t, "the first force stop to mark its response for a send-loop clear", func() bool {
+	testwait.Until(t, "the first force stop to mark its response for a send-loop clear", func() bool {
 		conn.mu.RLock()
 		defer conn.mu.RUnlock()
 		return conn.recoveryClearID != ""
@@ -306,7 +307,7 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 	}
 
 	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
-	waitUntil(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
+	testwait.Until(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
 		return len(conn.send) == cap(conn.send)
 	})
 
@@ -407,7 +408,7 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossTransportSend(t *testing.
 	// enqueue-backpressure test above, and, on this test's first version,
 	// the same mistake repeated: sending request 3 and releasing the gate
 	// with nothing in between).
-	waitUntil(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
+	testwait.Until(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
 		return len(conn.send) > 0
 	})
 

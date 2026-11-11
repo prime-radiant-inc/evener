@@ -159,7 +159,7 @@ func qualify(ctx context.Context, output string, withUI bool) (result error) {
 	if err := r.writeJSON("simulator-identity.json", map[string]string{"udid": udid, "runtime": runtimeID, "deviceType": deviceID}); err != nil {
 		return err
 	}
-	if _, err := r.commandOutput(ctx, "xcodebuild-release", false, "xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id="+udid, "-derivedDataPath", filepath.Join(output, "DerivedData"), "build"); err != nil {
+	if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, filepath.Join(output, "DerivedData"))...); err != nil {
 		return err
 	}
 	r.identity.AppPath = filepath.Join(output, "DerivedData", "Build", "Products", "Release-iphonesimulator", "Evener.app")
@@ -178,6 +178,13 @@ func qualify(ctx context.Context, output string, withUI bool) (result error) {
 		return err
 	}
 	return r.uiJourney(ctx)
+}
+
+// The runner is Apple silicon and the app is installed into an arm64
+// simulator, so ONLY_ACTIVE_ARCH builds the one slice the journeys exercise
+// instead of compiling the whole native dependency graph for both.
+func releaseBuildCommand(udid, derivedData string) []string {
+	return []string{"xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id=" + udid, "-derivedDataPath", derivedData, "build", "ONLY_ACTIVE_ARCH=YES"}
 }
 
 // uiJourney runs the installed-app qualification journeys as a child inside

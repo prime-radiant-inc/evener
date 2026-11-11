@@ -46,9 +46,9 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "awaiting", ask_pending: true }, true, "question"],
 		[{ state: "active" }, true, "approval"],
 		[{ state: "active" }, false, "working"],
-		// Awaiting without a question is a turn that ended on needs_response:
-		// it needs you (#4093).
-		[{ state: "awaiting" }, false, "needsYou"],
+		// Awaiting without a question is a turn that merely finished: it rests
+		// Idle (#2629).
+		[{ state: "awaiting" }, false, "idle"],
 		// A turn that ended otherwise rests Idle, seen or not: the row's blue
 		// dot says whether anything is new (#4093).
 		[{ state: "idle" }, false, "idle"],
@@ -101,7 +101,8 @@ describe("a row's Board state (spec 13.1)", () => {
 
 	it.each([
 		[{ state: "idle" }, false, "working"],
-		[{ state: "awaiting" }, false, "needsYou"],
+		// Running children keep a finished turn Working.
+		[{ state: "awaiting" }, false, "working"],
 		[{ state: "idle", dormant: true }, false, "working"],
 		[{ state: "warning" }, false, "working"],
 		[{ state: "warning", ask_pending: true }, false, "warning"],
@@ -138,7 +139,6 @@ describe("a row's Board state (spec 13.1)", () => {
 	it.each([
 		["failed", "Failed"],
 		["question", "Question"],
-		["needsYou", "Needs you"],
 		["approval", "Approval"],
 		["warning", "Warning"],
 		["restartNeeded", "Restart needed"],
@@ -178,7 +178,6 @@ describe("Live bands (spec 7.1)", () => {
 	it.each([
 		["failed", "needsYou"],
 		["question", "needsYou"],
-		["needsYou", "needsYou"],
 		["approval", "needsYou"],
 		["warning", "needsYou"],
 		["restartNeeded", "needsYou"],
@@ -189,7 +188,7 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("sorts Needs you by failed, then question, needs-your-reply or approval, then warning or restart-needed, then oldest first", () => {
+	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
 		// Every row is newer than each row in the bands below it, ages interleave
 		// within a band, and the rows arrive newest first: age order, arrival
 		// order and any merged or split band would each give a different sequence.
@@ -199,17 +198,12 @@ describe("Live bands (spec 7.1)", () => {
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
 			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
 			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
-			// A turn that ended on needs_response ranks with questions (#4093).
-			// It is the one exception to the rule above: the newest row of all,
-			// so only its band can place it ahead of the warnings and behind the
-			// failures.
-			row("n", { state: "awaiting", updated_at: at(9) }),
 			row("w-new", { state: "warning", updated_at: at(3) }),
 			row("r", { state: "restartRequired", updated_at: at(2) }),
 			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
 		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
-		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "n", "w-old", "r", "w-new"]);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
 	});
 
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
@@ -473,7 +467,6 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
 		["failed", "danger"],
 		["question", "attention"],
-		["needsYou", "attention"],
 		["approval", "attention"],
 		["warning", "attention"],
 		["restartNeeded", "attention"],
@@ -485,9 +478,28 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	});
 
 	it("gives each attention state its own reason", () => {
-		const states = ["failed", "question", "needsYou", "approval", "warning", "restartNeeded"] as const;
+		const states = ["failed", "question", "approval", "warning", "restartNeeded"] as const;
 		expect(new Set(states.map((state) => whyLine({ row: row("s"), state })?.text)).size).toBe(states.length);
 	});
+
+	// A working session whose model call waits out a usage limit until a
+	// known reset resumes by itself: while that time is ahead its line says so;
+	// once it has passed the wait is over and the working line returns.
+	it.each([
+		["ahead", 90 * 60_000, true],
+		["passed", -60_000, false],
+	] as const)(
+		"a working row whose quota wait resume time is %s (%d ms away) has the quota line: %s",
+		(_when, offsetMs, quota) => {
+			const failure = {
+				title: "Usage limit reached",
+				cause_kind: "provider",
+				status: 429,
+				resumes_at: new Date(Date.now() + offsetMs).toISOString(),
+			};
+			expect(whyLine({ row: row("s", { state: "active", failure }), state: "working" })?.kind === "quota").toBe(quota);
+		},
+	);
 
 	it("has none for Idle", () => {
 		expect(whyLine({ row: row("s"), state: "idle" })).toBeNull();

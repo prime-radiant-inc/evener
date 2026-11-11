@@ -62,6 +62,12 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	if err != nil {
 		return appwire.ThreadClearResponse{}, appwire.InternalError(err.Error())
 	}
+	// A response can be lost after the replacement was applied. Replay that
+	// saved receipt before taking the exclusive gate: another client may already
+	// be mutating the replacement, which holds the gate's read side.
+	if decision, ok := s.replayAppliedThreadClear(params, requestHash); ok {
+		return decision.response, decision.err
+	}
 	if !s.appMutationGate.TryLock() {
 		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "a retry-safe mutation is already in progress")
 	}
@@ -74,10 +80,48 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	case threadClearRecover:
 		return s.recoverThreadClear(params)
 	case threadClearProceed:
+		replace := decision.fn
+		decision.fn = func(ctx context.Context, params appwire.ThreadClearParams) error {
+			release, err := s.holdAutomaticInput(ctx)
+			if err != nil {
+				return err
+			}
+			defer release()
+			return replace(ctx, params)
+		}
 		return s.runThreadClear(ctx, params, decision)
 	default:
 		return appwire.ThreadClearResponse{}, decision.err
 	}
+}
+
+// replayAppliedThreadClear answers a validated retry of a clear whose receipt is
+// already durable. It deliberately runs before appMutationGate: the replacement
+// is installed and its turn traffic must not turn a successful clear into a
+// notAccepted recovery. Reserved or partially recorded clears still fall
+// through to the exclusive path.
+func (s *Server) replayAppliedThreadClear(
+	params appwire.ThreadClearParams,
+	requestHash string,
+) (threadClearDecision, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clearJournal.loadErr != nil || (s.appRef != "" && params.Ref != s.appRef) {
+		return threadClearDecision{}, false
+	}
+	record, ok := s.clearJournal.records[params.ClientMutationID]
+	if !ok {
+		return threadClearDecision{}, false
+	}
+	if record.RequestHash != requestHash || record.Ref != params.Ref || record.ExpectedInstanceID != params.ExpectedInstanceID {
+		return rejectThreadClear(appwire.InvalidRequest("client mutation ID reused with a different clear request")), true
+	}
+	if record.State != threadClearApplied || record.Response == nil {
+		return threadClearDecision{}, false
+	}
+	response := *record.Response
+	response.Receipt.Disposition = appwire.MutationDispositionReplayed
+	return threadClearDecision{action: threadClearReplay, response: response}, true
 }
 
 // decideThreadClear checks the request against the journal and the live

@@ -26,6 +26,25 @@ import (
 
 const backgroundJobsBrowserCount = 151
 
+// backgroundJobsDriverCommand launches the background Jobs browser driver.
+// Context cancellation sends SIGTERM first, so the Node owner can reap its
+// detached Chrome and remove its profile; the bounded WaitDelay force-kills a
+// driver that ignores the signal. The default CommandContext behavior kills
+// the owner outright and skips both cleanup steps (#4787).
+func backgroundJobsDriverCommand(ctx context.Context) *exec.Cmd {
+	return backgroundDriverCommand(ctx, "frontend/scripts/backgroundjobsguard/run.mjs")
+}
+
+func TestBackgroundJobsDriverCommandUsesGracefulCancellation(t *testing.T) {
+	cmd := backgroundJobsDriverCommand(context.Background())
+	if cmd.Cancel == nil {
+		t.Fatal("background Jobs driver has no graceful cancel: context cancellation would SIGKILL the owner before it reaps Chrome")
+	}
+	if cmd.WaitDelay != backgroundDriverForceKillDelay {
+		t.Fatalf("background Jobs driver WaitDelay = %s, want %s", cmd.WaitDelay, backgroundDriverForceKillDelay)
+	}
+}
+
 // TestMain scrubs product EVENER_* variables and removes its redirected root.
 // Capture the supplied evidence destination before that environment redirect.
 var backgroundJobsArtifactRoot = os.Getenv("EVENER_SCRATCH_DIR")
@@ -337,10 +356,9 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	driver := exec.CommandContext(ctx, "node", "frontend/scripts/backgroundjobsguard/run.mjs")
+	driver := backgroundJobsDriverCommand(ctx)
 	driver.Stdin = bytes.NewReader(body)
 	driver.Stdout, driver.Stderr = log, log
-	driver.WaitDelay = 15 * time.Second
 	if err := driver.Run(); err != nil {
 		skillGuardLogDriverTail(t, log.Name())
 		t.Fatalf("real background Jobs journey: %v, evidence: %s", err, artifacts)

@@ -155,9 +155,10 @@ type serveServer interface {
 	Close()
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
+	SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure)
 	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
-	SubmitContinuation(string)
+	SubmitContinuation(string, string)
 	SubmitNotification()
 	SubmitClientMutationStart(string)
 	SubmitPendingUserInput(string)
@@ -230,7 +231,7 @@ type serveDeps struct {
 	// is injectable: a test needs a deterministic preparation failure to prove
 	// thread/clear abandons a half-built session instead of publishing it.
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
-	updateSessionID    func(*rvreg.Registration, string) error
+	updateIdentity     func(*rvreg.Registration, string, string) error
 	observeCallbacks   func(serveCallbackObserver)
 	// reclaimScratch removes the session scratch that daemons now gone
 	// retained, for a serve working in the directory it is handed — the one
@@ -308,7 +309,7 @@ func defaultServeDeps() serveDeps {
 		provisionSandbox:     provisionSandbox,
 		newClearSession:      agent.NewSession,
 		prepareAppIdentity:   server.PrepareAppIdentityForRef,
-		updateSessionID:      func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		updateIdentity:       func(r *rvreg.Registration, id, workingDir string) error { return r.UpdateIdentity(id, workingDir) },
 	}
 }
 
@@ -648,10 +649,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
 	// /opt/homebrew/bin; the login shell's own PATH wins for spawned commands
-	// (kata 31gh). LoginShellPATH probes once per process with a short timeout
-	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
-	// on any failure.
-	env.LoginPATH = execenv.LoginShellPATH()
+	// (kata 31gh). The probe has a short timeout and never blocks launch; a
+	// probe failure is reported as the inherited-PATH fallback rather than
+	// cached, so the next launch retries it (#4495).
+	env.LoginPATH, env.LoginPATHProbeError = execenv.LoginShellPATHProbe()
 	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}
@@ -708,9 +709,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
-	if *lf.maxSubagentDepth >= 0 {
-		sessionCfg.MaxSubagentDepth = *lf.maxSubagentDepth
-	}
+	applyMaxSubagentDepth(&sessionCfg, *lf.maxSubagentDepth)
 	if *lf.maxConcurrentDelegates >= 0 {
 		sessionCfg.MaxConcurrentDelegateTurns = *lf.maxConcurrentDelegates
 	}
@@ -916,7 +915,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	go func() {
 		defer close(inputLoopDone)
 		processMessage := func(sess *agent.Session, msg server.InputMessage) bool {
-			if msg.ClientMutationStart && msg.SessionID != sess.ID() {
+			// User, queued, start and continuation messages that name a
+			// session belong only to it. A continuation queued while clear
+			// builds a replacement must not run its predecessor's objective
+			// in the replacement after the gate releases.
+			if !inputBelongsToSession(msg, sess.ID()) {
 				return false
 			}
 			runnerDone := make(chan struct{})
@@ -1027,7 +1030,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		for {
 			sess := live.session()
 			if !processNextServeInput(ctx, srv.InputCh(), sess.ID(), func(msg server.InputMessage) bool {
-				return processMessage(live.session(), msg)
+				return processWithMutationRead(srv, func() bool {
+					return processMessage(live.session(), msg)
+				})
 			}) {
 				return
 			}
@@ -1154,7 +1159,11 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 		sess.CloseForShutdown()
 		return
 	}
-	sess.Close()
+	// This close IS a clear: a concurrent thread/clear replaced this identity,
+	// which is the one reason only this path can prove. A shutdown-claimed
+	// session was already closed by CloseForShutdown, whose own reason
+	// (prompt_input_exit when idle, else other) belongs to that first close.
+	sess.CloseWithReason("clear")
 }
 
 // processNextServeInput gives durable turn/start work priority over the
@@ -1180,6 +1189,27 @@ func processNextServeInput(
 		process(msg)
 		return true
 	}
+}
+
+// processWithMutationRead admits one process-local input turn only while no
+// thread/clear owns the automatic input gate. The gate is held for clear's whole
+// preparation and publication; after it releases, the live session sampled
+// inside the callback is the replacement, not the closed predecessor.
+func processWithMutationRead(srv serveServer, fn func() bool) bool {
+	if gate, ok := srv.(interface{ WithMutationRead(func()) }); ok {
+		var processed bool
+		gate.WithMutationRead(func() { processed = fn() })
+		return processed
+	}
+	return fn()
+}
+
+// inputBelongsToSession reports whether msg may run against sessionID. An
+// untagged notification wake belongs to whichever session is live; every
+// input that names a session belongs only to that session, so a continuation
+// queued by a predecessor cannot execute its objective in the replacement.
+func inputBelongsToSession(msg server.InputMessage, sessionID string) bool {
+	return msg.SessionID == "" || msg.SessionID == sessionID
 }
 
 func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []appwire.SandboxEscalationRequested {

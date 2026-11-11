@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -9,6 +10,40 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
+
+func TestSnapshotCandidateAtReturnsExactVersionedItem(t *testing.T) {
+	path, lines := writeHeaderOnly(t, fixture{lines: []fixtureLine{
+		entryLine(user("fetch-source")),
+		entryLine(assistant(text("fetch-target"))),
+	}})
+	for _, line := range lines {
+		appendBytes(t, path, line)
+	}
+	x := openIndex(t, path, t.TempDir())
+	defer x.Close()
+	latest, err := x.Latest(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := latest.Candidates[0]
+	if err := x.ReadAt(latest.Length, func(snapshot *Snapshot) error {
+		got, err := snapshot.CandidateAt(want.Position)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("candidate = %+v, want %+v", got, want)
+		}
+		_, err = snapshot.CandidateAt(appwire.ThreadItemPosition{Entry: want.Position.Entry + 100})
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Data == nil {
+			t.Fatalf("missing candidate error = %T %v, want typed stale cursor", err, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestReadAtKeepsInterruptedExecutionOnOlderPage(t *testing.T) {
 	t.Parallel()

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
@@ -51,12 +52,13 @@ func parseRestartOptions(args []string, stderr io.Writer) (restartOptions, error
 // waits for a different incarnation to answer. A lost response is ambiguous:
 // the same wait decides whether the new process came up.
 func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
+	log := componentlog.NewWriter("hub", stderr)
 	opts, err := parseRestartOptions(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
@@ -64,30 +66,30 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 	// Validate explicit destinations before endpoint discovery or credentials.
 	if opts.addr != "" {
 		if _, err := attachOrigin("http://" + opts.addr); err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+			log.Info(fmt.Sprintf("%v", err))
 			return err
 		}
 	}
 	endpointOpts := endpointOptions{configPath: opts.configPath, configExplicit: opts.configExplicit}
 	report, err := resolveHubEndpoint(ctx, endpointOpts, deps)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)
+		log.Info(fmt.Sprintf("endpoint: %v", err))
 		return err
 	}
 	if report.Running == nil {
 		err := fmt.Errorf("%w: selected hub is %s (%s)", errNoHubAt, report.State, report.Reason)
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	origin, err := attachOrigin(report.Running.LoopbackURL)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	if opts.addr != "" {
 		selected, _ := attachOrigin("http://" + opts.addr)
 		if selected.String() != origin.String() {
-			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", hubendpoint.ErrIdentityMismatch)
+			log.Info(fmt.Sprintf("%v", hubendpoint.ErrIdentityMismatch))
 			return hubendpoint.ErrIdentityMismatch
 		}
 		origin = selected
@@ -95,23 +97,23 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 	configIdentity, err := selectRestartConfigIdentity(endpointOpts, report)
 	if err != nil {
 		err = fmt.Errorf("%w: selected config: %w", hubendpoint.ErrIdentityMismatch, err)
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	token, err := readAuthToken(report.Running.HubStateRoot)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	baseline, err := readHubStartedAt(ctx, origin)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] health: %v\n", err)
+		log.Info(fmt.Sprintf("health: %v", err))
 		return err
 	}
 
 	client, err := dialHubControl(ctx, origin, token, *report.Running)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		log.Info(fmt.Sprintf("%v", err))
 		return err
 	}
 	defer func() { _ = client.Close() }()
@@ -119,7 +121,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 	var resp appwire.HubRestartResponse
 	requestErr := client.Request(ctx, appwire.MethodEvenerHubRestart, appwire.HubRestartParams{}, &resp)
 	if requestErr != nil && !isAmbiguousRestartFailure(requestErr) {
-		_, _ = fmt.Fprintf(stderr, "[hub] restart: %v\n", requestErr)
+		log.Info(fmt.Sprintf("restart: %v", requestErr))
 		return requestErr
 	}
 
@@ -139,7 +141,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		if requestErr != nil {
 			confirmErr = fmt.Errorf("%w; %w", requestErr, err)
 		}
-		_, _ = fmt.Fprintf(stderr, "[hub] restart confirmation: %v\n", confirmErr)
+		log.Info(fmt.Sprintf("restart confirmation: %v", confirmErr))
 		return confirmErr
 	}
 	_, _ = fmt.Fprintln(stdout, "hub restarted")

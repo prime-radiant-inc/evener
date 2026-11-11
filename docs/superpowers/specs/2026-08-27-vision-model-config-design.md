@@ -370,7 +370,13 @@ the unset default assumes the session's chosen model consumes its own images,
 and a session that expects to hand history to a sightless model pins an
 explicit `vision_model` (or `off`) instead. Extending the model-switch
 preflight to warn about or reject switches that would orphan undescribed
-inline images is an open product choice (#4217).
+inline images is an open product choice (#4217). **Settled by the 2026-11-09
+provider-content ruling:** the switch is allowed. Request assembly drops
+tool-result media bytes the target cannot see (the result's text still reaches
+the model), and the persisted switch marker names how many tool-result media
+items are now out of the model's view. No describing call runs at switch time;
+a session that wants descriptions instead pins an explicit `vision_model`
+before switching.
 
 ## Revision (2026-10-12): the Anthropic builder carries documents (#4209)
 
@@ -389,3 +395,22 @@ protocols. Two statements above are superseded:
 - "only the Responses builder writes input_file today" is superseded: the
   Anthropic builder writes a document block too, and the `AcceptsDocumentInput`
   retry/failure gate covers both protocols.
+
+## Revision (2026-11-09): an Anthropic tool result carries a document natively (#4465)
+
+The Messages API accepts a `document` content block inside `tool_result`
+content, so the Anthropic builder now writes a PDF tool result as a document
+block. `llm.DeliversToolResultMedia` answers per media type: images follow the
+protocol rule, and `application/pdf` rides natively on Anthropic only.
+`RowSeesToolResultMedia` checks the media's own modality (pdf for a document,
+image for an image), so a row that declares pdf input skips the describing
+side-channel for a PDF tool result. The statements above that a PDF tool result
+always takes the side-channel are superseded for Anthropic. The Responses,
+Google and chat tool-result shapes carry no document, so those routes keep the
+side-channel, and token estimation bills the bytes Anthropic now sends.
+
+Native delivery removes the persisted text description the side-channel used
+to leave behind. A later switch to a target whose tool-result shape carries no
+document therefore leaves only the result's text. This is the same
+media-orphan tradeoff as #4217; this change does not add a switch-time notice
+for documents, so the limitation remains unresolved until that work lands.

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # GitHub sometimes drops a PR's pull_request events entirely (see
+  # scripts/ops/pr-ci-watchdog.sh), and a workflow without this trigger cannot
+  # be re-dispatched for the pushed head.
+  workflow_dispatch:
   # The merge queue tests each queued PR on top of main and the PRs ahead of
   # it, and main requires the same checks on that candidate.
   merge_group:
@@ -17,22 +21,78 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The verdict of every aggregate job below (web, static, race-root,
+  # race-modules, tests), read from toJSON(needs): each lane succeeded, or
+  # was skipped because the changes job named it. A skip nothing named (a
+  # cancelled run, or any skip in a merge group or on main, where changes
+  # names none) fails the aggregate.
+  REQUIRE_LANES: >-
+    (.changes.outputs.skip // "") as $s
+    | (if .changes.result == "success" and $s != "" then $s | fromjson else [] end) as $skipped
+    | del(.changes) | to_entries
+    | all(.value.result == "success" or (.value.result == "skipped" and (.key as $job | $skipped | any(. == $job))))
+
 jobs:
-  # The frontend gate runs as two lanes on separate runners, because its two
-  # halves share nothing: the unit/type/lint checks, and the production build
-  # plus the real-browser guards. Each takes about three minutes; run one
-  # after the other on one runner they took over six. `web`, the required
-  # check, passes only when both lanes do.
-  web-unit:
+  # On a pull request, names the lanes the change cannot reach, as
+  # cmd/evener-cilanes decides them (docs/developing-evener/testing.md, "Pull
+  # Requests Skip Lanes a Change Cannot Reach"). `skip` lists whole jobs, and
+  # each exclude_* output lists matrix cells to drop. Every lane runs in a
+  # merge group and on main, where this job is skipped, and when it fails:
+  # its outputs are then empty, so nothing is skipped. Those runs keep
+  # main safe from a wrong skip, which can only bounce a pull request in the
+  # merge queue.
+  changes:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      exclude_race_root_parts: ${{ steps.plan.outputs.exclude_race_root_parts }}
+      exclude_race_module_shards: ${{ steps.plan.outputs.exclude_race_module_shards }}
+      exclude_tests_parts: ${{ steps.plan.outputs.exclude_tests_parts }}
+    steps:
+      # The pull request's merge commit and its first parent, the base it
+      # merges onto: HEAD^1...HEAD is exactly what the merge changes.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - id: plan
+        run: go run ./cmd/evener-cilanes/bin --base HEAD^1 >> "$GITHUB_OUTPUT"
+
+  # Every job carries a timeout-minutes of about three times its slowest green
+  # run, never under 20, so a hang ends in tens of minutes instead of at the
+  # hosted runner's six-hour limit. They are backstops, not budgets: the timing
+  # ratchet polices speed, and a hung Go test is named by its test binary's own
+  # timeout, which each lane's bound leaves room for. A lane that grows past
+  # a third of its bound needs the bound raised with it.
+  #
+  # The frontend gate runs on separate runners, because its halves share
+  # nothing: the unit/type/lint checks in one lane, and the production build
+  # plus the real-browser guards in web-browser, which is itself split into
+  # shards, one runner each. `web`, the required check, passes only when every
+  # lane does.
+  #
+  # Each lane the changes job can name runs unless it names it, and runs
+  # when the changes job fails (!cancelled() instead of the implicit
+  # success()).
+  web-unit:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'web-unit') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       # The gate itself is Go: make test-web builds and runs evener-dev.
       - uses: actions/setup-go@v7
@@ -62,11 +122,14 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # The cache save must precede the timing gate: the gate fails on wall
-      # time while the cache this run warmed is good, and the save only acts
-      # on main pushes, so gating it behind the gate would leave a failing
-      # lane building cold until it fails again.
+      # The cache save precedes the timing gate: the gate fails on wall time
+      # while the cache this run warmed is good, and a save after a failed
+      # step keeps everything it restored instead of trimming to this job's
+      # build, so a budget breach on main would grow the entry.
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
       # The frontend's durations come from the same vitest run above (issue
       # #144): the JSON reporter it wrote is turned into the ratchet's rows and
@@ -86,55 +149,81 @@ jobs:
           vitest_json_to_tsv /tmp/gate-web-vitest.json > /tmp/gate-web-timing.tsv
           scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-web-timing.tsv
 
+  # One runner per shard of the browser gate (browserGuardShards in
+  # cmd/evener-dev/webbrowser.go); together the shards run every guard.
   web-browser:
+    name: web-browser / ${{ matrix.shard }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'web-browser') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [overflow, skill, cascade]
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
-      # The retirement and skill browser guards run go test against
-      # cmd/evener-hub, with and without the browserguard tag.
+      # The retirement, skill, cascade and background guards run go test
+      # against cmd/evener-hub, with and without the browserguard tag.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
           cache: false
 
+      # The shards compile the same dependencies; only the overflow shard's
+      # retirement guard builds cmd/evener-hub without the browserguard tag.
+      # So they share one kind, saved by the cascade shard, the slowest, and
+      # the overflow shard alone recompiles its untagged hub test.
       - uses: ./.github/actions/go-cache-restore
         with:
-          kind: web
+          kind: web-browser
 
-      - name: Build and browser guards
+      # Two guards at a time, whatever the load average: the one-minute
+      # average still carries the frontend build when the gate sizes its
+      # slots, which left the unsharded lane at one slot or two by chance.
+      # Two is the contention the guards already pass at, a long guard beside
+      # a short one.
+      - name: Build and browser guards (${{ matrix.shard }})
+        env:
+          BROWSER_GUARD_SHARD: ${{ matrix.shard }}
+          BROWSER_GUARD_CONCURRENCY: 2
         run: make test-web-browser
 
       - name: Install native and shared journey dependencies
+        if: matrix.shard == 'cascade'
         run: |
           npm ci --prefix mobile-native
           npm ci --prefix appwire-client/typescript
 
       - name: Failed-turn continuation in both clients
+        if: matrix.shard == 'cascade'
         run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() && matrix.shard == 'cascade' }}
+        with:
+          job-status: ${{ job.status }}
 
       # The skill guard keeps its driver log, screenshots and helper logs under
       # a temporary directory when it fails, deliberately, so a failing run can
       # be read afterwards. On a runner nobody reads it: the directory goes
       # with the machine, and the failure arrives as one line naming a path
       # that no longer exists. This is the only copy that outlives the job.
-      # Named for the run so two failures on the same PR do not collide.
+      # Named for the shard and the run so two failures on the same PR do not
+      # collide.
       # The cascade guard keeps its evidence the same way (its temp dir is
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
       # So are the background Jobs and job output paging guards'.
       - name: Keep the browser guards' artifacts
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-guards-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-guards-artifacts-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**
@@ -148,26 +237,28 @@ jobs:
 
   web:
     if: always()
-    needs: [web-unit, web-browser]
+    needs: [changes, web-unit, web-browser]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require both frontend lanes
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   native:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'native') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: mobile-native/package-lock.json
 
       - name: Install native dependencies
         run: npm ci --prefix mobile-native
@@ -177,18 +268,19 @@ jobs:
 
       - name: Bundle, test native app and shared session core
         timeout-minutes: 30
-        run: make test-native
+        run: make test-native check-mermaid-freshness
 
   api-package:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'api-package') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: appwire-client/typescript/package-lock.json
 
       - name: Install protocol development dependencies
         run: npm ci --prefix appwire-client/typescript
@@ -197,7 +289,10 @@ jobs:
         run: make test-api-package
 
   static-build:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'static-build') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -218,10 +313,19 @@ jobs:
       - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
         run: GOOS=windows make vet
 
+      # Building and vetting every GO_MODULES module downloads the modules
+      # nearly every kind needs, so this lane saves the shared module cache.
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+          modules: "true"
 
   lint-golangci:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-golangci') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -238,8 +342,10 @@ jobs:
       # points. That path hashes the checkout path, which is the same on every
       # hosted runner, so a restored cache lands where make lint looks. The
       # key carries the linter version, its config, and the Go version; like
-      # the Go build cache it restores the newest entry by prefix and saves
-      # only on main.
+      # the Go build cache it restores the newest entry by prefix, saves only
+      # on main, and saves after a failed lint too: a cold run that times out
+      # has still filled it, and skipping the save would leave every later
+      # run as cold.
       - name: Resolve golangci-lint cache
         id: golangci-cache
         env:
@@ -267,12 +373,15 @@ jobs:
         run: make lint-golangci
 
       - uses: actions/cache/save@v6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true' }}
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   # The tagged compile floors take minutes of their own, compiling and linting
   # every module under the evenerfuzz and eval tags, so they run on a runner
@@ -280,7 +389,10 @@ jobs:
   # golangci analysis differ from the untagged sweep's, so both caches are
   # this lane's own kind. `static` requires this lane too.
   lint-tagged:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-tagged') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -318,15 +430,19 @@ jobs:
         run: make lint-evenerfuzz lint-eval
 
       - uses: actions/cache/save@v6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true' }}
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   lint-repository:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -350,6 +466,9 @@ jobs:
         run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   # Both fuzz consistency checks are fast, static AST analyses over the same
   # target manifest and registry inputs; running them in one lane pays a
@@ -357,7 +476,10 @@ jobs:
   # its own script directly and fails the lane on its own verdict, so both
   # gates keep their teeth.
   fuzz-checks:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz-checks') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -377,18 +499,22 @@ jobs:
         run: make fuzz-registry-check
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
+    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every static lane
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   # The root module's race run is two lanes on separate runners: cmd/evener-hub
   # (its ~2100 mostly serial tests, as 12 shards) and everything else. On one
@@ -396,11 +522,15 @@ jobs:
   # `race-root`, the required check, passes only when both lanes do.
   race-root-parts:
     name: race-root / ${{ matrix.part }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'race-root-parts') }}
     strategy:
       fail-fast: false
       matrix:
         part: [hub, rest]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_root_parts || '[]') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -435,7 +565,7 @@ jobs:
 
       # Race skips the survey and timing capture, so raw hub output stays here.
       - name: Keep failed hub race logs
-        if: failure() && matrix.part == 'hub'
+        if: (failure() || cancelled()) && matrix.part == 'hub'
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-race-root-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -446,27 +576,39 @@ jobs:
             /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   race-root:
     if: always()
-    needs: [race-root-parts]
+    needs: [changes, race-root-parts]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require both root race lanes
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
+  # The agent module's race run is split across two runners, agent-1 and
+  # agent-2, each running half of its eight equally weighted shards
+  # (RACE_AGENT_PART); as one unsharded -race binary it was the longest lane.
+  # nonagent runs every other non-root module. `race-modules`, the required
+  # check, passes only when every lane does.
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'race-module-shards') }}
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
-        scope: [agent, nonagent]
+        scope: [agent-1, agent-2, nonagent]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_module_shards || '[]') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -474,12 +616,23 @@ jobs:
         with:
           go-cache-kind: race-${{ matrix.scope }}
 
+      # Sized to the runner, as race-root's hub lane is: the load-aware
+      # budgets would read a fresh runner's checkout load and start too few.
       - name: Test (race detector — ${{ matrix.scope }})
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        env:
+          SCOPE: ${{ matrix.scope }}
+          AGENT_SHARD_CONCURRENCY: 4
+          AGENT_SHARD_PARALLEL: 3
+        run: |
+          case "$SCOPE" in
+          agent-*) make test-race RACE_SCOPE=agent RACE_AGENT_PART="${SCOPE#agent-}/2" ;;
+          *) make test-race RACE_SCOPE="$SCOPE" ;;
+          esac
 
-      # Agent race tests are unsharded, and the module log has full got/want.
-      - name: Keep failed agent race log
-        if: failure() && matrix.scope == 'agent'
+      # Race skips timing capture, so a failed shard's log stays in the
+      # scratch directory the runner keeps; the module log replays it.
+      - name: Keep failed agent race logs
+        if: (failure() || cancelled()) && startsWith(matrix.scope, 'agent-')
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-race-modules-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -488,31 +641,41 @@ jobs:
           path: |
             /dev/shm/evener-module-tests.*/agent.log
             /tmp/evener-module-tests.*/agent.log
+            /dev/shm/evener-module-tests.*/tmp/agent/agent-test-shards.*/shard[0-9]*.log
+            /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/shard[0-9]*.log
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   race-modules:
     if: always()
-    needs: [race-module-shards]
+    needs: [changes, race-module-shards]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every non-root race lane
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   # The gate's two waves, the root module (full suite) and every other module,
   # took 131s and 142s one after the other on a single runner; each part runs
   # on its own runner instead. `tests` below keeps the required check name.
   tests-parts:
     name: tests / ${{ matrix.scope }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'tests-parts') }}
     strategy:
       fail-fast: false
       matrix:
         scope: [root, nonroot]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_tests_parts || '[]') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -523,6 +686,15 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+      - name: Retirement timing environment
+        if: ${{ matrix.scope == 'root' }}
+        run: |
+          uname -r
+          nproc
+          lscpu
+          findmnt -T /dev/shm -o TARGET,FSTYPE,OPTIONS
+          findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+          df -Pk /dev/shm /tmp
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -531,12 +703,36 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
+          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: /tmp/evener-module-tests.retire/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
-      # Survey failure replay is abbreviated. Keep the full surveys and raw
-      # timing-capture shard text, never the surrounding homes or test binaries.
+
+      # Same ordering rule as web-unit above: the cache save precedes the
+      # timing gate so a budget failure still saves a trimmed entry.
+      - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
+      # The timing ratchet's rows come from the test run above (issue #144), so
+      # the budget is enforced without a second full pass. Each lane checks its
+      # own scope: the rows name only the packages this lane measured, and a
+      # missing file fails the check rather than passing silently. A merge
+      # group is warn-only, for the reason given in web-unit.
+      - name: Timing budget (rows from the same test run)
+        env:
+          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
+        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+
+      # Survey failure replay is abbreviated. Keep the full surveys, raw
+      # timing-capture shard text and the retirement phase trace, never the
+      # surrounding homes or test binaries. After the timing check so a
+      # timing-only failure still collects them.
+      # A job stopped at its time limit can end cancelled rather than failed,
+      # and a hang's logs are the ones most worth keeping, so a cancelled job
+      # keeps them too. The same holds for every failed-log step in this workflow.
       - name: Keep failed hub and agent test logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: failed-go-tests-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -551,27 +747,18 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
-
-      # Same ordering rule as web-unit above: the cache save precedes the
-      # timing gate so a budget failure cannot skip the save.
-      - uses: ./.github/actions/go-cache-save
-
-      # The timing ratchet's rows come from the test run above (issue #144), so
-      # the budget is enforced without a second full pass. Each lane checks its
-      # own scope: the rows name only the packages this lane measured, and a
-      # missing file fails the check rather than passing silently. A merge
-      # group is warn-only, for the reason given in web-unit.
-      - name: Timing budget (rows from the same test run)
-        env:
-          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
-        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+            /dev/shm/evener-module-tests.*/retire-overlap-phases.tsv
+            /tmp/evener-module-tests.*/retire-overlap-phases.tsv
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
   # skips this exact set so the timing ratchet measures the stable suite; this
   # lane runs it without a timing budget because its wall time tracks the runner.
   hub-integration:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'hub-integration') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -587,18 +774,26 @@ jobs:
 
   tests:
     if: always()
-    needs: [tests-parts, hub-integration]
+    needs: [changes, tests-parts, hub-integration]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Require every test lane
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
+  # fuzz is a required check with no aggregate of its own, and a skip
+  # reports as passing. It skips when the changes job names it, or when the
+  # run is cancelled first; a cancelled run fails the aggregates, so it
+  # cannot pass the required checks either way.
   fuzz:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -610,6 +805,49 @@ jobs:
         run: make fuzz
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
+  # The repository's Actions cache holds 10GB and evicts the least recently
+  # accessed entries beyond it. Every main push saves a new entry for each Go
+  # cache kind, the golangci-lint analysis caches and the shared module cache,
+  # all keyed by commit, and runs restore only the newest entry per key
+  # prefix. This job keeps main at that one generation: once every lane has
+  # finished it deletes each such entry on main that a newer entry with the
+  # same prefix supersedes. It never deletes the newest entry of a prefix, so
+  # a lane that saved nothing this run keeps its last entry; an entry another
+  # main run deleted first is already gone, which is not a failure.
+  cache-prune:
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [web, tests, static, race-root, race-modules, fuzz]
+    runs-on: ubuntu-24.04
+    permissions:
+      # Lists and deletes cache entries. No other job in this workflow gets
+      # write access to Actions.
+      actions: write
+    steps:
+      - name: Delete superseded cache entries on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          entries="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --sort created_at --order desc --limit 1000 --json id,key \
+            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
+          # Newest first, so the first entry of each prefix is the one kept.
+          superseded="$(printf '%s\n' "$entries" | awk 'NF == 2 && seen[$2]++ { print $1 }')"
+          deleted=0
+          for id in $superseded; do
+            if gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; then
+              deleted=$((deleted + 1))
+            else
+              echo "Cache entry $id was not deleted; another main run may have deleted it first."
+            fi
+          done
+          echo "Deleted $deleted superseded cache entries."
+          gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
+            --jq '"Cache usage: \(.active_caches_count) entries, \(.active_caches_size_in_bytes / 1e9 * 100 | round / 100) GB"'
 
   # A merge-group run reports its results on the group's read-only queue
   # branch, never on the member PRs. When the group fails a required check —
@@ -627,6 +865,7 @@ jobs:
     if: always() && github.event_name == 'merge_group' && failure()
     needs: [web, tests, static, race-root, race-modules, fuzz]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       # Reads the group's commits and this run's failed jobs, and writes one
       # comment on each member PR. No other job in this workflow gets these.

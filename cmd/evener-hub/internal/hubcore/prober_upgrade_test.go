@@ -60,7 +60,7 @@ func TestRosterReportsRestartRequiredAfterProtocolUpgrade(t *testing.T) {
 		t.Fatal("unreadable activity must not be reported as current")
 	}
 
-	if NormalizeState(entry.Status) != "restartRequired" || attentionLevel(NormalizeState(entry.Status)) != "needs_you" {
+	if NormalizeState(entry.Status) != "restartRequired" || attentionLevel(NormalizeState(entry.Status), false, false) != "needs_you" {
 		t.Fatal("protocol mismatch must remain visible in navigation attention")
 	}
 	_, replacement := startProbeDaemon(t, probeDaemonConfig{

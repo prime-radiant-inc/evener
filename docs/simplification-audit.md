@@ -294,17 +294,22 @@ wrong (`fuzz-corpus-scan` claims CI). **Change:** keep summary plus one failure
 line per target; move the narrative into the doc it generates. **Risk:** low.
 **Delta:** −300 to −400 comment lines, fewer false claims.
 
-**F23. `docs/superpowers/plans` is 472 files and 401,038 lines — 65% of all
-Markdown — and only five plan paths are cited by Go code.**
-`docs-site/scripts/check.mjs` already excludes `docs/superpowers/` from link
-checking. Jesse's ruling: plans may go, specs stay.
-**Change:** delete `docs/superpowers/plans/`, fix the five citations
-(`agent/doctor/apilog.go`, `agent/internal/atif/atif.go`,
-`agent/session_notes_committed_test.go`, `agent/session_turn_boundary_test.go`,
-`appwire/daemon_test.go`, `llm/providers/anthropic/protocol_test.go`), and the
-`scripts/measure-transcript-read-model.sh` header reference; drop the `plans/`
-row from `docs/superpowers/README.md`. **Risk:** low — no gate reads them.
-**Delta:** −401,038 lines.
+**F23. `docs/superpowers/plans` held 472 files and 401,038 lines.**
+At the audit base that was 65% of all Markdown, and only five plan paths were
+cited by Go code. Two mass deletions landed before this finding was published
+and took it to 81 files and 55,129 lines, so the original figure was stale on
+arrival. `docs-site/scripts/check.mjs` excludes `docs/superpowers/` from link
+checking, so no gate reads them. Jesse's ruling: plans may go, specs stay.
+**Done:** all 44 plans deleted (11,942 lines); the directory is gone. The first
+pass kept 43 by a retention rule (dated 2026-10-15 or later, or cited), because
+the fleet-audit plan held D4 (replace the 50-delivery watch budget with one
+coalesced delivery per minute) and five other decisions no code implemented.
+The live program's open work and its six decisions were handed to issue #6029
+first, which is what let the directory go. Five references were repaired in the
+same commit: the archive index, `docs/design/session-activity-api.md`,
+`docs/research/2026-10-17-documentation-patterns.md`, `sendQueueGate.test.ts`
+(provenance only), and `scripts/measure-transcript-read-model.sh`.
+**Risk:** low. **Delta:** −11,942 lines.
 
 **F24. The doc archive beyond specs is also mostly uncited.** 899 superpowers
 files, 522,157 lines; only 68 are cited anywhere outside the tree. `handoffs` (6),
@@ -360,9 +365,12 @@ derivation. **Delta:** −150 lines now, one source of truth for the rest.
 
 **F30. A 3.5 MB generated module is rebuilt on every native test run.**
 `mobile-native/src/generated/mermaidPage.ts` is a two-line file whose second line
-is a 3.5 MB string; `mermaidPage.test.ts:26` re-bundles mermaid+DOMPurify and
-compares, every `npm test`. **Change:** move the freshness assertion behind a
-Make target; the committed bundle stays (it is what makes the WebView offline).
+is a 3.5 MB string; `mermaidPage.test.ts:26` re-bundled mermaid+DOMPurify and
+compared it, every `npm test`. **Done:** the freshness assertion moved to
+`make check-mermaid-freshness` (`scripts/check-mermaid-freshness.mts`), so
+the rebuild no longer rides every test run; the test keeps its five string
+assertions on the committed bundle. The bundle stays, because it is what makes
+the WebView work offline.
 **Risk:** low. **Delta:** one esbuild run per test run. The bundle stays in the
 module graph either way, because `MermaidDiagram.tsx` and
 `mermaidPageContent.ts` import it directly.

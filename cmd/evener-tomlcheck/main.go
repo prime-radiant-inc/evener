@@ -8,7 +8,12 @@
 // It prints one violation per line in `path:line: message` format and exits
 // non-zero when violations exist.
 //
-// Run it via `make lint-naming` (or directly: `go run ./cmd/evener-tomlcheck`).
+// Run it via `make lint-naming`, or directly through the dev binary that
+// dispatches it: `go run ./cmd/evener-dev/bin tomlcheck`. The package name here
+// is the tool's, not a program's: cmd/evener-* directories hold library
+// packages with a Run entry point, and a main elsewhere dispatches them. The
+// dev tools go through cmd/evener-dev/bin (see its main.go); cmd/evener-migrate
+// is reached as `evener migrate` instead.
 //
 // A single key can opt out with a `# evener:naming-ignore` marker on the
 // immediately preceding line. Use sparingly — every opt-out should also

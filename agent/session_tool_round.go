@@ -8,8 +8,10 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -121,6 +123,98 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 		}
 	}
 	return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalBareTextExhausted}
+}
+
+// batchToolCalls renders one PostToolBatch tool_calls entry per call in the
+// round. It maps the four fields the event documents directly instead of going
+// through toolHookInput, which would run the whole hookInput builder (two mu
+// sections, currentEnv, TranscriptPath) per call for three of them:
+//
+// A call whose raw bytes the repair step rejected omits tool_input, exactly as
+// PostToolUse does for the same call; the raw-argument bound is checked before
+// any decode, so oversized or invalid-UTF-8 bytes never reach a lossy
+// json.Unmarshal. A call with no positional result (an aborted round) carries an
+// empty tool_response.
+// beginToolRound starts the per-round record of dispatched arguments. The map
+// is replaced, not cleared, so a round's entries cannot outlive it: without
+// this a long-lived session would retain every tool payload it ever ran.
+func (s *Session) beginToolRound() {
+	s.mu.Lock()
+	s.dispatchedToolArgs = map[string][]byte{}
+	s.mu.Unlock()
+}
+
+// recordDispatchedToolArguments remembers the arguments a call actually ran
+// with, after the repair step and any PreToolUse updatedInput.
+func (s *Session) recordDispatchedToolArguments(call llm.ToolCallData) {
+	if s == nil || call.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.dispatchedToolArgs == nil {
+		s.dispatchedToolArgs = map[string][]byte{}
+	}
+	s.dispatchedToolArgs[call.ID] = append([]byte(nil), call.Arguments...)
+	s.mu.Unlock()
+}
+
+// dispatchedToolArguments returns the arguments call was dispatched with, or
+// its original bytes when nothing was recorded (a call that never dispatched).
+func (s *Session) dispatchedToolArguments(call llm.ToolCallData) []byte {
+	s.mu.Lock()
+	raw, ok := s.dispatchedToolArgs[call.ID]
+	s.mu.Unlock()
+	if ok {
+		return raw
+	}
+	return call.Arguments
+}
+
+// batchToolInput decodes one dispatched call's arguments for PostToolBatch,
+// through the registered tool's own decoder so an exact integer survives as it
+// does for the tool and for the per-tool hooks.
+func (s *Session) batchToolInput(call llm.ToolCallData) map[string]any {
+	raw := s.dispatchedToolArguments(call)
+	if len(raw) == 0 || tool.ValidateRawArguments(raw) != nil {
+		return nil
+	}
+	var input map[string]any
+	registered := s.reg.Get(call.Name)
+	if registered == nil {
+		registered = &tool.RegisteredTool{}
+	}
+	if err := registered.UnmarshalArguments(raw, &input); err != nil {
+		return nil
+	}
+	return input
+}
+
+func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
+	out := make([]hooks.BatchToolCall, len(calls))
+	for i, call := range calls {
+		// prepareToolCall synthesizes an ID for a provider call that had none,
+		// and dispatch records the arguments under it. Resolve it first, so the
+		// lookup below finds them and the batch names the call that ran.
+		callID := call.ID
+		if callID == "" && i < len(results) {
+			callID = results[i].CallID
+		}
+		// batchToolInput applies the same raw-argument bound and the same
+		// per-tool decoder as dispatch, so a rejected byte sequence yields no
+		// input and an exact integer keeps its value.
+		input := s.batchToolInput(llm.ToolCallData{Name: call.Name, ID: callID, Arguments: call.Arguments})
+		response := ""
+		if i < len(results) {
+			response = results[i].Output
+		}
+		out[i] = hooks.BatchToolCall{
+			ToolName:     toolname.EvenerToClaude(call.Name),
+			ToolInput:    input,
+			ToolUseID:    callID,
+			ToolResponse: response,
+		}
+	}
+	return out
 }
 
 // execToolBatch executes the round's tool calls and returns their results. When the
@@ -572,6 +666,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 	delivered := s.comm.called
 	text = s.comm.reply
 	s.mu.Unlock()
+	stopHookActive := s.stopHookActive.Load()
 	if !delivered && !askedThisRound {
 		return false, "", nil
 	}
@@ -583,6 +678,12 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// boundary — spec §5.1/§5.5).
 		hi := s.hookInput(plugin.HookStop)
 		hi.Reason = "communicate.end_turn"
+		// stop_hook_active tells a Stop hook whether this dispatch follows a
+		// block in the same turn, so a hook that blocks to ask for more work can
+		// tell the continuation apart and avoid blocking forever. The reply text
+		// is last_assistant_message: it is what the turn is about to deliver.
+		hi.StopHookActive = &stopHookActive
+		hi.LastAssistantMessage = text
 		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
 		for _, m := range stopResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
@@ -592,8 +693,42 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		for _, m := range stopResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+		// continue:false on Stop ends the turn: the hook's stopReason becomes the
+		// text this boundary delivers, replacing a reply the hook is vetoing. A
+		// stop takes precedence over a block -- the hook asked for the action to
+		// end, not to continue -- so it is checked first.
+		if stopResult.Stopped {
+			text = s.hookStopText(stopResult.StopReason, "Stop hook stopped this turn")
+			s.deliverHookUserMessage(text)
+			// The communicate call accepted and recorded its reply before this
+			// dispatch, so replacing only the returned text would leave clients
+			// serving the reply the hook vetoed, including after a reconnect.
+			// The hook's text becomes the turn's reply on every surface.
+			s.replaceAcceptedReply(text)
+			// The hook replaced the reply this turn would have delivered. A
+			// delegate's terminal packet must report this text, not the
+			// communicated reply it vetoed.
+			s.mu.Lock()
+			s.stopHookReplacedReply = true
+			s.mu.Unlock()
+			// A stop ends the turn exactly as the ordinary boundary does, so it
+			// must perform the same terminal-communicate bookkeeping: in a
+			// TurnEndsProcess session the latch is what lets the drain discard
+			// watch frames the model declined to wait for and keeps the process
+			// from waiting on undeliverable watch-send residue (#329, #865).
+			if delivered && s.cfg.TurnEndsProcess {
+				s.acceptTerminalCommunicate()
+			}
+			s.finishProcessingAtBoundary(ctx, boundaryState)
+			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
+				hook(s)
+			}
+			return true, text, nil
+		}
 		if stopResult.Blocked {
-			// Don't finish — keep looping.
+			// Don't finish — keep looping. The next Stop dispatch in this turn
+			// is a continuation, which is what stop_hook_active reports.
+			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
 	}
@@ -610,4 +745,20 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		hook(s)
 	}
 	return true, text, nil
+}
+
+// replaceAcceptedReply makes the hook's text this turn's reply on every
+// surface, after a Stop continue:false vetoed the one the communicate call had
+// already accepted and recorded.
+func (s *Session) replaceAcceptedReply(text string) {
+	s.mu.Lock()
+	if s.comm.called {
+		s.comm.text = text
+		s.comm.reply = text
+	}
+	if s.latestReport.called {
+		s.latestReport.text = text
+		s.latestReport.reply = text
+	}
+	s.mu.Unlock()
 }

@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // staleLaunchWeb is a web server whose unscoped launch list is cached and then
@@ -156,7 +157,7 @@ func TestLaunchRefreshOfAnEvictedEntryAnnounces(t *testing.T) {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	// The refresh is waiting on the launch check; evict the entry under it.
-	waitFor(t, func() bool { return spawner.callCount() >= 2 }, "the stale read never started a refresh")
+	testwait.Until(t, "the stale read to start a refresh", func() bool { return spawner.callCount() >= 2 })
 	web.launchModels.mu.Lock()
 	delete(web.launchModels.entries, "")
 	web.launchModels.mu.Unlock()

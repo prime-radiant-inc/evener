@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // deniedResult builds a tool.ExecResult carrying a typed file-tool sandbox denial,
@@ -60,15 +63,12 @@ func pendingIDs(s *Session) []string {
 // awaitPending blocks until exactly want escalations are pending (or fails).
 func awaitPending(t *testing.T, s *Session, want int) []string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ids := pendingIDs(s); len(ids) == want {
-			return ids
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("wanted %d pending escalations, saw %d", want, len(pendingIDs(s)))
-	return nil
+	var ids []string
+	testwait.UntilSeen(t, fmt.Sprintf("%d pending escalations", want), func() (bool, string) {
+		ids = pendingIDs(s)
+		return len(ids) == want, strconv.Itoa(len(ids))
+	})
+	return ids
 }
 
 // noRerun fails the test if the re-run path is ever taken.

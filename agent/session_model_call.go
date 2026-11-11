@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -265,6 +267,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	inFlightFrom := s.turnHistoryBaseline
+	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
+	for id := range s.rejectedToolResultDocuments {
+		suppressedDocuments[id] = struct{}{}
+	}
+	for id := range s.pendingToolResultDocuments {
+		suppressedDocuments[id] = struct{}{}
+	}
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
 	if afterSnapshot != nil {
@@ -277,12 +286,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:       profile.ID(),
-		Model:          profile.Model(),
-		Protocol:       profile.Protocol(),
-		InFlightFrom:   inFlightFrom,
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		Instance:     profile.ID(),
+		Model:        profile.Model(),
+		Protocol:     profile.Protocol(),
+		InFlightFrom: inFlightFrom,
+		dropsToolResult: func(tr *llm.ToolResultData) bool {
+			_, rejected := suppressedDocuments[tr.ToolCallID]
+			return rejected
+		},
+		// A dropped document was rejected for delivery, not read successfully;
+		// the request copy says so and the transcript keeps the payload (#4465).
+		annotateDroppedToolResult: true,
+		protocolOf:                s.instanceProtocol,
+		canonicalModel:            func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
@@ -335,8 +351,20 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
+	// The expanded history keeps the target-policy thinking and every
+	// tool-result payload so the fallback chain can apply each target's own
+	// replay and media policy; the primary request is projected for the
+	// primary's wire before it is built and budgeted (#4563, #4217).
+	untrimmedHistory := history
+	history = projectThinkingForTarget(profile, history)
+	history = projectToolResultMediaFor(profile, history)
+
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+	s.mu.Lock()
+	s.roundFallbackMessages = untrimmedReq.Messages
+	s.mu.Unlock()
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -381,10 +409,20 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
 		for _, notification := range appended {
-			history = append(history, scope.projectTurnMessage(notification, true))
+			// The appended turns carry no replay-sensitive thinking or
+			// tool-result media; both the dispatched history and the unprojected
+			// fallback source take them so a fallback sees the reloaded
+			// instructions too (#4563, #4217).
+			message := scope.projectTurnMessage(notification, true)
+			history = append(history, message)
+			untrimmedHistory = append(untrimmedHistory, message)
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+		s.mu.Lock()
+		s.roundFallbackMessages = untrimmedReq.Messages
+		s.mu.Unlock()
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
@@ -503,7 +541,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// publication claims exactly that generation, note generation
 			// included — even for an empty note. A FORCED operation is never
 			// captured here; only its round-tail dispatch claims it.
-			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn); err != nil {
 				s.emit(bareWarningDataFromError("context strategy error", err))
@@ -684,7 +722,9 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
-		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
+		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta, func(mediaType string) bool {
+			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
+		})
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -797,7 +837,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
 }
 
-func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn) []llm.Message {
+func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {
 	messages := make([]llm.Message, 0, len(base)+len(deltaTurns))
 	for _, msg := range base {
 		if msg.Role != llm.RoleSystem && msg.Role != llm.RoleDeveloper {
@@ -808,8 +848,26 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 	// Responses-continuation delta path (openai target): the Responses builder
 	// keeps its own reasoning guard, and selectResponsesContinuationAnchorCandidate
 	// already filtered self-echo TurnNotesContext turns against the full history.
-	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true})...)
+	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true, dropsToolResultMedia: dropsMedia})...)
 	return messages
+}
+
+// projectToolResultMediaFor returns messages with tool-result media bytes the
+// profile's row cannot see removed. A fallback reuses the primary's built
+// request, so it applies the fallback's own delivery decision before dispatch
+// and budgeting (#4217).
+func projectToolResultMediaFor(profile *provider.Profile, messages []llm.Message) []llm.Message {
+	if profile == nil {
+		return messages
+	}
+	scope := replayScope{dropsToolResultMedia: func(mediaType string) bool {
+		return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
+	}}
+	out := append([]llm.Message(nil), messages...)
+	for i := range out {
+		out[i] = scope.projectToolResultMedia(out[i])
+	}
+	return out
 }
 
 func responsesContinuationTurnKinds(turns []schema.Turn) []string {
@@ -904,7 +962,35 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // failure from agent quiescence; the original error is preserved via
 // errors.Unwrap, kata 3xbh). The outer lifecycle error boundary remains an
 // idempotent tail for this provider-owned path.
-func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool, contextWarningEmitted bool) (retry bool, ferr error) {
+func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried, documentRejectRetried *bool, contextWarningEmitted bool) (retry bool, ferr error) {
+	// A document-stripped retry that still fails did not resolve the error, so
+	// its speculative suppression must not outlive it (#4465).
+	s.rollbackSpeculativeToolResultDocuments()
+	// A provider that rejects a tool-result document fails the whole request.
+	// Omit those bytes and retry the round once (#4465); the transcript keeps
+	// them, and the warning says what happened. Only a rejection that names a
+	// document persists the suppression; any other invalid request strips them
+	// for one speculative retry, so an unrelated 400 cannot bury a document the
+	// provider already accepted.
+	if !*documentRejectRetried && llm.Kind(err) == llm.KindInvalidRequest {
+		if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
+			*documentRejectRetried = true
+			subject := "a tool-result document"
+			if len(ids) > 1 {
+				subject = pluralizedUnit(len(ids), "tool-result document")
+			}
+			if documentRejectionEvidence(err) {
+				s.suppressRejectedToolResultDocuments(ids)
+				s.emit(bareWarningDataFromError(
+					"Provider rejected "+subject+" — retrying without the document payload", err))
+			} else {
+				s.speculateRejectedToolResultDocuments(ids)
+				s.emit(bareWarningDataFromError(
+					"Provider rejected the request — retrying without the tool-result document payload", err))
+			}
+			return true, nil
+		}
+	}
 	dec := classifyModelError(
 		isTurnCancellation(ctx, err),
 		llm.Kind(err),
@@ -956,15 +1042,175 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
+
+	// StopFailure, the event an operator uses to log a failed turn and send an
+	// alert. It fires after the failure boundary, still in the terminal branch,
+	// so a hook's own duration cannot inflate the failed turn's recorded duration
+	// or delay the idle transition. It fires instead of Stop: a failed turn never
+	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
+	// outside s.mu, and every output they produce is discarded — the turn is
+	// already over, so nothing can steer or stop it.
+	if s.hookRunner != nil {
+		hi := s.hookInput(plugin.HookStopFailure)
+		hi.Error = hooks.ClaudeErrorName(err)
+		hi.ErrorDetails = hookErrorDetails(err)
+		// last_assistant_message is the failure text the conversation records,
+		// trimmed exactly as TurnFailureInfo.Message trims it, not err.Error():
+		// a hook must see what the reader sees.
+		hi.LastAssistantMessage = strings.TrimSpace(errData.Error)
+		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
+	}
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// hookErrorDetails renders a failed model call as the StopFailure
+// error_details value: the HTTP status and provider error code, whichever are
+// known, never a value the error does not carry. It is empty when neither is.
+func hookErrorDetails(err error) string {
+	providerErr, ok := errors.AsType[llm.Error](err)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	if status := providerErr.StatusCode(); status != 0 {
+		parts = append(parts, fmt.Sprintf("status=%d", status))
+	}
+	if code := strings.TrimSpace(providerErr.ErrorCode()); code != "" {
+		parts = append(parts, "code="+code)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // isProviderTerminalError identifies the wrapper returned by handleModelError
 // (and any underlying provider error it carries) so the outer drain loop does
 // not repeat goal termination or the idle-boundary provenance transition.
 func isProviderTerminalError(err error) bool {
-	var providerErr llm.Error
-	return strings.HasPrefix(err.Error(), "provider error: ") && errors.As(err, &providerErr)
+	_, ok := errors.AsType[llm.Error](err)
+	return strings.HasPrefix(err.Error(), "provider error: ") && ok
+}
+
+// takeRoundFallbackMessages returns and clears the round's unprojected request
+// messages kept for per-target fallback projection (#4563, #4217).
+func (s *Session) takeRoundFallbackMessages() []llm.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := s.roundFallbackMessages
+	s.roundFallbackMessages = nil
+	return msgs
+}
+
+// suppressRejectedToolResultDocuments records tool-call IDs whose document
+// payload the provider rejected, so request assembly omits those bytes from
+// every later request this session makes (#4465). The transcript keeps them.
+func (s *Session) suppressRejectedToolResultDocuments(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rejectedToolResultDocuments == nil {
+		s.rejectedToolResultDocuments = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		s.rejectedToolResultDocuments[id] = struct{}{}
+	}
+}
+
+// speculateRejectedToolResultDocuments records IDs whose document bytes a
+// speculative retry omits. The strip becomes permanent only if the retry
+// resolves the error (#4465).
+func (s *Session) speculateRejectedToolResultDocuments(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingToolResultDocuments == nil {
+		s.pendingToolResultDocuments = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		s.pendingToolResultDocuments[id] = struct{}{}
+	}
+}
+
+// rollbackSpeculativeToolResultDocuments drops a speculative strip that did
+// not resolve the error, so later requests carry the payload again (#4465).
+func (s *Session) rollbackSpeculativeToolResultDocuments() {
+	s.mu.Lock()
+	s.pendingToolResultDocuments = nil
+	s.mu.Unlock()
+}
+
+// commitSpeculativeToolResultDocuments promotes a speculative strip whose
+// retry succeeded: the rejection was in fact about the documents (#4465).
+func (s *Session) commitSpeculativeToolResultDocuments() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingToolResultDocuments) == 0 {
+		return
+	}
+	if s.rejectedToolResultDocuments == nil {
+		s.rejectedToolResultDocuments = map[string]struct{}{}
+	}
+	for id := range s.pendingToolResultDocuments {
+		s.rejectedToolResultDocuments[id] = struct{}{}
+	}
+	s.pendingToolResultDocuments = nil
+}
+
+// documentRejectionEvidence reports whether a provider rejection names the
+// document payload — the only evidence that justifies suppressing it for the
+// rest of the session (#4465). It reads the provider's own rejection, not
+// Evener's configuration hint (which mentions the provider's documentation) or
+// the provider identity label.
+func documentRejectionEvidence(err error) bool {
+	text := err.Error()
+	if hint := llm.ErrorHint(err); hint != "" {
+		text = strings.Replace(text, " (hint: "+hint+")", "", 1)
+	}
+	if providerErr, ok := errors.AsType[llm.Error](err); ok {
+		if name := providerErr.Provider(); name != "" {
+			text = strings.ReplaceAll(text, name, "")
+		}
+	}
+	text = strings.ToLower(text)
+	return strings.Contains(text, "document") || strings.Contains(text, "pdf")
+}
+
+// isDocumentPayloadSizeRejection reports a request-size rejection (HTTP 413 or
+// its error code). Compaction cannot recover one caused by the newest tool
+// results, because compaction preserves that tail (#4465).
+func isDocumentPayloadSizeRejection(err error) bool {
+	providerErr, ok := errors.AsType[llm.Error](err)
+	if !ok {
+		return false
+	}
+	if providerErr.StatusCode() == 413 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(providerErr.ErrorCode())) {
+	case "request_too_large", "payload_too_large", "too_large":
+		return true
+	}
+	return false
+}
+
+// toolResultDocumentCallIDs returns the tool-call IDs of the tool-result
+// document payloads a request carries.
+func toolResultDocumentCallIDs(req llm.Request) []string {
+	var ids []string
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
+				continue
+			}
+			if !llm.IsDocumentMediaType(p.ToolResult.ImageMediaType) {
+				continue
+			}
+			ids = append(ids, p.ToolResult.ToolCallID)
+		}
+	}
+	return ids
 }
 
 // modelErrorAction names the branch handleModelError takes on a failed model call.
@@ -1272,6 +1518,15 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
+	// The primary request was projected for its target. Fallbacks apply their
+	// own thinking and media policy to the round's unprojected messages instead
+	// of inheriting the primary's (#4563, #4217). A direct caller with no
+	// prepared round keeps the
+	// request's own full-history shadows.
+	fallbackHistory := fullHistory
+	if base := s.takeRoundFallbackMessages(); len(base) > 0 {
+		fallbackHistory = base
+	}
 	// The round's fallback chain is fixed here, at the round's model-call
 	// boundary, from a copy taken under s.mu. SetModel revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
@@ -1386,10 +1641,20 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fullHistory)
+			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
 			if !ok {
 				break
 			}
+			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
+			// A fallback reuses the primary's built messages, so it applies its
+			// own media decision here; the budget below then prices exactly what
+			// this target receives (#4217).
+			fbReq.Messages = projectToolResultMediaFor(fbProfile, fbReq.Messages)
+			// The continuation builder priced the unprojected messages; the
+			// projections above removed thinking and media this target does not
+			// replay or receive, so reprice both estimates before admission
+			// (#4563, #4217).
+			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
@@ -1631,7 +1896,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// precedes.
 	// The content-filter recovery fold captures no compaction operation —
 	// it is not any intent's requesting caller.
-	_, _ = s.foldWithForceCompact(ctx, "", nil, true)
+	_, _ = s.foldWithForceCompact(ctx, "", nil, triggerAuto, true)
 	s.maybeAutoSave()
 }
 
@@ -1663,11 +1928,68 @@ type replayScope struct {
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
+
+	// DropThinking strips assistant thinking/redacted_thinking from every
+	// replayed message, including the in-flight turn. See dropsReplayedThinking
+	// for the policy and its exception; provenance rules only apply when this
+	// is false.
+	DropThinking bool
+	// dropsToolResult reports whether the outgoing request must omit this tool
+	// result's media payload — a document the provider already rejected this
+	// session (#4465). Nil keeps every payload.
+	dropsToolResult func(*llm.ToolResultData) bool
+	// annotateDroppedToolResult marks a request copy of a dropped tool result
+	// as a delivery failure the model can see; the transcript keeps the
+	// original payload and its success state (#4465).
+	annotateDroppedToolResult bool
+	// dropsToolResultMedia reports whether the outgoing target cannot accept a
+	// tool-result media payload of this type. Nil keeps every payload. Set from
+	// the profile's advertised capabilities (profile.SeesToolResultMedia), so
+	// request assembly never hands an image-blind model bytes it would reject
+	// or ignore (#4217); the result's text still reaches it.
+	dropsToolResultMedia func(mediaType string) bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
 // empty protocol means "expand without filtering".
 func (rs replayScope) active() bool { return strings.TrimSpace(rs.Protocol) != "" }
+
+// dropsMedia reports whether the outgoing target cannot accept a tool-result
+// media payload of this type. A nil predicate keeps every payload.
+func (rs replayScope) dropsMedia(mediaType string) bool {
+	return rs.dropsToolResultMedia != nil && rs.dropsToolResultMedia(mediaType)
+}
+
+// projectToolResultMedia returns msg with tool-result media bytes the target
+// cannot see removed; the result's text stays (#4217). It returns msg
+// unchanged when nothing drops.
+func (rs replayScope) projectToolResultMedia(msg llm.Message) llm.Message {
+	if rs.dropsToolResultMedia == nil {
+		return msg
+	}
+	drops := false
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 && rs.dropsMedia(p.ToolResult.ImageMediaType) {
+			drops = true
+			break
+		}
+	}
+	if !drops {
+		return msg
+	}
+	parts := make([]llm.ContentPart, len(msg.Content))
+	for i, p := range msg.Content {
+		parts[i] = p
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 || !rs.dropsMedia(p.ToolResult.ImageMediaType) {
+			continue
+		}
+		tr := *p.ToolResult
+		tr.ImageData, tr.ImageMediaType = nil, ""
+		parts[i].ToolResult = &tr
+	}
+	msg.Content = parts
+	return msg
+}
 
 // producerProtocol is the wire protocol that produced a stored turn: the one
 // recorded on the turn, or — for a turn written before ResponseProtocol
@@ -1682,6 +2004,31 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 	return rs.protocolOf(t.ResponseProvider)
 }
 
+// dropsReplayedThinking reports whether the outgoing target takes no replayed
+// assistant thinking, per llm.ReplaysAssistantThinking — the one policy the
+// token estimate also uses, so pressure and compaction size what the request
+// actually carries. An OpenAI-chat target carries no reasoning as protocol
+// state (#4563); the thinking_as_text row is its deliberate exception.
+func dropsReplayedThinking(p *provider.Profile) bool {
+	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
+}
+
+// projectThinkingForTarget returns messages with the target's thinking-replay
+// policy applied: a target that does not replay assistant thinking drops it,
+// while Anthropic, Google, OpenAI Responses and a thinking_as_text row keep
+// every message as is. The round keeps the untrimmed source so each fallback
+// applies its own policy instead of inheriting the primary's (#4563).
+func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
+	if !dropsReplayedThinking(profile) {
+		return messages
+	}
+	out := append([]llm.Message(nil), messages...)
+	for i := range out {
+		out[i] = llm.TrimThinkingForReplayMessage(out[i], true)
+	}
+	return out
+}
+
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
 // Empty provenance (legacy transcripts) is always eligible. An anthropic
@@ -1692,8 +2039,11 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 // tool-call thought signatures regardless of model, and openai Responses
 // carries an opaque encrypted_content blob that only its issuing deployment
 // can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). Every other target keeps its own builder guard, so expansion
-// never strips thinking for it.
+// supported"). An openai-chat target never reaches this comparison: its
+// reasoning is display output rather than continuation state, so
+// dropsReplayedThinking strips it for the whole replay (except a
+// thinking_as_text row). Unknown protocols keep their builder guard, so
+// expansion does not strip thinking for them.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
@@ -1737,27 +2087,74 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 	return rs.producerProtocol(t) == rs.Protocol
 }
 
+// projectThinkingPart applies the N4 provenance rule and the target's thinking
+// policy to one part. provenanceKeeps is the per-turn rule (true for an
+// eligible turn or an in-flight round); false drops every thinking part.
+// Otherwise the target policy drops plain reasoning, but keeps an encrypted
+// reasoning_details array — wire continuation state the chat adapter must
+// round-trip, not the text #4563 measured — with its display text removed so
+// only the opaque detail rides. The returned part is the input unchanged when
+// nothing applies.
+func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps bool) (llm.ContentPart, bool) {
+	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
+		return p, false
+	}
+	if !provenanceKeeps {
+		return p, true
+	}
+	return llm.TrimThinkingForReplay(p, rs.DropThinking)
+}
+
 // projectTurnMessage returns t.Message with provider/model-scoped content
-// filtered per the N4 rules for the scope. In-flight turns and inactive scopes
-// pass through unchanged (identical to legacy expansion). tool_call/tool_result
-// and text/image content is never touched.
+// filtered per the N4 rules for the scope, plus the target's own thinking
+// policy. An inactive scope passes through unchanged (identical to legacy
+// expansion) unless the target policy drops thinking. In-flight turns keep the
+// N4 exemption but still lose thinking the target does not want.
+// tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
-	if !rs.active() || inFlight {
+	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
-	keepThinking := rs.thinkingReplayEligible(t)
-	keepWebSearch := rs.webSearchReplayEligible(t)
-	if keepThinking && keepWebSearch {
+	// N4 provenance and the target's thinking policy are independent gates: an
+	// inactive scope keeps the provenance rules off, while a target that does
+	// not want thinking still gets the drop.
+	provenanceKeepsThinking := true
+	keepWebSearch := true
+	if rs.active() && !inFlight {
+		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
+		keepWebSearch = rs.webSearchReplayEligible(t)
+	}
+	// Allocate only when a part actually has to go: the chat drop visits every
+	// replayed message, and most carry no thinking part at all.
+	needsFilter := false
+	for _, p := range t.Message.Content {
+		switch p.Kind {
+		case llm.ContentThinking, llm.ContentRedThinking:
+			if np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking); drop || np.Thinking != p.Thinking {
+				needsFilter = true
+			}
+		case llm.ContentWebSearch:
+			if !keepWebSearch {
+				needsFilter = true
+			}
+		}
+		if needsFilter {
+			break
+		}
+	}
+	if !needsFilter {
 		return t.Message
 	}
 	filtered := make([]llm.ContentPart, 0, len(t.Message.Content))
 	for _, p := range t.Message.Content {
 		switch p.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
-			if !keepThinking {
+			np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking)
+			if drop {
 				continue
 			}
+			p = np
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
 				continue
@@ -1768,6 +2165,52 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	msg := t.Message
 	msg.Content = filtered
 	return msg
+}
+
+// stripToolResultMedia returns msg with a tool result's media bytes removed
+// when the scope says the request must omit them (#4465); the result's text
+// stays. It returns msg unchanged when nothing drops.
+func (rs replayScope) stripToolResultMedia(msg llm.Message) llm.Message {
+	if rs.dropsToolResult == nil {
+		return msg
+	}
+	changed := false
+	parts := make([]llm.ContentPart, len(msg.Content))
+	for i, p := range msg.Content {
+		parts[i] = p
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 || !rs.dropsToolResult(p.ToolResult) {
+			continue
+		}
+		tr := *p.ToolResult
+		tr.ImageData, tr.ImageMediaType = nil, ""
+		if rs.annotateDroppedToolResult {
+			annotateSuppressedToolResult(&tr)
+		}
+		parts[i].ToolResult = &tr
+		changed = true
+	}
+	if !changed {
+		return msg
+	}
+	msg.Content = parts
+	return msg
+}
+
+// toolResultDocumentDeliveryFailure is the model-visible note left on a
+// request copy whose document payload was suppressed after a provider
+// rejection (#4465).
+const toolResultDocumentDeliveryFailure = "[document omitted: the provider rejected this document payload, so its content was not delivered]"
+
+// annotateSuppressedToolResult marks a request copy of a rejected tool-result
+// document as a delivery failure the model can see. The transcript keeps the
+// original, successful payload (#4465).
+func annotateSuppressedToolResult(tr *llm.ToolResultData) {
+	tr.IsError = true
+	if content, ok := tr.Content.(string); ok && strings.TrimSpace(content) != "" {
+		tr.Content = strings.TrimRight(content, "\n") + "\n\n" + toolResultDocumentDeliveryFailure
+		return
+	}
+	tr.Content = toolResultDocumentDeliveryFailure
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
@@ -1837,29 +2280,29 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					tr := *p.ToolResult
+					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
+					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
+						// The target cannot see this payload (or the provider
+						// rejected its document bytes), so the bytes are dropped
+						// rather than sent and rejected (#4217, #4465). The text
+						// form of the result stays; a switch that orphans earlier
+						// images says so in its persisted marker.
+						tr.ImageData, tr.ImageMediaType = nil, ""
+					}
+					if droppedDocument && scope.annotateDroppedToolResult {
+						annotateSuppressedToolResult(&tr)
+					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
-						ToolCallID: p.ToolResult.ToolCallID,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolResult,
-							ToolResult: &llm.ToolResultData{
-								ToolCallID:     p.ToolResult.ToolCallID,
-								Name:           p.ToolResult.Name,
-								Content:        p.ToolResult.Content,
-								IsError:        p.ToolResult.IsError,
-								PrevalOnly:     p.ToolResult.PrevalOnly,
-								DurationMS:     p.ToolResult.DurationMS,
-								ToolState:      p.ToolResult.ToolState,
-								ImageData:      p.ToolResult.ImageData,
-								ImageMediaType: p.ToolResult.ImageMediaType,
-							},
-						}},
+						ToolCallID: tr.ToolCallID,
+						Content:    []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &tr}},
 					})
 				}
 			}
 			resolveToolResults(t.Message)
 		case schema.TurnTool:
-			history = append(history, scope.projectTurnMessage(t, inFlight))
+			history = append(history, scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight))))
 			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()

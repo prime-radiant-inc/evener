@@ -27,18 +27,29 @@ import (
 // formatVersion/projectionID already show how easy that is to forget.
 var schemaID = schemaFieldFingerprint()
 
-// currentProjection is what this build's meta.Projection must equal:
-// projectionID with schemaID folded in, so a build whose reachable JSON
-// shape differs writes (and requires) a different string. Folding it into
-// the field readMeta always compared, rather than a separate field only a
-// schema-aware reader would look at, means a binary that predates this
-// check entirely still rejects a schema-mismatched sidecar: it runs its own
-// plain "does Projection equal my projectionID" comparison exactly as
-// before, and a schema-aware build's longer string never matches that
-// binary's bare projectionID, so it fails closed into a rebuild too (the
-// downgrade direction, not just an old sidecar read by a new binary).
+// currentProjection is what this build's meta.Projection must equal and what
+// DirFor keys the sidecar directory on: projectionID with schemaID and the
+// record layout version folded in, so a build whose reachable JSON shape or
+// record layout differs writes (and requires) a different identity. Folding
+// the layout version in matters to DirFor as much as to readMeta: two
+// binaries in one directory with different record sizes would otherwise
+// rebuild over each other's sidecars forever. Folding it into the field
+// readMeta always compared, rather than a separate field only a schema-aware
+// reader would look at, means a binary that predates this check entirely
+// still rejects a mismatched sidecar: it runs its own plain "does Projection
+// equal my projectionID" comparison exactly as before, and a newer build's
+// longer string never matches that binary's bare projectionID, so it fails
+// closed into a rebuild too (the downgrade direction, not just an old sidecar
+// read by a new binary).
 func currentProjection() string {
-	return projectionID + ":" + schemaID
+	return projectionFor(formatVersion)
+}
+
+// projectionFor is the projection identity of a binary whose sidecar layout is
+// format, so a layout change moves the sidecar directory as well as the meta
+// check.
+func projectionFor(format int) string {
+	return fmt.Sprintf("%s:%s:format%d", projectionID, schemaID, format)
 }
 
 // schemaFieldFingerprint hashes schemaFields(reflect.TypeFor[transcript.Entry]()).

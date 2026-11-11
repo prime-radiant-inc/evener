@@ -183,6 +183,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
 				Capabilities:      entry.Capabilities,
 				CapabilitiesKnown: entry.CapabilitiesKnown,
+				Failure:           appwire.CloneThreadFailure(item.ChildQuotaWaits[childID]), // the child's own usage-limit wait
 				ReadOnlyAlias:     true,
 			})
 		}
@@ -1388,6 +1389,14 @@ func registerThreadHandlers(
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
+		if params.TurnWindow != nil {
+			// A window request is served by the same path the Manager's turns
+			// operation uses: an initial window is a windowed read, and only a
+			// cursor-bearing request resumes one. The plain item listing below
+			// ignores a window entirely, and a saved session's window must come
+			// from the past index instead of an empty cursor.
+			return operations.turns(ctx, params)
+		}
 		params, err := appitempaging.ApplyBefore(params)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
@@ -1909,6 +1918,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins(ctx)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginComponents, func(ctx context.Context, params appwire.PluginComponentsParams) (appwire.PluginComponentsResponse, error) {
+		return pluginsController.Components(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
@@ -749,20 +750,13 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 		t.Fatalf("a generation bump served %q, want the stale gen-1 immediately", stale.Data[0].Model)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilSeen(t, "the cache to serve gen-2 after a generation bump", func() (bool, string) {
 		resp, err := web.fetchLaunchModels(context.Background(), "", false)
 		if err != nil {
 			t.Fatalf("fetchLaunchModels: %v", err)
 		}
-		if resp.Data[0].Model == "gen-2" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never refreshed after a generation bump: last=%q calls=%d", resp.Data[0].Model, spawner.callCount())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return resp.Data[0].Model == "gen-2", fmt.Sprintf("model=%q calls=%d", resp.Data[0].Model, spawner.callCount())
+	})
 	if got := spawner.callCount(); got != 2 {
 		t.Fatalf("launch contract called %d times, want 2 (one load, one refresh)", got)
 	}
@@ -799,13 +793,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	ctx := t.Context()
 	go startLaunchModelsPrefetch(ctx, web, func(fn func()) { fn() })
 
-	deadline := time.Now().Add(5 * time.Second)
-	for spawner.callCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the startup warm never ran the launch check")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the startup warm to run the launch check", func() bool { return spawner.callCount() > 0 })
 
 	resp, err := web.fetchLaunchModels(ctx, "", false)
 	if err != nil {
@@ -878,15 +866,15 @@ func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
 	// reader that has started reaches the shared flight while it is in progress.
 	// singleflight exposes no in-flight count, so "all readers started" plus the
 	// blocked leader is the observable bound; the assertion below is still exact.
-	waitFor(t, func() bool { return started.Load() == readers }, "the readers did not all start")
-	waitFor(t, func() bool {
+	testwait.Until(t, "every reader to start", func() bool { return started.Load() == readers })
+	testwait.Until(t, "a reader to enter the launch check", func() bool {
 		select {
 		case <-entered:
 			return true
 		default:
 			return false
 		}
-	}, "no reader entered the launch check")
+	})
 	close(release)
 	wg.Wait()
 	close(errs)
@@ -929,18 +917,6 @@ func TestLoadLaunchModelsReusesAFreshEntry(t *testing.T) {
 	}
 }
 
-// waitFor polls cond until it holds or five seconds pass.
-func waitFor(t *testing.T, cond func() bool, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal(msg)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // TestRefreshLaunchModelsUsesTheServerLifetime pins the shutdown-hygiene fix:
 // a request-triggered refresh hangs off the server's lifetime context, so hub
 // shutdown cancels an outstanding launch check instead of leaving the child to
@@ -971,13 +947,7 @@ func TestRefreshLaunchModelsUsesTheServerLifetime(t *testing.T) {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for spawner.callCount() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("the stale read never refreshed")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the stale read to refresh", func() bool { return spawner.callCount() >= 2 })
 	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
 		t.Fatalf("the refresh's context does not descend from the server lifetime: marker=%q, ctx=%v", got, spawner.contextOf())
 	}
@@ -1128,7 +1098,7 @@ func TestWaitLaunchRefreshesAwaitsInFlightRefresh(t *testing.T) {
 	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
-	waitFor(t, func() bool { return spawner.callCount() == 2 }, "the refresh never started")
+	testwait.Until(t, "the refresh to start", func() bool { return spawner.callCount() == 2 })
 
 	waited := make(chan struct{})
 	go func() {

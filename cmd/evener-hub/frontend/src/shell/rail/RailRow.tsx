@@ -39,7 +39,11 @@ import {
   watchDurationLabel,
   watchGloss,
 } from "@evener/appwire-client";
-import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import {
+  quotaWaitRemainingMs,
+  subagentTallyToShow,
+  waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import {
@@ -105,6 +109,7 @@ const CLASS = {
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
   contextSummary: requireClass(styles.contextSummary, "RailRow.module.css", "contextSummary"),
+  quotaWait: requireClass(styles.quotaWait, "RailRow.module.css", "quotaWait"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -135,8 +140,7 @@ function RowGutter({ className, testId, children }: { className: string; testId:
 // arithmetic): the dot hangs in the row's leading padding, left of the text,
 // so a dotted row's title and a quiet row's title start at exactly the same
 // x instead of state moving the title's position.
-function Signal({ wireState }: { wireState: string }) {
-  const state = cadenceStateFor(wireState);
+function Signal({ state }: { state: CadenceState }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
@@ -449,17 +453,34 @@ function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
   );
 }
 
+// RailQuotaWait is the row's second line while the session waits out a
+// provider usage limit: working, but paused until a known resume time. Without
+// it the row reads as a stuck spinner. It is its own leaf so the countdown
+// ticks without re-rendering the memoized row, and it sits inside the treeitem
+// so the wait is part of the row's accessible name.
+function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
+  const remaining = quotaWaitRemainingMs(session, useRailNow());
+  if (remaining === null) return null;
+  return (
+    <span data-testid="rail-row-quota-wait" className={CLASS.quotaWait}>
+      {waitingForQuotaText(remaining)}
+    </span>
+  );
+}
+
 function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   if (presented === "errored") return "errored";
-  // Only attention that waits on a person outranks work: a question, a turn
-  // that ended on needs_response (awaiting without a question, #4093), an
+  // Only attention that waits on a person outranks work: a question, an
   // approval (which displayState presents as awaiting), or a restart. A
-  // warning shares the amber dot family, but running jobs remain what is
-  // happening.
+  // finished turn (awaiting without a question) is not attention: running
+  // work reads as working instead (#2629). A warning shares the amber dot
+  // family only when it also blocks on a question; otherwise running jobs
+  // remain what is happening.
   const attentionOutranksWork =
-    presented === "awaiting" ||
+    (presented === "awaiting" && session.ask_pending === true) ||
+    session.approval_pending === true ||
     presented === "restartRequired" ||
     (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
@@ -474,8 +495,11 @@ function sessionStatusLabel(
   state: CadenceState,
   notStarted: boolean,
   read: RailActivityRead | null,
+  now: number,
 ): RailStatus {
   if (notStarted) return { kind: "not-started", text: "Not started" };
+  const quotaWait = quotaWaitRemainingMs(session, now);
+  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
   if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
@@ -519,12 +543,15 @@ function SessionContextCard({
   const jobs = session.running_job_count ?? 0;
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
-  const state = cadenceStateFor(effectiveState);
+  const state = cadenceStateFor(effectiveState, {
+    askPending: session.ask_pending === true,
+    approvalPending: session.approval_pending === true,
+  });
   // Only a working row asks the hub what the session is doing: every other
   // state word is already settled by the row's own fields.
   const read = useSessionActivityRead(session.ref, state === "working");
-  const status = sessionStatusLabel(session, state, notStarted, read);
   const now = useRailNow();
+  const status = sessionStatusLabel(session, state, notStarted, read, now);
   return (
     <div className={CLASS.contextCard} data-state={state}>
       <div className={CLASS.contextHead}>
@@ -606,7 +633,11 @@ function SessionTitle({
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   const effectiveState = effectiveSessionState(session);
-  const hasSignal = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
+  const signalState = cadenceStateFor(effectiveState, {
+    askPending: session.ask_pending === true,
+    approvalPending: session.approval_pending === true,
+  });
+  const hasSignal = SIGNAL_STATES.has(signalState);
   const notStarted = saysNotStarted(session, hasSignal);
   const rowRef = useRef<HTMLSpanElement>(null);
   const focusTarget = useCallback(() => rowRef.current?.closest<HTMLElement>('[role="treeitem"]') ?? null, []);
@@ -623,7 +654,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             does, since this text IS the treeitem's accessible name (no
             separate aria-label on the row). */}
         <span className={CLASS.titleLine}>
-          <Signal wireState={effectiveState} />
+          <Signal state={signalState} />
           <SessionTitle
             session={session}
             effectiveState={effectiveState}
@@ -632,6 +663,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           />
           <TrailingChevron info={info} />
         </span>
+        {cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />}
       </span>
       {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>
@@ -692,7 +724,11 @@ function ProjectRow({
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={showsRollup ? (project.rollup_state ?? "idle") : "idle"} />
+          <Signal
+            state={cadenceStateFor(showsRollup ? (project.rollup_state ?? "idle") : "idle", {
+              askPending: showsRollup && project.rollup_state === "awaiting",
+            })}
+          />
           {/* Same reasoning as SessionRow's own label above. displayName is
               the UX-fix decoration railNodes.ts's projectDisplayLabels
               stamps on when this project's name collides with a sibling's

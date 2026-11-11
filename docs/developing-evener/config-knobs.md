@@ -11,7 +11,7 @@ reference that only names a variable (in a message or a list) counts, so the
 audit catches a knob with no reference at all, not one whose reads are dead. The tables are generated from
 the `envvars` registry and the decoder in `cmd/evener-hub/config.go`, so
 a knob that nothing reads shows up as "none" in the Consumer column, and
-`internal/knobtable`'s repo test fails on it. Delete such a knob, and list a
+`make lint-repo-audit` fails on it. Delete such a knob, and list a
 removed `hub.toml` key in `removedKnobs` so a file that still sets it starts
 with a warning.
 
@@ -140,7 +140,8 @@ Dev tooling and test rigs declare these themselves.
 
 | Variable | Doc row | Consumer |
 |---|---|---|
-| `BROWSER_GUARD_CONCURRENCY` | none | `cmd/evener-dev` |
+| `BROWSER_GUARD_CONCURRENCY` | [developing-evener/testing.md](../developing-evener/testing.md) | `cmd/evener-dev` |
+| `BROWSER_GUARD_SHARD` | none | `cmd/evener-dev` |
 | `EVENER_FUZZ_PERSIST` | [developing-evener/fuzzing.md](../developing-evener/fuzzing.md) | `fuzz/promoter` |
 | `EVENER_HUB_LIVE_STACK_BIN` | none | `internal/devtool/shardrun` |
 | `EVENER_HUB_LIVE_STACK_WARM` | none | `internal/devtool/shardrun` |

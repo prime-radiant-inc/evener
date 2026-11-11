@@ -5,6 +5,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp } from "../../styles/cssBlock";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./button.module.css";
 import { Button, type ButtonProps } from "./index";
@@ -189,7 +191,7 @@ test("wrap lets the label break across lines while keeping each size's height an
   expect(css).toMatch(/\.wrap:where\(\.md\)\s*\{[^}]*min-height: 32px/);
   // The floors above are one class of specificity, like the phone block's
   // .xs/.sm/.md, and come before it, so the tap floor still wins on a phone.
-  expect(css.indexOf(".wrap:where(.md)")).toBeLessThan(css.indexOf("@media (max-width: 899px)"));
+  expect(css.indexOf(".wrap:where(.md)")).toBeLessThan(css.indexOf(`@media ${MOBILE_QUERY}`));
   // .wrap has to come after the size rules it relaxes.
   expect(css.indexOf("\n.wrap {")).toBeGreaterThan(css.indexOf("\n.md {"));
 });
@@ -303,8 +305,10 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
 // CSS source, same as the focus-ring tests above.
 test("mobile: all button sizes meet the 44px tap floor", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(mobile, "button.module.css must have a max-width:899px media block").not.toBeNull();
+  const mobile = css.match(
+    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`),
+  );
+  expect(mobile, "button.module.css must have a mobile media block").not.toBeNull();
   for (const size of ["xs", "sm", "md"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
     expect(rule, `mobile media block must override .${size}`).not.toBeNull();

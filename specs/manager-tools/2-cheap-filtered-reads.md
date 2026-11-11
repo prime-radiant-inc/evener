@@ -276,18 +276,16 @@ Existing call shapes keep their meaning byte-for-byte. The new surface:
      length.
    - **Offsets are byte offsets into that fixed encoding**, minted at
      fetch time against the version-fenced encoding, so a range can
-     never split anything that matters. WHO forms the encoding and
-     slices the range is per-arrangement, each answer named: on the
-     `serving-daemon` arrangement the SERVING DAEMON forms the
-     canonical encoding and slices the addressed range — the daemon
-     read handler that builds the response
-     (`server/appwire_read_handlers.go:98`, `handleAppThreadRead`)
-     is the assigning site, reached through the hub's client call
-     (`cmd/evener-hub/internal/appsource/local_daemon.go:648-659`,
-     the transport hop that receives it); the `hub-compat`,
-     `saved-index` and `remote-source` arrangements construct the
-     encoding hub-side (the origin routing below). The byte domain
-     is the same canonical wire encoding in every arrangement, so
+     never split anything that matters. The HUB view owner forms the
+     canonical enriched encoding before packing for every arrangement:
+     `serving-daemon`, `hub-compat`, `saved-index` and `remote-source`.
+     It retains the exact bytes for cursor-bearing items in a bounded
+     store keyed by the complete cursor identity, and every range fetch
+     validates the source fence before slicing only those retained bytes.
+     Eviction or hub restart returns the typed stale result; an existing
+     cursor never falls back to re-enriching mutable source state. The
+     byte domain is therefore the same canonical wire encoding in every
+     arrangement, so
      journey 7's equality holds per arrangement against the
      unfiltered read the Manager would issue. Range data travels
      base64-encoded, so an
@@ -833,16 +831,18 @@ Existing call shapes keep their meaning byte-for-byte. The new surface:
    serves the cap's items in transcript order plus one elision record
    naming the withheld count, with a cursor that continues inside the
    turn.
-7. **Older-daemon tolerance, visible and narrow.** Against a daemon
-   predating the capability bit (local or remote, once the remote
-   rebuild forwards the bit), `latest` windows answer through the
+7. **Older-daemon tolerance, visible and narrow.** Against a live daemon
+   predating the capability bit, `latest` windows answer through the
    hub-compat projection with `appliedBy: hub-compat`, partial when the
    page cannot cover the window, and `since`/`before`/`turn` fail the
    typed `window-unsupported-on-daemon` error; a legacy read (no window
-   params) is unchanged. Never a silent fallback: when spec 3 has
-   landed, its serving facts mark the read, and `appliedBy`
-   distinguishes who did the work — `serving-daemon`, `hub-compat`,
-   or `saved-index` for the hub's own daemonless index.
+   params) is unchanged. A stopped remote session has no live daemon to
+   advertise the bit, so for every selector form the controller asks the
+   owning hub for its saved window and passes that hub's typed failure
+   through unchanged (Jesse's ruling, 2026-11-09). Never a silent
+   fallback: when spec 3 has landed, its serving facts mark the read, and
+   `appliedBy` distinguishes who did the work — `serving-daemon`,
+   `hub-compat`, or `saved-index` for the hub's own daemonless index.
 8. **Follow-ups keep the shape.** A suggestion followed from a
    messages-only bounded window re-issues a messages-only bounded
    read, asserted.

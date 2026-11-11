@@ -8,11 +8,12 @@ import (
 )
 
 type Turn struct {
-	ID        string        `json:"id"`
-	Items     []ThreadItem  `json:"items,omitempty"`
-	ItemsView TurnItemsView `json:"itemsView"`
-	Status    string        `json:"status"`
-	Error     *TurnError    `json:"error,omitempty"`
+	ID        string             `json:"id"`
+	Items     []ThreadItem       `json:"items,omitempty"`
+	ItemsView TurnItemsView      `json:"itemsView"`
+	Elision   *ThreadTurnElision `json:"elision,omitempty"`
+	Status    string             `json:"status"`
+	Error     *TurnError         `json:"error,omitempty"`
 	// Version is the highest contributing entry ordinal + 1 (0 means an
 	// overlay-only turn with no recorded history yet).
 	Version uint64 `json:"version,omitempty"`
@@ -199,6 +200,10 @@ type ThreadItem struct {
 	Description            string                        `json:"description,omitempty"`
 	Output                 string                        `json:"output,omitempty"`
 	Error                  string                        `json:"error,omitempty"`
+	Truncated              bool                          `json:"truncated,omitempty"`
+	TruncatedBytes         int                           `json:"truncatedBytes,omitempty"`
+	InFlight               bool                          `json:"inFlight,omitempty"`
+	FetchCursor            string                        `json:"fetchCursor,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -329,6 +334,8 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	FetchCursor         string `json:"fetchCursor,omitempty"`
+	ThreadWindowParams
 	// RequestGeneration is the client's own read-request counter, echoed back
 	// on ThreadReadResponse so a client can discard a stale reply that
 	// resolves after a newer request it already issued.
@@ -350,6 +357,23 @@ type ThreadReadParams struct {
 	ExpectedAskBootGeneration string  `json:"expectedAskBootGeneration,omitempty"`
 	Offset                    *int    `json:"offset,omitempty"`
 	Limit                     *int    `json:"limit,omitempty"`
+	// WindowTransfer is the resume point inside the turn a windowed transfer
+	// page cut. Only a hub walking a bounded window transfer sets it; a client
+	// never sends it. It is deliberately absent from the generated client
+	// schema (json:"-") and travels as "windowTransfer" through
+	// MarshalJSON/UnmarshalJSON below.
+	WindowTransfer *ThreadWindowTransfer `json:"-"`
+}
+
+// ThreadWindowTransfer names the resume position of a bounded window transfer
+// page inside one turn. A hub sends it only to the daemon it reads from, so it
+// stays out of the client-facing protocol surface.
+type ThreadWindowTransfer struct {
+	TurnID   string             `json:"turnId"`
+	Position ThreadItemPosition `json:"position"`
+	// Before selects the items strictly older than Position; otherwise the
+	// transfer selects the items strictly newer.
+	Before bool `json:"before,omitempty"`
 }
 
 // PendingAskPage enumerates call composites, not questions. A nil NextOffset
@@ -385,8 +409,10 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread         Thread          `json:"thread"`
-	PendingAskPage *PendingAskPage `json:"pendingAskPage,omitempty"`
+	Thread         Thread                `json:"thread"`
+	PendingAskPage *PendingAskPage       `json:"pendingAskPage,omitempty"`
+	Window         *ThreadWindowResult   `json:"window,omitempty"`
+	Fetch          *SessionFetchResponse `json:"fetch,omitempty"`
 	// TargetSessionToolsSupported reports whether the daemon serving this thread
 	// negotiated session tools. Omission means the serving hub cannot attest it.
 	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
@@ -542,9 +568,23 @@ func decodeStrictJSON(data []byte, dst any) error {
 	return decoder.Decode(dst)
 }
 
+// MarshalJSON carries WindowTransfer, which ThreadReadParams keeps out of the
+// generated client schema. Every other field encodes exactly as it would
+// without this method.
+func (p ThreadReadParams) MarshalJSON() ([]byte, error) {
+	type wire ThreadReadParams
+	return json.Marshal(struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer,omitempty"`
+	}{wire: wire(p), WindowTransfer: p.WindowTransfer})
+}
+
 func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 	type wire ThreadReadParams
-	var decoded wire
+	var decoded struct {
+		wire
+		WindowTransfer *ThreadWindowTransfer `json:"windowTransfer"`
+	}
 	if err := decodeStrictJSON(data, &decoded); err != nil {
 		return err
 	}
@@ -566,11 +606,12 @@ func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 		if decoded.ExpectedAskRevision == nil {
 			return InvalidParams("pending ask pages require an observed ask pair")
 		}
-		if err := ValidateThreadReadParams(ThreadReadParams(decoded)); err != nil {
+		if err := ValidateThreadReadParams(ThreadReadParams(decoded.wire)); err != nil {
 			return err
 		}
 	}
-	*p = ThreadReadParams(decoded)
+	*p = ThreadReadParams(decoded.wire)
+	p.WindowTransfer = decoded.WindowTransfer
 	return nil
 }
 
@@ -579,6 +620,36 @@ type ThreadUnsubscribeParams struct {
 	Ref      string `json:"ref,omitempty"`
 }
 
+type ThreadTurnBoundary struct {
+	TurnID string `json:"turnId"`
+	Limit  int    `json:"limit"`
+}
+
+type ThreadTurnWindow struct {
+	Latest int                 `json:"latest,omitempty"`
+	Turn   string              `json:"turn,omitempty"`
+	Since  string              `json:"since,omitempty"`
+	Limit  int                 `json:"limit,omitempty"`
+	Before *ThreadTurnBoundary `json:"before,omitempty"`
+}
+
+type ThreadWindowParams struct {
+	TurnWindow        *ThreadTurnWindow `json:"turnWindow,omitempty"`
+	ItemTypes         []string          `json:"itemTypes,omitempty"`
+	PreviewBytes      int               `json:"previewBytes,omitempty"`
+	MessageBytes      int               `json:"messageBytes,omitempty"`
+	WindowBudgetBytes int               `json:"windowBudgetBytes,omitempty"`
+}
+
+const (
+	ThreadWindowPreviewBytesDefault = 2048
+	ThreadWindowMessageBytesDefault = 8192
+	ThreadWindowItemLimitDefault    = 10
+	ThreadWindowBudgetBytesDefault  = 192 << 10
+	ThreadWindowBudgetBytesFloor    = 16 << 10
+	ThreadWindowCursorLineLimit     = 10
+)
+
 type ThreadTurnsListParams struct {
 	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`
@@ -586,6 +657,7 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	ThreadWindowParams
 	// Before, when set, ends the page just before this position. With a
 	// Cursor it moves the cursor's boundary, keeping the cursor's identity
 	// fence; with none the source mints a cursor there under the thread's
@@ -598,8 +670,9 @@ type ThreadTurnsListParams struct {
 // generation: backfill pages accumulate within their snapshot in any arrival
 // order, and only latest-window reads are ordered by generation.
 type ThreadTurnsListResponse struct {
-	Data       []Turn `json:"data"`
-	NextCursor string `json:"nextCursor,omitempty"`
+	Data       []Turn              `json:"data"`
+	NextCursor string              `json:"nextCursor,omitempty"`
+	Window     *ThreadWindowResult `json:"window,omitempty"`
 	// BootGeneration is the serving daemon's boot generation for this thread,
 	// as on ThreadReadResponse. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
@@ -611,6 +684,41 @@ type ThreadTurnsListResponse struct {
 	// Authoritative is true when this page can settle uncertain state; see
 	// ThreadReadResponse.Authoritative.
 	Authoritative bool `json:"authoritative,omitempty"`
+}
+
+type ThreadTurnElision struct {
+	ExcludedByType                     map[string]int `json:"excludedByType,omitempty"`
+	CapWithheld                        int            `json:"capWithheld,omitempty"`
+	TruncatedBeyondCursorLimit         int            `json:"truncatedBeyondCursorLimit,omitempty"`
+	ElidedBeyondCursorLimit            int            `json:"elidedBeyondCursorLimit,omitempty"`
+	ContinuationCursor                 string         `json:"continuationCursor,omitempty"`
+	TypeExcludedRecovery               string         `json:"typeExcludedRecovery,omitempty"`
+	CapWithheldRecovery                string         `json:"capWithheldRecovery,omitempty"`
+	TruncatedBeyondCursorLimitRecovery string         `json:"truncatedBeyondCursorLimitRecovery,omitempty"`
+	ElidedBeyondCursorLimitRecovery    string         `json:"elidedBeyondCursorLimitRecovery,omitempty"`
+}
+
+const (
+	ThreadElisionRecoveryWiderItemTypes = "reread-wider-item-types"
+	ThreadElisionRecoveryContinuation   = "continuation"
+	ThreadElisionRecoveryWiderByteBound = "reread-wider-byte-bound"
+	// ThreadElisionRecoveryRereadSettled names the reread that recovers a
+	// withheld in-flight item: it has no version to fence, so no cursor can
+	// address it until the turn settles.
+	ThreadElisionRecoveryRereadSettled = "reread-after-settle"
+)
+
+type ThreadWindowResult struct {
+	EffectiveBudgetBytes int    `json:"effectiveBudgetBytes"`
+	AppliedBy            string `json:"appliedBy"`
+	ServedTurns          int    `json:"servedTurns"`
+	WithheldTurns        int    `json:"withheldTurns"`
+	FirstServedTurnID    string `json:"firstServedTurnId,omitempty"`
+	LastServedTurnID     string `json:"lastServedTurnId,omitempty"`
+	FirstWithheldTurnID  string `json:"firstWithheldTurnId,omitempty"`
+	LastWithheldTurnID   string `json:"lastWithheldTurnId,omitempty"`
+	TrimmedEnd           string `json:"trimmedEnd,omitempty"`
+	ContinuationCursor   string `json:"continuationCursor,omitempty"`
 }
 
 func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {

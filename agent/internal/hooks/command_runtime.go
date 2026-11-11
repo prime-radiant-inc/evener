@@ -261,8 +261,8 @@ func prepareCommandHookInvocation(hook plugin.RegisteredHook, input Input, inher
 	invocation.Env = slices.DeleteFunc(env, func(kv string) bool {
 		return strings.HasPrefix(kv, "CLAUDE_EFFORT=")
 	})
-	if input.Effort != "" {
-		invocation.Env = append(invocation.Env, "CLAUDE_EFFORT="+input.Effort)
+	if input.Effort != nil && input.Effort.Level != "" {
+		invocation.Env = append(invocation.Env, "CLAUDE_EFFORT="+input.Effort.Level)
 	}
 	return invocation, nil
 }

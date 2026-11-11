@@ -290,16 +290,21 @@ func (cm *Manager) estimateTokens(turns []schema.Turn) int {
 }
 
 // estimateTokensFor is the snapshot-taking estimator: the caller passes the
-// same profile whose window its reading used.
+// same profile whose window its reading used. It projects each turn with the
+// same thinking-replay policy request assembly applies, so a target that drops
+// plain chat reasoning does not size compaction against bytes it never sends
+// (#4563); a request-level estimate keeps billing what the builder serializes.
 func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn) int {
+	res := resolvedTargetOf(prof)
+	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
-		messages = append(messages, t.Message)
+		messages = append(messages, llm.TrimThinkingForReplayMessage(t.Message, dropPlainThinking))
 	}
-	return llm.EstimateMessagesInputTokensForResolved(resolvedTargetOf(prof), messages).Tokens
+	return llm.EstimateMessagesInputTokensForResolved(res, messages).Tokens
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

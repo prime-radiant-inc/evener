@@ -48,7 +48,7 @@ func TestSubmitNotification_DropIfFull(t *testing.T) {
 
 func TestSubmitContinuation(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SubmitContinuation("continue")
+	srv.SubmitContinuation("session-1", "continue")
 	select {
 	case msg := <-srv.InputCh():
 		if msg.Kind != agent.EntryContinuation {
@@ -56,6 +56,9 @@ func TestSubmitContinuation(t *testing.T) {
 		}
 		if msg.Text != "continue" {
 			t.Errorf("Text: got %q, want continue", msg.Text)
+		}
+		if msg.SessionID != "session-1" {
+			t.Errorf("SessionID: got %q, want session-1", msg.SessionID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout: SubmitContinuation did not deliver a message")
@@ -65,11 +68,11 @@ func TestSubmitContinuation(t *testing.T) {
 func TestSubmitContinuation_DropIfFull(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	// Fill the 1-slot buffer.
-	srv.SubmitContinuation("first")
+	srv.SubmitContinuation("session-1", "first")
 	// Second call must not block even though the channel is full.
 	done := make(chan struct{})
 	go func() {
-		srv.SubmitContinuation("second")
+		srv.SubmitContinuation("session-1", "second")
 		close(done)
 	}()
 	select {

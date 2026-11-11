@@ -3041,6 +3041,8 @@ function SpawnForm({
                 <PluginSelectionPanel
                   preview={previewResponse}
                   selection={pluginSelection}
+                  client={client}
+                  host={submittedSource}
                   removeOnly={pluginPreview.state.status === "error"}
                   onSelectionChange={handlePluginSelectionChange}
                   onRetry={pluginPreview.retry}
@@ -3069,6 +3071,8 @@ function SpawnForm({
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
+            pluginClient={client}
+            pluginHost={submittedSource}
             pluginsSupported={pluginSelectionSupported}
             onPluginSelectionChange={handlePluginSelectionChange}
             onPluginRetry={pluginPreview.retry}

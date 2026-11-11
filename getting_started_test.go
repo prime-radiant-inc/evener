@@ -6,9 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
 
 // Execute the guide's actual setup block. Only the network clone source is
@@ -18,10 +19,18 @@ func TestGettingStartedExercisePreservesExistingWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fences, err := repoaudit.MarkdownFences(string(doc))
+	if err != nil {
+		t.Fatalf("docs/getting-started.md: %v", err)
+	}
 	var script string
-	for _, block := range regexp.MustCompile("(?s)```sh\\n(.*?)\\n```").FindAllSubmatch(doc, -1) {
-		if bytes.Contains(block[1], []byte("evener-first-task")) {
-			script = string(block[1])
+	for _, fence := range fences {
+		if fence.Lang != "sh" {
+			continue
+		}
+		block := strings.Join(fence.Lines, "\n")
+		if strings.Contains(block, "evener-first-task") {
+			script = block
 			break
 		}
 	}

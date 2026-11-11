@@ -441,7 +441,10 @@ func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
 	if _, err := (&Protocol{}).BuildBody(req, protoRes(nil)); err == nil {
 		t.Fatal("tool-result images need MultimodalToolResults")
 	}
-	body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.MultimodalToolResults = new(true) }))
+	body := protoBuild(t, req, protoRes(func(c *registry.Caps) {
+		c.InputModalities = []string{"text", "image"}
+		c.MultimodalToolResults = new(true)
+	}))
 	parts := body["contents"].([]map[string]any)[1]["parts"].([]map[string]any)
 	fr := parts[0]["functionResponse"].(map[string]any)
 	if fr["parts"] == nil {

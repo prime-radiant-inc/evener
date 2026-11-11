@@ -29,6 +29,20 @@ export default function ListRowGallerySection() {
               />
             </li>
             <li>
+              <ListRow
+                leading={<StatusDot state="idle" />}
+                label="deskol"
+                chips={<Chip>update available</Chip>}
+                meta="github.com/deskol/agent-plugins"
+                onSelect={() => {}}
+                trailingAction={
+                  <Button variant="secondary" size="sm">
+                    Install
+                  </Button>
+                }
+              />
+            </li>
+            <li>
               <ListRow label="OpenRouter (offline)" onSelect={() => {}} disabled />
             </li>
             <li>

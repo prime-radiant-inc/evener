@@ -3,7 +3,7 @@
 ## Intent and status
 
 This is the target contract for session activity. Implementation and verification
-are tracked in the [implementation plan](../superpowers/plans/session-activity-api.md).
+are tracked in issue #6029 (which absorbed the deleted implementation plan).
 The [product guide](../product/README.md) describes verified behavior; this design
 must not be cited as evidence that an unfinished interface is available.
 

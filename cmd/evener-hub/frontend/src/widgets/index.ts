@@ -10,7 +10,7 @@ export { Banner } from "./banner";
 export type { ButtonProps, ButtonSize, ButtonVariant } from "./button";
 export { Button } from "./button";
 export type { CadenceProps, CadenceState } from "./cadence";
-export { Cadence } from "./cadence";
+export { Cadence, STATE_LABELS } from "./cadence";
 export type { CardProps } from "./card";
 export { Card } from "./card";
 export type { ChevronDirection, ChevronProps } from "./chevron";
@@ -50,7 +50,7 @@ export { FailureGlyph } from "./failureglyph";
 export type { FocusScopeProps } from "./focusscope";
 // --- overlays batch (W2T3) ---
 export { FocusScope } from "./focusscope";
-export { useFocusRehome } from "./focusscope/rehome";
+export { rehomeFocus, useFocusRehome } from "./focusscope/rehome";
 export type { FormRowProps } from "./formrow";
 export { FormRow } from "./formrow";
 export type { HoverCardProps } from "./hovercard";

@@ -41,12 +41,16 @@ type DeletionTarget struct {
 	StateProjectID string `json:"state_project_id,omitempty"`
 }
 
-// DeletionRecord is one irrevocable project deletion generation.
+// DeletionRecord is one irrevocable deletion generation. SessionOnly marks a
+// generation begun by individual session deletion: it fences the same stable
+// target as a project generation, but it is never resumed by (or merged into)
+// a project deletion, and DeletingProject ignores it.
 type DeletionRecord struct {
 	ProjectID    string           `json:"project_id"`
 	Generation   uint64           `json:"generation"`
 	State        DeletionState    `json:"state"`
 	WholeProject bool             `json:"whole_project"`
+	SessionOnly  bool             `json:"session_only,omitempty"`
 	Targets      []DeletionTarget `json:"targets"`
 }
 
@@ -91,6 +95,32 @@ func (s *DeletionStore) Begin(projectID string, targets []DeletionTarget) (Delet
 // BeginProject durably fences targets and records whether they still
 // constitute the complete project deletion set.
 func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget, wholeProject bool) (DeletionRecord, error) {
+	return s.begin(projectID, targets, false, wholeProject, func(record DeletionRecord, _ []DeletionTarget) bool {
+		return !record.SessionOnly && record.State == DeletionStateDeleting
+	})
+}
+
+// BeginSession durably fences one individual session deletion under the
+// project that owns its state. A session record reuses only its own
+// incomplete generation for the same target. It never merges with a project
+// generation, whose target set governs a different deletion, and it never
+// becomes the generation DeletingProject resumes.
+func (s *DeletionStore) BeginSession(projectID string, target DeletionTarget) (DeletionRecord, error) {
+	return s.begin(projectID, []DeletionTarget{target}, true, false, func(record DeletionRecord, normalized []DeletionTarget) bool {
+		return record.SessionOnly && record.State == DeletionStateDeleting &&
+			len(record.Targets) == 1 && record.Targets[0] == normalized[0]
+	})
+}
+
+// begin is the one generation-creation path both scopes share: validate,
+// normalize, reuse an incomplete generation the scope's predicate accepts, or
+// append the next generation for the project.
+func (s *DeletionStore) begin(
+	projectID string,
+	targets []DeletionTarget,
+	sessionOnly, wholeProject bool,
+	reuse func(record DeletionRecord, normalized []DeletionTarget) bool,
+) (DeletionRecord, error) {
 	if s == nil {
 		return DeletionRecord{}, errors.New("deletion store is not configured")
 	}
@@ -112,11 +142,11 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		if record.ProjectID != projectID {
 			continue
 		}
-		if record.State == DeletionStateDeleting {
-			return cloneDeletionRecord(record), nil
-		}
 		if record.Generation > generation {
 			generation = record.Generation
+		}
+		if reuse(record, normalized) {
+			return cloneDeletionRecord(record), nil
 		}
 	}
 	record := DeletionRecord{
@@ -124,6 +154,7 @@ func (s *DeletionStore) BeginProject(projectID string, targets []DeletionTarget,
 		Generation:   generation + 1,
 		State:        DeletionStateDeleting,
 		WholeProject: wholeProject,
+		SessionOnly:  sessionOnly,
 		Targets:      normalized,
 	}
 	next := cloneDeletionSnapshot(s.state)
@@ -156,6 +187,32 @@ func (s *DeletionStore) MarkDeleted(projectID string, generation uint64) error {
 	return fmt.Errorf("deletion generation %s/%d not found", projectID, generation)
 }
 
+// Abandon removes one in-progress generation whose governed cleanup was
+// refused before the target was removed. The fence existed only across that
+// destructive window: leaving it behind would turn an intact, resumable
+// session into a terminal deletion for every later read. A deleted generation
+// is irrevocable and cannot be abandoned.
+func (s *DeletionStore) Abandon(projectID string, generation uint64) error {
+	if s == nil {
+		return errors.New("deletion store is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneDeletionSnapshot(s.state)
+	for i := range next.Records {
+		record := next.Records[i]
+		if record.ProjectID != projectID || record.Generation != generation {
+			continue
+		}
+		if record.State == DeletionStateDeleted {
+			return fmt.Errorf("deletion generation %s/%d is already deleted", projectID, generation)
+		}
+		next.Records = append(next.Records[:i], next.Records[i+1:]...)
+		return s.commitLocked(next)
+	}
+	return fmt.Errorf("deletion generation %s/%d not found", projectID, generation)
+}
+
 // Deleting returns every incomplete generation for startup recovery.
 func (s *DeletionStore) Deleting() []DeletionRecord {
 	if s == nil {
@@ -180,7 +237,7 @@ func (s *DeletionStore) DeletingProject(projectID string) (DeletionRecord, bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range slices.Backward(s.state.Records) {
-		if record.ProjectID == projectID && record.State == DeletionStateDeleting {
+		if record.ProjectID == projectID && !record.SessionOnly && record.State == DeletionStateDeleting {
 			return cloneDeletionRecord(record), true
 		}
 	}
@@ -318,6 +375,9 @@ func validateDeletionSnapshot(state deletionSnapshot) error {
 		}
 		if len(record.Targets) == 0 {
 			return fmt.Errorf("deletion project %q has no targets", record.ProjectID)
+		}
+		if record.SessionOnly && (record.WholeProject || len(record.Targets) != 1) {
+			return fmt.Errorf("session deletion project %q must have one target and not be whole-project", record.ProjectID)
 		}
 		key := fmt.Sprintf("%s/%d", record.ProjectID, record.Generation)
 		if _, ok := seen[key]; ok {

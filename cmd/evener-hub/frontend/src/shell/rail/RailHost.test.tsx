@@ -8,6 +8,7 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { ClientProvider } from "../clientContext";
+import { MOBILE_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import railStyles from "./Rail.module.css";
 import { RailHost } from "./RailHost";
@@ -225,15 +226,15 @@ describe("resizable width", () => {
     expect(separator().getAttribute("aria-valuenow")).toBe(resized);
   });
 
-  // Below 899px the Rail fills TreeDrawer's Sheet (Rail.module.css's own
-  // max-width:899px block sets width:100%) - there is no rail edge to grab, so
+  // Below the mobile breakpoint the Rail fills TreeDrawer's Sheet (Rail.module.css's own
+  // phone media block sets width:100%) - there is no rail edge to grab, so
   // the handle must not render at all rather than render inert.
   test("no handle in the mobile drawer", () => {
     vi.stubGlobal(
       "matchMedia",
       vi.fn((media: string) => ({
         media,
-        matches: media === "(max-width: 899px)",
+        matches: media === MOBILE_QUERY,
         addEventListener: () => {},
         removeEventListener: () => {},
       })),

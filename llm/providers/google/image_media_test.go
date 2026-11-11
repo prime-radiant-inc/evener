@@ -147,7 +147,10 @@ func TestBuildBodyNormalizesUnsupportedToolResultImageMediaType(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shot", Arguments: []byte(`{}`)}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "shot", Content: "ok", ImageData: testBMP(t), ImageMediaType: "image/bmp"}}}},
 	}}
-	body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.MultimodalToolResults = new(true) }))
+	body := protoBuild(t, req, protoRes(func(c *registry.Caps) {
+		c.InputModalities = []string{"text", "image"}
+		c.MultimodalToolResults = new(true)
+	}))
 	parts := body["contents"].([]map[string]any)[1]["parts"].([]map[string]any)
 	fr := parts[0]["functionResponse"].(map[string]any)
 	inline := fr["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
