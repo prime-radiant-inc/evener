@@ -7,6 +7,7 @@ import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { attentionJourney } from "./attention.mjs";
+import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -1713,14 +1714,14 @@ async function reconnect({ expectRefs } = {}) {
     return sockets.length;
   })()`);
   assert.equal(sockets, 1, "one actual shared hub socket is closed");
-  await waitFrames(() => expected.every(ref => sent(after).some(f => f.method === "thread/read" && f.params.ref === ref && f.params.subscribe && answered(f))), expectRefs ? `${expected.length} mounted subscription owners recover` : "all seven real subscription owners recover")
+  await waitFrames(() => expected.every(ref => sent(after).some(f => isHistoryReadMethod(f.method) && f.params.ref === ref && f.params.subscribe && answered(f))), expectRefs ? `${expected.length} mounted subscription owners recover` : "all seven real subscription owners recover")
     .catch((error) => {
-      const subscriptions = sent(after).filter((f) => f.method === "thread/read" && f.params.subscribe);
+      const subscriptions = sent(after).filter((f) => isHistoryReadMethod(f.method) && f.params.subscribe);
       const observed = [...new Set(subscriptions.map((f) => f.params.ref))];
       const missing = expected.filter((ref) => !subscriptions.some((f) => f.params.ref === ref && answered(f)));
       throw new Error(`${error.message}; missing owners ${JSON.stringify(missing)}; observed ${observed.length} subscriptions ${JSON.stringify(observed)}`);
     });
-  const subscriptions = sent(after).filter(f => f.method === "thread/read" && f.params.subscribe);
+  const subscriptions = sent(after).filter(f => isHistoryReadMethod(f.method) && f.params.subscribe);
   assert.ok(subscriptions.length >= expected.length);
   assert.ok(subscriptions.every(f => f.params.replaceSubscription === false), "every admitted thread membership is additive");
   return after;
@@ -2114,7 +2115,7 @@ try {
   assert.equal(sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === closedRef).length, 0, "closed independent peek causes no delegate-page read on recovery");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), []);
   await read("window.__cascadeGeometryObserver.disconnect()");
-  driver.milestone("reconnect-extent-closed-peek", { extent: fixture.rootDelegateCount, closedPeekRef: closedRef, rootDelegateReads: sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef).length, subscriptions: sent(openAfter).filter(f => f.method === 'thread/read' && f.params.subscribe).length });
+  driver.milestone("reconnect-extent-closed-peek", { extent: fixture.rootDelegateCount, closedPeekRef: closedRef, rootDelegateReads: sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef).length, subscriptions: sent(openAfter).filter(f => isHistoryReadMethod(f.method) && f.params.subscribe).length });
 
   const removedInspectorId = await returnToSource();
   assert.equal((await driver.composerState(fixture.rootRef)).text, sourceDraft.text);

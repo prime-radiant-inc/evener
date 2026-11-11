@@ -14,7 +14,8 @@ import {
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import type { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { LegacyHistorySocket } from "@evener/appwire-client/testing/legacyHistorySocket";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
@@ -94,7 +95,7 @@ function threadReadRequests(socket: FakeSocket): Array<{ id: number; ref: string
 }
 
 async function connectRealClientWithSocket(): Promise<{ client: AppwireClient; socket: FakeSocket }> {
-  const socket = new FakeSocket({ autoInitialize: true });
+  const socket = new LegacyHistorySocket({ autoInitialize: true });
   const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
   const ready = client.connect();
   socket.open();

@@ -2591,7 +2591,7 @@ func quietSteerHarness(t *testing.T) (*Session, *delegateTreeController, delegat
 	}
 	t.Cleanup(func() { _ = childWriter.Close() })
 	child := &Session{clock: clock, delegateController: controller}
-	child.attachTranscript(childWriter)
+	child.attachTranscript(childWriter, nil)
 	controller.mu.Lock()
 	controller.live[lease.delegateID].runtime = child
 	controller.live[lease.delegateID].binding.runtime = child
@@ -2848,7 +2848,7 @@ func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdent
 		owningDelegateID:      "dlg_owner",
 		state:                 SessionIdle,
 	}
-	owner.attachTranscript(ownerWriter)
+	owner.attachTranscript(ownerWriter, nil)
 	retryWake := make(chan struct{}, 1)
 	owner.SetNotifyFunc(func() { retryWake <- struct{}{} })
 	controller.mu.Lock()

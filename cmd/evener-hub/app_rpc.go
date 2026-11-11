@@ -357,6 +357,7 @@ func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.
 	response.Overlay = from.Overlay
 	response.Authoritative = from.Authoritative
 	response.Changes = from.Changes
+	response.ServingFacts = from.ServingFacts
 	return response
 }
 
@@ -474,6 +475,19 @@ func listItemTurns(
 	}, itemLimit)
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
+	}
+	if appwire.HistoryServingFactsRequested(ctx) {
+		facts := candidates.History.ServingFacts
+		if facts == nil {
+			facts = &appwire.HistoryServingFacts{ServingFactsUnavailableReason: "older-source"}
+		}
+		if source.ID() == appwire.LocalSourceID && facts.ServedFrom == "" {
+			factsCopy := *facts
+			facts = &factsCopy
+			facts.ServedFrom = "live-daemon"
+			facts.AsOf = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		candidates.History.ServingFacts = facts
 	}
 	return candidates.History.StampPage(packed), true, nil
 }
@@ -1055,7 +1069,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		ConcurrentRequest: concurrentForwardedRequest,
 		SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
-			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+			if msg.Request == nil {
+				return notSubscribe
+			}
+			threadRead := appserver.IsThreadReadMethod(msg.Request.Method)
+			if !threadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe {
 				return notSubscribe
 			}
 			var params appwire.ThreadReadParams
@@ -1071,7 +1089,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			// A durably deleted target has no source left to resolve. Let the
 			// read handler return its terminal fence instead of replacing it
 			// with retryable unresolved admission. No subscription can open.
-			if msg.Request.Method == appwire.MethodThreadRead && deletionFenceError(cfg, params.Ref, params.ThreadID, "") != nil {
+			if threadRead && deletionFenceError(cfg, params.Ref, params.ThreadID, "") != nil {
 				return notSubscribe
 			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
@@ -1079,14 +1097,14 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
 					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 				}
-				if msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+				if threadRead && params.Subscribe {
 					if past, ok := pastEntryForRead(cfg, params); ok && past.ID != "" {
 						return appserver.SubscriptionAdmissionResolution{Key: "local:" + past.ID, Intent: appserver.SubscriptionAdmissionResolved}
 					}
 				}
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 			}
-			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe &&
+			if threadRead && !params.Subscribe &&
 				(params.AnswerContinuation != nil || !sourceSupportsThreadRelay(source) || !relayOnThreadRead(source)) {
 				return notSubscribe
 			}
@@ -1094,7 +1112,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			// must not rewrite the relay's notification delivery identity.
 			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
 				ref, err := daemon.ResolveSubscriptionAdmission(params)
-				if err != nil && msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+				if err != nil && threadRead && params.Subscribe {
 					if past, pastOK := pastEntryForRead(cfg, params); pastOK && past.ID != "" {
 						return appserver.SubscriptionAdmissionResolution{Key: "local:" + past.ID, Intent: appserver.SubscriptionAdmissionResolved}
 					}
@@ -1437,6 +1455,14 @@ func registerThreadHandlers(
 			return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
 		}
 		if ok {
+			if srcErr == nil && saved.ServingFacts != nil {
+				facts := *saved.ServingFacts
+				facts.FallbackReason = "live-read-empty"
+				if liveErr != nil {
+					facts.FallbackReason = "live-read-failed"
+				}
+				saved.ServingFacts = &facts
+			}
 			return saved, nil
 		}
 		if srcErr != nil {

@@ -3,6 +3,7 @@
 // model types, identity validation and generated wire types.
 
 import { pendingTextJoined } from "./chunkview";
+import { historyServingFacts } from "./historyServing";
 import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
 import { isValidTranscriptRef } from "./steeringNotifications";
@@ -496,8 +497,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
   const imageSessionId = wireImageSessionId(thread);
+  const servingFacts = historyServingFacts(resp);
   const fields: Omit<ThreadModel, "turns"> = {
     ref,
+    ...(servingFacts ? { servingFacts } : {}),
     threadId: thread.id,
     ...(thread.evener.parentRef === undefined ? {} : { parentRef: thread.evener.parentRef }),
     ...(thread.evener.kind === undefined ? {} : { kind: thread.evener.kind }),

@@ -385,7 +385,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.mode = "normal";
 				wire.armed = true;
 				wire.holdResponses("turn/start");
-				wire.holdResponses("thread/read");
+				wire.holdResponses("thread/read", "evener/thread/history/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				await waitRetryReady(failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
@@ -413,7 +413,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				await waitDurable(hubId, 1);
 				milestone(fixture.milestonePath, "retry-held", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
-				wire.releaseResponses("thread/read");
+				wire.releaseResponses("thread/read", "evener/thread/history/read");
 				wire.releaseNotifications();
 				await untilRendered(() =>
 					expect(tree.root.findAllByType("EnrichedMarkdownText" as never).map((node) => node.props.markdown)).toContain(
@@ -438,7 +438,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				const stale = retryButtonForTurn(tree, failed)!.props.onPress;
 				wire.mode = "normal";
 				wire.armed = true;
-				wire.holdResponses("thread/read");
+				wire.holdResponses("thread/read", "evener/thread/history/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				// A newer ordinary turn starts, with the provider holding its reply.
 				await act(async () => composer(tree).props.onChangeText("RETRY_RUNNING_NEW"));
@@ -457,7 +457,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				await act(async () => stale());
 				expect(wire.requests).toHaveLength(1);
 				milestone(fixture.milestonePath, "running-empty", {});
-				wire.releaseResponses("thread/read");
+				wire.releaseResponses("thread/read", "evener/thread/history/read");
 				wire.releaseNotifications();
 				await untilRendered(() =>
 					expect(tree.root.findAllByType("EnrichedMarkdownText" as never).map((node) => node.props.markdown)).toContain(
@@ -516,7 +516,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				const stale = retryButtonForTurn(tree, failed)!.props.onPress;
 				wire.mode = "lost-reply";
 				wire.armed = true;
-				wire.holdResponses("thread/read");
+				wire.holdResponses("thread/read", "evener/thread/history/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				await waitRetryReady(failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
@@ -539,7 +539,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				expectDraftIntact(document);
 				milestone(fixture.milestonePath, "remounted-unresolved", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
-				wire.releaseResponses("thread/read");
+				wire.releaseResponses("thread/read", "evener/thread/history/read");
 				wire.releaseNotifications(
 					"history/updated",
 					"overlay/upserted",

@@ -116,7 +116,8 @@ func (f *continuationRecoveryFixture) verdict(ctx context.Context, r appwire.Ses
 	read.Snapshot = &cut
 	read.Thread.Turns = nil // No later snapshot can supply the failed candidate.
 	read.AnswerContinuation = &appwire.AnswerContinuationVerdict{AncestorTurnID: q.AncestorTurnID, CandidateTurnID: q.CandidateTurnID, Matches: matches}
-	return appwire.SessionOperationResponse{Read: &read}, nil
+	versioned := appwire.HistoryReadResponse(read)
+	return appwire.SessionOperationResponse{Read: &versioned}, nil
 }
 func (f *continuationRecoveryFixture) start(t *testing.T) {
 	t.Helper()

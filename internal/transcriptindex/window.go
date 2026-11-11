@@ -247,7 +247,12 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 		if err != nil {
 			return Window{}, err
 		}
-		return x.window(r, rank, limit, flush)
+		window, err := x.window(r, rank, limit, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window.LatestExecutionTurnID, err = x.latestExecutionTurnID()
+		return window, err
 	})
 }
 

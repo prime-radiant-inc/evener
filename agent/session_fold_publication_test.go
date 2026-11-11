@@ -1842,7 +1842,7 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 		t.Fatalf("create transcript: %v", err)
 	}
 	writer.SyncInterval = time.Hour // plain appends never sync on their own here; only durable writes and the marker do
-	s.attachTranscript(writer)
+	s.attachTranscript(writer, nil)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)

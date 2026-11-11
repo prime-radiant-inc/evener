@@ -297,7 +297,7 @@ func newDelegateToolResultPersistenceSession(t *testing.T, c *delegateTreeContro
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	sess := &Session{id: "caller", delegateController: c}
-	sess.attachTranscript(writer)
+	sess.attachTranscript(writer, nil)
 	c.rootRuntime = sess
 	return sess
 }
@@ -383,7 +383,7 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	root := &Session{id: "root-session", stateDir: t.TempDir()}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 
 	fs.blockSync = true
 	// A fatal assertion below must not leave the append blocked in Sync while

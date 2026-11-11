@@ -19,7 +19,12 @@ import { ConnectionClosedError, errorText, RequestTimeoutError, WireError } from
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { wireThread } from "./testing/notifications";
 import { rpcURLFromLocation } from "./transport";
-import type { AttentionChangedPayload, InitializeResponse, ThreadReadParams, ThreadReadResponse } from "./types.gen";
+import type {
+  AttentionChangedPayload,
+  InitializeResponse,
+  ThreadHistoryReadResponse,
+  ThreadReadParams,
+} from "./types.gen";
 
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -634,7 +639,8 @@ describe("AppwireClient", () => {
     const result = {
       thread,
       pendingAskPage: { composites: calls, total: 2, nextOffset: 1, calllessCount: 1 },
-    } satisfies ThreadReadResponse;
+      servingFactsUnavailableReason: "source-unsupported",
+    } satisfies ThreadHistoryReadResponse;
     const response = client.request("thread/read", params);
     const frame = lastSentFrame(fake);
     expect(frame.params).toEqual(params);
@@ -708,7 +714,8 @@ describe("AppwireClient", () => {
     const result = {
       thread,
       pendingAskPage: { composites: [], total: 0, calllessCount: 0 },
-    } satisfies ThreadReadResponse;
+      servingFactsUnavailableReason: "source-unsupported",
+    } satisfies ThreadHistoryReadResponse;
     const response = client.request("thread/read", { ref: thread.evener.ref, includeTurns: false });
     fake.receive({ id: lastSentFrame(fake).id, result });
     await expect(response).resolves.toEqual(result);
@@ -1621,3 +1628,408 @@ test.each(["close", "disconnect", "heartbeat loss"])(
     expect(vi.getTimerCount()).toBe(0);
   },
 );
+
+describe("history method migration", () => {
+  class HistorySocket extends FakeSocket {
+    constructor(
+      private readonly refusal?: number,
+      private readonly extraFacts: Record<string, unknown> = {},
+    ) {
+      super({ autoInitialize: true });
+    }
+    override send(raw: string): void {
+      super.send(raw);
+      const frame = JSON.parse(raw) as { id: number; method: string };
+      if (!frame.method.includes("thread/") || frame.method === "thread/unsubscribe") return;
+      if (frame.method.startsWith("evener/") && this.refusal !== undefined) {
+        this.receive({ id: frame.id, error: { code: this.refusal, message: "fixture" } });
+        return;
+      }
+      const facts = frame.method.startsWith("evener/")
+        ? { servedFrom: "live-daemon", asOf: "2026-11-08T01:02:03Z", instanceId: "instance-A", ...this.extraFacts }
+        : {};
+      this.receive({
+        id: frame.id,
+        result: frame.method.endsWith("/list")
+          ? { data: [], ...facts }
+          : { thread: { id: "lane", evener: { ref: "local:lane" } }, ...facts },
+      });
+    }
+  }
+
+  test("new history reads carry facts without caller-specific migration", async () => {
+    const socket = new HistorySocket();
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      const response = await client.request("thread/read", { ref: "local:lane", includeTurns: true });
+      expect(response).toMatchObject({ servedFrom: "live-daemon", instanceId: "instance-A" });
+      expect(lastSentFrame(socket).method).toBe("evener/thread/history/read");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("versioned history reads preserve pending-question pages", async () => {
+    const pendingAskPage = {
+      composites: [{ turnId: "turn-page", callId: "call-page" }],
+      total: 2,
+      nextOffset: 1,
+      calllessCount: 1,
+    };
+    const socket = new HistorySocket(undefined, { pendingAskPage });
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      const response = await client.request("thread/read", {
+        ref: "local:lane",
+        includeTurns: false,
+        expectedAskRevision: 0,
+        expectedAskBootGeneration: "4",
+        offset: 0,
+        limit: 1,
+      });
+      expect(response.pendingAskPage).toEqual(pendingAskPage);
+      expect(response).toMatchObject({ servedFrom: "live-daemon", instanceId: "instance-A" });
+      expect(lastSentFrame(socket).method).toBe("evener/thread/history/read");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("typed method-not-found degrades both history methods once per connection and retries after reconnect", async () => {
+    const sockets = [new HistorySocket(-32601), new HistorySocket()];
+    let index = 0;
+    const client = new AppwireClient({
+      url: "ws://fixture/rpc",
+      socketFactory: () => {
+        const socket = sockets[index++];
+        if (!socket) throw new Error("missing transport");
+        return socket;
+      },
+    });
+    const first = sockets[0];
+    const second = sockets[1];
+    if (!first || !second) throw new Error("missing fixture transport");
+    await connectReady(first, client);
+    try {
+      await Promise.all([
+        client.request("thread/read", { ref: "local:lane", includeTurns: true }),
+        client.request("thread/turns/list", { ref: "local:lane" }),
+      ]);
+      expect(
+        sentFrames(first)
+          .map((frame) => frame.method)
+          .filter((method) => method !== "initialize" && method !== "initialized"),
+      ).toEqual(["evener/thread/history/read", "evener/thread/history/turns/list", "thread/read", "thread/turns/list"]);
+      first.closeFromServer(1006);
+      const ready = new Promise<void>((resolve) => {
+        const stop = client.onReady(() => {
+          stop();
+          resolve();
+        });
+      });
+      client.retryNow();
+      second.open();
+      await ready;
+      const response = await client.request("thread/read", { ref: "local:lane", includeTurns: true });
+      expect(response).toMatchObject({ servedFrom: "live-daemon" });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a typed non-method error does not fall back to legacy", async () => {
+    const socket = new HistorySocket(-32014);
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      await expect(client.request("thread/read", { ref: "local:lane", includeTurns: true })).rejects.toMatchObject({
+        code: -32014,
+      });
+      expect(sentFrames(socket).some((frame) => frame.method === "thread/read")).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  function historyFrames(socket: FakeSocket): Array<Record<string, unknown>> {
+    return sentFrames(socket).filter((frame) =>
+      ["thread/read", "thread/turns/list", "evener/thread/history/read", "evener/thread/history/turns/list"].includes(
+        String(frame.method),
+      ),
+    );
+  }
+
+  class HeldHistorySocket extends FakeSocket {
+    onHistorySend?: (frame: Record<string, unknown>) => void;
+
+    override send(raw: string): void {
+      super.send(raw);
+      const frame = JSON.parse(raw) as Record<string, unknown>;
+      if (!String(frame.method).includes("thread/")) return;
+      const notify = this.onHistorySend;
+      this.onHistorySend = undefined;
+      notify?.(frame);
+    }
+
+    nextHistoryFrame(): Promise<Record<string, unknown>> {
+      return new Promise((resolve) => {
+        this.onHistorySend = resolve;
+      });
+    }
+  }
+
+  function replyHeldHistory(socket: FakeSocket, frame: Record<string, unknown>, legacy: boolean): void {
+    const facts = legacy
+      ? { bootGeneration: "daemonless", epoch: 9, authoritative: true }
+      : { servedFrom: "live-daemon", asOf: "2026-11-08T01:02:03Z", instanceId: "instance-A" };
+    const params = frame.params as { ref: string };
+    socket.receive({
+      id: frame.id,
+      result: String(frame.method).endsWith("/list")
+        ? { data: [], ...facts }
+        : { thread: { id: params.ref }, ...facts },
+    });
+  }
+
+  test.each([false, true])(
+    "two held history reads issue before either response, established=%s",
+    async (established) => {
+      const socket = new HeldHistorySocket({ autoInitialize: true });
+      const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+      await connectReady(socket, client);
+      const cleanup: Promise<unknown>[] = [];
+      try {
+        if (established) {
+          const warm = client.request("thread/read", { ref: "local:probe", includeTurns: false });
+          cleanup.push(warm.catch(() => undefined));
+          replyHeldHistory(socket, lastSentFrame(socket), false);
+          await warm;
+        }
+        const baseline = historyFrames(socket).length;
+        const first = client.request("thread/read", { ref: "local:held-one", includeTurns: true });
+        const second = client.request("thread/read", { ref: "local:held-two", includeTurns: true });
+        cleanup.push(Promise.allSettled([first, second]));
+        const requests = historyFrames(socket).slice(baseline);
+        expect(requests.map((frame) => ({ method: frame.method, params: frame.params }))).toEqual([
+          { method: "evener/thread/history/read", params: { ref: "local:held-one", includeTurns: true } },
+          { method: "evener/thread/history/read", params: { ref: "local:held-two", includeTurns: true } },
+        ]);
+        for (const request of requests) replyHeldHistory(socket, request, false);
+        expect(await first).toMatchObject({ thread: { id: "local:held-one" }, servedFrom: "live-daemon" });
+        expect(await second).toMatchObject({ thread: { id: "local:held-two" }, servedFrom: "live-daemon" });
+      } finally {
+        client.close();
+        await Promise.all(cleanup);
+      }
+    },
+  );
+
+  test.each(["thread/read", "thread/turns/list"] as const)(
+    "concurrent probes each fall back and cache legacy for later calls, first=%s",
+    async (firstMethod) => {
+      const socket = new HeldHistorySocket({ autoInitialize: true });
+      const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+      await connectReady(socket, client);
+      const cleanup: Promise<unknown>[] = [];
+      try {
+        const secondMethod = firstMethod === "thread/read" ? "thread/turns/list" : "thread/read";
+        const first = client.request(
+          firstMethod,
+          firstMethod === "thread/read" ? { ref: "local:first", includeTurns: true } : { ref: "local:first" },
+        );
+        const second = client.request(
+          secondMethod,
+          secondMethod === "thread/read" ? { ref: "local:second", includeTurns: true } : { ref: "local:second" },
+        );
+        cleanup.push(Promise.allSettled([first, second]));
+        const initial = historyFrames(socket);
+        expect(initial.map((frame) => frame.method)).toEqual(
+          firstMethod === "thread/read"
+            ? ["evener/thread/history/read", "evener/thread/history/turns/list"]
+            : ["evener/thread/history/turns/list", "evener/thread/history/read"],
+        );
+        const firstRequest = initial[0];
+        const secondRequest = initial[1];
+        if (!firstRequest || !secondRequest) throw new Error("missing initial history requests");
+        const firstFallbackSent = socket.nextHistoryFrame();
+        socket.receive({ id: firstRequest.id, error: { code: -32601, message: "fixture" } });
+        const firstFallback = await firstFallbackSent;
+        expect(firstFallback).toMatchObject({ method: firstMethod, params: firstRequest.params });
+        // The second probe and first fallback are both still unanswered.
+        for (const method of ["thread/read", "thread/turns/list"] as const) {
+          const later = client.request(
+            method,
+            method === "thread/read" ? { ref: "local:later", includeTurns: true } : { ref: "local:later" },
+          );
+          cleanup.push(later.catch(() => undefined));
+          const request = lastSentFrame(socket);
+          expect(request.method).toBe(method);
+          replyHeldHistory(socket, request, true);
+          expect(await later).toMatchObject({ bootGeneration: "daemonless", epoch: 9, authoritative: true });
+        }
+        const secondFallbackSent = socket.nextHistoryFrame();
+        socket.receive({ id: secondRequest.id, error: { code: -32601, message: "fixture" } });
+        const secondFallback = await secondFallbackSent;
+        expect(secondFallback).toMatchObject({ method: secondMethod, params: secondRequest.params });
+        replyHeldHistory(socket, secondFallback, true);
+        replyHeldHistory(socket, firstFallback, true);
+        for (const response of await Promise.all([first, second])) {
+          expect(response).toMatchObject({ bootGeneration: "daemonless", epoch: 9, authoritative: true });
+          expect(response).not.toHaveProperty("servedFrom");
+        }
+        expect(historyFrames(socket).map((frame) => frame.method)).toHaveLength(6);
+      } finally {
+        client.close();
+        await Promise.all(cleanup);
+      }
+    },
+  );
+
+  test("a late initial success cannot undo cached legacy mode", async () => {
+    const socket = new HeldHistorySocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    const cleanup: Promise<unknown>[] = [];
+    try {
+      const first = client.request("thread/read", { ref: "local:first", includeTurns: true });
+      const late = client.request("thread/turns/list", { ref: "local:late" });
+      cleanup.push(Promise.allSettled([first, late]));
+      const initial = historyFrames(socket);
+      expect(initial).toHaveLength(2);
+      const firstRequest = initial[0];
+      const lateRequest = initial[1];
+      if (!firstRequest || !lateRequest) throw new Error("missing initial requests");
+      const fallbackSent = socket.nextHistoryFrame();
+      socket.receive({ id: firstRequest.id, error: { code: -32601, message: "fixture" } });
+      const fallback = await fallbackSent;
+      expect(fallback.method).toBe("thread/read");
+      replyHeldHistory(socket, fallback, true);
+      await first;
+      replyHeldHistory(socket, lateRequest, false);
+      expect(await late).toMatchObject({ servedFrom: "live-daemon" });
+      for (const method of ["thread/read", "thread/turns/list"] as const) {
+        const later = client.request(
+          method,
+          method === "thread/read"
+            ? { ref: "local:after-late-success", includeTurns: true }
+            : { ref: "local:after-late-success" },
+        );
+        cleanup.push(later.catch(() => undefined));
+        const request = lastSentFrame(socket);
+        expect(request.method).toBe(method);
+        replyHeldHistory(socket, request, true);
+        expect(await later).not.toHaveProperty("servedFrom");
+      }
+    } finally {
+      client.close();
+      await Promise.all(cleanup);
+    }
+  });
+
+  test("a generic code-shaped method-not-found error does not cache legacy mode", async () => {
+    const failure = Object.assign(new Error("fixture"), { code: -32601 });
+    class FailingHistorySocket extends HistorySocket {
+      private failNext = true;
+      override send(raw: string): void {
+        const frame = JSON.parse(raw) as { method: string };
+        if (this.failNext && frame.method === "evener/thread/history/read") {
+          this.failNext = false;
+          throw failure;
+        }
+        super.send(raw);
+      }
+    }
+    const socket = new FailingHistorySocket();
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      await expect(client.request("thread/read", { ref: "local:lane", includeTurns: true })).rejects.toBe(failure);
+      expect(historyFrames(socket)).toHaveLength(0);
+      expect(await client.request("thread/turns/list", { ref: "local:lane" })).toMatchObject({
+        servedFrom: "live-daemon",
+      });
+      expect(lastSentFrame(socket).method).toBe("evener/thread/history/turns/list");
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a retired connection's queued method-not-found cannot downgrade its replacement", async () => {
+    const firstSocket = new HeldHistorySocket({ autoInitialize: true });
+    const secondSocket = new HistorySocket();
+    const sockets = [firstSocket, secondSocket];
+    let index = 0;
+    const client = new AppwireClient({
+      url: "ws://fixture/rpc",
+      socketFactory: () => {
+        const socket = sockets[index++];
+        if (!socket) throw new Error("missing replacement transport");
+        return socket;
+      },
+    });
+    await connectReady(firstSocket, client);
+    const pending = client.request("thread/read", { ref: "local:old", includeTurns: true });
+    const rejected = expect(pending).rejects.toMatchObject({ code: -32601 });
+    try {
+      const request = lastSentFrame(firstSocket);
+      // Queue the old refusal, then replace the connection before the
+      // request's async catch can install a compatibility decision.
+      firstSocket.receive({ id: request.id, error: { code: -32601, message: "fixture" } });
+      firstSocket.closeFromServer(1006);
+      const ready = new Promise<void>((resolve) => {
+        const stop = client.onReady(() => {
+          stop();
+          resolve();
+        });
+      });
+      client.retryNow();
+      secondSocket.open();
+      await ready;
+      await rejected;
+      expect(await client.request("thread/read", { ref: "local:new", includeTurns: true })).toMatchObject({
+        servedFrom: "live-daemon",
+      });
+      expect(lastSentFrame(secondSocket).method).toBe("evener/thread/history/read");
+      expect(historyFrames(firstSocket)).toHaveLength(1);
+    } finally {
+      client.close();
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  test("explicit versioned methods use the same strict facts decoder", async () => {
+    const socket = new HistorySocket(undefined, { servedFrom: "invented" });
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      await expect(
+        client.request("evener/thread/history/read", { ref: "local:lane", includeTurns: true }),
+      ).rejects.toBeInstanceOf(TypeError);
+    } finally {
+      client.close();
+    }
+  });
+
+  test.each([
+    { servedFrom: "invented" },
+    { asOf: 17 },
+    { asOf: "January 1, 2026" },
+    { servedFrom: undefined, asOf: undefined, instanceId: undefined },
+    { fallbackReason: "live-read-failed" },
+    { unexpectedField: true },
+  ])("malformed versioned facts are not accepted or downgraded: %j", async (facts) => {
+    const socket = new HistorySocket(undefined, facts);
+    const client = new AppwireClient({ url: "ws://fixture/rpc", socketFactory: () => socket });
+    await connectReady(socket, client);
+    try {
+      await expect(client.request("thread/read", { ref: "local:lane", includeTurns: true })).rejects.toBeInstanceOf(
+        TypeError,
+      );
+      expect(sentFrames(socket).some((frame) => frame.method === "thread/read")).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+});

@@ -75,6 +75,13 @@ async function qualify() {
   // each module actually evaluates and runs inside a bare Node consumer.
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.deepEqual(client.mergeTurnHistory([], []).turns, []);
+assert.equal(client.historyFallback({ servedFrom: "saved-index", fallbackReason: "live-read-failed" }), true);
+assert.equal(client.historyFallback({ servedFrom: "live-daemon" }), false);
+assert.equal(client.historyReplacesWindow({ servedFrom: "saved-index", authoritative: false }), true);
+assert.equal(client.historyReplacesWindow({ servedFrom: "live-daemon", authoritative: false }), true);
+assert.equal(client.historyReplacesWindow({ servedFrom: "saved-index", fallbackReason: "live-read-failed", authoritative: true }), false);
+assert.equal(client.historyReplacesWindow({ authoritative: true }), true);
+assert.equal(client.historyReplacesWindow({ authoritative: false }), false);
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 const askItem = {
@@ -478,8 +485,13 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
       // A typed construction for the specifiers that offer one, so the
       // declaration checks prove more than that the names resolve.
       esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+import { historyReplacesWindow as replacesHistoryWindow } from "@evener/appwire-client";
+const servingFacts: HistoryServingFacts = { servedFrom: "saved-index" };
+const replacesWindow: boolean = replacesHistoryWindow(servingFacts); void replacesWindow;
 const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
-      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
+      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
+const servingFacts: client.HistoryServingFacts = { servedFrom: "saved-index" };
+const replacesWindow: boolean = client.historyReplacesWindow(servingFacts); void replacesWindow;`,
       smoke: rootSmokeCalls,
     },
     // The doc-pane data layer, published as its own specifier because

@@ -242,7 +242,7 @@ func (s *Session) SetTranscriptRecordedFunc(fn func(transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.transcriptRecorded = fn
-	s.transcript.OnRecorded(fn)
+	s.installTranscriptRecordedLocked()
 }
 
 // setTranscriptLocked makes w the session's writer, installing the session's
@@ -253,9 +253,7 @@ func (s *Session) SetTranscriptRecordedFunc(fn func(transcript.Record)) {
 // writer on the file closed, which starts a fresh tail. Callers hold s.mu.
 func (s *Session) setTranscriptLocked(w *transcript.Writer) {
 	s.transcript = w
-	if s.transcriptRecorded != nil {
-		w.OnRecorded(s.transcriptRecorded)
-	}
+	s.installTranscriptRecordedLocked()
 }
 
 // TranscriptRecordedLength is the recorded length of the session's transcript,

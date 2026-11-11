@@ -384,7 +384,7 @@ async function runLatestOnly(driver, scenario) {
   await evaluate(
     driver.send,
     `(() => { const wire = window.__retryWire; wire.clearHolds(); wire.requests.length = 0; wire.dropped = 0;
-      wire.holdResponses("thread/read");
+      wire.holdResponses("thread/read", "evener/thread/history/read");
       wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
       return true; })()`,
   );
@@ -405,7 +405,7 @@ async function runLatestOnly(driver, scenario) {
   );
   driver.milestone("running-empty", {});
 
-  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read")');
+  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read", "evener/thread/history/read")');
   await evaluate(driver.send, "window.__retryWire.releaseNotifications()");
   await waitBodyIncludes(driver, "RETRY_RUNNING_DONE", { timeoutMs: 30000 });
   await waitRetry(driver, 0, { label: "completed newer turn leaves the older failure without Retry" });

@@ -38,11 +38,11 @@ type ServerConfig struct {
 	// of the socket, including handler failures and connection lifecycle events.
 	// Nil means silent.
 	Logf func(format string, args ...any)
-	// SubscriptionAdmissionResolver classifies a thread/read or
-	// thread/unsubscribe request for ordered dispatch: the canonical
-	// pending-admission key of a subscribing read, an unresolvable one
-	// (unavailable, unless its params are invalid) or a request that is not a
-	// subscribe at all. It must be pure and synchronous; ordered dispatch uses
+	// SubscriptionAdmissionResolver classifies a thread/read,
+	// evener/thread/history/read or thread/unsubscribe request for ordered
+	// dispatch: the canonical pending-admission key of a subscribing read, an
+	// unresolvable one (unavailable, unless its params are invalid) or a request
+	// that is not a subscribe at all. It must be pure and synchronous; dispatch uses
 	// it before starting the read or invoking the unsubscribe handler. It does
 	// not determine delivery routing.
 	SubscriptionAdmissionResolver func(appwire.Message) SubscriptionAdmissionResolution

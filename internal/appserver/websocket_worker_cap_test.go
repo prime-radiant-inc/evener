@@ -207,38 +207,67 @@ func TestServeWebSocketSlowReadCapAcquireExitsOnClose(t *testing.T) {
 // slot held, cancel the connection, release the hook — the slow read never
 // starts and the slot was released.
 func TestServeWebSocketSlowReadCapAcquireRaceNeverStartsAfterCancel(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	hookEntered := make(chan struct{})
-	hookRelease := make(chan struct{})
-	server.afterSlowReadAcquire = func() {
-		close(hookEntered)
-		<-hookRelease
-	}
-	var readCalls atomic.Int64
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		readCalls.Add(1)
-		return appwire.ThreadReadResponse{}, nil
-	})
-	httpServer := serveWebSocketHTTP(t, server)
-	transport := dialRawAppWire(t, httpServer)
-	initializeRaw(t, transport)
-	conn := registeredConnection(t, server)
+	for _, tc := range []struct {
+		method     string
+		admissions int
+	}{
+		{appwire.MethodThreadRead, 1},
+		{appwire.MethodThreadHistoryRead, 1},
+		{appwire.MethodThreadHistoryTurnsList, 0},
+	} {
+		method := tc.method
+		t.Run(method, func(t *testing.T) {
+			server := NewServer(ServerConfig{
+				ServerName: "test-server", Version: "test", SourceID: "local",
+				SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+					return SubscriptionAdmissionResolution{Key: "read-racing-cancel", Intent: SubscriptionAdmissionResolved}
+				},
+			})
+			hookEntered := make(chan struct{})
+			hookRelease := make(chan struct{})
+			server.afterSlowReadAcquire = func() {
+				close(hookEntered)
+				<-hookRelease
+			}
+			var readCalls atomic.Int64
+			HandleTyped(server.Router(), method, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				readCalls.Add(1)
+				return appwire.ThreadReadResponse{}, nil
+			})
+			httpServer := serveWebSocketHTTP(t, server)
+			transport := dialRawAppWire(t, httpServer)
+			initializeRaw(t, transport)
+			conn := registeredConnection(t, server)
 
-	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: "read-racing-cancel"}))
-	waitFor(t, "the worker to park in the after-acquire hook", hookEntered)
+			sendRaw(t, transport, rawRequest(t, 2, method, appwire.ThreadReadParams{ThreadID: "read-racing-cancel", Subscribe: true}))
+			waitFor(t, "the worker to park in the after-acquire hook", hookEntered)
+			conn.admissionMu.Lock()
+			pendingBeforeCancel := len(conn.pendingAdmissions)
+			conn.admissionMu.Unlock()
+			if pendingBeforeCancel != tc.admissions {
+				t.Fatalf("pending admissions at acquire = %d, want %d", pendingBeforeCancel, tc.admissions)
+			}
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("close transport: %v", err)
-	}
-	waitUnregistered(t, server)
-	close(hookRelease)
+			if err := transport.Close(); err != nil {
+				t.Fatalf("close transport: %v", err)
+			}
+			waitUnregistered(t, server)
+			close(hookRelease)
 
-	waitFor(t, "the worker to exit at the post-acquire re-check", conn.workerExited)
-	if got := readCalls.Load(); got != 0 {
-		t.Fatalf("slow read ran %d times after cancellation was observable at the acquire, want 0", got)
-	}
-	if held := len(conn.slowReadSlots); held != 0 {
-		t.Fatalf("cap slots still held after the canceled acquire = %d, want 0", held)
+			waitFor(t, "the worker to exit at the post-acquire re-check", conn.workerExited)
+			if got := readCalls.Load(); got != 0 {
+				t.Fatalf("slow read ran %d times after cancellation was observable at the acquire, want 0", got)
+			}
+			if held := len(conn.slowReadSlots); held != 0 {
+				t.Fatalf("cap slots still held after the canceled acquire = %d, want 0", held)
+			}
+			conn.admissionMu.Lock()
+			pending := len(conn.pendingAdmissions)
+			conn.admissionMu.Unlock()
+			if pending != 0 {
+				t.Fatalf("pending admissions after canceled acquire = %d, want 0", pending)
+			}
+		})
 	}
 }
 

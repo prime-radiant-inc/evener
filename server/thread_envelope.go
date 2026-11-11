@@ -42,6 +42,7 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
+	LatestExecutionTurnID  string
 	ConversationProvenance *appwire.ConversationProvenanceState
 	PendingAsk             *appwire.PendingAskState
 	ContextPressure        float64
@@ -143,6 +144,7 @@ type threadEnvelope struct {
 // agent.EnvelopeSampling, so a new value has to be declared there, where the
 // rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {
+	LatestExecutionTurnID() string
 	// ContextStatus returns the context pair from one shared history snapshot
 	// and one profile/measurement snapshot, not a globally atomic session
 	// instant.
@@ -195,13 +197,14 @@ const (
 	// call's next answer (ASSISTANT_TEXT_END) and a model switch
 	// (MODEL_CHANGED) re-sample it too.
 	facetTurnFailure
+	facetFrontier
 )
 
 // facetAll is every facet. Used for the seed at identity install, which is the
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetVision | facetMeta | facetTurnFailure
+	facetReasoning | facetVision | facetMeta | facetTurnFailure | facetFrontier
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -237,9 +240,10 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// next cleanly-ending turn -- which never comes if the user stops after a
 	// failure. Sampling everything once per turn costs one jobs.jsonl read and
 	// one task-store read per turn, which is the right price for that.
-	events.EventSessionStart: facetAll,
-	events.EventSessionEnd:   facetAll,
-	events.EventTurnEnded:    facetAll,
+	events.EventSessionStart:           facetAll,
+	events.EventSessionEnd:             facetAll,
+	events.EventTurnEnded:              facetAll,
+	events.EventExecutionFirstRecorded: facetFrontier,
 
 	// Queue mutations. QUEUE_CHANGED is the direct announcement; the turn-start
 	// events are here because a queued entry is CONSUMED into a turn without a
@@ -252,7 +256,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// first turn.
 	events.EventQueueChanged: facetQueue,
 	events.EventEnvironment:  facetContext,
-	events.EventUserInput:    facetQueue | facetWork | facetContext | facetAsk | facetMeta,
+	events.EventUserInput:    facetQueue | facetWork | facetContext | facetAsk | facetMeta | facetFrontier,
 	// TURN_STARTED is a turn-OPENING event, so it sits here rather than with
 	// TURN_ENDED's facetAll: the checkpoint argument above is about a turn
 	// ENDING -- values that drifted during it, and a failed turn that emits
@@ -267,7 +271,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// arriving while a question is pending is refused before it ever reaches
 	// the boundary.
 	events.EventTurnStarted:      facetWork,
-	events.EventSteeringInjected: facetQueue | facetAsk | facetContext,
+	events.EventSteeringInjected: facetQueue | facetAsk | facetContext | facetFrontier,
 
 	// A completed tool call appends its result to history (context), can be the
 	// ask_user whose completion sets the pending-ask bit, and can be a task tool.
@@ -287,7 +291,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// A model response moves cumulative usage and context pressure. Compaction
 	// rewrites history outright, and an idle /compact has no turn boundary to
 	// rescue the preview it can change.
-	events.EventAssistantTextEnd:  facetContext | facetWork | facetTurnFailure,
+	events.EventAssistantTextEnd:  facetContext | facetWork | facetTurnFailure | facetFrontier,
 	events.EventCommunicate:       facetContext,
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
@@ -301,7 +305,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// Goal state. GOAL_UPDATED is the direct structured carrier for every mutation.
 	// The older lifecycle events remain refresh triggers for compatibility with
 	// producers that predate the structured update.
-	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
+	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk | facetFrontier,
 	events.EventGoalEnded:        facetGoal,
 
 	// A model call waiting out a usage limit announces the wait as a retry
@@ -397,6 +401,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 
 	var next threadEnvelope
+	if facets&facetFrontier != 0 {
+		next.LatestExecutionTurnID = src.LatestExecutionTurnID()
+	}
 	if facets&facetContext != 0 {
 		next.ContextMetrics, next.ContextPressure = src.ContextStatus()
 	}
@@ -539,6 +546,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 // sampled and then dropped, which is far easier to see in six lines of
 // assignment than spread across the sampler.
 func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdStale, notesStale, urlsStale bool) {
+	if facets&facetFrontier != 0 {
+		e.LatestExecutionTurnID = next.LatestExecutionTurnID
+	}
 	if facets&facetContext != 0 {
 		e.ContextPressure = next.ContextPressure
 		e.ContextMetrics = next.ContextMetrics

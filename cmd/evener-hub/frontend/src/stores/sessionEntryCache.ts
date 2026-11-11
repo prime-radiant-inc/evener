@@ -108,7 +108,7 @@ interface EntrySourceAuthority {
 
 type EntryHistoryMeta = TranscriptHistoryMetaRow & {
   sourceAuthority?: EntrySourceAuthority;
-  replacementScopes?: Array<{ from: ThreadItemPosition; authority: EntrySourceAuthority }>;
+  replacementScopes?: Array<{ from: ThreadItemPosition; to?: ThreadItemPosition; authority: EntrySourceAuthority }>;
 };
 
 function advancesSourceAuthority(held: EntrySourceAuthority, incoming: EntrySourceAuthority | undefined): boolean {
@@ -123,6 +123,54 @@ function advancesSourceAuthority(held: EntrySourceAuthority, incoming: EntrySour
   );
 }
 
+// Within one continuing recorded source a re-served identity may keep the
+// payload already stored for it. An incomparable generation (a different boot
+// lineage or incarnation) replaces its rows outright.
+function continuesSourceAuthority(
+  held: EntrySourceAuthority | undefined,
+  incoming: EntrySourceAuthority | undefined,
+): boolean {
+  if (!held || !incoming) return false;
+  return (
+    held.incarnation === incoming.incarnation &&
+    compareBootGeneration(held.bootGeneration, incoming.bootGeneration) === "apply"
+  );
+}
+
+// Which stored rows a replacement lets the version/richness merge decide.
+// Within one continuing recorded source every identity the batch carries keeps
+// its stored row, so the merge -- which tolerates an omission and applies a
+// newer value -- decides the payload, exactly as the resident reducer does. An
+// incomparable generation replaces its rows outright.
+function returnedKeysFor(batch: EntryBatch, held: EntrySourceAuthority | undefined): ReadonlySet<string> | undefined {
+  const replacement = batch.replacement;
+  if (!replacement) return undefined;
+  if (replacement.to !== undefined || continuesSourceAuthority(held, batch.sourceAuthority))
+    return new Set(batch.items.map((row) => row.transcriptKey));
+  return undefined;
+}
+
+function inReplacementRange(
+  position: ThreadItemPosition,
+  range: { from: ThreadItemPosition; to?: ThreadItemPosition },
+): boolean {
+  return comparePosition(position, range.from) >= 0 && (!range.to || comparePosition(position, range.to) <= 0);
+}
+
+function staleReplacementScopes(meta: EntryHistoryMeta, authority: EntrySourceAuthority | undefined) {
+  return (meta.replacementScopes ?? []).filter((scope) => !advancesSourceAuthority(scope.authority, authority));
+}
+
+function coverageOverlapsScope(
+  input: EntryCoverageInput,
+  scope: { from: ThreadItemPosition; to?: ThreadItemPosition },
+): boolean {
+  if (input.start && input.end) {
+    return comparePosition(scope.from, input.end) <= 0 && (!scope.to || comparePosition(scope.to, input.start) >= 0);
+  }
+  return input.kind !== "page" || input.before === null || comparePosition(scope.from, input.before) < 0;
+}
+
 export interface EntryBatch {
   historyKey: string;
   clearEpoch: number;
@@ -132,8 +180,25 @@ export interface EntryBatch {
   historyGeneration?: number;
   items: readonly TranscriptItemRow<unknown>[];
   turns?: readonly TurnModel[];
-  // Accepted authoritative read replaces this position through history's end.
-  replacement?: { from: ThreadItemPosition };
+  // A page replaces a closed interval. An absent upper bound is a read suffix.
+  // `representedOrdinal` is the highest entry ordinal the observation reported,
+  // which can exceed the ordinals of the rows this batch happens to carry. A
+  // replacement widened over a still-uncommitted earlier observation records
+  // that observation's own interval and boundary, because each observation
+  // can have omitted only up to what it itself reported.
+  replacement?:
+    | {
+        from: ThreadItemPosition;
+        to?: undefined;
+        representedOrdinal?: number;
+        inherited?: Array<{ from: ThreadItemPosition; to: ThreadItemPosition; representedOrdinal?: number }>;
+      }
+    | {
+        from: ThreadItemPosition;
+        to: ThreadItemPosition;
+        representedOrdinal: number;
+        inherited?: Array<{ from: ThreadItemPosition; to: ThreadItemPosition; representedOrdinal?: number }>;
+      };
   // Source identity and represented boundary, never a tab-local read/revision.
   sourceAuthority?: EntrySourceAuthority;
   coverage?: EntryCoverageInput;
@@ -190,7 +255,8 @@ function sessionMetadataPayload(row: EntryHistoryMeta | TranscriptSessionMetadat
     savedAt === undefined &&
     accessedAt === undefined &&
     formatVersion === undefined &&
-    sourceAuthority === undefined
+    sourceAuthority === undefined &&
+    replacementScopes === undefined
   ) {
     return undefined;
   }
@@ -601,12 +667,15 @@ async function scanReplacementItems(
   itemStore: IDBObjectStore,
   historyKey: string,
   from: ThreadItemPosition,
+  to?: ThreadItemPosition,
+  keep?: (row: TranscriptItemRow<CachedSessionItem>) => boolean,
   remove?: (cursor: IDBCursorWithValue) => void,
 ) {
   const removed = { bytes: 0, items: 0 };
   const keptTurns = new Set<string>();
   const removedTurns = new Set<string>();
   let keptBelow: ThreadItemPosition | undefined;
+  let keptAbove: ThreadItemPosition | undefined;
   await new Promise<void>((resolve, reject) => {
     const request = itemStore.index("historyKey").openCursor(historyKey);
     request.onerror = () => reject(request.error);
@@ -614,20 +683,58 @@ async function scanReplacementItems(
       const cursor = request.result;
       if (!cursor) return resolve();
       const row = cursor.value as TranscriptItemRow<CachedSessionItem>;
-      if (comparePosition(row.position, from) >= 0) {
+      if (comparePosition(row.position, from) >= 0 && (!to || comparePosition(row.position, to) <= 0) && !keep?.(row)) {
         removed.bytes += encodedBytes(row);
         removed.items++;
         removedTurns.add(row.item.turnId);
         remove?.(cursor);
       } else {
         keptTurns.add(row.item.turnId);
-        if (!keptBelow || comparePosition(row.position, keptBelow) > 0) keptBelow = row.position;
+        if (comparePosition(row.position, from) < 0 && (!keptBelow || comparePosition(row.position, keptBelow) > 0))
+          keptBelow = row.position;
+        if (to && comparePosition(row.position, to) > 0 && (!keptAbove || comparePosition(row.position, keptAbove) < 0))
+          keptAbove = row.position;
       }
       cursor.continue();
     };
   });
   for (const turnId of keptTurns) removedTurns.delete(turnId);
-  return { removed, removedTurns, keptBelow };
+  return { removed, removedTurns, keptBelow, keptAbove };
+}
+
+// The boundary of the observation that covered this position: the inherited
+// prefix owns everything before its upper bound, the current observation owns
+// the rest of the widened range.
+function coveringOrdinal(
+  position: ThreadItemPosition,
+  replacement: NonNullable<EntryBatch["replacement"]>,
+  primary: number | undefined,
+): number | undefined {
+  for (const interval of replacement.inherited ?? [])
+    if (comparePosition(position, interval.from) >= 0 && comparePosition(position, interval.to) < 0)
+      return interval.representedOrdinal;
+  return primary;
+}
+
+function preservesReplacementItem(
+  row: TranscriptItemRow<CachedSessionItem>,
+  staleScopes: NonNullable<EntryHistoryMeta["replacementScopes"]>,
+  replacement: NonNullable<EntryBatch["replacement"]> | undefined,
+  primary: number | undefined,
+  returnedKeys?: ReadonlySet<string>,
+): boolean {
+  // A returned identity still participates in the version/richness merge; its
+  // stored row is only deleted when the batch's own record is strictly newer,
+  // which is the source superseding this body. An observation cannot retract a
+  // row recorded after the highest entry ordinal it reported: row versions and
+  // reported ordinals share that scale, while a source authority's snapshot
+  // counts bytes.
+  const boundary = replacement ? coveringOrdinal(row.position, replacement, primary) : undefined;
+  return (
+    returnedKeys?.has(row.transcriptKey) === true ||
+    (boundary !== undefined && row.version > boundary) ||
+    staleScopes.some((scope) => inReplacementRange(row.position, scope))
+  );
 }
 
 // The one version/richness computation for writes and capacity memo checks.
@@ -639,14 +746,23 @@ async function planEntryRows(
   historyKey: string,
   items: readonly TranscriptItemRow<unknown>[],
   turns: readonly TurnModel[],
-  replacementFrom?: ThreadItemPosition,
+  replacement?: EntryBatch["replacement"],
+  staleScopes: NonNullable<EntryHistoryMeta["replacementScopes"]> = [],
+  returnedKeys?: ReadonlySet<string>,
 ) {
   let byteDelta = 0;
   let changedItems = 0;
   const itemRows = new Map<string, ReturnType<typeof encodeEntryItemRow>>();
   const turnRows = new Map<string, TranscriptTurnRow>();
-  const removedTurns = replacementFrom
-    ? (await scanReplacementItems(itemStore, historyKey, replacementFrom)).removedTurns
+  const blocked = (position: ThreadItemPosition) => staleScopes.some((scope) => inReplacementRange(position, scope));
+  // A replacement names the boundary of the observation that produced it. One
+  // that names none exempts nothing: an observation with no reported ordinal
+  // cannot say which rows it might have omitted.
+  const primary = replacement?.representedOrdinal;
+  const keep = (row: TranscriptItemRow<CachedSessionItem>) =>
+    preservesReplacementItem(row, staleScopes, replacement, primary, returnedKeys);
+  const removedTurns = replacement
+    ? (await scanReplacementItems(itemStore, historyKey, replacement.from, replacement.to, keep)).removedTurns
     : undefined;
   for (const row of items) {
     let current: (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined = itemRows.get(
@@ -658,8 +774,16 @@ async function planEntryRows(
           (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined
         >,
       );
-      if (current && replacementFrom && comparePosition(current.position, replacementFrom) >= 0) current = undefined;
+      if (
+        current &&
+        replacement &&
+        comparePosition(current.position, replacement.from) >= 0 &&
+        (!replacement.to || comparePosition(current.position, replacement.to) <= 0) &&
+        !keep(current)
+      )
+        current = undefined;
     }
+    if (!current && blocked(row.position)) continue;
     const incoming = incomingEntryItem(row);
     const held = current ? decodeTranscriptItem(current.item) : undefined;
     const merged: ItemModel = mergeTranscriptItemVersioned(held, current?.version, incoming, row.version);
@@ -750,8 +874,9 @@ async function applyEntryRows(
   historyKey: string,
   items: readonly TranscriptItemRow<unknown>[],
   turns: readonly TurnModel[],
+  staleScopes: NonNullable<EntryHistoryMeta["replacementScopes"]> = [],
 ) {
-  const plan = await planEntryRows(itemStore, turnStore, historyKey, items, turns);
+  const plan = await planEntryRows(itemStore, turnStore, historyKey, items, turns, undefined, staleScopes);
   for (const row of plan.itemRows.values()) itemStore.put(row);
   for (const row of plan.turnRows.values()) turnStore.put(row);
   return plan;
@@ -815,6 +940,7 @@ export class SessionEntryCache {
 
   /** Recheck a memo against current held versions using the writer's planner. */
   async planCapacity(batch: EntryBatch): Promise<EntryCapacityPlan> {
+    const meta = await this.#readHistoryMeta(batch.historyKey);
     const database = await this.#connection.open();
     // Bound requests and completion with the ordinary transaction watchdog.
     // Late work only computes rows, never publishes a plan after the race fails.
@@ -831,7 +957,9 @@ export class SessionEntryCache {
             batch.historyKey,
             batch.items,
             batch.turns ?? [],
-            batch.replacement?.from,
+            batch.replacement,
+            meta ? staleReplacementScopes(meta, batch.sourceAuthority) : [],
+            returnedKeysFor(batch, meta?.sourceAuthority),
           ),
           complete,
         ]);
@@ -839,6 +967,24 @@ export class SessionEntryCache {
       },
     );
     return capacityPlan(plan, batch);
+  }
+
+  /** Committed replacement observations, sampled before any body restoration. */
+  async getReplacementScopes(historyKey: string): Promise<NonNullable<EntryHistoryMeta["replacementScopes"]>> {
+    return (await this.#readHistoryMeta(historyKey))?.replacementScopes ?? [];
+  }
+
+  async #readHistoryMeta(historyKey: string): Promise<EntryHistoryMeta | undefined> {
+    const database = await this.#connection.open();
+    return this.#runTransaction(database, [ENTRY_META_STORE], "readonly", async (transaction, complete) => {
+      const [row] = await Promise.all([
+        requestResult(
+          transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<EntryHistoryMeta | undefined>,
+        ),
+        complete,
+      ]);
+      return row;
+    });
   }
 
   subscribeWrites(listener: () => void): () => void {
@@ -954,10 +1100,19 @@ export class SessionEntryCache {
         const authority = batch.sourceAuthority;
         const advancesAuthority =
           authority !== undefined && (!heldAuthority || advancesSourceAuthority(heldAuthority, authority));
+        const boundedPage = batch.replacement?.to !== undefined;
+        const compatiblePageAuthority =
+          boundedPage &&
+          authority !== undefined &&
+          heldAuthority !== undefined &&
+          advancesSourceAuthority(heldAuthority, {
+            ...authority,
+            representedSnapshot: heldAuthority.representedSnapshot,
+          });
         // Refuse only provably older sources. Restarts reset epochs, while
         // different incarnations and incomparable boot owners replace scope.
         // Missing authority still cannot displace an established fence.
-        if (batch.replacement && heldAuthority && !advancesAuthority) {
+        if (batch.replacement && heldAuthority && !advancesAuthority && !compatiblePageAuthority) {
           transaction.abort();
           await complete.catch(() => {});
           return { outcome: "refused", reason: "source-authority" };
@@ -970,7 +1125,8 @@ export class SessionEntryCache {
           historyMeta.replacementScopes?.some(
             (scope) =>
               !advancesSourceAuthority(scope.authority, authority) &&
-              batch.items.some((row) => comparePosition(row.position, scope.from) >= 0),
+              scope.to === undefined &&
+              batch.items.some((row) => inReplacementRange(row.position, scope)),
           )
         ) {
           transaction.abort();
@@ -982,17 +1138,39 @@ export class SessionEntryCache {
         )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
         let historyBytes = historyMeta.encodedBytes;
         let aggregateBytes = aggregateMeta.encodedBytes;
+        const staleScopes = staleReplacementScopes(historyMeta, authority);
         const removed = batch.replacement
-          ? await this.#removeReplacementScope(transaction, batch.historyKey, batch.replacement.from)
+          ? await this.#removeReplacementScope(
+              transaction,
+              batch.historyKey,
+              batch.replacement.from,
+              batch.replacement.to,
+              staleScopes,
+              authority,
+              returnedKeysFor(batch, historyMeta.sourceAuthority),
+              batch.replacement,
+              batch.replacement?.representedOrdinal,
+            )
           : { bytes: 0, items: 0 };
         historyBytes -= removed.bytes;
         aggregateBytes -= removed.bytes;
-        const written = await applyEntryRows(itemStore, turnStore, batch.historyKey, batch.items, batch.turns ?? []);
+        const written = await applyEntryRows(
+          itemStore,
+          turnStore,
+          batch.historyKey,
+          batch.items,
+          batch.turns ?? [],
+          staleScopes,
+        );
         historyBytes += written.byteDelta;
         aggregateBytes += written.byteDelta;
         const changedItems = written.changedItems;
 
-        const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
+        const coverage = batch.coverage;
+        const blockedCoverage = coverage && staleScopes.some((scope) => coverageOverlapsScope(coverage, scope));
+        const coverageResult = blockedCoverage
+          ? { result: "not-extended" as const, byteDelta: 0 }
+          : await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
         historyBytes += coverageResult.byteDelta;
         aggregateBytes += coverageResult.byteDelta;
         // Additive predecessors may still merge rows, but must not lower the
@@ -1002,18 +1180,39 @@ export class SessionEntryCache {
         const nextMeta = {
           ...historyMeta,
           ...sessionMetadata,
-          ...(advancesAuthority ? { sourceAuthority: authority } : {}),
+          ...(advancesAuthority && !boundedPage ? { sourceAuthority: authority } : {}),
           ...(replacement && authority
             ? {
                 replacementScopes: [
                   ...(historyMeta.replacementScopes ?? []).filter(
-                    (scope) => comparePosition(scope.from, replacement.from) < 0,
+                    (scope) =>
+                      !(
+                        comparePosition(replacement.from, scope.from) <= 0 &&
+                        (!replacement.to ||
+                          (scope.to !== undefined && comparePosition(scope.to, replacement.to) <= 0)) &&
+                        advancesSourceAuthority(scope.authority, authority)
+                      ),
                   ),
-                  { from: replacement.from, authority },
+                  { ...replacement, authority },
                 ],
               }
             : {}),
         };
+        if (nextMeta.cachedHeader) {
+          const { replacementScopes: _scopes, ...history } = nextMeta.cachedHeader.history;
+          const replacementScopes = (nextMeta.replacementScopes ?? []).flatMap((scope) =>
+            scope.to &&
+            scope.authority.bootGeneration === history.bootGeneration &&
+            scope.authority.epoch === history.epoch &&
+            scope.authority.incarnation === history.incarnation
+              ? [{ from: scope.from, to: scope.to, representedSnapshot: scope.authority.representedSnapshot }]
+              : [],
+          );
+          nextMeta.cachedHeader = {
+            ...nextMeta.cachedHeader,
+            history: { ...history, ...(replacementScopes.length > 0 ? { replacementScopes } : {}) },
+          };
+        }
         const previousPayload = sessionMetadataPayload(historyMeta);
         const nextPayload = sessionMetadataPayload(nextMeta);
         const metadataDelta =
@@ -1055,14 +1254,27 @@ export class SessionEntryCache {
     transaction: IDBTransaction,
     historyKey: string,
     from: ThreadItemPosition,
+    to?: ThreadItemPosition,
+    staleScopes: NonNullable<EntryHistoryMeta["replacementScopes"]> = [],
+    authority?: EntrySourceAuthority,
+    returnedKeys?: ReadonlySet<string>,
+    replacement?: NonNullable<EntryBatch["replacement"]>,
+    primary?: number,
   ): Promise<{ bytes: number; items: number }> {
     const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
     const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
     const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
     // Stream the rows, retaining only turn identities, not a second history body.
-    const { removed, removedTurns, keptBelow } = await scanReplacementItems(itemStore, historyKey, from, (cursor) => {
-      itemStore.delete(cursor.primaryKey);
-    });
+    const { removed, removedTurns, keptBelow, keptAbove } = await scanReplacementItems(
+      itemStore,
+      historyKey,
+      from,
+      to,
+      (row) => preservesReplacementItem(row, staleScopes, replacement, primary, returnedKeys),
+      (cursor) => {
+        itemStore.delete(cursor.primaryKey);
+      },
+    );
     for (const turnId of removedTurns) {
       const row = await requestResult(turnStore.get([historyKey, turnId]) as IDBRequest<TranscriptTurnRow | undefined>);
       if (!row) continue;
@@ -1077,6 +1289,71 @@ export class SessionEntryCache {
         const cursor = request.result;
         if (!cursor) return resolve();
         const row = cursor.value as TranscriptCoverageRow;
+        if (
+          authority &&
+          row.representedSnapshot > authority.representedSnapshot &&
+          staleScopes.some(
+            (scope) =>
+              row.start !== null &&
+              row.end !== null &&
+              comparePosition(scope.from, row.end) <= 0 &&
+              (!scope.to || comparePosition(scope.to, row.start) >= 0),
+          )
+        ) {
+          cursor.continue();
+          return;
+        }
+        if (to) {
+          if (
+            (row.start !== null && comparePosition(row.start, to) > 0) ||
+            (row.end !== null && comparePosition(row.end, from) < 0)
+          ) {
+            cursor.continue();
+            return;
+          }
+          const kept: TranscriptCoverageRow[] = [];
+          if (
+            row.start !== null &&
+            keptBelow &&
+            comparePosition(row.start, from) < 0 &&
+            comparePosition(row.start, keptBelow) <= 0
+          ) {
+            kept.push({
+              historyKey,
+              rangeId: `kept:${row.rangeId}`,
+              kind: row.kind,
+              start: row.start,
+              end: keptBelow,
+              before: from,
+              representedSnapshot: row.representedSnapshot,
+              boundary: `kept:${row.rangeId}`,
+              ...(row.authority === undefined ? {} : { authority: row.authority }),
+            });
+          }
+          if (
+            row.end !== null &&
+            keptAbove &&
+            comparePosition(row.end, to) > 0 &&
+            comparePosition(keptAbove, row.end) <= 0
+          ) {
+            kept.push({
+              historyKey,
+              rangeId: `kept:${row.rangeId}:after`,
+              kind: row.kind,
+              start: keptAbove,
+              end: row.end,
+              representedSnapshot: row.representedSnapshot,
+              boundary: `kept:${row.rangeId}:after`,
+              ...(row.authority === undefined ? {} : { authority: row.authority }),
+              ...(row.serverCursor === undefined ? {} : { serverCursor: row.serverCursor }),
+            });
+          }
+          removed.bytes += encodedBytes(row) - kept.reduce((sum, part) => sum + encodedBytes(part), 0);
+          coverageStore.delete(cursor.primaryKey);
+          for (const part of kept) coverageStore.put(part);
+          cursor.continue();
+          return;
+        }
         // Retain wholly older certificates, never a certificate spanning removed
         // content: a spanning row is deleted. Its retained interval below the
         // replacement boundary still certifies content that stands, so it is
@@ -1852,13 +2129,7 @@ export class SessionEntryCache {
   async getSessionMetadata(
     historyKey: string,
   ): Promise<(TranscriptSessionMetadata & Pick<EntryHistoryMeta, "sourceAuthority">) | undefined> {
-    const database = await this.#connection.open();
-    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
-    const complete = transactionCompletion(transaction);
-    const row = await requestResult(
-      transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<EntryHistoryMeta | undefined>,
-    );
-    await complete;
+    const row = await this.#readHistoryMeta(historyKey);
     if (
       !row ||
       row.requestedRefs === undefined ||

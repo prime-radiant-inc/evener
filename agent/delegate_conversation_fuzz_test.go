@@ -31,7 +31,7 @@ func FuzzDelegateConversationTransitions(f *testing.F) {
 		}
 		t.Cleanup(func() { _ = writer.Close() })
 		runtime := &Session{}
-		runtime.attachTranscript(writer)
+		runtime.attachTranscript(writer, nil)
 		receiver := newFakeDelegateDeliveryReceiver()
 		acceptedSteers := make(map[string]bool)
 		boundSteers := make(map[string]bool)

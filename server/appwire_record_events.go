@@ -364,14 +364,20 @@ func isExecutionBoundary(event events.SessionEvent) bool {
 // This deliberately does not sample or stamp the root session envelope;
 // descendant mutations remain owned by the agent tree, while this path supplies
 // the independently addressed read/notification view.
-// Its notes/URL carriers therefore bump no generation: the fields land on the
-// descendant's own appwire.Thread, and refreshFacets samples and installs only
-// the root envelope, so no sampled install can race these carriers.
+// Notes/URL carriers land on the child's own row without sampling. The first-
+// record carrier samples only the child after the projection gate, and fences
+// its plain row install against the runtime registration carried at entry.
 func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.SessionEvent) {
 	threadID := strings.TrimSpace(event.SessionID)
 	ownerThreadID = strings.TrimSpace(ownerThreadID)
 	if threadID == "" || ownerThreadID == "" || threadID == ownerThreadID {
 		return
+	}
+	var frontier *descendantFrontierEntry
+	if event.Kind == events.EventExecutionFirstRecorded || event.Kind == events.EventSessionStart {
+		s.mu.RLock()
+		frontier = s.appDescendantFrontiers[threadID]
+		s.mu.RUnlock()
 	}
 	var released *threadHistory
 	defer func() {
@@ -433,6 +439,9 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
 				params.Thread.Evener.ParentRef = parentRef
 				params.Thread.Evener.InstanceID = ownerThreadID
+				if frontier != nil && !s.acceptDescendantFrontierInstallLocked(ownerThreadID, frontier, events.ExecutionFrontier{TurnID: start.LatestExecutionTurnID, Sequence: start.LatestExecutionSequence}) {
+					params.Thread.Evener.LatestExecutionTurnID = projection.thread.Evener.LatestExecutionTurnID
+				}
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Access = appwire.SessionAccess(start.Sandbox, start.SandboxNet)
@@ -511,6 +520,9 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		}
 		return s.recordAppNotifications(ownerThreadID, pending)
 	})
+	if event.Kind == events.EventExecutionFirstRecorded {
+		s.installDescendantFrontier(ownerThreadID, frontier)
+	}
 }
 
 type pendingAppNotification struct {

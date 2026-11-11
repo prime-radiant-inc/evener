@@ -4,10 +4,12 @@
 // these live in `reducer.ts`.
 
 import { compareBootGeneration } from "./bootGeneration";
+import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
-import { SYSTEM_PRELUDE_TURN_ID } from "./model";
+import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
+export { comparePositions } from "./model";
 export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFrontier } from "./olderFrontier";
 
 import {
@@ -34,6 +36,18 @@ import type {
   ThreadTurnsListResponse,
   Turn,
 } from "./types.gen";
+
+// A page from the saved projection merges its content into the held
+// transcript without speaking for the live history: it cannot replace or
+// remove held turns, advance the identity, or adopt its own continuation. The
+// live continuation stays available for recovery while the saved view pages.
+export function mergeSavedViewPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  const fragment = splitWireTurns(resp.data ?? [], imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
+  // A saved page may not resurrect an identity a newer observation omitted.
+  const kept = withoutNewerPageOmissions(model.history ?? EMPTY_HISTORY, fragment, resp.snapshot?.length ?? 0);
+  const turns = mergeHistory(model.history?.turns ?? model.turns, kept);
+  return model.history ? withDisplay(model, { ...model.history, turns }, model.overlay ?? {}) : { ...model, turns };
+}
 
 // mergeOlderItemPage folds one thread/turns/list backfill page into the model.
 // A v6 page into a model holding versioned history merges by version under
@@ -67,6 +81,16 @@ export const EMPTY_HISTORY: HistoryState = {
 };
 
 type ReadIdentity = Pick<HistoryState, "bootGeneration" | "epoch" | "incarnation" | "length">;
+
+// Carry only active identity, never recovery state a successful read resolved.
+function retainedReadIdentity(identity: ReadIdentity | undefined, held: ReadIdentity): ReadIdentity {
+  return {
+    bootGeneration: identity?.bootGeneration ?? held.bootGeneration,
+    epoch: identity?.epoch ?? held.epoch,
+    incarnation: identity?.incarnation ?? held.incarnation,
+    length: identity?.length ?? held.length,
+  };
+}
 
 export function readIdentity(resp: {
   bootGeneration?: string;
@@ -180,15 +204,6 @@ export function mergeTranscriptReaderWindow<M extends ThreadModel>(
   };
   const history = { ...model.history, turns: mergeHistory(model.history.turns, fragment) };
   return publicModel<M>(withDisplay(model, history, model.overlay ?? {}));
-}
-
-// Orders by (entry, item, sub). An item with no position sorts after every
-// positioned one. Exported for transcriptProjector.ts, which ranks items by
-// real document position rather than turn-then-item array order (turns can
-// interleave - see noticeHistoryTurn above).
-export function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
-  if (!left || !right) return left ? -1 : right ? 1 : 0;
-  return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
 }
 
 // Where a turn sits: its first item's position, or, for a turn that holds no
@@ -330,7 +345,12 @@ export function fragmentRange(items: readonly ItemModel[]): [ThreadItemPosition,
 // An authoritative read replaces what it returned: held items in [from, to]
 // (to undefined: through the end of history) are dropped before the read's
 // own items merge in, and a turn left with no items goes with them.
-function dropItemsInRange(turns: TurnModel[], from: ThreadItemPosition, to?: ThreadItemPosition): TurnModel[] {
+function dropItemsInRange(
+  turns: TurnModel[],
+  from: ThreadItemPosition,
+  to?: ThreadItemPosition,
+  keep?: (item: ItemModel) => boolean,
+): TurnModel[] {
   const inRange = (position: ThreadItemPosition | undefined) =>
     position !== undefined &&
     comparePositions(position, from) >= 0 &&
@@ -338,7 +358,7 @@ function dropItemsInRange(turns: TurnModel[], from: ThreadItemPosition, to?: Thr
   let changed = false;
   const kept: TurnModel[] = [];
   for (const turn of turns) {
-    const items = turn.items.filter((item) => !inRange(item.position));
+    const items = turn.items.filter((item) => !inRange(item.position) || keep?.(item));
     if (items.length === turn.items.length) {
       kept.push(turn);
       continue;
@@ -347,6 +367,113 @@ function dropItemsInRange(turns: TurnModel[], from: ThreadItemPosition, to?: Thr
     if (items.length > 0) kept.push({ ...turn, items });
   }
   return changed ? kept : turns;
+}
+
+function newerPageObservation(
+  history: HistoryState,
+  position: ThreadItemPosition | undefined,
+  snapshot: number,
+): boolean {
+  return (
+    position !== undefined &&
+    (history.replacementScopes ?? []).some(
+      (scope) =>
+        scope.representedSnapshot > snapshot &&
+        comparePositions(position, scope.from) >= 0 &&
+        comparePositions(position, scope.to) <= 0,
+    )
+  );
+}
+
+// The highest entry ordinal a response reported: the boundary of the entries
+// its replacement can have omitted. Item and turn versions use that ordinal
+// scale, while a snapshot length counts transcript bytes.
+function servedCutOrdinal(fresh: HistoryFragment): number {
+  let highest = 0;
+  for (const item of fresh.items) highest = Math.max(highest, item.version ?? 0);
+  for (const turn of fresh.turns) highest = Math.max(highest, turn.version ?? 0);
+  return highest;
+}
+
+// A response or notification that is not authoritative for the range it
+// covers cannot re-add an identity a newer page observation has already
+// omitted.
+export function withoutNewerPageOmissions(
+  history: HistoryState,
+  fragment: HistoryFragment,
+  snapshot: number,
+): HistoryFragment {
+  const items = fragment.items.filter((item) => !newerPageObservation(history, item.position, snapshot));
+  return items.length === fragment.items.length ? fragment : { ...fragment, items };
+}
+
+// Replacement removes omitted identities, not the held version of an identity
+// the response still names, nor an item recorded after the entries it
+// returned. An older observation cannot undo a newer range.
+function replaceObservedWindow(
+  history: HistoryState,
+  fresh: HistoryFragment,
+  from: ThreadItemPosition,
+  to: ThreadItemPosition | undefined,
+  snapshot: number,
+): TurnModel[] {
+  // Whatever the shape, the highest ordinal the response reported bounds what
+  // its replacement can have omitted: a held item recorded after it survives.
+  const cutOrdinal = servedCutOrdinal(fresh);
+  const key = (item: ItemModel) => JSON.stringify([item.turnId, itemIdentity(item)]);
+  const heldKeys = new Set(history.turns.flatMap((turn) => turn.items.map(key)));
+  const items = fresh.items.filter(
+    (item) => heldKeys.has(key(item)) || !newerPageObservation(history, item.position, snapshot),
+  );
+  const returnedKeys = new Set(items.map(key));
+  const returnedTurns = new Set(items.map((item) => item.turnId));
+  const originalTurns = new Set(fresh.items.map((item) => item.turnId));
+  const heldTurns = new Set(history.turns.map((turn) => turn.id));
+  const turns = dropItemsInRange(
+    history.turns,
+    from,
+    to,
+    (item) =>
+      returnedKeys.has(key(item)) ||
+      (item.version ?? 0) > cutOrdinal ||
+      newerPageObservation(history, item.position, snapshot),
+  );
+  return mergeHistory(turns, {
+    items,
+    turns: fresh.turns.filter(
+      (turn) => !originalTurns.has(turn.id) || returnedTurns.has(turn.id) || heldTurns.has(turn.id),
+    ),
+  });
+}
+
+function observePageRange(
+  scopes: HistoryState["replacementScopes"],
+  from: ThreadItemPosition,
+  to: ThreadItemPosition,
+  representedSnapshot: number,
+  representedOrdinal: number,
+): NonNullable<HistoryState["replacementScopes"]> {
+  const held = scopes ?? [];
+  if (
+    held.some(
+      (scope) =>
+        scope.representedSnapshot >= representedSnapshot &&
+        comparePositions(scope.from, from) <= 0 &&
+        comparePositions(scope.to, to) >= 0,
+    )
+  )
+    return held;
+  return [
+    ...held.filter(
+      (scope) =>
+        !(
+          representedSnapshot >= scope.representedSnapshot &&
+          comparePositions(from, scope.from) <= 0 &&
+          comparePositions(to, scope.to) >= 0
+        ),
+    ),
+    { from, to, representedSnapshot, representedOrdinal },
+  ];
 }
 
 // Drops the overlay state history now covers: a stream once history holds an
@@ -786,6 +913,7 @@ export function readDisposition(held: HistoryState, resp: ReadDispositionSignal)
   const generation = resp.requestGeneration ?? 0;
   if (generation < held.issuedGeneration) return "discard";
   if (held.invalidatedAtGeneration !== undefined && generation <= held.invalidatedAtGeneration) return "discard";
+  if (historyFallback(resp)) return "merge";
   return identityDisposition(held, readIdentity(resp));
 }
 
@@ -819,6 +947,7 @@ export function applyReadResponse<M extends ThreadModel>(
   const held = model.history ?? EMPTY_HISTORY;
   const disposition = readDisposition(held, resp);
   if (disposition === "discard") return publicModel<M>(model);
+  const fallback = historyFallback(resp);
   const fields = threadFields(resp, model.ref, now);
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
@@ -829,10 +958,21 @@ export function applyReadResponse<M extends ThreadModel>(
     turns = mergeHistory([], fresh);
   } else {
     const window = fragmentRange(fresh.items);
-    turns = resp.authoritative ? dropItemsInRange(held.turns, window?.[0] ?? { entry: 0, item: 0 }) : held.turns;
+    const observed = historyReplacesWindow(resp) && historyServingFacts(resp)?.servedFrom !== undefined;
+    turns = observed
+      ? replaceObservedWindow(held, fresh, window?.[0] ?? { entry: 0, item: 0 }, undefined, resp.snapshot?.length ?? 0)
+      : historyReplacesWindow(resp)
+        ? dropItemsInRange(held.turns, window?.[0] ?? { entry: 0, item: 0 })
+        : held.turns;
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
-    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
+    if (fallback && olderFrontierOf(model) !== "unknown" && model.olderCursor !== undefined) {
+      // A saved fallback window speaks for the saved index, never for the live
+      // continuation: a disjoint window it reaches further back with must not
+      // replace a live cursor the held history still names.
+      olderCursor = model.olderCursor;
+      olderFrontier = olderFrontierOf(model);
+    } else if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
       // Held older pages keep their own cursor only when they recorded a
       // provenance. A seed's unknown frontier is not evidence of a held
       // continuation: keeping it would leave a cursorless recovery read with
@@ -843,20 +983,25 @@ export function applyReadResponse<M extends ThreadModel>(
         olderFrontier = olderFrontierOf(model);
       }
     }
-    turns = mergeHistory(turns, fresh);
+    if (!observed)
+      turns = mergeHistory(
+        turns,
+        fallback ? withoutNewerPageOmissions(held, fresh, resp.snapshot?.length ?? 0) : fresh,
+      );
     if (resp.changes) {
       turns = mergeHistory(turns, wireFragment(resp.changes.turns, resp.changes.items, imageSessionRoute), true);
     }
   }
   const generation = resp.requestGeneration ?? 0;
   const history: HistoryState = {
-    ...readIdentity(resp),
+    ...(historyFallback(resp) ? retainedReadIdentity(undefined, held) : readIdentity(resp)),
     appliedGeneration: generation,
     issuedGeneration: Math.max(held.issuedGeneration, generation),
     deferredPages: [],
+    ...(disposition === "merge" && held.replacementScopes ? { replacementScopes: held.replacementScopes } : {}),
     turns,
   };
-  const { runningTurnId: _previous, ...base } = model;
+  const { runningTurnId: _previous, servingFacts: _previousFacts, ...base } = model;
   // The spread keeps any field this read omits. A snapshot that no longer
   // advertises a served root (artifacts, scratch) must clear the previous
   // one, or link actions stay aimed at a directory the hub no longer serves.
@@ -952,7 +1097,8 @@ export function applyReadModel<M extends ThreadModel>(
 ): ThreadModel & ModelExtras<M> {
   const held = model.history ?? EMPTY_HISTORY;
   const freshHistory = fresh.history;
-  const disposition = readModelDisposition(held, freshHistory);
+  const fallback = historyFallback(fresh.servingFacts);
+  const disposition = fallback ? "merge" : readModelDisposition(held, freshHistory);
   if (disposition === "discard") return publicModel<M>(model);
   const fragment = turnModelsToFragment(freshHistory?.turns ?? fresh.turns);
   let turns: TurnModel[];
@@ -962,10 +1108,24 @@ export function applyReadModel<M extends ThreadModel>(
     turns = mergeHistory([], fragment);
   } else {
     const window = fragmentRange(fragment.items);
-    turns = held.turns;
+    const observed = fresh.servingFacts && historyReplacesWindow(fresh.servingFacts);
+    turns = observed
+      ? replaceObservedWindow(
+          held,
+          fragment,
+          window?.[0] ?? { entry: 0, item: 0 },
+          undefined,
+          freshHistory?.length ?? 0,
+        )
+      : held.turns;
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
-    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
+    if (fallback && olderFrontierOf(model) !== "unknown" && model.olderCursor !== undefined) {
+      // Same fallback rule as applyReadResponse: the saved window never
+      // replaces a live continuation the held history names.
+      olderCursor = model.olderCursor;
+      olderFrontier = olderFrontierOf(model);
+    } else if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
       // Same rule as applyReadResponse: only a KNOWN held frontier outlives
       // the read's own.
       if (olderFrontierOf(model) !== "unknown") {
@@ -973,7 +1133,11 @@ export function applyReadModel<M extends ThreadModel>(
         olderFrontier = olderFrontierOf(model);
       }
     }
-    turns = mergeHistory(turns, fragment);
+    if (!observed)
+      turns = mergeHistory(
+        turns,
+        fallback ? withoutNewerPageOmissions(held, fragment, freshHistory?.length ?? 0) : fragment,
+      );
     if (changes) {
       const imageSessionRoute = imageSessionRouteForSession(fresh.imageSessionId ?? fresh.threadId);
       turns = mergeHistory(turns, wireFragment(changes.turns, changes.items, imageSessionRoute), true);
@@ -985,6 +1149,7 @@ export function applyReadModel<M extends ThreadModel>(
   // appliedGeneration/issuedGeneration to advance past what is already
   // held; carrying held's forward (rather than always 0) at least survives
   // a real one arriving from elsewhere (a page response's own snapshot).
+  const identity = fallback ? held : freshHistory;
   const history: HistoryState = {
     // freshHistory undefined (a caller with no snapshot support, or one
     // hydrated on the legacy branch) has no identity of its own to
@@ -994,13 +1159,11 @@ export function applyReadModel<M extends ThreadModel>(
     // preserved. Only the four identity fields carry over — never
     // invalidatedAtGeneration/awaited/pendingIncarnation/failed, which this
     // merge (a non-discard disposition) already resolved.
-    bootGeneration: freshHistory?.bootGeneration ?? held.bootGeneration,
-    epoch: freshHistory?.epoch ?? held.epoch,
-    incarnation: freshHistory?.incarnation ?? held.incarnation,
-    length: freshHistory?.length ?? held.length,
+    ...retainedReadIdentity(identity, held),
     appliedGeneration: held.appliedGeneration,
     issuedGeneration: held.issuedGeneration,
     deferredPages: [],
+    ...(disposition === "merge" && held.replacementScopes ? { replacementScopes: held.replacementScopes } : {}),
     turns,
   };
   const {
@@ -1010,7 +1173,7 @@ export function applyReadModel<M extends ThreadModel>(
     runningTurnId: freshRunningTurnId,
     ...fields
   } = fresh;
-  const { runningTurnId: _previous, ...base } = model;
+  const { runningTurnId: _previous, servingFacts: _previousFacts, ...base } = model;
   // Same rule as applyReadResponse: a freshly hydrated model that carries no
   // served root (artifacts, scratch) must clear the previous one, or the
   // spread keeps it and link actions stay aimed at a directory the snapshot
@@ -1047,6 +1210,7 @@ type PageDisposition = "discard" | "defer" | "invalidate" | "merge";
 // replace anything.
 function pageDisposition(held: HistoryState, resp: ThreadTurnsListResponse): PageDisposition {
   if (held.failed !== undefined) return "discard";
+  if (historyFallback(resp)) return "merge";
   const identity = readIdentity(resp);
   const signal = classifySignal(held, identity);
   if (signal !== "apply") return signal === "ignore" ? "discard" : "invalidate";
@@ -1079,11 +1243,22 @@ function mergeVersionedPage<M extends ThreadModel>(
     }
     case "merge": {
       const fresh = splitWireTurns(resp.data ?? [], modelImageSessionRoute(model));
-      const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
-      const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
+      const range = historyReplacesWindow(resp) ? fragmentRange(fresh.items) : undefined;
+      const servingFacts = historyServingFacts(resp);
+      const snapshot = resp.snapshot?.length ?? held.length;
+      const observed = range !== undefined && servingFacts !== undefined;
+      const turns = observed
+        ? replaceObservedWindow(held, fresh, range[0], range[1], snapshot)
+        : mergeHistory(
+            range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns,
+            withoutNewerPageOmissions(held, fresh, snapshot),
+          );
       // A page that names no successor cursor names the end of older history
       // for the range it serves (#5585).
-      const next = takeCursor ? withOlderFrontier(model, resp.nextCursor) : model;
+      const next = {
+        ...(takeCursor ? withOlderFrontier(model, resp.nextCursor) : model),
+        ...(servingFacts ? { servingFacts } : {}),
+      };
       // The held length never advances from a page: a page's snapshot length
       // is the transcript length the index had at read time, not a promise
       // that everything through it was delivered - Before only returns items
@@ -1097,7 +1272,25 @@ function mergeVersionedPage<M extends ThreadModel>(
       // held. pageDisposition still requires a page's length to be at least
       // held's to merge, comparing against that one true, latest-window
       // watermark - never one a page pushed forward.
-      return withDisplay(next, { ...held, turns }, model.overlay ?? {});
+      return withDisplay(
+        next,
+        {
+          ...held,
+          ...(observed
+            ? {
+                replacementScopes: observePageRange(
+                  held.replacementScopes,
+                  range[0],
+                  range[1],
+                  snapshot,
+                  servedCutOrdinal(fresh),
+                ),
+              }
+            : {}),
+          turns,
+        },
+        model.overlay ?? {},
+      );
     }
   }
 }

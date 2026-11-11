@@ -133,6 +133,28 @@ Manager argument preparation and tool dispatch share an opt-in exact decoder for
 fence revisions and page bounds, including pre-tool hook views and replacements.
 Other arguments keep their numeric decoding.
 
+For [history serving facts](history-content.md#serving-facts-and-status-comparison),
+**S10** owns saved-index coverage and the execution frontier of each immutable
+view. **S09** owns the Session's commit-time execution stamp, including unsynced
+retained records, its validated only-if-empty restore seed, composed recorded
+hook and owned emitter outside the append lock. The atomic turn-ID/sequence pair
+is stamped under the frontier leaf; only descendant installs consume its
+process-local sequence, never event JSON or wire responses. **S08** owns the
+`Server.mu` incarnation sampler registry, retained-runtime release before reclaim/teardown
+and descendant first-record sampling outside both `Server.mu` and the projection
+gate. Immutable entries retain the last successful install pair, bootstrap
+included, so older samples cannot regress the same registration and a fresh
+registration is independent of its predecessor's cached row. The
+descendant's fenced cached-row install emits no notification, so subscribers
+keep their last full row until a full read or later `ThreadStarted`; addressed
+metadata reads see the installed frontier immediately.
+**S06** owns live/fallback branch selection and forwards remote facts
+without guessing from a roster. **S05** owns the versioned history methods,
+frozen legacy shapes, per-connection typed-method-not-found degradation and
+shared client validation, range replacement and fallback accumulation.
+Status/history freshness remains a caller comparison, not a derived server
+verdict.
+
 For [voice conversations](voice.md), **S03** owns native microphone processing,
 local playback and played-sample acknowledgements. **S06** owns the scoped
 device/manager binding and provider bridge. Arm requires authoritative

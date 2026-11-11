@@ -1,7 +1,8 @@
 import "fake-indexeddb/auto";
 import { AppwireClient } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
-import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import type { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { LegacyHistorySocket } from "@evener/appwire-client/testing/legacyHistorySocket";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
@@ -71,7 +72,7 @@ function threadReadRequests(socket: FakeSocket): Array<{ id: number; ref: string
 }
 
 async function connectRealClientWithSocket(): Promise<{ client: AppwireClient; socket: FakeSocket }> {
-  const socket = new FakeSocket({ autoInitialize: true });
+  const socket = new LegacyHistorySocket({ autoInitialize: true });
   const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
   const ready = client.connect();
   socket.open();
@@ -121,7 +122,7 @@ describe("background thread claims", () => {
   test("last owner release cancels a queued real-client read before it can issue", async () => {
     // Keep IndexedDB task scheduling real while faking the protocol clock.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    const socket = new FakeSocket({ autoInitialize: true });
+    const socket = new LegacyHistorySocket({ autoInitialize: true });
     const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
     const ready = client.connect();
     socket.open();

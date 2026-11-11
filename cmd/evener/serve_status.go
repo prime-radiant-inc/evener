@@ -223,6 +223,10 @@ func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
 }
 
+func (l liveThreadEnvelopeSource) LatestExecutionTurnID() string {
+	return l.session().LatestExecutionTurnID()
+}
+
 func (l liveThreadEnvelopeSource) VisionModel() string {
 	return l.session().VisionModel()
 }

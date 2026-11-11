@@ -9,6 +9,7 @@ import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
 import type { ThreadModel } from "./model";
 import { applyNotification } from "./reducer";
+import { currentTranscriptState, decodeCurrentTranscriptState } from "./transcriptCache";
 import {
   applyHistoryReadFailure,
   applyReadModel,
@@ -1310,5 +1311,112 @@ describe("applyReadModel", () => {
       ["t1", [itemKey("t1", 0), itemKey("t1", 1)]],
       ["t2", [itemKey("t2", 2)]],
     ]);
+  });
+});
+
+describe("serving-fact replacement contract", () => {
+  test("legacy failed-live reads retain their known erase cost and deferred pages retain the frozen envelope", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)]), turn("t2", 3, [item("t2", 2)])], { bootGeneration: "42" });
+    const [issued, generation] = issue(model);
+    const legacyRead = read([turn("t2", 3, [item("t2", 2)])], {
+      bootGeneration: "daemonless",
+      authoritative: true,
+      requestGeneration: generation,
+    });
+    const replaced = applyReadResponse(issued, legacyRead, NOW);
+    expect(shown(replaced)).toEqual([["t2", [itemKey("t2", 2)]]]);
+    expect(replaced.history?.bootGeneration).toBe("daemonless");
+    expect(replaced.servingFacts).toBeUndefined();
+
+    const invalid = applyNotification(model, updated([], [], { bootGeneration: "42", incarnation: "next" }), NOW);
+    const legacyPage = page([turn("t1", 1, [item("t1", 0)])], {
+      bootGeneration: "42",
+      incarnation: "next",
+      authoritative: true,
+    });
+    const state = currentTranscriptState(mergeOlderItemPage(invalid, legacyPage));
+    expect(state?.history.deferredPages).toHaveLength(1);
+    const legacyKeys = ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"];
+    expect(Object.keys(legacyPage).every((key) => legacyKeys.includes(key))).toBe(true);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(state)));
+    expect(decoded?.history.deferredPages[0]).toEqual(legacyPage);
+  });
+
+  test.each([
+    { servedFrom: "live-daemon", fallbackReason: undefined, bootGeneration: "1", keep: false },
+    { servedFrom: "saved-index", fallbackReason: undefined, bootGeneration: "daemonless", keep: false },
+    { servedFrom: "saved-index", fallbackReason: "live-read-empty", bootGeneration: "1", keep: true },
+    { servedFrom: "saved-index", fallbackReason: "live-read-failed", bootGeneration: "daemonless", keep: true },
+  ])("$servedFrom $fallbackReason preserves only the intended history", (facts) => {
+    const model = hydrate([turn("t1", 3, [item("t1", 0), item("t1", 1), item("t1", 2)])], {
+      bootGeneration: facts.fallbackReason ? "1" : facts.bootGeneration,
+    });
+    const [issued, generation] = issue(model);
+    const response = Object.assign(
+      read([turn("t1", 3, [item("t1", 0), item("t1", 2)])], {
+        bootGeneration: facts.bootGeneration,
+        requestGeneration: generation,
+        authoritative: false,
+      }),
+      { servedFrom: facts.servedFrom, fallbackReason: facts.fallbackReason, asOf: "2026-11-08T01:02:03Z" },
+    );
+    const next = applyReadResponse(issued, response, NOW);
+    expect(shown(next)).toEqual([
+      [
+        "t1",
+        facts.keep ? [itemKey("t1", 0), itemKey("t1", 1), itemKey("t1", 2)] : [itemKey("t1", 0), itemKey("t1", 2)],
+      ],
+    ]);
+    if (facts.keep) expect(next.history?.bootGeneration).toBe(model.history?.bootGeneration);
+    const hydrated = applyReadModel(model, hydrateThread(response, REF, NOW));
+    expect(shown(hydrated)).toEqual(shown(next));
+  });
+
+  test("a failed-live saved page retains the held live identity", () => {
+    const model = hydrate([turn("t2", 3, [item("t2", 2)])]);
+    const response = Object.assign(
+      page([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "daemonless", authoritative: false }),
+      {
+        servedFrom: "saved-index",
+        fallbackReason: "live-read-failed",
+        asOf: "2026-11-08T01:02:03Z",
+      },
+    );
+    const next = mergeOlderItemPage(model, response);
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0)]],
+      ["t2", [itemKey("t2", 2)]],
+    ]);
+    expect(next.history?.bootGeneration).toBe(model.history?.bootGeneration);
+    expect(next.history?.invalidatedAtGeneration).toBeUndefined();
+  });
+
+  test("versioned deferred pages reload with facts and reject malformed provenance", () => {
+    const model = applyNotification(
+      hydrate([turn("t2", 3, [item("t2", 2)])]),
+      updated([], [], { incarnation: "next" }),
+      NOW,
+    );
+    const response = Object.assign(page([turn("t1", 1, [item("t1", 0)])], { incarnation: "next" }), {
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T01:02:03Z",
+      instanceId: "instance-A",
+      latestExecutionTurnId: "t2",
+    });
+    const deferred = mergeOlderItemPage(model, response);
+    const state = currentTranscriptState(deferred);
+    expect(state?.history.deferredPages).toHaveLength(1);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(state)));
+    expect(decoded?.history.deferredPages[0]).toMatchObject({
+      servedFrom: "live-daemon",
+      instanceId: "instance-A",
+      latestExecutionTurnId: "t2",
+    });
+    const broken = JSON.parse(JSON.stringify(state));
+    broken.history.deferredPages[0].fallbackReason = "live-read-failed";
+    expect(decodeCurrentTranscriptState(broken)).toBeUndefined();
+    const unknownFact = JSON.parse(JSON.stringify(state));
+    unknownFact.fields.servingFacts = { servedFrom: "saved-index", asOf: "2026-11-08T01:02:03Z", unexpectedFact: true };
+    expect(decodeCurrentTranscriptState(unknownFact)).toBeUndefined();
   });
 });

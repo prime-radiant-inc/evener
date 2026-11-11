@@ -418,6 +418,24 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
   const model = store().getState().threads.get(ref);
   if (!model) return undefined;
   const route = entryTranscriptRoute(ref);
+  // A saved view pages from its own oldest row while the live cursor is kept
+  // for recovery, so progress must key off that boundary, not the cursor.
+  if (
+    model.servingFacts?.servedFrom === "saved-index" &&
+    model.servingFacts.fallbackReason !== undefined &&
+    route?.repository !== undefined
+  ) {
+    if (route.repository.savedViewExhausted()) return null;
+    const before = route.repository.oldestPosition();
+    if (before === undefined) return null;
+    return JSON.stringify([
+      "saved",
+      route.repository.getBaselineIdentity(),
+      before.entry,
+      before.item,
+      before.sub ?? 0,
+    ]);
+  }
   const local = route?.repository?.localOlderPosition();
   // This is a scheduling identity only. The wire path reads model.olderCursor,
   // never this key. Tag both kinds so an opaque server cursor cannot collide.

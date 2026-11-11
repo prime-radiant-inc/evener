@@ -363,6 +363,10 @@ async function mountWireScreen() {
 		send(frame);
 		const request = JSON.parse(frame) as { id?: number; method: string; params: SessionActivityReadParams };
 		if (request.id === undefined || request.method === "evener/jobs/output") return;
+		if (request.method === "evener/thread/history/read" || request.method === "evener/thread/history/turns/list") {
+			peer.receive({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });
+			return;
+		}
 		let result: unknown;
 		if (request.method === "thread/read") {
 			result = { thread: wireThread("local:coord", { id: "coord", sessionId: "coord", modelProvider: "scripted" }) };

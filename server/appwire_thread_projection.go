@@ -115,6 +115,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
+			LatestExecutionTurnID:  envelope.LatestExecutionTurnID,
 			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
 			PendingAsk:             projectPendingAsk(envelope.PendingAsk),
 			Ref:                    ref,
