@@ -121,6 +121,7 @@ const CLASS = {
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
+  activityRow: requireClass(styles.activityRow, "composer.module.css", "activityRow"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -1015,9 +1016,6 @@ export function Composer({
             </Tooltip>
           )}
           {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
-          {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
-              this row is where the activity counts live on a phone. */}
-          {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
         </>
       )}
     </div>
@@ -1256,6 +1254,14 @@ export function Composer({
             </Dropzone>
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
           </form>
+        </div>
+      )}
+      {/* The phone's activity counts are a glance line below the card, the
+          same place the desktop status bar puts them. They are not a control
+          in the writing row. */}
+      {isMobile && !ownsActivityCounts && (!ended || showFollowUpCard) && (
+        <div className={CLASS.activityRow} data-testid="composer-activity-line">
+          <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>
       )}
     </div>

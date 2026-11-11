@@ -1195,20 +1195,23 @@ test("mobile keeps the session's activity chips in the composer's control row, w
   expect(screen.queryByTestId("statusbar")).toBeNull();
 
   const user = userEvent.setup();
-  // Engaging the editor brings the full row: attach and the activity chips
-  // ride in it.
+  // Engaging the editor brings the full row: attach and the status chrome.
   await user.click(editor);
   const form = screen.getByTestId("composer-form");
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy());
+  // The activity counts keep their own line below the card, outside the form.
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
 
-  // A resting editor sheds the chips and attach; Send stays, so the
-  // resting card is still a usable one-line composer. A real blur() moves
-  // focus off the editor, which the engagement reconcile reads.
+  // A resting editor sheds Attach; the activity line stays, and Send stays,
+  // so the resting card is still a usable one-line composer. A real blur()
+  // moves focus off the editor, which the engagement reconcile reads.
   act(() => {
     editor.blur();
   });
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
 
   // Re-engaged, a chip is the phone's one-tap way into the Overview list.

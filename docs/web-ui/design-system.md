@@ -118,24 +118,26 @@ losing the conversation that made the evidence relevant.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
   Phones keep one bottom surface: the pane renders no separate footer strip below the
-  composer, so the composer's own control row carries the session's activity: Attach,
-  the model and reasoning chrome line, the activity chips, and Send or Stop. The
+  composer, so the composer's own control row carries Attach, the model and reasoning
+  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
+  where the desktop status bar puts them. The
   composer dock owns the home-indicator band; the inset yields when the on-screen
   keyboard covers that area. The working-directory strip stays desktop-only: a phone
   reads the session's working directory and branch through the session menu's Overview
   (About) and never stacks a second strip below the composer. A phone chip shows its
-  glyph, its name when the width can carry it, and a single active count (settled for
-  Tasks); the full active/total fraction stays in its accessible name, tooltip and the
-  Overview. While the card rests — empty, unfocused, no send in flight — a composer
+  glyph and a single active count (settled for Tasks); its category name and the full
+  active/total fraction stay in its accessible name and tooltip. While the card rests —
+  empty, unfocused, no send in flight — a composer
   with room folds to one row: the placeholder beside the model and effort, with the
   session menu and Send at the right. The paperclip returns with the expanded card,
   and focusing or typing grows it back through the spatial-motion budget. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
   picker. A desktop card under 620px keeps the stacked control row and the folded
-  one-line field. The phone's resting row sheds Attach, the model chrome and the
-  chips. At the 466px Duo cover width the control row tightens; focus, drafts,
-  attachments, and question/approval docks keep their writing and response space. The
+  one-line field. The phone's resting card sheds Attach and the model chrome; the
+  activity line below the card stays. At the 466px Duo cover width the control row
+  tightens; focus, drafts, attachments, and question/approval docks keep their writing
+  and response space. The
   four activity counters stay in the
   app with their existing Overview links. The OS-owned Duo system rail is not a public
   customization surface, so no counters move there.

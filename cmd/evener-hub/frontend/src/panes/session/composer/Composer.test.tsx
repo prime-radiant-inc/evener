@@ -580,17 +580,6 @@ test("the session chrome reserves its compact rung and fills the expanded row", 
   expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
 });
 
-// The folded row is content-sized, so the leading reports an intrinsic width
-// for it. It must keep the `statusbar` query container: phone exited/fenced
-// composers still render activity chips in this slot.
-test("the folded composer keeps the statusbar container the phone chips query", () => {
-  const css = readModuleCss(import.meta.url, "composer.module.css");
-  expect(topRuleBlock(css, ".leading")).toMatch(/container:\s*statusbar \/ inline-size/);
-  const folded = topRuleBlock(css, '.leading[data-folded="true"]');
-  expect(folded).toMatch(/contain-intrinsic-inline-size:/);
-  expect(folded).not.toMatch(/container-type:\s*normal/);
-});
-
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
@@ -694,7 +683,9 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
 // and Send stay, so a landscape phone spends its height on the transcript
 // and session actions stay reachable without focusing first. Focus engages
 // the full row again.
-test("a resting phone composer sheds chips and attach until focus engages the full row", async ({ onTestFinished }) => {
+test("a resting phone composer sheds attach and status chrome but keeps its activity line", async ({
+  onTestFinished,
+}) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -707,11 +698,14 @@ test("a resting phone composer sheds chips and attach until focus engages the fu
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // At rest: no attach, no status chips, no activity chips. The menu-only
-  // chrome keeps the session actions reachable, and Send stays.
+  // At rest: no attach and no status chrome. The activity line stays below
+  // the card, outside the form; the menu-only chrome keeps the session
+  // actions reachable, and Send stays.
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  const form = screen.getByTestId("composer-form");
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
@@ -720,15 +714,17 @@ test("a resting phone composer sheds chips and attach until focus engages the fu
   fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
   await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-activity-line")).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeTruthy();
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
 });
 
 // A cascade column's chrome renders the conversation's activity controls
 // below the footer (CascadeColumn's ScopeActivityControls), so its seat
-// declares that ownership and the phone composer row keeps no second set of
-// chips beside the status chrome, even engaged.
+// declares that ownership and the phone composer renders no second activity
+// line below its card.
 test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
@@ -752,6 +748,7 @@ test("a composer whose seat owns the activity counts never mounts chips", async 
   await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
 });
 
 // A turn in flight keeps its Stop control even while the editor rests

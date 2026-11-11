@@ -34,23 +34,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  /* The engaged row's line break is decided by honest flex bases: the status
-     chrome carries its measured compact rung as its basis
-     (sessionchrome.module.css, because its container-contained .body cannot
-     report one), so the chrome plus the wrapped strip no longer fit on one
-     line exactly when one line cannot hold both - and the strip takes the
-     next line, keeping the model picker at a real width and every count at
-     the tap floor. When everything fits, no line breaks and this behaves
-     exactly like the single-line row. */
-  flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
-  /* The phone's activity chips ride in this slot (ActivityChips reuses the
-     statusbar's compact presentation), so the slot carries the same named
-     container the statusbar's own bar declares: chips drop their names and
-     glyphs by this slot's measured width, not the page's. Desktop renders
-     no chips here, so the container only ever holds them on a phone. */
-  container: statusbar / inline-size;
+  /* The attach control and the chrome's compact rung cannot share one line
+     with the verbs at the narrowest engaged panes; the chrome takes the next
+     line and keeps the model picker at a readable width. */
+  flex-wrap: wrap;
 }
 
 /* The session's own status (model · effort, context, menu) sits at the row's
@@ -64,6 +53,16 @@
   display: flex;
   flex: 1 1 200px;
   min-width: 0;
+}
+
+/* The phone's activity counts sit on a glance line below the composer card,
+ * where the desktop status bar puts them: not a control in the writing row. */
+.activityRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: var(--tap-min);
+  flex: none;
 }
 
 .attachments {

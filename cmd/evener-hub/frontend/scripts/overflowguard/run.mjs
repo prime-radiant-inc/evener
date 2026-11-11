@@ -448,6 +448,8 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             const submit = form?.querySelector('[data-testid="composer-submit"]');
             const stop = form?.querySelector('[data-testid="composer-stop"]');
             const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
+            const activityLine = pane?.querySelector('[data-testid="composer-activity-line"]');
+            const activityChips = activityLine ? [...activityLine.querySelectorAll('[data-activity-tab]')] : [];
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
@@ -486,6 +488,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               submitVisible: visible(submit),
               stopVisible: visible(stop),
               rowChipCount: rowChips.filter((chip) => visible(chip)).length,
+              activityChipCount: activityChips.filter((chip) => visible(chip)).length,
+              activityLine: rect(activityLine),
+              activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
               modelTrigger: modelTrigger
                 ? {
                     visible: visible(modelTrigger),
@@ -551,15 +556,24 @@ function assertComposerFooter(measurement, width) {
         `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
       );
     }
-    // The resting row sheds attach and the activity chips but never its
-    // actions control - Send, or Stop while the harness session runs a turn;
-    // editor engagement brings the full row back, and a composer button's
-    // own focus must not expand the row out from under it.
+    // The resting row sheds attach but never its actions control - Send, or
+    // Stop while the harness session runs a turn. The activity counts live on
+    // their own line below the card, outside the form, in every focus state.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
+    if (measurement.rowChipCount !== 0)
+      failures.push("activity chips must not ride in the composer control row");
+    if (measurement.activityChipCount === 0) failures.push("phone activity line is missing its chips");
+    if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+    if (
+      measurement.activityLine !== null &&
+      measurement.lastBottom !== null &&
+      measurement.activityLine.top < measurement.lastBottom - 1
+    ) {
+      failures.push("activity line is not below the card");
+    }
     if (measurement.focus === "editor") {
       if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
-      if (measurement.rowChipCount === 0) failures.push("focused editor did not bring the activity chips back");
       // The model picker must stay a real control in the engaged row at
       // every width: the status chrome's basis (its compact rung) keeps the
       // row honest beside the chips, so the trigger never renders clipped
@@ -572,9 +586,9 @@ function assertComposerFooter(measurement, width) {
           `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
         );
       }
-    } else if (measurement.attachVisible || measurement.rowChipCount > 0) {
+    } else if (measurement.attachVisible) {
       failures.push(
-        `phone row must shed attach and chips while resting (${measurement.focus} focus, attach=${measurement.attachVisible}, chips=${measurement.rowChipCount})`,
+        `phone row must shed attach while resting (${measurement.focus} focus, attach=${measurement.attachVisible})`,
       );
     }
     return failures;
@@ -750,11 +764,10 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The phone's resting row sheds the activity chips (the collapsed-row
-    // contract): only the empty, unfocused card mounts none. Every other
-    // state - engaged, drafting, attached, ask-pending, approval - keeps
-    // its four counters, the ask states inside their hidden card.
-    const expectedCount = state.state === "empty" ? 0 : 4;
+    // The activity counts live on their own line below the card, so every
+    // phone state - empty, engaged, drafting, attached, ask-pending,
+    // approval - mounts all four counters.
+    const expectedCount = 4;
     if (state.counters.length !== expectedCount)
       failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
     for (const counter of state.counters) {
