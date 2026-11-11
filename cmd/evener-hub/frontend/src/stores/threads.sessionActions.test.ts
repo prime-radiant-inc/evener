@@ -473,6 +473,7 @@ test("a queue frame keeps the content of a consumed row this client never owned"
   expect(consumedQueueEntriesFor("ref_a")).toEqual([
     expect.objectContaining({ entryId: "q1", text: "queued elsewhere" }),
   ]);
+  expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));
 });
 
 test("an authoritative hydration retires an absent retained queue source", async () => {
