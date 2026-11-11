@@ -246,6 +246,30 @@ test("an accepted source stays while the daemon still projects its queue entry",
   expect(rows[0]?.queueEntryIds).toContain("q1");
 });
 
+test.each(["turn/promoteQueuedAsSteer", "turn/drainAsSteer"])(
+  "an accepted %s keeps its own row after consuming a queue entry",
+  (method) => {
+    const model = threadModel({
+      queue: { depth: 0, revision: 5, ids: [] },
+      pendingMutations: [],
+      turns: [
+        {
+          id: "t1",
+          status: "completed",
+          items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "m3" }],
+        },
+      ],
+    });
+    const rows = project({
+      optimistic: [accepted("m2", method, "consuming", { queueEntryIds: ["q1"] })],
+      model,
+      mutationStateAuthoritative: true,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe("m2");
+  },
+);
+
 test("a promote row suppresses its queue entry", () => {
   const model = threadModel({
     queue: {

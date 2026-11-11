@@ -492,12 +492,18 @@ function deliveredSourceRow<A extends MutationAttachmentRef>(
   row: PendingMessage<A>,
   queuedEntryIds: ReadonlySet<string>,
   pendingEntryIds: ReadonlySet<string>,
+  pendingMutationIds: ReadonlySet<string>,
   queueKnown: boolean,
   pendingKnown: boolean,
   mutationStateAuthoritative: boolean,
   deliveredAny: boolean,
 ): boolean {
   if (!deliveredAny || !queueKnown || !pendingKnown || !mutationStateAuthoritative) return false;
+  // Only the original queue command is a source. A promotion or drain owns the
+  // queue entry it consumed, so its own accepted copy must stay until the
+  // transcript records that mutation.
+  if (row.method !== "queue") return false;
+  if (pendingMutationIds.has(row.id)) return false;
   if (!row.optimistic || row.outbox || row.recovery) return false;
   if (row.queueEntryIds.length === 0) return false;
   return row.queueEntryIds.every((id) => !queuedEntryIds.has(id) && !pendingEntryIds.has(id));
@@ -512,7 +518,9 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   const queuedEntryIds = new Set(model?.queue?.ids ?? []);
   const queueKnown = model?.queue != null && (model.queue.ids !== undefined || (model.queue.depth ?? 0) === 0);
   const pendingEntryIds = new Set<string>();
+  const pendingMutationIds = new Set<string>();
   for (const mutation of model?.pendingMutations ?? []) {
+    pendingMutationIds.add(mutation.clientMutationId);
     for (const id of mutation.queueEntryIds ?? []) pendingEntryIds.add(id);
   }
   const pendingKnown = model?.pendingMutations !== undefined;
@@ -757,6 +765,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
           row,
           queuedEntryIds,
           pendingEntryIds,
+          pendingMutationIds,
           queueKnown,
           pendingKnown,
           mutationStateAuthoritative,

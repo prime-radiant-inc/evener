@@ -173,6 +173,38 @@ test("an image-only queue row promotes with its placeholder display", async () =
   }
 });
 
+test("Steer now stays mounted as an aria-disabled control when draining is unavailable", () => {
+  const previous = threadsStore.getState().threads;
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([
+        [
+          "ref_a",
+          {
+            id: "thr_ref_a",
+            status: { type: "awaiting" },
+            capabilities: { steer: true },
+            queue: { depth: 1, revision: 1 },
+          } as unknown as ThreadModel,
+        ],
+      ]),
+    });
+  });
+  const promote = vi.spyOn(threadsStore.getState(), "promoteQueuedAsSteer").mockResolvedValue(undefined);
+  try {
+    renderStack([row({ queueIndex: 0, queueEntryId: "q1" })], context);
+    const button = screen.getByRole("button", { name: "Steer now" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(button);
+    expect(promote).not.toHaveBeenCalled();
+  } finally {
+    promote.mockRestore();
+    act(() => {
+      threadsStore.setState({ threads: previous });
+    });
+  }
+});
+
 test("a legacy queue row with only a preview shows it but offers no Edit", () => {
   renderStack([row({ text: "truncated…", textComplete: false, queueIndex: 0, queueEntryId: "q1" })], context);
   expect(screen.getByTestId("user-bubble").textContent).toContain("truncated…");

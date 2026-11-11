@@ -2177,7 +2177,7 @@ describe("retry-safe mutation outbox integration", () => {
     expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   });
 
-  test("a queue change clears consumed identities from hydrated pendingMutations", async () => {
+  test("a queue change preserves the hydrated source until a replacement arrives", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
       readResponse("ref_a", {
@@ -2214,9 +2214,14 @@ describe("retry-safe mutation outbox integration", () => {
         consumedClientMutationIds: ["m1"],
       },
     } as AnyNotification);
-    await flushUntil(() => (threadsStore.getState().threads.get("ref_a")?.pendingMutations ?? []).length === 0);
+    await flushUntil(() => false, 5);
 
-    expect(threadsStore.getState().threads.get("ref_a")?.pendingMutations).toEqual([]);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.pendingMutations?.map((pending) => pending.clientMutationId),
+    ).toEqual(["m1"]);
   });
 });
 

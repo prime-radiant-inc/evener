@@ -94,7 +94,12 @@ function PendingMessageRowActions({
   disabled: boolean;
 }) {
   const busy = disabled || handlers.isBusy(row);
-  const actions: Array<{ verb: Parameters<Handlers["action"]>[1]; label: string; disabled: boolean }> = [];
+  const actions: Array<{
+    verb: Parameters<Handlers["action"]>[1];
+    label: string;
+    disabled: boolean;
+    ariaDisabled?: boolean;
+  }> = [];
 
   switch (row.state) {
     case "waiting":
@@ -103,8 +108,8 @@ function PendingMessageRowActions({
       break;
     case "queued":
     case "held":
-      if (row.queueEntryId !== undefined && canDrain)
-        actions.push({ verb: "steerNow", label: "Steer now", disabled: busy });
+      if (row.queueEntryId !== undefined)
+        actions.push({ verb: "steerNow", label: "Steer now", disabled: busy, ariaDisabled: !canDrain });
       if (handlers.canEdit(row)) actions.push({ verb: "edit", label: "Edit message", disabled: busy });
       if (handlers.canRemove(row)) actions.push({ verb: "remove", label: "Remove from queue", disabled: busy });
       break;
@@ -140,6 +145,7 @@ function PendingMessageRowActions({
           variant="quiet"
           size="sm"
           disabled={action.disabled}
+          aria-disabled={action.ariaDisabled ? true : undefined}
           onClick={() => handlers.action(row, action.verb)}
         >
           {action.label}

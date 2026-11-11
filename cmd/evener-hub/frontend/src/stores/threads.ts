@@ -5955,11 +5955,15 @@ async function publishAndReconcileThreadHydration(
   // other caller leaves this undefined for the ordinary target-wide reopen.
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
+  onAuthoritativePublished?: (model: ThreadModel) => void,
 ): Promise<ThreadModel | null> {
   if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
+    onAuthoritativePublished?.(published);
+  }
   if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
     const runtime = getMutationRuntime();
     if (runtime) settleConsumedFromModel(runtime, ref, published);
@@ -6453,21 +6457,6 @@ function acceptEntryNotification(
   return accepted;
 }
 
-function withoutConsumedPendingMutations(
-  models: Map<string, ThreadModel> | null,
-  ref: string,
-  consumed: ReadonlySet<string>,
-): Map<string, ThreadModel> | null {
-  const model = models?.get(ref);
-  if (!model?.pendingMutations?.some((pending) => consumed.has(pending.clientMutationId))) return models;
-  const next = new Map(models);
-  next.set(ref, {
-    ...model,
-    pendingMutations: model.pendingMutations.filter((pending) => !consumed.has(pending.clientMutationId)),
-  });
-  return next;
-}
-
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
@@ -6621,14 +6610,6 @@ function handleNotification(n: AnyNotification): void {
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
     if (projected) nextWatchedThreads = projected;
-  }
-  if (n.method === "thread/queueChanged") {
-    const consumed = new Set(validConsumedClientMutationIds(n.params.consumedClientMutationIds));
-    const changedRef = notificationRef(n);
-    if (changedRef && consumed.size > 0) {
-      nextThreads = withoutConsumedPendingMutations(nextThreads, changedRef, consumed);
-      nextWatchedThreads = withoutConsumedPendingMutations(nextWatchedThreads, changedRef, consumed);
-    }
   }
   const publishableThreads = nextThreads;
   const publishableChangedThreads = changedThreads;
@@ -7000,6 +6981,8 @@ interface TrackedRefreshOptions {
   intent?: HydrationIntent;
   /** False when the caller already holds a wider completion registration. */
   registerCompletion?: boolean;
+  /** Runs when a published model is also current mutation authority. */
+  onAuthoritativePublished?: (model: ThreadModel) => void;
 }
 
 async function refreshTrackedThread(
@@ -7080,7 +7063,14 @@ async function refreshTrackedThreadNow(
       throw error;
     }
     if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
-    return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId, intent);
+    return publishAndReconcileThreadHydration(
+      ref,
+      pending,
+      result,
+      reopenOnlyClientMutationId,
+      intent,
+      options.onAuthoritativePublished,
+    );
   });
   if (registerCompletion) registerHydrationSettlement(ref, hydration);
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
@@ -7199,11 +7189,15 @@ async function handleReady(
   const watchRefs = targetRef
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
+  const authoritativePublishedRefs = new Set<string>();
   await Promise.all([
     ...Array.from(refs, (ref) =>
       refreshTrackedThread(client, epoch, ref, targetedResync, {
         reopenOnlyClientMutationId: options?.reopenOnlyClientMutationId,
         intent: hydrationIntentFor(ref),
+        onAuthoritativePublished: () => {
+          authoritativePublishedRefs.add(ref);
+        },
       }),
     ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
@@ -7245,6 +7239,7 @@ async function handleReady(
     await runtime.outbox.connectionReady();
     if (options?.replayAcceptedCopies) {
       for (const ref of replayRefs) {
+        if (!authoritativePublishedRefs.has(ref)) continue;
         acceptedCopyReplayRefs.add(ref);
         void runtime.dispatcher.reconcileAcceptedCopies(ref, new Set());
       }
@@ -7252,7 +7247,12 @@ async function handleReady(
   } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (options?.suppressTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
   }
-  if (targetedResync && targetRef && acceptedCopyReplayRefs.has(targetRef)) {
+  if (
+    targetedResync &&
+    targetRef &&
+    authoritativePublishedRefs.has(targetRef) &&
+    acceptedCopyReplayRefs.has(targetRef)
+  ) {
     void runtime.dispatcher.reconcileAcceptedCopies(targetRef, new Set());
   }
 }
