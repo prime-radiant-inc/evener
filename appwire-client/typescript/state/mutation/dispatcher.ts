@@ -183,7 +183,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     try {
       await replay;
     } finally {
-      if (this.#acceptedCopyReplays.get(targetRef) === replay) this.#acceptedCopyReplays.delete(targetRef);
+      this.#acceptedCopyReplays.delete(targetRef);
     }
   }
 

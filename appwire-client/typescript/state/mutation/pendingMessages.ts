@@ -139,7 +139,6 @@ export interface ConsumedQueueEntry {
   imageCount: number;
   skillNames: readonly string[];
   commandNames: readonly string[];
-  createdAt?: number;
 }
 
 export { transcriptMutationIds };
@@ -829,10 +828,11 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       imageCount: entry.imageCount,
       skillNames: [...entry.skillNames],
       commandNames: [...entry.commandNames],
-      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
       fromThisClient: false,
       queueEntryIds: [entry.entryId],
     }));
 
-  return mergeLineageRows([...all, ...carriedRows]).sort(compareRows);
+  // Carried rows are already deduped against every owned entry id above, so
+  // there is nothing left for the lineage merge to join.
+  return [...all, ...carriedRows].sort(compareRows);
 }
