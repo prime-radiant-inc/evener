@@ -1840,6 +1840,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.reg.Remove(name)
 		}
 	}
+	// Only the coordinator writes the session URL list (#6080). This gate runs
+	// after the allowed/denied policy and the frozen ceiling, so an all-tools
+	// role or a restored descriptor cannot reintroduce the tool.
+	if s.isSubagentSession() {
+		for _, name := range coordinatorOnlySubagentTools() {
+			s.reg.Remove(name)
+		}
+	}
 	if len(s.cfg.spawn.toolNameCeiling) > 0 {
 		ceiling := make(map[string]bool, len(s.cfg.spawn.toolNameCeiling))
 		for _, name := range s.cfg.spawn.toolNameCeiling {

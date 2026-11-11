@@ -32,6 +32,9 @@ before you finish, such as a question only it can answer, send an update with
 `communicate(end_turn=false)` and keep working. It reaches your parent and may
 wake it, so never send one as narration.
 
+Only the coordinator can add session links. If a link matters, ask the parent
+to add it rather than trying to record it yourself.
+
 When work you started is still running and you have nothing left to do, end your
 turn with one line naming what you wait for. That is a normal turn end, not an
 incomplete report: the result comes back to you when the work finishes, on your

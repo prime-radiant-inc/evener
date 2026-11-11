@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -884,6 +885,9 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 				}
 			}
 		}
+		if !slices.Contains(denied, "urls_add") {
+			t.Errorf("default child with canDelegate=true: urls_add must be denied (got %v)", denied)
+		}
 	})
 
 	t.Run("default child with canDelegate=false: delegate denied, job_watch kept", func(t *testing.T) {
@@ -893,6 +897,9 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 		if slices.Contains(denied, "job_watch") {
 			t.Errorf("default child with canDelegate=false: job_watch must NOT be denied — a session that can run jobs watches its own jobs (got %v)", denied)
+		}
+		if !slices.Contains(denied, "urls_add") {
+			t.Errorf("default child with canDelegate=false: urls_add must be denied (got %v)", denied)
 		}
 	})
 
@@ -912,13 +919,16 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	})
 
 	t.Run("explicit-Tools agent: canDelegate=true does NOT inject delegate into allow-list", func(t *testing.T) {
-		ag := &plugin.Agent{Tools: []string{"read_file"}}
+		ag := &plugin.Agent{Tools: []string{"read_file", "urls_add"}}
 		_, allowed, denied := baseSubagentToolPolicy(ag, true)
 		if len(denied) != 0 {
 			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
 		}
 		if slices.Contains(allowed, "delegate") {
 			t.Errorf("canDelegate=true must NOT inject delegate into a typed agent's allow-list (got %v)", allowed)
+		}
+		if slices.Contains(allowed, "urls_add") {
+			t.Errorf("a typed role must not keep urls_add in its allow-list (got %v)", allowed)
 		}
 		// The job-supervision tools are intrinsic, not injected for delegation:
 		// every allow-list carries them so a leaf can enumerate, await, inspect,
@@ -929,6 +939,70 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Issue #6080: only the coordinator writes the session URL list. The builtin
+// default role is all-tools, so the registry gate on a prepared child is the
+// behavior that matters, not only the base policy's allow/deny lists.
+func TestSubagentRegistryHasNoCoordinatorOnlyTools(t *testing.T) {
+	t.Parallel()
+	coordinatorAgents := coordinatorWorkflowPublicAgentsForTest(t)
+	for _, agentType := range []string{"", "default", "subagent", "explorer", "implementer"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withConfig(SessionConfig{
+				MaxSubagentDepth: 3,
+				StateDir:         t.TempDir(),
+				testOnly: testConfig{
+					skipGitSnapshot:     true,
+					minimalSystemPrompt: true,
+					noSyncJobStore:      true,
+					sandboxProber:       bwrapCapableProber(t.TempDir()),
+				},
+			}))
+			maps.Copy(s.pluginAgents, coordinatorAgents)
+			s.delegationAllowance = 1
+			if s.reg.Get("urls_add") == nil {
+				t.Fatal("root session does not register urls_add; the fixture no longer proves the child gate")
+			}
+			prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: agentType})
+			for _, name := range coordinatorOnlySubagentTools() {
+				if prepared.sub.sess.reg.Get(name) != nil {
+					t.Errorf("agent_type=%q: child registry has %q; only the coordinator writes session links", agentType, name)
+				}
+			}
+			prepared.sub.sess.Close()
+		})
+	}
+}
+
+// The builtin default role is all-tools and an in-process spawn leaves the
+// registry unrestricted, so the session-init gate is the only removal on that
+// path. Issue #6080: a subagent asks its parent to add a session link.
+func TestInProcessAllToolsSubagentHasNoCoordinatorOnlyTools(t *testing.T) {
+	parent := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 3,
+		StateDir:         t.TempDir(),
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+	if parent.reg.Get("urls_add") == nil {
+		t.Fatal("root session does not register urls_add; the fixture no longer proves the child gate")
+	}
+	prepared, err := prepareSubagentRunForTest(parent, "default", parent.currentEnv().WorkingDirectory())
+	if err != nil {
+		t.Fatalf("prepare a default subagent run: %v", err)
+	}
+	defer prepared.disposeUnadopted()
+	for _, name := range coordinatorOnlySubagentTools() {
+		if prepared.sub.sess.reg.Get(name) != nil {
+			t.Errorf("in-process all-tools subagent has %q; only the coordinator writes session links", name)
+		}
+	}
 }
 
 func TestMintBootGenerationWithoutStateDirServesWithoutCounterFile(t *testing.T) {

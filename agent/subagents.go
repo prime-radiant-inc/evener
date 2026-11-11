@@ -425,6 +425,15 @@ func removeRootOnlySubagentTools(items []string) []string {
 	return removeStrings(items, rootOnlySubagentTools())
 }
 
+// coordinatorOnlySubagentTools lists capabilities reserved to the coordinator
+// role. The session URL list has one writer, so a subagent asks its parent to
+// record a link instead of writing one itself (#6080).
+func coordinatorOnlySubagentTools() []string { return []string{"urls_add"} }
+
+func isCoordinatorOnlySubagentTool(name string) bool {
+	return hasString(coordinatorOnlySubagentTools(), name)
+}
+
 // intrinsicSubagentTools ride along on every typed role's tools: allow-list.
 // None is a capability a role opts into, so no role's list may take one away
 // (the untyped surface keeps them all on the deny-list path):
@@ -452,6 +461,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
 		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
+		allowed = removeStrings(allowed, coordinatorOnlySubagentTools())
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
 		// path, exactly as the untyped surface does.
@@ -461,9 +471,11 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		return false, allowed, nil
 	default:
 		if canDelegate {
-			return false, nil, nil // untyped child with allowance: no deny-list → gets delegate+job_watch on default surface
+			// An untyped child with an allowance keeps delegate and job_watch,
+			// but the coordinator-only tools are still denied.
+			return false, nil, coordinatorOnlySubagentTools()
 		}
-		return false, nil, rootOnlySubagentTools()
+		return false, nil, appendUniqueStrings(rootOnlySubagentTools(), coordinatorOnlySubagentTools()...)
 	}
 }
 
@@ -525,6 +537,11 @@ func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools
 		selected[resultToolName] = true
 	}
 	for _, name := range protectedGrantTools() {
+		delete(selected, name)
+	}
+	// The session URL list has one writer: a subagent asks its parent to add a
+	// link instead of writing one itself (#6080).
+	for _, name := range coordinatorOnlySubagentTools() {
 		delete(selected, name)
 	}
 	// No delegate saves memory (filterUnavailableMemoryTools).
@@ -1199,6 +1216,9 @@ func (s *Session) applyChildToolPolicy(subCfg *SessionConfig, agent *plugin.Agen
 		for _, toolName := range canonicalGrantTools {
 			if isProtectedGrantTool(toolName) {
 				return false, nil, nil, fmt.Errorf("%s is root-only and cannot be granted to subagents", toolName)
+			}
+			if isCoordinatorOnlySubagentTool(toolName) {
+				return false, nil, nil, fmt.Errorf("cannot grant tool %q: only the coordinator can add session links; ask the parent to add one", toolName)
 			}
 			if isRootOnlySubagentTool(toolName) {
 				return false, nil, nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
