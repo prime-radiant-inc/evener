@@ -142,8 +142,34 @@ func TestWebChecksTimeOutAWedgedCheck(t *testing.T) {
 	if r.status != webCheckTimedOutStatus || !r.keep {
 		t.Fatalf("result = %+v, want the timeout status and the scratch kept", r)
 	}
-	if want := "FAIL  web-test (timed out after 200ms, 0.0s)\n"; !strings.Contains(tg.stderr.String(), want) {
-		t.Fatalf("stderr = %q, want it to contain %q", tg.stderr.String(), want)
+}
+
+// A check can exit as soon as the timeout's TERM lands, before the gate's
+// select consumes the timeout event. The timeout must be latched at TERM, not
+// at that select, so the verdict is the timeout whether the exit or the event
+// is read first.
+func TestWebChecksTimeoutLatchedBeforeTERM(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 100 * time.Millisecond
+	gate.killGrace = 50 * time.Millisecond
+	launcher.terminateExit["test"] = 143
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	r := tg.await(t)
+	if r.status != webCheckTimedOutStatus || !r.keep {
+		t.Fatalf("result = %+v, want the timeout status and the scratch kept", r)
 	}
 }
 

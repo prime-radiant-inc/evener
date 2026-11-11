@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -219,7 +220,7 @@ func (g *webGate) run() (int, bool) {
 	exits := make(chan guardExit, n)
 	timeouts := make(chan int, n)
 	timers := make([]*time.Timer, n)
-	timedOut := make([]bool, n)
+	timedOut := make([]atomic.Bool, n)
 	defer func() {
 		for _, timer := range timers {
 			if timer != nil {
@@ -271,6 +272,10 @@ func (g *webGate) run() (int, bool) {
 				// select: an interrupt replaces that select with stop's wait,
 				// and a wedged check must still reach its deadline there.
 				timers[index] = time.AfterFunc(g.checkTimeout, func() {
+					// Latch before TERM: the check may exit on that signal
+					// and its exit event may reach the gate before the
+					// timeout event does.
+					timedOut[index].Store(true)
 					proc.Terminate()
 					time.AfterFunc(g.killGrace, proc.Kill)
 					timeouts <- index
@@ -290,7 +295,7 @@ func (g *webGate) run() (int, bool) {
 			if timers[exit.index] != nil {
 				timers[exit.index].Stop()
 			}
-			if timedOut[exit.index] {
+			if timedOut[exit.index].Load() {
 				statuses[exit.index] = webCheckTimedOutStatus
 			}
 			running--
@@ -299,7 +304,7 @@ func (g *webGate) run() (int, bool) {
 			if live[index] == nil {
 				continue
 			}
-			timedOut[index] = true
+			timedOut[index].Store(true)
 		case sig := <-g.signals:
 			return g.stop(sig, specs, live, exits), true
 		}
@@ -318,7 +323,7 @@ func (g *webGate) run() (int, bool) {
 		case specs[i].needsBuild && buildStatus != 0:
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
-		case timedOut[i]:
+		case timedOut[i].Load():
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (timed out after %s%s)\n", guard, g.checkTimeout, wallTime)
 			g.replay(filepath.Join(g.scratch, guard+".log"))
 		default:
