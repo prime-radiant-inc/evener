@@ -33,8 +33,7 @@ const (
 )
 
 // Compact forces context compaction regardless of current pressure.
-// Runs all compaction layers (observation masking, thinking clearing,
-// checkpoint, and LLM summarization). Safe to call while idle.
+// Runs all compaction layers (checkpoint and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {

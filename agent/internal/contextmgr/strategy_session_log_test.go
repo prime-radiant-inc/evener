@@ -35,91 +35,12 @@ func TestSessionLogStrategy_Tools_Empty(t *testing.T) {
 	}
 }
 
-func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testing.T) {
-	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	// Set a low observation mask threshold so compaction triggers on our test data.
-	cm.ObservationMaskThreshold = 0.05
-	cm.ThinkingClearThreshold = 0.95 // high enough to not trigger
-	cm.CheckpointThreshold = 0.95    // high enough to not trigger
-	cm.SummarizeThreshold = 0.99     // high enough to not trigger
-	cm.PreserveRecentTurns = 2
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
-		cm:  cm,
-		log: mustNewSessionLog(t, logPath),
-	}
-
-	// Build a history with a large tool result that will exceed 5% threshold.
-	largeContent := strings.Repeat("x", 30000)
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("read some files")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call1",
-					Name:      "read_file",
-					Arguments: []byte(`{"file_path": "/tmp/test.txt"}`),
-				}},
-			},
-		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
-		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Done reading"},
-		}}},
-		{Kind: schema.TurnUserInput, Message: llm.User("another task")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "working on it"},
-		}}},
-	}
-
-	var emittedLayers []string
-	emitFn := func(kind events.EventKind, data events.EventData) {
-		if kind == events.EventContextCompaction {
-			if cd, ok := data.(events.ContextCompactionData); ok {
-				emittedLayers = append(emittedLayers, cd.Layer)
-			}
-		}
-	}
-
-	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
-	if err != nil {
-		t.Fatalf("ManageContext returned error: %v", err)
-	}
-
-	// Verify observation masking occurred.
-	if len(emittedLayers) == 0 {
-		t.Fatal("expected at least one compaction event")
-	}
-	if emittedLayers[0] != "observation_mask" {
-		t.Errorf("expected first layer to be observation_mask, got %q", emittedLayers[0])
-	}
-
-	// Verify the tool result was masked.
-	toolResult := history[2].Message.Content[0].ToolResult
-	content, ok := toolResult.Content.(string)
-	if !ok {
-		t.Fatalf("expected string content, got %T", toolResult.Content)
-	}
-	if !strings.HasPrefix(content, "[") {
-		t.Errorf("expected masked content starting with '[', got: %s", content[:50])
-	}
-}
-
 func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds so checkpoint triggers but not summarize.
-	cm.ObservationMaskThreshold = 0.01
-	cm.ThinkingClearThreshold = 0.01
 	cm.CheckpointThreshold = 0.01
 	cm.SummarizeThreshold = 0.99 // don't trigger
 	cm.PreserveRecentTurns = 2
@@ -501,8 +422,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 2.0 // Disable layer 4.
 	cm.PreserveRecentTurns = 2
@@ -564,8 +483,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	// All thresholds very low so all layers fire.
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	cm.PreserveRecentTurns = 2
@@ -615,8 +532,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 // same pass reads the partner's messages from what the checkpoint folded.
 func TestSessionLogStrategy_ManageContext_SummaryKeepsPartnerMessagesTheCheckpointFolded(t *testing.T) {
 	cm := partnerTestManager(emptySummaryReply)
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}

@@ -1,6 +1,6 @@
 // Package contextmgr manages a session's context pressure: it tracks cumulative
-// token usage, applies progressive compaction layers (observation masking,
-// thinking clearing, deterministic checkpoint, LLM summarization) to the
+// token usage, applies progressive compaction layers (deterministic
+// checkpoint, LLM summarization) to the
 // conversation history, and hosts the pluggable context strategies. Strategies
 // reach back to their owning session only through the narrow Host interface,
 // which breaks the context⇄session cycle.
@@ -115,17 +115,15 @@ type Manager struct {
 	// see summary_failure.go.
 	lastSummaryFailureRepeat string
 
-	// Thresholds are fractions (0.0–1.0) of the context window.
-	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
-	// default compaction path (MaybeCompact/ForceCompact) because in-place
-	// modifications bust the prompt cache for all providers. They remain here
-	// for the session-log strategy, which calls
-	// maskObservations/clearThinking directly.
-	ObservationMaskThreshold float64
-	ThinkingClearThreshold   float64
+	// Thresholds are fractions (0.0–1.0) of the context window. SetCompactAt
+	// keeps them ordered: WarnThreshold < CheckpointThreshold <=
+	// SummarizeThreshold.
+	//
 	// WarnThreshold is the pressure fraction at which the Session nudges the
 	// agent to self-compact at its next clean seam (best-effort; the checkpoint
-	// and summary layers remain the guarantee).
+	// and summary layers remain the guarantee). CheckpointThreshold is the
+	// trigger for automatic compaction. SummarizeThreshold is the backstop
+	// that adds an LLM summary when a checkpoint alone did not free enough.
 	WarnThreshold       float64
 	CheckpointThreshold float64
 	SummarizeThreshold  float64
@@ -159,17 +157,40 @@ func (cm *Manager) handleCompactionTurn(ctx context.Context, turn schema.Turn) {
 // a model the provider refuses is learned once for the whole session rather
 // than once per compaction layer.
 func NewManager(profile *provider.Profile, client *llm.Client, cheap *cheapmodel.Caller) *Manager {
-	return &Manager{
-		profile:                  profile,
-		client:                   client,
-		cheap:                    cheap,
-		ObservationMaskThreshold: 0.60,
-		ThinkingClearThreshold:   0.70,
-		WarnThreshold:            0.75,
-		CheckpointThreshold:      0.80,
-		SummarizeThreshold:       0.95,
-		PreserveRecentTurns:      6,
+	cm := &Manager{
+		profile:             profile,
+		client:              client,
+		cheap:               cheap,
+		PreserveRecentTurns: 6,
 	}
+	cm.SetCompactAt(DefaultCompactAt)
+	return cm
+}
+
+// DefaultCompactAt is the context-window fraction at which automatic
+// compaction triggers unless the user configures another.
+const DefaultCompactAt = 0.90
+
+const (
+	// selfCompactNudgeAt is the pressure at which the agent is nudged to
+	// compact itself; a trigger at or below it pulls the nudge down with it.
+	selfCompactNudgeAt = 0.75
+	// nudgeLead is how far below the trigger the nudge sits when the trigger
+	// is configured at or below selfCompactNudgeAt.
+	nudgeLead = 0.05
+	// summarizeBackstopAt is the pressure at which a checkpoint is followed by
+	// an LLM summary; a trigger at or above it raises the backstop to match.
+	summarizeBackstopAt = 0.95
+)
+
+// SetCompactAt sets the fraction of the context window at which automatic
+// compaction triggers and derives the other two thresholds from it: the
+// self-compact nudge stays at 0.75 or sits 0.05 below a lower trigger, and the
+// summarize backstop stays at 0.95 or rises to a higher trigger.
+func (cm *Manager) SetCompactAt(fraction float64) {
+	cm.CheckpointThreshold = fraction
+	cm.WarnThreshold = min(selfCompactNudgeAt, max(0, fraction-nudgeLead))
+	cm.SummarizeThreshold = max(summarizeBackstopAt, fraction)
 }
 
 func (cm *Manager) resultToolName() string {

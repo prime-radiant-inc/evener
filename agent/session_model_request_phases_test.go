@@ -48,7 +48,7 @@ func TestPrepareModelRequest_LaterRoundFoldShiftsBoundaryWithRemovedTurns(t *tes
 	s := newTestSession(t)
 	seedNumberedSessionHistory(t, s, 12)
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
-	forcePressureAbove(t, s, 0.85)
+	forcePressureAbove(t, s, 0.92)
 	s.mu.Lock()
 	before := len(s.history)
 	s.turnHistoryBaseline = before

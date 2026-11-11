@@ -45,8 +45,6 @@ func gctPureTails(t *testing.T, token string) {
 		t.Fatalf("cleaned conversation = %#v", cleaned)
 	}
 
-	maskObservations(nil, 0, "communicate")
-	maskObservations([]schema.Turn{schema.NewTurn(schema.TurnToolResults, llm.User("not result"))}, 0, "communicate")
 	if findToolCallArgs(nil, "missing") != nil {
 		t.Fatal("missing tool call returned arguments")
 	}
@@ -54,15 +52,6 @@ func gctPureTails(t *testing.T, token string) {
 	if !end || msg != "fallback" {
 		t.Fatalf("output fallback = %v, %q", end, msg)
 	}
-	_ = summarizeToolResult("unknown", token, false, []byte(`{}`))
-	_ = summarizeToolResult("read_file", token, false, []byte(`{}`))
-	_ = summarizeToolResult("shell", token, false, []byte(`{"command":"`+strings.Repeat("x", 61)+`"}`))
-	_ = summarizeToolResult("delegate", token, false, []byte(`{}`))
-	clearThinking(nil, 0)
-	clearThinking([]schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "[thinking: 1 chars]"}},
-		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{}},
-	}})}, 0)
 	if extractJSONField(`{"other":1}`, "missing") != "" {
 		t.Fatal("missing JSON field returned a value")
 	}
@@ -172,8 +161,6 @@ func gctStrategyTails(t *testing.T, token string) {
 	_ = extractOriginalPromptLine("Original task: no newline", "Original task: ")
 
 	sls.cm.PreserveRecentTurns = 1
-	sls.cm.ObservationMaskThreshold = 0
-	sls.cm.ThinkingClearThreshold = 0
 	sls.cm.CheckpointThreshold = 0
 	sls.cm.SummarizeThreshold = 0
 	slsCallbacks := 0

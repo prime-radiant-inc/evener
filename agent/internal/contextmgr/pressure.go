@@ -271,8 +271,6 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 			}
 			return v
 		}
-		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
-		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
 		cm.WarnThreshold = clamp(cm.WarnThreshold * scale)
 		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)

@@ -852,29 +852,6 @@ func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *tes
 	}
 }
 
-func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "session-log"})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	sess.contextMgr.ObservationMaskThreshold = 0
-	sess.contextMgr.CheckpointThreshold = 2
-	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("observation-only operation"))}
-	compactionCtx, emitFn, flush, _ := sess.compactionEmitFunc(context.Background(), &history)
-	if err := sess.strategy.ManageContext(compactionCtx, &history, 0, emitFn); err != nil {
-		t.Fatalf("ManageContext: %v", err)
-	}
-	flush()
-	if got := compactionReminders(sess); len(got) != 0 {
-		t.Fatalf("compaction transcript reminders = %q, want none", got)
-	}
-}
-
 func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

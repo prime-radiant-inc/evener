@@ -30,15 +30,6 @@ func TestTruncateKeepsRunesWhole(t *testing.T) {
 	}
 }
 
-func TestSummarizeToolResultShellCommandKeepsRunesWhole(t *testing.T) {
-	args, _ := json.Marshal(map[string]string{"command": multibyteRun("a", 40)})
-	got := summarizeToolResult("shell", "exit code: 0", false, args)
-	// The command is %q-quoted, which escapes a torn rune into valid text.
-	if !utf8.ValidString(got) || strings.Contains(got, `\x`) {
-		t.Fatalf("shell summary split a rune: %q", got)
-	}
-}
-
 func TestCheckpointShellCommandKeepsRunesWhole(t *testing.T) {
 	args, _ := json.Marshal(map[string]string{"command": multibyteRun("a", 40)})
 	history := []schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Message{
