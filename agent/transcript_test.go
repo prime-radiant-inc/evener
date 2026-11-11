@@ -1223,6 +1223,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
+	var window int
 
 	// Adapter: first call returns a read_file tool call, second call returns "done".
 	// This pattern repeats for each ProcessInput.
@@ -1232,7 +1233,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			// Round 1, input 1: read a big file.
 			func(req llm.Request) llm.Response {
 				return llm.Response{
-					Usage: llm.Usage{InputTokens: 22_000},
+					Usage: llm.Usage{InputTokens: window * 8 / 10},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -1285,14 +1286,15 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Size the window from this session's own standing request. The system
 	// prompt states host facts (temp paths, toolchain probes), so a fixed
-	// window lands on different sides of the fit on different hosts. The
-	// window must hold the standing request plus a checkpoint and two reads
-	// of big.txt (about 2.5k tokens) yet stay small enough that the first read
-	// crosses the compaction threshold (lost above about 5.2k); 3.8k sits
-	// inside that band with margin both ways.
+	// window fits on one host and not another. The window holds the standing
+	// request plus a checkpoint and two reads of big.txt (about 2.5k tokens);
+	// 5k of headroom leaves margin for that. The first round reports usage at
+	// the 80% checkpoint threshold of whatever window results, so compaction
+	// runs independently of the headroom.
 	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
 	standing := standingRequestTokens(t, dir, profile, SessionConfig{StateDir: t.TempDir()}, "read the big file")
-	profile = WithContextWindow(profile, standing+3_800)
+	window = standing + 5_000
+	profile = WithContextWindow(profile, window)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,

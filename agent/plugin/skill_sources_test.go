@@ -48,3 +48,32 @@ func TestSkillSourcesMetadataOnlyFirstManifestReservation(t *testing.T) {
 		t.Fatalf("selected=%+v err=%v", d, err)
 	}
 }
+
+func TestSkillSourcesSelectsASymlinkedPluginByItsRealDirectory(t *testing.T) {
+	root := fixtureRoot(t)
+	real := filepath.Join(root, "revision")
+	if err := os.MkdirAll(filepath.Join(real, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, ".claude-plugin", "plugin.json"), []byte(`{"name":"probe"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "skills", "selected"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "skills", "selected", "SKILL.md"), []byte("---\nname: selected\ndescription: fixture\n---\nBODY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "current")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	sources, diagnostics := SkillSources([]string{link})
+	if len(diagnostics) != 0 || len(sources) != 1 || sources[0].Dir != real {
+		t.Fatalf("sources=%+v diagnostics=%+v, want the real directory %q", sources, diagnostics, real)
+	}
+	c := skill.Discover(nil, skill.DiscoverOptions{HomeDir: t.TempDir(), Plugins: sources})
+	if d, err := c.ResolveExact("probe:selected"); err != nil || d.Meta.SkillFile != filepath.Join(real, "skills", "selected", "SKILL.md") {
+		t.Fatalf("selected=%+v err=%v", d, err)
+	}
+}
