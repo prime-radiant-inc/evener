@@ -1660,6 +1660,42 @@ export class Driver {
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
+  // clickQueueRowControl presses the named control on the queue strip row
+  // whose own text carries rowText. The strip renders one control per row kind
+  // and re-renders as its durable records settle, so a document-wide
+  // first-match lookup can press another row's (possibly disabled) control and
+  // then lose the target's control when the target row settles (#5788).
+  // Finding, hit-testing and pressing in one page turn keeps the pressed
+  // element the one that was checked.
+  async clickQueueRowControl({ rowText, label, ref = null }) {
+    const selector = `button[aria-label="${label}"]`;
+    const result = await evaluate(
+      this.send,
+      `(() => {
+        const root = ${this.paneOrDocumentExpr(ref)};
+        if (!root) return "missing";
+        const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
+        const strip = header?.closest("section");
+        if (!strip) return "missing";
+        const row = [...strip.querySelectorAll("li")].find((li) =>
+          (li.textContent ?? "").includes(${JSON.stringify(rowText)}) && li.querySelector(${JSON.stringify(selector)}));
+        const button = row?.querySelector(${JSON.stringify(selector)});
+        if (!button) return "missing";
+        if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
+        button.scrollIntoView({ block: "center", inline: "center" });
+        const r = button.getBoundingClientRect();
+        if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
+        button.click();
+        return "clicked";
+      })()`,
+    );
+    const where = `the queue row carrying ${JSON.stringify(rowText)}`;
+    if (result === "missing") throw new Error(`clickQueueRowControl: no ${label} control on ${where}`);
+    if (result === "disabled") throw new Error(`clickQueueRowControl: ${label} is disabled on ${where}`);
+    if (result === "covered") throw new Error(`clickQueueRowControl: ${label} is covered at its center on ${where}`);
+    if (result !== "clicked") throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
+  }
+
   // turnTextsExpr evaluates to one session's mounted transcript text per turn:
   // the pane's turn-blocks that share a data-turn-id, concatenated, because a
   // turn can render as several segments (TranscriptBody's turnRow). Scoped to
@@ -2105,9 +2141,24 @@ async function runScenarios(driver) {
   // click is effect-verified and retried: the strip re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
-    locate: () => driver.click("button[aria-label='Edit message']"),
-    effectExpr: `(() => { const state = ${driver.composerStateExpr(driver.sessionA)};
-      return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
+    locate: () => driver.clickQueueRowControl({
+      rowText: PROSE.queue1,
+      label: "Edit message",
+      ref: driver.sessionA,
+    }),
+    // The press restores the text to the composer synchronously and then
+    // cancels the durable queue entry. Waiting only for the composer text
+    // released the guard while that cancel was still updating the entry, so a
+    // re-click could find the control gone (#5788) and the next submit could
+    // fence against a recovery row that changed underneath it (#4916). The
+    // awaited signal is the whole edit transition: the composer carries the
+    // text and the row has left the queue.
+    effectExpr: `(() => {
+      const state = ${driver.composerStateExpr(driver.sessionA)};
+      if (!state || !state.text.includes(${JSON.stringify(PROSE.queue1)})) return null;
+      const strip = ${driver.queueStripExpr(driver.sessionA)};
+      return strip === null || !strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? true : null;
+    })()`,
     label: "Edit message",
   });
   const returned = await driver.composerState(driver.sessionA);
