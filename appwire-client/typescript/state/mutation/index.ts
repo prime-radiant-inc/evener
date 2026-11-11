@@ -37,6 +37,7 @@ export {
   ownPendingTurnInput,
   parseImagePlaceholder,
   pendingEntryPreview,
+  queueEntryAt,
   reconcilePendingEntries,
   reflectedMutationIds,
   skillMarkers,

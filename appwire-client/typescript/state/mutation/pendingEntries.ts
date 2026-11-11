@@ -111,6 +111,43 @@ export function pendingEntryPreview(entry: {
     .join(" ");
 }
 
+// One index of the daemon's queue arrays, canonicalized. Both the pending
+// projection and the web store's carried-row registry read the wire shape
+// through here so the two cannot disagree about text, previews, or selections.
+export function queueEntryAt(
+  queue: {
+    ids?: readonly string[];
+    clientMutationIds?: readonly string[];
+    texts?: readonly string[];
+    preview?: readonly string[];
+    skillNames?: readonly (readonly string[])[];
+    commandNames?: readonly (readonly string[])[];
+  },
+  index: number,
+): {
+  entryId: string | undefined;
+  clientMutationId: string | undefined;
+  fullText: string | undefined;
+  text: string;
+  preview: string | undefined;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
+  const fullText = queue.texts?.[index];
+  const preview = queue.preview?.[index];
+  return {
+    entryId: queue.ids?.[index],
+    clientMutationId: queue.clientMutationIds?.[index],
+    fullText,
+    text: fullText ?? preview ?? "",
+    preview,
+    imageCount: parseImagePlaceholder(preview),
+    skillNames: canonicalSkillNames(queue.skillNames?.[index] ?? []),
+    commandNames: canonicalSkillNames(queue.commandNames?.[index] ?? []),
+  };
+}
+
 // Whether THIS client has a turn/start of its own that the session has not
 // reflected yet: deriveSendQueueAvailability's tier 6 input. A fast second
 // message is composed while the thread still reads idle; routed to

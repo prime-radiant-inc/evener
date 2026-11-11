@@ -73,7 +73,7 @@ import {
   MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
-  parseImagePlaceholder,
+  queueEntryAt,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -7512,37 +7512,39 @@ let replayAcceptedCopiesOnReady = false;
 const acceptedCopyReplayRefs = new Set<string>();
 const pendingConsumedSettlements = new Map<string, Set<string>>();
 // Queue rows another client's transition consumed, kept visible here because
-// this client never held a local copy of them. Keyed by ref, then entry id.
-const consumedQueueRows = new Map<string, Map<string, ConsumedQueueEntry>>();
-// The array handed to the projection. Kept stable per ref so the pending
-// stack's snapshot comparison sees one identity until the rows change.
-const consumedQueueRowList = new Map<string, ConsumedQueueEntry[]>();
+// this client never held a local copy of them. One entry per ref owns both the
+// rows and the array the projection reads, so the array stays the same identity
+// until the rows change and invalidation is a single delete.
+type ConsumedQueueRows = { rows: Map<string, ConsumedQueueEntry>; list: ConsumedQueueEntry[] | undefined };
+const consumedQueueRows = new Map<string, ConsumedQueueRows>();
+
+function invalidateConsumedQueueRows(ref: string): void {
+  const entry = consumedQueueRows.get(ref);
+  if (entry) entry.list = undefined;
+}
 
 function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consumed: readonly string[]): void {
   const queue = previous?.queue;
   if (!queue || consumed.length === 0) return;
   const consumedIds = new Set(consumed);
-  let rows = consumedQueueRows.get(ref);
+  let entry = consumedQueueRows.get(ref);
   for (let index = 0; index < (queue.ids?.length ?? 0); index += 1) {
-    const entryId = queue.ids?.[index];
-    const mutationId = queue.clientMutationIds?.[index];
-    if (!entryId || !mutationId || !consumedIds.has(mutationId)) continue;
-    rows ??= new Map();
-    const fullText = queue.texts?.[index];
-    rows.set(entryId, {
+    const queued = queueEntryAt(queue, index);
+    const { entryId, clientMutationId } = queued;
+    if (!entryId || !clientMutationId || !consumedIds.has(clientMutationId)) continue;
+    entry ??= { rows: new Map(), list: undefined };
+    entry.list = undefined;
+    entry.rows.set(entryId, {
       entryId,
-      clientMutationId: mutationId,
-      text: fullText ?? queue.preview?.[index] ?? "",
-      textComplete: fullText !== undefined,
-      imageCount: parseImagePlaceholder(queue.preview?.[index]),
-      skillNames: queue.skillNames?.[index] ?? [],
-      commandNames: queue.commandNames?.[index] ?? [],
+      clientMutationId,
+      text: queued.text,
+      textComplete: queued.fullText !== undefined,
+      imageCount: queued.imageCount,
+      skillNames: queued.skillNames,
+      commandNames: queued.commandNames,
     });
   }
-  if (rows && rows.size > 0) {
-    consumedQueueRows.set(ref, rows);
-    consumedQueueRowList.delete(ref);
-  }
+  if (entry && entry.rows.size > 0) consumedQueueRows.set(ref, entry);
 }
 
 // The consumed rows still awaiting an authoritative replacement. A published,
@@ -7551,38 +7553,35 @@ function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consum
 const NO_CONSUMED_QUEUE_ENTRIES: ConsumedQueueEntry[] = [];
 
 export function consumedQueueEntriesFor(ref: string): ConsumedQueueEntry[] {
-  const rows = consumedQueueRows.get(ref);
-  if (!rows) return NO_CONSUMED_QUEUE_ENTRIES;
-  const cached = consumedQueueRowList.get(ref);
-  if (cached) return cached;
+  const entry = consumedQueueRows.get(ref);
+  if (!entry) return NO_CONSUMED_QUEUE_ENTRIES;
+  if (entry.list) return entry.list;
   // Stable for the pending stack's snapshot comparison: rebuilt only when a
-  // new consumption changes the map, never on a plain read.
-  const list = [...rows.values()];
-  consumedQueueRowList.set(ref, list);
-  return list;
+  // new consumption changes the rows, never on a plain read.
+  entry.list = [...entry.rows.values()];
+  return entry.list;
 }
 
 // Retire carried rows the model proves landed. Called from the publication
 // path, never from a render, so a discarded concurrent render cannot delete a
 // row that never reached the screen.
 function pruneConsumedQueueRows(ref: string, model: ThreadModel | undefined): void {
-  const rows = consumedQueueRows.get(ref);
-  if (!rows) return;
+  const entry = consumedQueueRows.get(ref);
+  if (!entry) return;
   const recorded = transcriptMutationIds(model);
   let changed = false;
-  for (const [entryId, entry] of rows) {
-    if (!recorded.has(entry.clientMutationId)) continue;
-    rows.delete(entryId);
+  for (const [entryId, row] of entry.rows) {
+    if (!recorded.has(row.clientMutationId)) continue;
+    entry.rows.delete(entryId);
     changed = true;
   }
   if (!changed) return;
-  if (rows.size === 0) consumedQueueRows.delete(ref);
-  consumedQueueRowList.delete(ref);
+  if (entry.rows.size === 0) consumedQueueRows.delete(ref);
+  else invalidateConsumedQueueRows(ref);
 }
 
 function forgetConsumedQueueRows(ref: string): void {
-  if (!consumedQueueRows.delete(ref)) return;
-  consumedQueueRowList.delete(ref);
+  consumedQueueRows.delete(ref);
 }
 
 // A consumed queue identity retires only when an accepted authoritative
@@ -9452,7 +9451,6 @@ export function resetThreadsStoreForTests(): void {
   acceptedCopyReplayRefs.clear();
   pendingConsumedSettlements.clear();
   consumedQueueRows.clear();
-  consumedQueueRowList.clear();
   resetThreadOwnersForTests();
   cacheLifetimeHeld.clear();
   // A pre-reset ensure may still await the cache. Do not reuse its generation
@@ -9474,8 +9472,6 @@ export function resetThreadsStoreForTests(): void {
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
   releaseThreadSubscriptions();
-  consumedQueueRows.clear();
-  consumedQueueRowList.clear();
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;
