@@ -39,6 +39,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
+import stackStyles from "../shell/mobile/StackHost.module.css";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
@@ -63,6 +64,12 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
+// ?panels=1&activity=about: the phone's Overview opened on About for a local
+// session, whose branch row is resolved through evener/git/head. The fixture
+// ref is local: because that lookup (and RepoLocation's locality rule) only
+// runs for local sessions.
+const panelsMode = params.get("panels") === "1";
+const aboutOverviewMode = panelsMode && params.get("activity") === "about";
 // ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
@@ -334,6 +341,21 @@ const heldTailSnapshot: ThreadReadResponse = {
   },
 };
 
+const ABOUT_REF = "local:overflowabout";
+const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
+const aboutSnapshot: ThreadReadResponse = {
+  ...snapshot,
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_about",
+    sessionId: "sess_overflow_about",
+    // About reads session facts, not the transcript; the base snapshot's
+    // 12k-character payload would only hydrate and render the hidden pane.
+    turns: [],
+    evener: { ...snapshot.thread.evener, ref: ABOUT_REF },
+  },
+};
+
 const PAGING_REF = "overflowpaging";
 const PAGING_ITEM_IDS = Array.from({ length: 45 }, (_, index) => `paging-item-${index}`);
 PAGING_ITEM_IDS[4] = "item_tool_paging";
@@ -409,6 +431,7 @@ const FIXTURES = [
   { on: pagingMode, ref: PAGING_REF, snapshot: pagingSnapshot },
   { on: intentTailMode, ref: INTENTTAIL_REF, snapshot: intentTailSnapshot },
   { on: heldTailMode, ref: HELDTAIL_REF, snapshot: heldTailSnapshot },
+  { on: aboutOverviewMode, ref: ABOUT_REF, snapshot: aboutSnapshot },
 ];
 const activeFixture = FIXTURES.find((fixture) => fixture.on) ?? { ref: REF, snapshot };
 const { ref: activeRef, snapshot: activeSnapshot } = activeFixture;
@@ -430,6 +453,9 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
   };
 });
 fake.on("thread/unsubscribe", () => ({}));
+// Only the About fixture asks: every footer-pinned page keeps its geometry
+// because no other page's session is local, and no other page has this handler.
+if (aboutOverviewMode) fake.on("evener/git/head", () => ({ head: ABOUT_BRANCH }));
 const composerRequests: { method: string; at: number; params: unknown }[] = [];
 fake.on("evener/sandbox/escalation/resolve", () => ({}));
 for (const method of ["turn/queue", "turn/interrupt"] as const) {
@@ -583,17 +609,28 @@ if (settingsMode) {
       </div>
     </ClientProvider>,
   );
-} else if (params.get("panels") === "1") {
-  workspaceStore.getState().openPane("session", { ref: REF });
-  if (params.get("activity") === "tasks") activitySidebarStore.getState().openWith("tasks");
+} else if (panelsMode) {
+  workspaceStore.getState().openPane("session", { ref: activeRef });
+  if (params.get("activity") === "tasks" || aboutOverviewMode) {
+    activitySidebarStore.getState().openWith(aboutOverviewMode ? "about" : "tasks");
+  }
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
       <MotionProvider>
-        <div id="oh-pane" style={{ width, height: 900, display: "flex" }}>
+        <div id="oh-pane" style={{ width, height: 900, display: "flex", position: "relative" }}>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
             <DockHost />
           </div>
-          <ActivitySidebar />
+          {/* On a phone the sidebar is a full-screen overlay (StackHost's
+              activityOverlay), not a flex sibling of the workspace. Use the
+              real class so a change to the overlay CSS is measured here. */}
+          {width < 900 ? (
+            <div className={stackStyles.activityOverlay}>
+              <ActivitySidebar mobile />
+            </div>
+          ) : (
+            <ActivitySidebar />
+          )}
         </div>
       </MotionProvider>
     </ClientProvider>,

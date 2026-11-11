@@ -1001,6 +1001,84 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
   }
 }
 
+// The phone's Overview is a local session's only branch surface: the footer
+// RepoLocation line is desktop-only, so About resolves the branch through
+// evener/git/head. This page mounts that Overview as the phone's full-screen
+// overlay, on the local: fixture whose scoped git/head answer the harness
+// registers only for this mode, and pins the branch row's geometry.
+// Kept in step with the fixture's ABOUT_BRANCH in
+// src/dev/overflowharness-entry.tsx; it is deliberately long enough to press
+// the row's truncation.
+const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
+async function verifyAboutOverview(cdpEndpoint, url, width) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width, height: 900, mobile: true });
+    await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await navigateTo(page, url, BOOT);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    const out = await send("Runtime.evaluate", {
+      expression: `(async () => {
+        const until = async (read, label) => {
+          for (let i = 0; i < 240; i++) {
+            const value = read();
+            if (value) return value;
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          throw new Error('About Overview fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 400));
+        };
+        const sidebar = await until(
+          () => document.querySelector('[data-testid="activity-sidebar"]'),
+          'activity sidebar',
+        );
+        await until(
+          () => [...sidebar.querySelectorAll('[role="radio"]')].find(
+            (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('About'),
+          ),
+          'selected About tab',
+        );
+        const branch = await until(
+          () => document.querySelector('[data-testid="session-details-branch"]'),
+          'About branch row',
+        );
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const sidebarBox = sidebar.getBoundingClientRect();
+        const branchBox = branch.getBoundingClientRect();
+        const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
+            (style.overflowX === 'auto' || style.overflowX === 'scroll');
+        });
+        return {
+          viewportWidth: window.innerWidth,
+          sidebarLeft: sidebarBox.left,
+          sidebarRight: sidebarBox.right,
+          sidebarWidth: sidebarBox.width,
+          branchText: branch.textContent?.trim() ?? '',
+          branchVisible: branch.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+          branchContained: branchBox.left >= sidebarBox.left - 1 && branchBox.right <= sidebarBox.right + 1,
+          horizontalOverflowCount: horizontallyOverflowing.length,
+          overflowing: horizontallyOverflowing.slice(0, 5).map((element) => element.className || element.tagName),
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+        };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (out.result.exceptionDetails) {
+      throw new Error(`About Overview eval threw: ${JSON.stringify(out.result.exceptionDetails)}`);
+    }
+    return out.result.result.value;
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 async function verifyShortSessionMenu(cdpEndpoint, url) {
   const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
@@ -1618,12 +1696,61 @@ async function runDuoCompactGuard(cdpEndpoint, vitePort, profileDir, verbose = f
   return true;
 }
 
+// The phone's Overview is a local session's only branch surface (the footer
+// RepoLocation line is desktop-only), so this page pins the About tab's
+// resolved branch row and the overlay's phone geometry. It is its own function
+// so the mutation recipe in MUTATIONS.md can run just this page with
+// --about-only instead of the whole sweep.
+async function runAboutOverviewGuard(cdpEndpoint, vitePort) {
+  const aboutOverview = await verifyAboutOverview(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=390&panels=1&activity=about`,
+    390,
+  );
+  const failures = [];
+  if (aboutOverview.viewportWidth !== 390) {
+    failures.push(`viewport=${aboutOverview.viewportWidth}, expected 390`);
+  }
+  if (aboutOverview.branchText !== ABOUT_BRANCH) {
+    failures.push(`branch row=${JSON.stringify(aboutOverview.branchText)}, expected ${ABOUT_BRANCH}`);
+  }
+  if (!aboutOverview.branchVisible) failures.push("branch row is not visible");
+  if (Math.abs(aboutOverview.sidebarWidth - 390) > GEOMETRY_TOLERANCE) {
+    failures.push(`sidebar=${aboutOverview.sidebarWidth}px wide, expected the 390px overlay`);
+  }
+  if (aboutOverview.sidebarLeft < -1 || aboutOverview.sidebarRight > 390 + 1) {
+    failures.push(
+      `sidebar spans ${aboutOverview.sidebarLeft}-${aboutOverview.sidebarRight}, outside the 390px viewport`,
+    );
+  }
+  if (aboutOverview.documentScrollWidth > 390 + 1 || aboutOverview.bodyScrollWidth > 390 + 1) {
+    failures.push(
+      `page scrolls horizontally: document=${aboutOverview.documentScrollWidth}, body=${aboutOverview.bodyScrollWidth}`,
+    );
+  }
+  if (!aboutOverview.branchContained) {
+    failures.push("branch row escapes the sidebar's horizontal bounds");
+  }
+  if (aboutOverview.horizontalOverflowCount !== 0) {
+    failures.push(`horizontal scroll container(s) inside the pane: ${JSON.stringify(aboutOverview.overflowing)}`);
+  }
+  if (failures.length > 0) {
+    console.log(`390px About Overview ... FAIL - ${failures.join("; ")}; ${JSON.stringify(aboutOverview)}`);
+    return false;
+  }
+  console.log(
+    `390px About Overview ... PASS - ${aboutOverview.branchText} resolved and contained in the ${aboutOverview.sidebarWidth}px overlay`,
+  );
+  return true;
+}
+
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
   const composerOnly = process.argv.includes("--composer-only");
   const composerDelayOnly = process.argv.includes("--composer-delay-only");
   const duoOnly = process.argv.includes("--duo-only");
-  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly].filter(Boolean).length > 1)
+  const aboutOnly = process.argv.includes("--about-only");
+  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly, aboutOnly].filter(Boolean).length > 1)
     throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
@@ -1664,6 +1791,7 @@ async function main() {
     cdpEndpoint = await waitForBrowserReady(guard);
 
     if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir, true)) ? 0 : 1;
+    if (aboutOnly) return (await runAboutOverviewGuard(cdpEndpoint, vitePort)) ? 0 : 1;
 
     const delayedComposer = async () => {
       // One adversarial transport case per input type, not another theme matrix.
@@ -1971,6 +2099,8 @@ async function main() {
           `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }
+
+    if (!(await runAboutOverviewGuard(cdpEndpoint, vitePort))) failed++;
 
     for (const width of sweep) {
       const result = await measureAt(
