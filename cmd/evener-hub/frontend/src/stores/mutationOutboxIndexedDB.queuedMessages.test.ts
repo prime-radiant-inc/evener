@@ -1671,8 +1671,9 @@ test("a retained copy from an edited recovery keeps the frozen original input", 
   await f.storage.settleApplied(queued.clientMutationId, { retainDisplayCopy: true });
 
   const optimistic = await f.storage.getOptimistic(queued.clientMutationId);
-  expect((optimistic?.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
-  expect((optimistic?.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  if (!optimistic) throw new Error("retained display copy missing");
+  expect((optimistic.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
 });
 
 test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {
