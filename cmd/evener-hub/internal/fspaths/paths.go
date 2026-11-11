@@ -76,26 +76,19 @@ var ErrPathEscapesRoot = errors.New("path escapes root")
 //     symlink-resolved root (catches a symlink inside root pointing outside).
 //
 // The root itself must be an existing directory; rel must resolve to an
-// existing path. A relative rel is joined onto root; an absolute rel is only
-// accepted if it already lives inside root.
+// existing path. A relative rel is joined onto root; an absolute rel is
+// accepted when its canonical path lives inside the canonical root, including
+// a spelling that reaches the same path through a symlinked ancestor.
 func ResolveInRoot(root, rel string) (string, error) {
 	root = strings.TrimSpace(root)
 	rel = strings.TrimSpace(rel)
 	if root == "" || rel == "" {
 		return "", errors.New("empty root or path")
 	}
-	trustedRoot := filepath.Clean(root)
-	realRoot, err := filepath.EvalSymlinks(trustedRoot)
+	realRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
 	if err != nil {
 		return "", err
 	}
-	if filepath.IsAbs(rel) && trustedRoot != realRoot {
-		relative, err := filepath.Rel(trustedRoot, rel)
-		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			rel = filepath.Join(realRoot, relative)
-		}
-	}
-
 	var joined string
 	if filepath.IsAbs(rel) {
 		joined = filepath.Clean(rel)
@@ -104,7 +97,21 @@ func ResolveInRoot(root, rel string) (string, error) {
 	}
 	// Lexical containment: the cleaned target must sit under the cleaned root.
 	if !withinRoot(realRoot, joined) {
-		return "", ErrPathEscapesRoot
+		// An absolute request may name a path through a symlinked ancestor
+		// (macOS spells /private/var/... as /var/...). Canonicalize the
+		// existing parent and retry the lexical check, so that spelling is
+		// accepted without an extra symlink walk on the normal spelling. A
+		// retry that still is not lexically contained is not refused here:
+		// the symlink-resolved check below makes the final call, so a request
+		// that is exactly a symlinked spelling of the root, and a missing tail
+		// whose canonical spelling would report the same miss, follow the same
+		// rule as their canonical spellings.
+		if !filepath.IsAbs(rel) {
+			return "", ErrPathEscapesRoot
+		}
+		if realParent, err := filepath.EvalSymlinks(filepath.Dir(joined)); err == nil {
+			joined = filepath.Join(realParent, filepath.Base(joined))
+		}
 	}
 
 	// Symlink-resolved containment: resolve the target and re-check, so a
