@@ -33,7 +33,31 @@ type change struct {
 	Path    string
 	Base    string
 	Head    string
-	License string
+	License licenseInfo
+}
+
+// licenseInfo is the structured result of reading a module's license. Name is
+// the recognized license, File is the file that was read, and Downloaded says
+// whether the module directory was available at all.
+type licenseInfo struct {
+	Name       string
+	File       string
+	Downloaded bool
+}
+
+// String renders the reviewer-facing label without being the only assertion
+// surface: tests assert Name, File, and Downloaded directly.
+func (l licenseInfo) String() string {
+	switch {
+	case !l.Downloaded:
+		return "unknown (module not downloaded)"
+	case l.Name != "":
+		return l.Name
+	case l.File != "":
+		return "unrecognized (" + l.File + ")"
+	default:
+		return "no license file"
+	}
 }
 
 func main() {
@@ -76,7 +100,7 @@ func main() {
 		}
 	}
 	if !*acknowledged {
-		fmt.Println("\nA reviewer must sign off on these Go dependency changes. Ask a reviewer to approve the pull request after reviewing the modules and licenses above; if the repository defines the `go-dependency-reviewed` label, adding it also acknowledges.")
+		fmt.Println("\nA reviewer must sign off on these Go dependency changes. Ask a reviewer to approve the pull request after reviewing the modules and licenses above; adding the `go-dependency-reviewed` label also acknowledges. Adding either re-runs CI; if it does not, re-run the failed job.")
 		os.Exit(1)
 	}
 	fmt.Println("\nGo dependency changes acknowledged by a reviewer label or approval.")
@@ -245,7 +269,7 @@ func renderChanges(base string, changes []change) string {
 	b.WriteString("| module | base | head | license |\n")
 	b.WriteString("| --- | --- | --- | --- |\n")
 	for _, c := range changes {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.Path, displayVersion(c.Base), displayVersion(c.Head), c.License)
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.Path, displayVersion(c.Base), displayVersion(c.Head), c.License.String())
 	}
 	return b.String()
 }
@@ -260,9 +284,9 @@ func displayVersion(version string) string {
 // licenseFor finds the module's license name from its LICENSE/COPYING file.
 // The module cache is read-only, so this only reads. An unrecognized or absent
 // file is reported as such rather than guessed.
-func licenseFor(m module) string {
+func licenseFor(m module) licenseInfo {
 	if m.Dir == "" {
-		return "unknown (module not downloaded)"
+		return licenseInfo{}
 	}
 	for _, filename := range []string{"LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "COPYING.md"} {
 		path := filepath.Join(m.Dir, filename)
@@ -270,13 +294,9 @@ func licenseFor(m module) string {
 		if err != nil {
 			continue
 		}
-		detected := licenseName(string(data))
-		if detected != "" {
-			return detected
-		}
-		return "unrecognized (" + filename + ")"
+		return licenseInfo{Name: licenseName(string(data)), File: filename, Downloaded: true}
 	}
-	return "no license file"
+	return licenseInfo{Downloaded: true}
 }
 
 // licenseName recognizes the common licenses by their text. It is a coarse

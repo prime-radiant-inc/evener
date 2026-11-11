@@ -537,6 +537,47 @@ jobs:
         with:
           go-cache-kind: go-dependency-review
 
+      - name: Resolve the dispatch base and acknowledgement
+        id: dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.ref_name }}
+          BASE_INPUT: ${{ github.event.inputs.base }}
+          ACK_INPUT: ${{ github.event.inputs.acknowledged }}
+        run: |
+          set -euo pipefail
+          base="$BASE_INPUT"
+          acknowledged=""
+          if [ "$ACK_INPUT" = "true" ]; then
+            acknowledged=true
+          fi
+          if [ -z "$base" ] || [ -z "$acknowledged" ]; then
+            pr="$(gh pr view "$HEAD_REF" --repo "$GITHUB_REPOSITORY" \
+              --json baseRefOid,labels,reviews 2>/dev/null || true)"
+            if [ -z "$pr" ]; then
+              echo "No pull request is associated with $HEAD_REF; pass the base input." >&2
+              exit 1
+            fi
+            if [ -z "$base" ]; then
+              base="$(jq -r '.baseRefOid // empty' <<<"$pr")"
+            fi
+            if [ -z "$acknowledged" ]; then
+              acknowledged="$(jq -r 'if any(.labels[]; .name == "go-dependency-reviewed") or any(.reviews[]; .state == "APPROVED") then "true" else "false" end' <<<"$pr")"
+            fi
+          fi
+          if [ -z "$base" ]; then
+            echo "Could not resolve a base for $HEAD_REF; pass the base input." >&2
+            exit 1
+          fi
+          resolved="$(git rev-parse --verify "$base^{commit}" 2>/dev/null || git rev-parse --verify "origin/$base^{commit}" 2>/dev/null || true)"
+          if [ -z "$resolved" ]; then
+            echo "Base $base is not present in this checkout; fetch it or pass a reachable SHA." >&2
+            exit 1
+          fi
+          echo "base=$resolved" >> "$GITHUB_OUTPUT"
+          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
+
       - name: Check for a reviewer acknowledgement
         id: ack
         if: github.event_name == 'pull_request'
@@ -556,8 +597,8 @@ jobs:
       - name: Compare the Go module graph with the base
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
-          ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch.outputs.base }}
+          ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged || steps.dispatch.outputs.acknowledged }}
           ACK_INPUT: ${{ github.event.inputs.acknowledged }}
         run: |
           go run ./cmd/evener-go-deps \

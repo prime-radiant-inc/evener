@@ -7,6 +7,29 @@ import (
 	"testing"
 )
 
+// fixtureModule writes a self-contained module whose only dependency is a
+// local replace, so `go list -m all` needs no network and no real workspace.
+func fixtureModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/local v0.0.0\n\nreplace example.com/local => ./local\n")
+	write("local/go.mod", "module example.com/local\n\ngo 1.27\n")
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOSUMDB", "off")
+	return dir
+}
+
 func TestDiffModulesUnchangedGraph(t *testing.T) {
 	modules := []module{
 		{Path: "example.com/main", Main: true},
@@ -83,29 +106,29 @@ func TestLicenseForReadsTheModuleLicenseFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "LICENSE"), []byte("MIT License\n\nPermission is hereby granted, free of charge"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := licenseFor(module{Dir: dir}); got != "MIT" {
-		t.Fatalf("licenseFor = %q, want MIT", got)
+	if got := licenseFor(module{Dir: dir}); got.Name != "MIT" || got.File != "LICENSE" || !got.Downloaded {
+		t.Fatalf("licenseFor = %+v, want the MIT LICENSE", got)
 	}
 
 	unknown := t.TempDir()
 	if err := os.WriteFile(filepath.Join(unknown, "COPYING"), []byte("All rights reserved."), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := licenseFor(module{Dir: unknown}); got != "unrecognized (COPYING)" {
-		t.Fatalf("licenseFor(unknown) = %q", got)
+	if got := licenseFor(module{Dir: unknown}); got.Name != "" || got.File != "COPYING" || !got.Downloaded {
+		t.Fatalf("licenseFor(unknown) = %+v", got)
 	}
-	if got := licenseFor(module{Dir: t.TempDir()}); got != "no license file" {
-		t.Fatalf("licenseFor(no file) = %q", got)
+	if got := licenseFor(module{Dir: t.TempDir()}); got.File != "" || !got.Downloaded {
+		t.Fatalf("licenseFor(no file) = %+v", got)
 	}
-	if got := licenseFor(module{}); got != "unknown (module not downloaded)" {
-		t.Fatalf("licenseFor(no dir) = %q", got)
+	if got := licenseFor(module{}); got.Downloaded {
+		t.Fatalf("licenseFor(no dir) = %+v, want not downloaded", got)
 	}
 }
 
 func TestRenderChangesListsModulesAndLicenses(t *testing.T) {
 	summary := renderChanges("base-sha", []change{
-		{Path: "github.com/new/added", Head: "v1.0.0", License: "MIT"},
-		{Path: "github.com/old/removed", Base: "v1.0.0", License: "Apache-2.0"},
+		{Path: "github.com/new/added", Head: "v1.0.0", License: licenseInfo{Name: "MIT", Downloaded: true}},
+		{Path: "github.com/old/removed", Base: "v1.0.0", License: licenseInfo{Name: "Apache-2.0", Downloaded: true}},
 	})
 	for _, want := range []string{"base-sha", "github.com/new/added", "github.com/old/removed", "v1.0.0", "MIT", "Apache-2.0", "—"} {
 		if !strings.Contains(summary, want) {
@@ -117,7 +140,7 @@ func TestRenderChangesListsModulesAndLicenses(t *testing.T) {
 // The unchanged graph is the live module graph compared with itself, so the
 // check passes without needing a reviewer acknowledgement.
 func TestListModulesUnchangedGraph(t *testing.T) {
-	modules, err := listModules(".")
+	modules, err := listModules(fixtureModule(t))
 	if err != nil {
 		t.Fatalf("listModules: %v", err)
 	}
@@ -136,7 +159,7 @@ func TestListModulesDoesNotDownload(t *testing.T) {
 	t.Cleanup(func() { downloadModules = saved })
 	downloaded := false
 	downloadModules = func(string) { downloaded = true }
-	if _, err := listModules("."); err != nil {
+	if _, err := listModules(fixtureModule(t)); err != nil {
 		t.Fatalf("listModules: %v", err)
 	}
 	if downloaded {

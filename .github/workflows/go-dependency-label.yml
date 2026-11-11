@@ -1,13 +1,15 @@
 name: Go dependency review recheck
 
-# A required check does not re-evaluate when a label is added, so the
-# go-dependency-reviewed acknowledgement would not clear the failed
+# A required check does not re-evaluate when a label is added or a review is
+# approved, so the acknowledgement would not clear the failed
 # go-dependency-review job. This lightweight workflow re-runs that run's failed
-# jobs on the PR head, where the job now sees the label. It is not a second
-# copy of the check: the check itself stays in ci.yml.
+# jobs on the PR head, where the job now sees the label or approval. It is not
+# a second copy of the check: the check itself stays in ci.yml.
 on:
   pull_request:
     types: [labeled]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: read
@@ -15,7 +17,9 @@ permissions:
 
 jobs:
   recheck:
-    if: github.event.label.name == 'go-dependency-reviewed'
+    if: |
+      (github.event_name == 'pull_request' && github.event.label.name == 'go-dependency-reviewed') ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
