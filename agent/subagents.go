@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2776,9 +2777,16 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 		return
 	}
 	packet.StructuredResultSource = delegatestore.StructuredResultSourceSchema
+	decodeExactJSON := func(data []byte, into any) error {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		return decoder.Decode(into)
+	}
 	var schemaValue any
 	var structuredValue any
-	if err := json.Unmarshal(inputs.descriptor.ResultSchema, &schemaValue); err != nil || json.Unmarshal(raw, &structuredValue) != nil || validateStructuredResult(structuredValue, schemaValue) != nil {
+	if err := decodeExactJSON(inputs.descriptor.ResultSchema, &schemaValue); err != nil ||
+		decodeExactJSON(raw, &structuredValue) != nil ||
+		validateStructuredResult(structuredValue, schemaValue) != nil {
 		valid = false
 		packet.StructuredResultValid = &valid
 		packet.StructuredResultReason = structuredResultReasonSchemaValidationFailed

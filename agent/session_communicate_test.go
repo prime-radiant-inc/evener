@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -559,6 +560,31 @@ func TestCommunicateRegistryDispatchPreservesExactStructuredIntegers(t *testing.
 	const rounded = `"large_id":9007199254740992`
 	if strings.Contains(string(encoded), rounded) {
 		t.Fatalf("captured output = %s, rounded through float64", encoded)
+	}
+
+	// The terminal packet re-decodes the structured value for schema
+	// validation. exclusiveMinimum 9007199254740992 accepts the exact value
+	// and rejects the float64-rounded 9007199254740992, so a float64 re-decode
+	// marks a report the model got past communicate validation as invalid.
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "report",
+		communicated:            true,
+		structuredResult:        captured,
+		structuredResultPresent: true,
+		descriptor: delegatestore.Descriptor{
+			ResultSchema: json.RawMessage(`{"type":"object","properties":{"data":{"type":"object","properties":{"large_id":{"type":"integer","exclusiveMinimum":9007199254740992}}}},"required":["data"]}`),
+		},
+	})
+	packet := finish.packet
+	if packet == nil {
+		t.Fatal("no terminal packet")
+	}
+	valid := packet.StructuredResultValid != nil && *packet.StructuredResultValid
+	if !valid || packet.StructuredResultReason != "" {
+		t.Fatalf("terminal packet marked the exact value invalid: valid=%v reason=%q result=%s", valid, packet.StructuredResultReason, packet.StructuredResult)
+	}
+	if !strings.Contains(string(packet.StructuredResult), `"large_id":9007199254740993`) {
+		t.Fatalf("terminal structured result = %s, want the exact integer 9007199254740993", packet.StructuredResult)
 	}
 }
 
