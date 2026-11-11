@@ -11,7 +11,9 @@ import "os"
 func defaultSkillsBaseRoot() (string, error) { return os.TempDir(), nil }
 
 // defaultSkillsFallbackRoot is the verified root used when the configured temp
-// dir cannot be trusted. It is the platform temp root, not TMPDIR: /tmp is a
-// fresh per-sandbox mount, and its ownership is checkable on a host where
-// TMPDIR's ancestors are not.
+// dir cannot be trusted. It is the platform temp root, not TMPDIR, so it does
+// not inherit TMPDIR's ancestor chain. Inside a sandbox /tmp is the fresh
+// per-sandbox mount; on a host it is the shared platform temp dir, and the same
+// ownership and per-user cache-dir checks still apply. The diagnostic names
+// the substitution.
 func defaultSkillsFallbackRoot() string { return "/tmp" }

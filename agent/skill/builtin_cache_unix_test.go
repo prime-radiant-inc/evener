@@ -72,10 +72,7 @@ func TestDefaultEmbeddedSkillsBaseDir_DoesNotUseAnUntrustedTempRoot(t *testing.T
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
 	fallback := t.TempDir()
-	savedFallback := skillsFallbackRoot
-	t.Cleanup(func() { skillsFallbackRoot = savedFallback })
-	skillsFallbackRoot = func() string { return fallback }
-	resetSkillsFallback(t)
+	pointSkillsFallbackAt(t, fallback)
 	if err := os.Chmod(root, 0o777); err != nil {
 		t.Fatalf("open up temp root: %v", err)
 	}
@@ -203,6 +200,11 @@ func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *t
 // verification. An ordinary ancestor whose owner this process cannot verify is
 // therefore refused even on a read-only mount; resolution falls back to a root
 // whose ownership it can verify instead.
+//
+// The red-first check against the previous exemption commit needs a narrow uid
+// map (the sandbox's map, where uid+1 is unmapped); on a full-range host map the
+// old code refused this owner for a different reason. The permanent assertion is
+// the boundary: any owner that is not this user or root is refused.
 func TestEnsureTrustedAncestors_RefusesAnUnverifiableOwnerOnAReadOnlyMount(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "inner")
@@ -294,18 +296,71 @@ func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
 	}
 }
 
+// An untrusted configured temp root is refused rather than accepted on mount
+// evidence, and the base moves to a root whose ownership this process can
+// verify (issue #5809).
+func TestDefaultEmbeddedSkillsBaseDirFallsBackToAVerifiedRoot(t *testing.T) {
+	configured := t.TempDir()
+	if err := os.Chmod(configured, 0o777); err != nil {
+		t.Fatalf("open up configured root: %v", err)
+	}
+	fallback := t.TempDir()
+	savedBase := skillsBaseRoot
+	t.Cleanup(func() { skillsBaseRoot = savedBase })
+	skillsBaseRoot = func() (string, error) { return configured, nil }
+	pointSkillsFallbackAt(t, fallback)
+
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir with an untrusted configured root: %v", err)
+	}
+	resolvedFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
+		t.Fatalf("base dir = %q, want it under the verified fallback %q", dir, resolvedFallback)
+	}
+	diagnostics := EmbeddedSkillsDiagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, configured) || !strings.Contains(diagnostics[0].Message, resolvedFallback) {
+		t.Fatalf("diagnostics = %+v, want one naming %q and %q", diagnostics, configured, resolvedFallback)
+	}
+}
+
+// A fallback that cannot be written is not a fallback: report the configured
+// root's failure and do not claim a substitution that never served the cache.
+func TestDefaultEmbeddedSkillsBaseDirDoesNotClaimAnUnusableFallback(t *testing.T) {
+	configured := t.TempDir()
+	if err := os.Chmod(configured, 0o777); err != nil {
+		t.Fatalf("open up configured root: %v", err)
+	}
+	fallback := t.TempDir()
+	if err := os.Chmod(fallback, 0o500); err != nil {
+		t.Fatalf("lock the fallback: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fallback, 0o700) })
+	savedBase := skillsBaseRoot
+	t.Cleanup(func() { skillsBaseRoot = savedBase })
+	skillsBaseRoot = func() (string, error) { return configured, nil }
+	pointSkillsFallbackAt(t, fallback)
+
+	if _, err := defaultEmbeddedSkillsBaseDir(); err == nil {
+		t.Fatal("accepted a read-only fallback root")
+	}
+	if diagnostics := EmbeddedSkillsDiagnostics(); diagnostics != nil {
+		t.Fatalf("diagnostics = %+v, want none for a fallback that never served", diagnostics)
+	}
+}
+
 // The degraded extraction must not land in a temp root the shared cache refuses;
 // it moves to the verified fallback instead.
 func TestEmbeddedSkillsDir_ProcessCopyAvoidsAnUntrustedTempRoot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TMPDIR", root)
 	fallback := t.TempDir()
-	savedFallback := skillsFallbackRoot
-	t.Cleanup(func() { skillsFallbackRoot = savedFallback })
-	skillsFallbackRoot = func() string { return fallback }
+	pointSkillsFallbackAt(t, fallback)
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
 	t.Cleanup(resetProcessSkills)
-	resetSkillsFallback(t)
 
 	if err := os.Chmod(root, 0o777); err != nil {
 		t.Fatalf("open up temp root: %v", err)
@@ -320,6 +375,13 @@ func TestEmbeddedSkillsDir_ProcessCopyAvoidsAnUntrustedTempRoot(t *testing.T) {
 	}
 	if strings.HasPrefix(dir, resolvedRoot+string(os.PathSeparator)) {
 		t.Fatalf("process copy %q landed in the untrusted temp root", dir)
+	}
+	resolvedFallback, err := filepath.EvalSymlinks(fallback)
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
+		t.Fatalf("process copy %q is not under the verified fallback %q", dir, resolvedFallback)
 	}
 
 	resetProcessSkills()
@@ -347,20 +409,12 @@ func resetEmbeddedSkillsCache(t *testing.T) {
 	embeddedSkillsCache.mu.Lock()
 	forgetEmbeddedSkillsLocked()
 	embeddedSkillsCache.mu.Unlock()
-	skillsFallbackMu.Lock()
-	savedFallback := skillsFallback
-	skillsFallback = nil
-	skillsFallbackMu.Unlock()
+	resetSkillsFallback(t)
 	// forgetEmbeddedSkillsLocked released the lease the snapshot captured, so the
 	// restore must not reinstall it.
 	saved.lease = nil
 	saved.leasedDir = ""
-	t.Cleanup(func() {
-		restoreEmbeddedSkillsCache(saved)
-		skillsFallbackMu.Lock()
-		skillsFallback = savedFallback
-		skillsFallbackMu.Unlock()
-	})
+	t.Cleanup(func() { restoreEmbeddedSkillsCache(saved) })
 }
 
 // os.TempDir returns TMPDIR verbatim, and a temp root that is itself a symlink

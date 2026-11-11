@@ -40,6 +40,16 @@ func resetSkillsFallback(t *testing.T) {
 	})
 }
 
+// pointSkillsFallbackAt points the fallback root at dir and clears any recorded
+// fallback diagnostic for the test.
+func pointSkillsFallbackAt(t *testing.T, dir string) {
+	t.Helper()
+	saved := skillsFallbackRoot
+	t.Cleanup(func() { skillsFallbackRoot = saved })
+	skillsFallbackRoot = func() string { return dir }
+	resetSkillsFallback(t)
+}
+
 // Issue #5809: a configured root this process refuses reaches the session
 // through the skill diagnostic channel, which session init turns into a
 // user-facing warning, and the verified fallback keeps bundled skills working.
@@ -48,7 +58,7 @@ func TestEmbeddedSkillsDiagnosticsReportsAVerifiedFallback(t *testing.T) {
 	if got := EmbeddedSkillsDiagnostics(); got != nil {
 		t.Fatalf("diagnostics before a fallback = %v, want none", got)
 	}
-	rememberSkillsFallback("/home/alice/tmp", "/tmp", errors.New("skill cache ancestor /home can be replaced by other users"))
+	rememberSkillsFallback(&skillsRootFallback{configured: "/home/alice/tmp", resolved: "/tmp", cause: errors.New("skill cache ancestor /home can be replaced by other users")})
 	got := EmbeddedSkillsDiagnostics()
 	if len(got) != 1 {
 		t.Fatalf("diagnostics = %v, want one", got)
@@ -63,39 +73,16 @@ func TestEmbeddedSkillsDiagnosticsReportsAVerifiedFallback(t *testing.T) {
 	}
 }
 
-// An untrusted configured temp root is refused rather than accepted on mount
-// evidence, and the base moves to a root whose ownership this process can
-// verify (issue #5809).
-func TestDefaultEmbeddedSkillsBaseDirFallsBackToAVerifiedRoot(t *testing.T) {
-	configured := t.TempDir()
-	if err := os.Chmod(configured, 0o777); err != nil {
-		t.Fatalf("open up configured root: %v", err)
-	}
-	fallback := t.TempDir()
-	savedBase := skillsBaseRoot
-	savedFallback := skillsFallbackRoot
-	t.Cleanup(func() {
-		skillsBaseRoot = savedBase
-		skillsFallbackRoot = savedFallback
-	})
-	skillsBaseRoot = func() (string, error) { return configured, nil }
-	skillsFallbackRoot = func() string { return fallback }
+// A configured root that verifies again must not keep an old fallback warning
+// alive in a long-lived process.
+func TestEmbeddedSkillsDiagnosticsClearsWhenTheConfiguredRootVerifies(t *testing.T) {
 	resetSkillsFallback(t)
-
-	dir, err := defaultEmbeddedSkillsBaseDir()
-	if err != nil {
-		t.Fatalf("defaultEmbeddedSkillsBaseDir with an untrusted configured root: %v", err)
+	rememberSkillsFallback(&skillsRootFallback{configured: "/bad", resolved: "/tmp", cause: errors.New("refused")})
+	if _, _, err := resolveSkillsRoot(t.TempDir(), ensureTrustedRoot); err != nil {
+		t.Fatalf("resolve a trusted root: %v", err)
 	}
-	resolvedFallback, err := filepath.EvalSymlinks(fallback)
-	if err != nil {
-		t.Fatalf("resolve fallback: %v", err)
-	}
-	if !strings.HasPrefix(dir, resolvedFallback+string(os.PathSeparator)) {
-		t.Fatalf("base dir = %q, want it under the verified fallback %q", dir, resolvedFallback)
-	}
-	diagnostics := EmbeddedSkillsDiagnostics()
-	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, configured) || !strings.Contains(diagnostics[0].Message, resolvedFallback) {
-		t.Fatalf("diagnostics = %+v, want one naming %q and %q", diagnostics, configured, resolvedFallback)
+	if got := EmbeddedSkillsDiagnostics(); got != nil {
+		t.Fatalf("diagnostics after recovery = %+v, want none", got)
 	}
 }
 
