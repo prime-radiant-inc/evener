@@ -115,9 +115,9 @@ type webGate struct {
 	slots         int
 	scratch       string
 	buildFrontend bool
-	// checkTimeout bounds each check's run. Zero disables it; runWebGate sets
-	// the default. A check still running at its deadline is TERMed, KILLed
-	// after killGrace, and reported as timed out.
+	// checkTimeout bounds each check's run. Zero disables it; the web-checks
+	// gate sets the default. A check still running at its deadline is TERMed,
+	// KILLed after killGrace, and reported as timed out.
 	checkTimeout time.Duration
 	// killGrace is how long a timed-out check gets to exit after its TERM.
 	// Zero means checkKillGrace.
@@ -433,9 +433,6 @@ func (g *webGate) replay(path string) {
 // process's HUP/INT/TERM delivered to it, and returns its exit status. The
 // scratch is removed after a clean run and kept and named otherwise.
 func runWebGate(gate *webGate, scratchPrefix string) int {
-	if gate.checkTimeout == 0 {
-		gate.checkTimeout = defaultCheckTimeout
-	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)

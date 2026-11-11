@@ -19,10 +19,11 @@ var webChecks = []string{"typecheck", "test", "lint"}
 // (see runWebGate).
 func newWebChecksGate() *webGate {
 	return &webGate{
-		name:   "web-checks",
-		checks: webChecks,
-		spec:   webCheckSpec,
-		slots:  len(webChecks),
+		name:         "web-checks",
+		checks:       webChecks,
+		spec:         webCheckSpec,
+		slots:        len(webChecks),
+		checkTimeout: defaultCheckTimeout,
 	}
 }
 
