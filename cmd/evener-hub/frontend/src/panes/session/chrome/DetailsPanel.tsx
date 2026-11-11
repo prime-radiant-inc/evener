@@ -22,9 +22,10 @@
 // Every value comes off the live ThreadModel the status row already reads - no
 // fetch for accounting. Manager is the session's own start-time property.
 // The branch row is the one caller-supplied exception: nothing populates the
-// wire's thread.gitInfo on the hub's local read paths, so the About tab passes
-// a branch resolved from the session's cwd at view time (resolvedBranch) - a
-// display lookup the caller owns, never a fetch this panel makes.
+// wire's thread.gitInfo on the hub's local read paths, so the About tab and the
+// desktop session Details pane pass a branch resolved from the session's cwd at
+// view time (resolvedBranch) - a display lookup the caller owns, never a fetch
+// this panel makes.
 //
 // Cost is EvenerThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
 // server-side from the thread's cumulative usage at the model's catalog price.
@@ -56,9 +57,10 @@ export interface DetailsPanelBodyProps {
   model: ThreadModel;
   now: number;
   /** Branch resolved at view time from the session's cwd on this hub - the
-   * About tab's fallback for local sessions, whose read paths never populated
-   * the wire's gitInfo. The model's own gitBranch wins when present; empty
-   * means "looked, nothing to show" and renders no row. */
+   * About tab's and the desktop Details pane's fallback for local sessions,
+   * whose read paths never populated the wire's gitInfo. The model's own
+   * gitBranch wins when present; empty means "looked, nothing to show" and
+   * renders no row. */
   resolvedBranch?: string;
 }
 

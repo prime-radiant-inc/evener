@@ -94,6 +94,30 @@ fixture mode disturbs nothing else.
 
 **Verified:** 2026-09-08. **Expect:** fail.
 
+## Phone Overview About tab (`verifyAboutOverview()` / `runAboutOverviewGuard()`, the `?panels=1&activity=about` fixture)
+
+Asserts the phone's replacement session-details surface: the local-session
+Overview opened on About resolves its branch row through the scoped
+`evener/git/head` answer, and the row, the sidebar and the page all stay inside
+a 390px viewport with no horizontal scroll container. The harness applies
+`StackHost.module.css`'s real `.activityOverlay` class, so the overlay rule
+itself is measured. `node scripts/overflowguard/run.mjs --about-only` runs just
+this page; the full sweep runs it too.
+
+**Mutation performed:** `src/shell/mobile/StackHost.module.css`'s
+`.activityOverlay { inset: 0 }` changed to `inset: 0 -100px 0 0`, so the phone
+overlay is 490px wide on the 390px viewport.
+
+**Result before restore:** FAIL —
+`390px About Overview ... FAIL - sidebar=490px wide, expected the 390px overlay; sidebar spans 0-490, outside the 390px viewport; page scrolls horizontally: document=390, body=490; {"viewportWidth":390,"sidebarLeft":0,"sidebarRight":490,"sidebarWidth":490,...,"branchContained":true,"horizontalOverflowCount":0,"documentScrollWidth":390,"bodyScrollWidth":490}`.
+The branch row itself stayed contained, so the width, viewport-edge and page
+scroll assertions are what catch this regression.
+
+**Result after restore:** PASS —
+`390px About Overview ... PASS - feature/overflow-about-branch-that-must-not-widen-the-panel resolved and contained in the 390px overlay`.
+
+**Verified:** 2026-11-11. **Expect:** fail.
+
 ## Trailing held-steer stack column (`verifyHeldSteerColumn()` /
 `inspectHeldSteerColumn()`, the `?heldtail=1` fixture)
 

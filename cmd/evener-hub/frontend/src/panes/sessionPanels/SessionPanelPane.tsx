@@ -1,4 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
+import { useLocalSessionBranch } from "../../shell/gitLocation";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { Loader, PaneScaffold } from "../../widgets";
@@ -15,9 +16,10 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
   return typeof value?.ref === "string" && value.ref.length > 0;
 }
 
-function DetailsPaneBody({ model }: { sessionRef: string; model: ThreadModel }) {
+function DetailsPaneBody({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const now = useNowTick(NOW_TICK_MS);
-  return <DetailsPanelBody model={model} now={now} />;
+  const resolvedBranch = useLocalSessionBranch(sessionRef, model);
+  return <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />;
 }
 
 export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanelPaneProps) {
