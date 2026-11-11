@@ -3,10 +3,11 @@
 package execenv
 
 import (
-	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // canonicalPathOfFd hands the kernel the address of a buffer to write the fd's
@@ -16,10 +17,7 @@ import (
 // (#3744). Calling it from a fresh goroutine at every stack depth across a
 // range makes some call land on a growth boundary inside the fcntl chain.
 func TestCanonicalPathOfFdSurvivesStackGrowth(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)

@@ -11,11 +11,12 @@ import (
 	"strings"
 )
 
-// tempDirCommands are the command trees #4426 swept: every one of them had
-// grown its own spelling of the same fixture step, because a test that compares
-// against a path production canonicalized needs a temp dir with symlinks
-// resolved (macOS /var is a symlink to /private/var, #2497).
-var tempDirCommands = []string{"cmd/evener", "cmd/evener-dev", "cmd/evener-hub"}
+// tempDirRoots are the test trees that had grown their own spelling of the
+// same fixture step, because a test that compares against a path production
+// canonicalized needs a temp dir with symlinks resolved (macOS /var is a
+// symlink to /private/var, #2497). #4426 swept the command trees; #5936 added
+// the agent module, whose packages cannot be left to drift either.
+var tempDirRoots = []string{"cmd/evener", "cmd/evener-dev", "cmd/evener-hub", "agent"}
 
 // tempDirResolveNames are the calls that canonicalize a directory. A function
 // that both mints a temp dir and resolves it is the helper shape this audit
@@ -62,7 +63,7 @@ func tempDirResolverFunc(fn *ast.FuncDecl) bool {
 // and a second one would drift the moment the rule changes.
 func noCommandTestMintsItsOwnCanonicalTempDir(a *audit) {
 	var offenders []string
-	for _, root := range tempDirCommands {
+	for _, root := range tempDirRoots {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err

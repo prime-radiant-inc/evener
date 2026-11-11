@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/mcp"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 )
@@ -29,8 +30,7 @@ import (
 // prompt hook, MCP server, and a command (ignored by evener).
 func buildLiveTestPlugin(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	dir, _ = filepath.EvalSymlinks(dir)
+	dir := testfs.CanonicalTempDir(t)
 
 	mcpServerPath := intg_buildMCPServer(t)
 

@@ -51,3 +51,31 @@ func TestEstimatorTargetsEquivalentComparesToolResultImageVisibility(t *testing.
 		t.Fatal("targets that differ in tool-result image visibility compared equivalent")
 	}
 }
+
+// TestEstimatorTargetsEquivalentComparesToolResultDocumentVisibility pins #6076:
+// a metadata refresh that changes whether an Anthropic row sees a PDF tool
+// result changes what the estimator prices, so the cached measurement must be
+// invalidated in both directions. The two rows carry the same protocol and image
+// facts; only the effective PDF-delivery predicate differs.
+func TestEstimatorTargetsEquivalentComparesToolResultDocumentVisibility(t *testing.T) {
+	t.Parallel()
+	base := registry.Resolved{Instance: "gw", ModelID: "m", Protocol: registry.ProtocolAnthropic}
+	blind, capable := base, base
+	blind.Caps.InputModalities = []string{"text", "image"}
+	capable.Caps.InputModalities = []string{"text", "image", "pdf"}
+	if RowSeesToolResultMedia(blind, "application/pdf") {
+		t.Fatal("document-blind row still sees a PDF tool result; the fixture does not exercise the predicate")
+	}
+	if !RowSeesToolResultMedia(capable, "application/pdf") {
+		t.Fatal("document-capable row does not see a PDF tool result; the fixture does not exercise the predicate")
+	}
+	if EstimatorTargetsEquivalent(capable, blind) {
+		t.Fatal("a refresh from document-capable to document-blind compared equivalent")
+	}
+	if EstimatorTargetsEquivalent(blind, capable) {
+		t.Fatal("a refresh from document-blind to document-capable compared equivalent")
+	}
+	if !EstimatorTargetsEquivalent(capable, capable) {
+		t.Fatal("identical document-capable rows compared different")
+	}
+}
