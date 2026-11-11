@@ -58,9 +58,10 @@ func tempDirResolverFunc(fn *ast.FuncDecl) bool {
 }
 
 // noTestMintsItsOwnCanonicalTempDir keeps the canonical temp-dir helper
-// singular. Every test in these roots that needs a resolved temp dir calls
-// internal/testfs.CanonicalTempDir; a local helper is the copy #4426 collapsed,
-// and a second one would drift the moment the rule changes.
+// singular. Every helper in these roots that mints a temp dir and resolves it
+// calls internal/testfs.CanonicalTempDir; a local helper of that shape is the
+// copy #4426 collapsed, and a second one would drift the moment the rule
+// changes. An inline resolve in a test body is a use, not a second helper.
 func noTestMintsItsOwnCanonicalTempDir(a *audit) {
 	var offenders []string
 	for _, root := range tempDirRoots {

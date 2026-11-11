@@ -460,10 +460,20 @@ func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 	})
 
 	const synthesized = "batch-synthesized-1"
+	// Dispatch records the arguments a call actually ran with under the
+	// synthesized ID. Resolving that ID after the batch lookup would show the
+	// originals instead, so the repaired command below is what the event must
+	// carry for the id-less call.
+	f.sess.recordDispatchedToolArguments(llm.ToolCallData{
+		ID:        synthesized,
+		Arguments: json.RawMessage(`{"command":"echo repaired","description":"batch test"}`),
+	})
 	valid := batchShellCall("batch-valid-0")
 	calls := []llm.ToolCallData{
 		valid,
-		{ID: "batch-invalid-1", Name: "exec_command", Type: "function", Arguments: json.RawMessage(`{"command":`)},
+		// Invalid UTF-8 is the shape only the prevalidation bound rejects;
+		// json.Unmarshal would lossily replace it and decode the rest.
+		{ID: "batch-invalid-1", Name: "exec_command", Type: "function", Arguments: json.RawMessage("{\"command\":\"\xff\"}")},
 		{Name: "exec_command", Type: "function", Arguments: valid.Arguments},
 	}
 	results := []tool.ExecResult{
@@ -485,6 +495,9 @@ func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 	if batch[2].ToolUseID != synthesized {
 		t.Fatalf("id-less call tool_use_id = %q, want the synthesized CallID %q", batch[2].ToolUseID, synthesized)
 	}
+	if got := batch[2].ToolInput["command"]; got != "echo repaired" {
+		t.Fatalf("id-less call tool_input = %v, want the dispatched repaired arguments", batch[2].ToolInput)
+	}
 
 	hi := f.sess.hookInput(plugin.HookPostToolBatch)
 	hi.ToolCalls = batch
@@ -502,5 +515,8 @@ func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 	}
 	if captured[2].ToolUseID != synthesized {
 		t.Errorf("captured id-less call tool_use_id = %q, want %q", captured[2].ToolUseID, synthesized)
+	}
+	if got := captured[2].ToolInput["command"]; got != "echo repaired" {
+		t.Errorf("captured id-less call tool_input = %v, want the dispatched repaired arguments", captured[2].ToolInput)
 	}
 }
