@@ -6,7 +6,15 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
+
+// foldCopy returns a shallow copy of turn stamped as a compaction replay copy
+// of original ordinal ord.
+func foldCopy(turn schema.Turn, ord uint64) schema.Turn {
+	turn.OriginalOrdinal = &ord
+	return turn
+}
 
 // writeFile writes content to path, creating parent dirs. Test-only helper.
 func writeFile(t testing.TB, path, content string) {

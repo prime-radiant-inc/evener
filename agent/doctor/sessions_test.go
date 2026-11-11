@@ -298,6 +298,41 @@ func TestListSessions_OutcomeHint_TopLevelStatusIsNotDecision(t *testing.T) {
 	}
 }
 
+func TestListSessions_OutcomeHint_SkipsCompactionFoldCopies(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	earlierAssistant := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		toolCall("read_file", `{"path":"a"}`),
+	}})
+	finalAssistant := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		communicateCall(true, ""),
+	}})
+	writeSessionsFixtureSession(t, bucket, sid,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"},
+		[]schema.Turn{
+			earlierAssistant,
+			finalAssistant,
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			foldCopy(earlierAssistant, 0),
+		},
+		schema.SessionMeta{TurnCount: 2},
+		nil,
+		time.Now(),
+	)
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(res.Sessions))
+	}
+	if got := res.Sessions[0].Outcome; got != "end_turn=true" {
+		t.Errorf("outcome = %q, want end_turn=true", got)
+	}
+}
+
 func TestListSessions_DelegateAndObserverCounts(t *testing.T) {
 	base, root, _, _ := sessionsFixture(t)
 	res, err := ListSessions(context.Background(), base, SessionsOpts{})

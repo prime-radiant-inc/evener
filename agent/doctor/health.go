@@ -149,7 +149,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	if err != nil {
 		return HealthResult{}, err
 	}
-	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
+	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return HealthResult{}, err
 	}
