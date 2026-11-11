@@ -449,8 +449,8 @@ func (m metricSource) resolve(path string) (any, error) {
 		}
 		return m.health.ToolCalls[rest], nil
 	case "tool_errors":
-		tool, class, ok := strings.Cut(rest, ".")
-		if !ok || tool == "" || class == "" {
+		tool, class, _ := strings.Cut(rest, ".")
+		if tool == "" || class == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_errors.<tool>.<class>", path)
 		}
 		return m.health.ToolErrors[tool][class], nil
@@ -472,8 +472,6 @@ func (m metricSource) resolve(path string) (any, error) {
 					return nil, fmt.Errorf("metric %q: expected apilog.errors_by_class.<class>", path)
 				}
 				return m.apiHealth.ErrorsByClass[class], nil
-			default:
-				return nil, fmt.Errorf("unknown metric %q", path)
 			}
 		}
 		if !m.haveAPILog {

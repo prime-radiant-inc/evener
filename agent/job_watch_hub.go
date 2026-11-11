@@ -695,18 +695,17 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 
 // suspendHubWatch reports a single observation-loss episode without ending the
 // durable watch or discarding a pending delivery.
-func (jm *jobManager) suspendHubWatch(watchID string) error {
+func (jm *jobManager) suspendHubWatch(watchID string) {
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if !ok || cfg.hubRef == "" || cfg.hubSuspended {
 		jm.mu.Unlock()
-		return nil
+		return
 	}
 	cfg.hubSuspended = true
 	delivery := jm.watchSendSnapshot(cfg, cfg.hubRef+"#interruption", "observation interrupted: waiting for recovery", events.SessionEvent{SessionID: jm.sessionID})
 	jm.mu.Unlock()
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-	return nil
 }
 
 // suspendHubWatchQuiet marks the episode that suspendHubWatch notices,
@@ -1305,9 +1304,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				if !retryableHubContinuationRead(err) || failures >= hubWatchStateFailureLimit {
 					return false, err
 				}
-				if err := jm.suspendHubWatch(id); err != nil {
-					return false, err
-				}
+				jm.suspendHubWatch(id)
 				// Retain this exact query and held cut, not a newer snapshot that
 				// may no longer contain the failed terminal candidate. Only call
 				// failures retry, never missing or incompatible evidence below.

@@ -504,9 +504,7 @@ func TestManagerWatchRebindAndDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := jm.suspendHubWatch(watch.WatchID); err != nil {
-		t.Fatal(err)
-	}
+	jm.suspendHubWatch(watch.WatchID)
 	present := managerWatchActive(jm, watch.WatchID)
 	if !present {
 		t.Fatal("transport loss destroyed watch")

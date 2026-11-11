@@ -224,13 +224,7 @@ type jobManager struct {
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
-	closeGrace time.Duration
-	// quietWindow and quietCheckInterval govern the delegate quiet watchdog.
-	// Seeded from the package defaults at construction; per-manager so tests can
-	// scale them on their own jobManager without mutating a shared global that
-	// concurrently-running watchdogs would race on.
-	quietWindow         time.Duration
-	quietCheckInterval  time.Duration
+	closeGrace          time.Duration
 	delegateController  *delegateTreeController
 	delegateLease       delegateLease
 	stableOwner         *Session
@@ -674,8 +668,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		clock:                 clock.Real(),
 		reminderClock:         clock.Real(),
 		closeGrace:            defaultCloseGrace,
-		quietWindow:           delegateQuietWindow,
-		quietCheckInterval:    delegateQuietCheckInterval,
 		stableWatchReceipts:   make(map[string]*delegateWatchReceipt),
 	}
 	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
