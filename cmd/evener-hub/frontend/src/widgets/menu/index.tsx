@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { watchViewport } from "../internal/viewportWatch";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
@@ -326,20 +327,17 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     }
   }
 
-  // Outside click closes the menu. A click on the trigger itself is inside
-  // rootRef too, so this never fights handleTriggerClick's own toggle; a
-  // click inside the popup is inside popupRef, which rootRef alone can't
-  // see now that the popup renders through a portal elsewhere in the DOM.
-  useEffect(() => {
-    if (!isOpen) return;
-    function onDocumentMouseDown(event: MouseEvent) {
-      const target = event.target as Node;
-      if (rootRef.current?.contains(target) || popupRef.current?.contains(target)) return;
-      closeMenu();
-    }
-    ownerDocument.addEventListener("mousedown", onDocumentMouseDown);
-    return () => ownerDocument.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [isOpen, closeMenu, ownerDocument]);
+  // Outside press closes the menu. A press on the trigger itself is inside
+  // rootRef too, so this never fights handleTriggerClick's own toggle; a press
+  // inside the popup is inside popupRef, which rootRef alone can't see now that
+  // the popup renders through a portal elsewhere in the DOM.
+  useDismissOnOutsidePress({
+    ownerDocument,
+    enabled: isOpen,
+    isInside: (target) =>
+      rootRef.current?.contains(target as Node) === true || popupRef.current?.contains(target as Node) === true,
+    onDismiss: closeMenu,
+  });
 
   // A scroll that can move the trigger out from under the fixed popup
   // closes the menu; a scroll anywhere else leaves it open (see this

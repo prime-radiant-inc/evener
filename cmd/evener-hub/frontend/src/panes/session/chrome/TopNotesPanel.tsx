@@ -5,6 +5,8 @@ import { syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDraft
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
+import { useOwnedDocument } from "../../../widgets/internal/useOwnedDocument";
 import { hasNoteText, NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
 
@@ -26,6 +28,12 @@ export interface TopNotesPanelProps {
   sourcePaneId?: string;
 }
 
+/** Collapse the panel for one conversation. Module-level, so the dismissal
+ * effect below binds a stable callback instead of re-subscribing per render. */
+function collapseNotes(ref: string): void {
+  topNotesStore.getState().setExpanded(ref, false);
+}
+
 export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingRequest = usePendingTopNotesFocus(sessionRef);
@@ -35,6 +43,11 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   // can never skip a hook (Rules of Hooks).
   const draftState = useHumanNoteDraft(sessionRef);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Resolved from the panel's own root so a panel moved into a Dockview popout
+  // listens on THAT window's document, not the opener's.
+  const ownerDocument = useOwnedDocument(rootRef, expanded);
   // The frame-callback focus guard below compares against the ref the pane
   // CURRENTLY serves; mirroring the prop here keeps that current through
   // every render (the latest-ref pattern).
@@ -47,6 +60,30 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     if (!readable) return;
     syncHumanNote(sessionRef, model.humanNote);
   }, [sessionRef, model.humanNote, readable]);
+
+  // An expanded panel is a disclosure floating over the conversation, so a
+  // press anywhere else in the pane means the reader has moved on and it
+  // collapses.
+  //
+  // A press inside ANY notes panel for this conversation is inside the
+  // surface being worked in: one conversation can hold two panels at once (an
+  // ordinary session pane and a cascade column) and they share one expanded
+  // flag, so a press in the other one must not collapse this one.
+  useDismissOnOutsidePress({
+    ownerDocument,
+    enabled: expanded,
+    // The panel is IN FLOW, so collapsing it on mousedown would reflow the
+    // pane before the mouseup and a control below it (a sandbox approval, the
+    // composer) would move out from under the pointer, losing its click.
+    when: "click",
+    isInside: (target) =>
+      // Read nodeType rather than `instanceof Element`: a Dockview popout has
+      // its own constructors, and its nodes fail an opener-realm instanceof.
+      target !== null &&
+      (target as Node).nodeType === 1 &&
+      (target as Element).closest("[data-notes-panel-ref]")?.getAttribute("data-notes-panel-ref") === sessionRef,
+    onDismiss: () => collapseNotes(sessionRef),
+  });
 
   // Serve the outstanding focus request whenever the editor is visible:
   // immediately for /notes on a mounted panel, and on mount for a request
@@ -123,12 +160,46 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     topNotesStore.getState().toggle(sessionRef);
   };
 
+  // Escape is the keyboard path for the same dismissal the outside press
+  // performs. The handler sits on the panel root rather than on the document,
+  // so it fires exactly when the key came from inside the panel (the trigger
+  // or the body bubbles through here) and never eats the key for the rest of
+  // the pane - an enclosing overlay, a menu, or the composer.
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Collapsed, the trigger is the whole panel: Escape is not ours to consume,
+    // so an enclosing overlay still gets it.
+    if (event.key !== "Escape" || !expanded) return;
+    // preventDefault marks the key as handled so an enclosing overlay does not
+    // also close, without stopping the event from being seen (OverlayPanel's
+    // rule).
+    event.preventDefault();
+    collapseNotes(sessionRef);
+    // Hand focus to the trigger AFTER the body has unmounted, never before:
+    // focusing it while the editor still exists blurs the editor, and a blur
+    // arms the 10-second note save. Closing a panel without leaving the field
+    // must not save (docs/web-ui/shared-notes.md), and an armed save outlives
+    // this component and can wake the agent. Unmounting the focused editor
+    // moves focus away without a blur, and the frame below then puts it on the
+    // disclosure instead of leaving it on the document body.
+    requestAnimationFrame(() => {
+      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+    });
+  };
+
   return (
-    <div className={CLASS.topNotesPanel} data-expanded={expanded} data-testid="top-notes-panel">
+    // biome-ignore lint/a11y/noStaticElementInteractions: keydown only dismisses on Escape, mirroring widgets/dialog/OverlayPanel.tsx; the interactive controls are the trigger button and the body
+    <div
+      ref={rootRef}
+      className={CLASS.topNotesPanel}
+      data-notes-panel-ref={sessionRef}
+      data-testid="top-notes-panel"
+      onKeyDown={handleKeyDown}
+    >
       {/* One disclosure trigger both states share (the collapsed summary and
           the expanded header row): same button role, same toggle, same
           chevron - only the resting style, label, and lead content differ. */}
       <button
+        ref={triggerRef}
         type="button"
         className={expanded ? CLASS.expandedHeader : CLASS.summary}
         onClick={toggle}

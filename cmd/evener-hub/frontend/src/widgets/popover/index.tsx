@@ -10,6 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { usePortalDocument } from "../internal/usePortalDocument";
 import { computePopoverPosition, type PopoverPosition, TRIGGER_GAP } from "./computePosition";
 import styles from "./popover.module.css";
@@ -154,21 +155,17 @@ export function Popover({
     return () => observer.disconnect();
   }, [open, panelWindow]);
 
-  // Outside click closes. A click on the trigger is inside triggerRef, so this
-  // never fights the consumer's own trigger toggle; a click inside the panel
+  // Outside press closes. A press on the trigger is inside triggerRef, so this
+  // never fights the consumer's own trigger toggle; a press inside the panel
   // is inside panelRef, which the trigger wrapper alone can't see now that the
   // panel renders through a portal elsewhere in the DOM.
-  useEffect(() => {
-    if (!open) return;
-    function onDocumentMouseDown(event: MouseEvent) {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
-      onClose();
-    }
-    if (!panelDocument) return;
-    panelDocument.addEventListener("mousedown", onDocumentMouseDown);
-    return () => panelDocument.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [open, onClose, panelDocument]);
+  useDismissOnOutsidePress({
+    ownerDocument: panelDocument,
+    enabled: open,
+    isInside: (target) =>
+      triggerRef.current?.contains(target as Node) === true || panelRef.current?.contains(target as Node) === true,
+    onDismiss: onClose,
+  });
 
   // A scroll anywhere (capture-phase) or a viewport resize closes the popover -
   // simpler than continuously repositioning, matching Menu. Consumers whose
