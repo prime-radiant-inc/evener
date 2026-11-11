@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -211,17 +212,18 @@ func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 const unconfirmedReason = "sandbox not yet confirmed: the host check timed out; retry the command"
 
 // Confirm settles an unconfirmed policy (ResolvedPolicy.Unconfirmed) before a
-// spawn: it reruns the host's user-namespace check until one answers. Every
-// spawn site calls it before Confine and spawns nothing when it errs. A check
-// still without an answer refuses this command with RefusalUnconfirmed, so a
-// later command rechecks; a definitive "no" refuses with RefusalDefinitive, and
-// every later command refuses the same way. A nil wrapper, or a policy that was
-// never unconfirmed, confirms at once.
-func (w *Wrapper) Confirm() error {
+// spawn: it reruns the host's user-namespace check, sharing a run already in
+// progress, until one answers. Every spawn site calls it before Confine and
+// spawns nothing when it errs. A check still without an answer when the run
+// ends or ctx ends refuses this command with RefusalUnconfirmed, so a later
+// command rechecks; a definitive "no" refuses with RefusalDefinitive, and every
+// later command refuses the same way. A nil wrapper, or a policy that was never
+// unconfirmed, confirms at once.
+func (w *Wrapper) Confirm(ctx context.Context) error {
 	if w == nil || w.policy.Backend != BackendBwrap || w.policy.resolveHost.BwrapRecheck == nil {
 		return nil
 	}
-	switch w.policy.resolveHost.BwrapRecheck.Outcome() {
+	switch w.policy.resolveHost.BwrapRecheck.Outcome(ctx) {
 	case CheckPassed:
 		return nil
 	case CheckFailed:

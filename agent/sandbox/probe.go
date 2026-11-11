@@ -208,22 +208,21 @@ type HostFacts struct {
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
 
-	// InconclusiveChecks names the host checks that reached no answer during
-	// the probe: a subprocess that hit probeCommandTimeout, or that the host
-	// could not start for lack of resources. The fact each one feeds holds its
-	// fail-closed value. Empty means every check answered (Complete).
-	InconclusiveChecks []string
-
 	// BwrapRecheck is non-nil when the bwrap user-namespace check stayed
 	// inconclusive after its retry. The resolver then selects bwrap with the
 	// policy unconfirmed (ResolvedPolicy.Unconfirmed), and every spawn reruns
 	// the check through it (Wrapper.Confirm) until one answers. A definitive
-	// "no" never sets it: that host refuses at resolve time.
+	// "no" at probe time never sets it: that host refuses at resolve time.
 	BwrapRecheck *BackendRecheck
 }
 
-// Complete reports that every host check reached an answer.
-func (h HostFacts) Complete() bool { return len(h.InconclusiveChecks) == 0 }
+// BwrapAvailable reports that bwrap can serve as this host's backend: its
+// user-namespace check passed, or it has not answered yet and no recheck has
+// answered no. A recheck that answered no leaves the host without a backend,
+// exactly as a probe that answered no.
+func (h HostFacts) BwrapAvailable() bool {
+	return h.BwrapCapable || h.BwrapRecheck != nil && h.BwrapRecheck.answered() != CheckFailed
+}
 
 // CheckOutcome is what one host capability check established.
 type CheckOutcome uint8
@@ -256,12 +255,15 @@ func checkOutcome(ctx context.Context, err error) CheckOutcome {
 
 // BackendRecheck reruns a backend capability check that had not answered when
 // the host was probed. Copies of HostFacts, and every policy resolved from
-// them, share one recheck, so the first spawn that settles it settles it for
-// all of them.
+// them, share one recheck, so the first run that answers settles it for all of
+// them, and an answer is kept for the life of the recheck.
 type BackendRecheck struct {
+	check func() CheckOutcome
+
 	mu      sync.Mutex
-	check   func() CheckOutcome
 	outcome CheckOutcome
+	// running is non-nil while a run is in progress and is closed when it ends.
+	running chan struct{}
 }
 
 // NewBackendRecheck returns a recheck that runs check until it answers.
@@ -269,16 +271,39 @@ func NewBackendRecheck(check func() CheckOutcome) *BackendRecheck {
 	return &BackendRecheck{check: check}
 }
 
-// Outcome runs the check while it has not answered and returns the answer once
-// it has; an answer is kept for the life of the recheck. Concurrent callers
-// wait for one run rather than each starting a check.
-func (r *BackendRecheck) Outcome() CheckOutcome {
+// Outcome returns the answer once the check has given one. Otherwise it joins
+// the run in progress, or starts one, and returns what that run established.
+// Concurrent callers share one run. A caller whose ctx ends first stops
+// waiting and gets CheckInconclusive; the run still finishes and records its
+// answer for the next caller.
+func (r *BackendRecheck) Outcome(ctx context.Context) CheckOutcome {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.outcome == CheckInconclusive {
-		r.outcome = r.check()
+	if r.outcome != CheckInconclusive {
+		defer r.mu.Unlock()
+		return r.outcome
 	}
-	return r.outcome
+	running := r.running
+	if running == nil {
+		running = make(chan struct{})
+		r.running = running
+		go r.run(running)
+	}
+	r.mu.Unlock()
+	select {
+	case <-running:
+		return r.answered()
+	case <-ctx.Done():
+		return CheckInconclusive
+	}
+}
+
+func (r *BackendRecheck) run(done chan struct{}) {
+	outcome := r.check()
+	r.mu.Lock()
+	r.outcome = outcome
+	r.running = nil
+	r.mu.Unlock()
+	close(done)
 }
 
 // answered returns the outcome so far without running the check.
@@ -435,16 +460,6 @@ func (p RealProber) Probe() HostFacts {
 }
 
 func probeHost(system probeSystem) HostFacts {
-	// The informational checks read through recorder, which notes each one that
-	// reached no answer. The user-namespace check reads the host directly: it
-	// is retried and recorded below, and it keeps running after the probe.
-	recorder := &checkRecorder{probeSystem: system}
-	facts := probeHostThrough(recorder, system)
-	facts.InconclusiveChecks = append(recorder.inconclusive, facts.InconclusiveChecks...)
-	return facts
-}
-
-func probeHostThrough(system, direct probeSystem) HostFacts {
 	facts := HostFacts{
 		OS:            system.goos(),
 		KernelVersion: probeKernelVersion(system),
@@ -473,18 +488,17 @@ func probeHostThrough(system, direct probeSystem) HostFacts {
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
-		outcome := bwrapUsernsCheck(direct, path)
+		outcome := bwrapUsernsCheck(system, path)
 		if outcome == CheckInconclusive {
-			outcome = bwrapUsernsCheck(direct, path)
+			outcome = bwrapUsernsCheck(system, path)
 		}
 		facts.BwrapCapable = outcome == CheckPassed
 		if outcome == CheckInconclusive {
-			facts.InconclusiveChecks = append(facts.InconclusiveChecks, bwrapUsernsCheckName)
-			facts.BwrapRecheck = NewBackendRecheck(func() CheckOutcome { return bwrapUsernsCheck(direct, path) })
+			facts.BwrapRecheck = NewBackendRecheck(func() CheckOutcome { return bwrapUsernsCheck(system, path) })
 		}
 		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
 		if facts.OverlaySupported {
-			facts.OverlayLowerOK = memoizedOverlayLower(direct, path)
+			facts.OverlayLowerOK = memoizedOverlayLower(system, path)
 		}
 	}
 
@@ -1189,44 +1203,6 @@ func bwrapUsernsCheck(system probeSystem, path string) CheckOutcome {
 	defer cancel()
 	args := bwrapProbeArgs(path)
 	return checkOutcome(ctx, system.run(ctx, args[0], args[1:]...))
-}
-
-// bwrapUsernsCheckName names the user-namespace check in InconclusiveChecks.
-const bwrapUsernsCheckName = "bwrap user namespaces"
-
-// checkRecorder is a probeSystem that notes every subprocess check reaching no
-// answer (checkOutcome), named by its command line. Each command is noted once.
-type checkRecorder struct {
-	probeSystem
-	inconclusive []string
-}
-
-func (r *checkRecorder) note(ctx context.Context, err error, name string, args []string) {
-	if checkOutcome(ctx, err) != CheckInconclusive {
-		return
-	}
-	command := strings.Join(append([]string{filepath.Base(name)}, args...), " ")
-	if !slices.Contains(r.inconclusive, command) {
-		r.inconclusive = append(r.inconclusive, command)
-	}
-}
-
-func (r *checkRecorder) run(ctx context.Context, name string, args ...string) error {
-	err := r.probeSystem.run(ctx, name, args...)
-	r.note(ctx, err, name, args)
-	return err
-}
-
-func (r *checkRecorder) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := r.probeSystem.combinedOutput(ctx, name, args...)
-	r.note(ctx, err, name, args)
-	return out, err
-}
-
-func (r *checkRecorder) output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := r.probeSystem.output(ctx, name, args...)
-	r.note(ctx, err, name, args)
-	return out, err
 }
 
 // bwrapProbeArgs is the full argv (binary included) the capability probe runs. It

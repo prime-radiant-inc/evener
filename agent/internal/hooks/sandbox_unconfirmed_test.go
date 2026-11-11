@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -18,7 +19,7 @@ func TestHookCommandWaitsForAnUnconfirmedSandbox(t *testing.T) {
 		outcomes = outcomes[1:]
 		return outcome
 	})
-	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapRecheck: recheck, InconclusiveChecks: []string{"bwrap user namespaces"}}
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapRecheck: recheck}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, t.TempDir())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -46,5 +47,36 @@ func TestHookCommandWaitsForAnUnconfirmedSandbox(t *testing.T) {
 	}
 	if len(spawned) != 1 || spawned[0] != host.BwrapPath {
 		t.Fatalf("the confirmed hook must spawn confined under bwrap, spawned %v", spawned)
+	}
+}
+
+// TestUnconfirmedSandboxDeniesTheToolAGuardHookCouldNotCheck: a PreToolUse
+// hook that cannot run because its sandbox is not yet confirmed refuses the
+// tool call it guards, so the call never proceeds without the user's guard.
+func TestUnconfirmedSandboxDeniesTheToolAGuardHookCouldNotCheck(t *testing.T) {
+	t.Parallel()
+	recheck := sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckInconclusive })
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapRecheck: recheck}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, t.TempDir())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := sandbox.NewWrapper(rp, host.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	spawned := 0
+	runner := newRunner(nil, "")
+	runner.commandHookRuntime = systemCommandHookRuntime{run: func(context.Context, commandHookInvocation, *exec.Cmd) error {
+		spawned++
+		return nil
+	}}
+	runner.SetSandboxWrapper(w)
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 30, Command: "guard"})
+
+	result := runner.RunPreToolUse(context.Background(), Input{CWD: t.TempDir(), HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !result.Denied || result.DenyMessage == "" || spawned != 0 {
+		t.Fatalf("an unconfirmed guard must deny the tool with a reason and spawn nothing: denied=%v message=%q spawned=%d",
+			result.Denied, result.DenyMessage, spawned)
 	}
 }

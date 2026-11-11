@@ -380,10 +380,17 @@ hooks, stdio MCP servers) reruns the check first:
 - **It still has no answer.** Only that command is refused, with a retryable
   reason (`sandbox not yet confirmed: the host check timed out; retry the
   command`), and the next command checks again. The session recovers on its own
-  once load drops; an MCP server refused this way is redialed by its lazy
-  reconnect.
-- **It answers no.** That command and every later one are refused, exactly as if
-  the host had answered no at startup.
+  once load drops. Spawns waiting on the check share one run of it, and a
+  caller that is stopped stops waiting.
+- **It answers no.** That command and every later one are refused, and the host
+  is treated exactly as one that answered no at startup.
+
+Two spawns get special handling. A `PreToolUse` hook that cannot run for this
+reason refuses the tool call it guards, so the call never proceeds without its
+guard. A stdio MCP server starts once, at session start, so its start keeps
+rechecking within its connect time bound. If the check still has no answer
+then, the server fails to start, like any server that cannot start, and is
+absent for that session.
 
 File tools are confined in process and keep working throughout. A delegate on
 such a host keeps the sandbox modes on offer, and a derived read-only delegate

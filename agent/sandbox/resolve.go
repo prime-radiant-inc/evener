@@ -727,7 +727,7 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 		// no way to enforce any sandboxed mode, so it refuses; only --sandbox off
 		// works there. A host whose check has not answered resolves to bwrap
 		// unconfirmed, and its spawns wait on the recheck (Wrapper.Confirm).
-		if host.BwrapCapable || host.BwrapRecheck != nil {
+		if host.BwrapAvailable() {
 			return BackendBwrap, nil
 		}
 		return 0, noBwrapRefusal(policy.Mode, net)

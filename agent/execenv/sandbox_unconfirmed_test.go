@@ -37,7 +37,7 @@ func unconfirmedSandboxEnv(t *testing.T, outcomes ...sandbox.CheckOutcome) *Loca
 		runs++
 		return outcome
 	})
-	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: passThroughBwrap(t), BwrapRecheck: recheck, InconclusiveChecks: []string{"bwrap user namespaces"}}
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: passThroughBwrap(t), BwrapRecheck: recheck}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

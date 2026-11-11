@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
@@ -11,8 +12,33 @@ import (
 func sbxUnconfirmedBwrapFacts(home string) sandbox.HostFacts {
 	return sandbox.HostFacts{
 		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap",
-		BwrapRecheck:       sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckInconclusive }),
-		InconclusiveChecks: []string{"bwrap user namespaces"},
+		BwrapRecheck: sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckInconclusive }),
+	}
+}
+
+// TestARecheckThatAnswersNoRestoresTheNoBackendDelegateBehavior: once the
+// host's recheck answers no, delegates see the host exactly as one that
+// answered no at probe time: no sandbox modes on offer, and a derived
+// read-only scope degrades to confined file tools.
+func TestARecheckThatAnswersNoRestoresTheNoBackendDelegateBehavior(t *testing.T) {
+	t.Parallel()
+	_, home := sbxLane(t)
+	facts := sandbox.HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap",
+		BwrapRecheck: sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckFailed }),
+	}
+	parent := sbxDelegateSession(t, facts)
+	facts.BwrapRecheck.Outcome(context.Background())
+
+	if schema := parent.delegateSandboxSchemaForEnv(parent.env); schema.Available {
+		t.Fatalf("a host whose recheck answered no must offer no sandbox modes: %+v", schema)
+	}
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	if policy == nil || policy.Mode != sandbox.ModeOff || !policy.WriteBlocked {
+		t.Fatalf("read-only delegate after a definitive recheck = %+v, want the degraded off/write-blocked scope", policy)
 	}
 }
 

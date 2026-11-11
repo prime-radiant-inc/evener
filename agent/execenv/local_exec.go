@@ -71,7 +71,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	if err != nil {
 		return ExecResult{ExitCode: 127}, err
 	}
-	if err := e.Wrapper.Confirm(); err != nil {
+	if err := e.Wrapper.Confirm(ctx); err != nil {
 		return ExecResult{ExitCode: 127}, err
 	}
 
@@ -200,7 +200,11 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		default:
 		}
 	}
-	if err := e.Wrapper.Confirm(); err != nil {
+	confirmCtx := ctx
+	if confirmCtx == nil {
+		confirmCtx = context.Background()
+	}
+	if err := e.Wrapper.Confirm(confirmCtx); err != nil {
 		return nil, err
 	}
 
