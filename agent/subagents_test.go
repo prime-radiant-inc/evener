@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -884,6 +885,11 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 				}
 			}
 		}
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if !slices.Contains(denied, tool) {
+				t.Errorf("default child with canDelegate=true: %s must be denied (got %v)", tool, denied)
+			}
+		}
 	})
 
 	t.Run("default child with canDelegate=false: delegate denied, job_watch kept", func(t *testing.T) {
@@ -893,6 +899,11 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 		if slices.Contains(denied, "job_watch") {
 			t.Errorf("default child with canDelegate=false: job_watch must NOT be denied — a session that can run jobs watches its own jobs (got %v)", denied)
+		}
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if !slices.Contains(denied, tool) {
+				t.Errorf("default child with canDelegate=false: %s must be denied (got %v)", tool, denied)
+			}
 		}
 	})
 
@@ -912,13 +923,18 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	})
 
 	t.Run("explicit-Tools agent: canDelegate=true does NOT inject delegate into allow-list", func(t *testing.T) {
-		ag := &plugin.Agent{Tools: []string{"read_file"}}
+		ag := &plugin.Agent{Tools: []string{"read_file", "urls_add", "urls_remove"}}
 		_, allowed, denied := baseSubagentToolPolicy(ag, true)
 		if len(denied) != 0 {
 			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
 		}
 		if slices.Contains(allowed, "delegate") {
 			t.Errorf("canDelegate=true must NOT inject delegate into a typed agent's allow-list (got %v)", allowed)
+		}
+		for _, tool := range []string{"urls_add", "urls_remove"} {
+			if slices.Contains(allowed, tool) {
+				t.Errorf("a typed role must not keep %s in its allow-list (got %v)", tool, allowed)
+			}
 		}
 		// The job-supervision tools are intrinsic, not injected for delegation:
 		// every allow-list carries them so a leaf can enumerate, await, inspect,
@@ -929,6 +945,106 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Issue #6080: only the coordinator writes the session URL list. A stable
+// delegate's frozen ceiling is computed by the policy and must not carry the
+// URL tools, whichever role (including the all-tools default) it names. The
+// session-init gate is covered separately by the in-process and restored-ceiling
+// tests below, which bypass the ceiling.
+func TestStableSubagentCeilingHasNoSessionURLTools(t *testing.T) {
+	t.Parallel()
+	coordinatorAgents := coordinatorWorkflowPublicAgentsForTest(t)
+	for _, agentType := range []string{"", "default", "subagent", "explorer", "implementer"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withConfig(SessionConfig{
+				MaxSubagentDepth: 3,
+				StateDir:         t.TempDir(),
+				testOnly: testConfig{
+					skipGitSnapshot:     true,
+					minimalSystemPrompt: true,
+					noSyncJobStore:      true,
+					sandboxProber:       bwrapCapableProber(t.TempDir()),
+				},
+			}))
+			maps.Copy(s.pluginAgents, coordinatorAgents)
+			s.delegationAllowance = 1
+			if s.reg.Get("urls_add") == nil {
+				t.Fatal("root session does not register urls_add; the fixture no longer proves the child gate")
+			}
+			prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: agentType})
+			for _, name := range []string{"urls_add", "urls_remove"} {
+				if prepared.sub.sess.reg.Get(name) != nil {
+					t.Errorf("agent_type=%q: child registry has %q; only the coordinator writes session links", agentType, name)
+				}
+			}
+			prepared.sub.sess.Close()
+		})
+	}
+}
+
+// The builtin default role is all-tools and an in-process spawn leaves the
+// registry unrestricted, so the session-init gate is the only removal on that
+// path. Issue #6080: a subagent asks its parent to add a session link.
+func TestInProcessAllToolsSubagentHasNoCoordinatorOnlyTools(t *testing.T) {
+	parent := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 3,
+		StateDir:         t.TempDir(),
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+	if parent.reg.Get("urls_add") == nil {
+		t.Fatal("root session does not register urls_add; the fixture no longer proves the child gate")
+	}
+	prepared, err := prepareSubagentRunForTest(parent, "default", parent.currentEnv().WorkingDirectory())
+	if err != nil {
+		t.Fatalf("prepare a default subagent run: %v", err)
+	}
+	defer prepared.disposeUnadopted()
+	for _, name := range []string{"urls_add", "urls_remove"} {
+		if prepared.sub.sess.reg.Get(name) != nil {
+			t.Errorf("in-process all-tools subagent has %q; only the coordinator writes session links", name)
+		}
+	}
+}
+
+func TestApplyChildToolPolicyRefusesProtectedGrants(t *testing.T) {
+	parent := newTestSession(t)
+	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if _, _, _, err := parent.applyChildToolPolicy(&SessionConfig{}, nil, nil, false, []string{name}); err == nil {
+			t.Errorf("%s was grantable to a subagent", name)
+		}
+	}
+}
+
+// A delegate restored from a descriptor written before the protected-tool rule
+// still carries urls_add in its frozen ceiling. The session-init gate is the
+// only removal on that path, and it must leave the child without the tool.
+func TestRestoredSubagentCeilingCannotServeSessionURLTools(t *testing.T) {
+	child := newSession(t, withConfig(SessionConfig{
+		StateDir: t.TempDir(),
+		spawn: spawnConfig{
+			parentSessionID: "01PARENTSESSION00000000010",
+			depth:           1,
+			toolNameCeiling: []string{"urls_add", "urls_remove", "read_file", "communicate", "task_list"},
+		},
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+	for _, name := range []string{"urls_add", "urls_remove"} {
+		if child.reg.Get(name) != nil {
+			t.Errorf("restored child serving the old ceiling has %q; only the coordinator writes session links", name)
+		}
+	}
 }
 
 func TestMintBootGenerationWithoutStateDirServesWithoutCounterFile(t *testing.T) {

@@ -1850,6 +1850,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
+	// Only the coordinator writes the session URL list, and a subagent cannot
+	// ask the human (#6080, ask_user). This gate is the last removal, after the
+	// allowed/denied policy and the frozen ceiling, so an all-tools role or a
+	// restored descriptor cannot reintroduce a protected tool.
+	if s.isSubagentSession() {
+		for _, name := range protectedGrantTools() {
+			s.reg.Remove(name)
+		}
+	}
 	s.filterUnavailableMemoryTools()
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
