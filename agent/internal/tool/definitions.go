@@ -1129,6 +1129,9 @@ func DefManageWorktree() llm.ToolDefinition {
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
 		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
 		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
+		"unlock (release a direct worktree-isolated delegate's lane lock by its delegate `id` without retiring it — the " +
+		"parent-only recovery path when that delegate can no longer be reached or revived; its resumability, worktree, " +
+		"branch and uncommitted work stay untouched, the lane becomes switchable, and a later send re-locks it); " +
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
@@ -1143,8 +1146,8 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, adopt, exit, remove, prune, or dispose.",
-					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "dispose"},
+					"description": "create, list, switch, adopt, exit, remove, prune, unlock, or dispose.",
+					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "unlock", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -1152,7 +1155,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "For dispose: the delegate id (dlg_…) whose isolation worktree lane to retire.",
+					"description": "For unlock: the delegate id (dlg_…) whose isolation lane lock to release without retiring it. For dispose: the delegate id whose isolation worktree lane to retire.",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",

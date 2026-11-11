@@ -44,6 +44,14 @@ func (c *delegateTreeController) beginSubtreeLaneHandoff(delegateID string) lane
 		return laneHandoffAlreadyCovered
 	}
 	members := c.subtreeMembersLocked(delegateID)
+	for id := range members {
+		if c.releasing[id] != nil {
+			// A non-terminal release has unhooked its runtime and cleared the
+			// pointers, but its teardown is still winding down in the lane.
+			// Handing the lane over now would put a new occupant beside it.
+			return laneHandoffBusy
+		}
+	}
 	if _, self := c.laneHandoffs[delegateID]; self {
 		return laneHandoffBusy
 	}
@@ -104,6 +112,68 @@ func (c *delegateTreeController) endSubtreeLaneHandoff(delegateID string) {
 	c.mu.Lock()
 	delete(c.laneHandoffs, delegateID)
 	c.mu.Unlock()
+}
+
+// beginRuntimeReleaseInFlight records the entries of a non-terminal runtime
+// release whose teardown is about to run outside the reclamation claim. The
+// release path unhooks the subagent record and clears the resident pointer
+// before teardown, so without this window a lane handoff cannot tell a
+// discontinued member from a settled one. It MUST be paired with
+// endRuntimeReleaseInFlight.
+func (c *delegateTreeController) beginRuntimeReleaseInFlight(entries []delegateRuntimeReclamationEntry) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.releasing == nil {
+		c.releasing = make(map[string]*Session)
+	}
+	for _, entry := range entries {
+		if entry.delegateID != "" && entry.runtime != nil {
+			c.releasing[entry.delegateID] = entry.runtime
+		}
+	}
+	c.evidenceVersion++
+}
+
+// endRuntimeReleaseInFlight clears the exact release entries
+// beginRuntimeReleaseInFlight recorded. A newer release of a replacement
+// runtime survives an older release's completion.
+func (c *delegateTreeController) endRuntimeReleaseInFlight(entries []delegateRuntimeReclamationEntry) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, entry := range entries {
+		if c.releasing[entry.delegateID] == entry.runtime {
+			delete(c.releasing, entry.delegateID)
+		}
+	}
+	c.evidenceVersion++
+}
+
+// laneHandoffIntersectsRuntimeEntriesLocked reports whether a lane handoff
+// rooted at one of the entries, or an ancestor of one, is in flight. Callers
+// hold c.mu.
+func (c *delegateTreeController) laneHandoffIntersectsRuntimeEntriesLocked(entries []delegateRuntimeReclamationEntry) bool {
+	if c == nil || len(c.laneHandoffs) == 0 || len(entries) == 0 {
+		return false
+	}
+	for root := range c.laneHandoffs {
+		for _, entry := range entries {
+			if entry.delegateID == root {
+				return true
+			}
+		}
+	}
+	for _, entry := range entries {
+		if c.laneHandoffCoveredByAncestorLocked(entry.delegateID) {
+			return true
+		}
+	}
+	return false
 }
 
 // laneHandoffCoveredByAncestorLocked reports whether an in-flight handoff

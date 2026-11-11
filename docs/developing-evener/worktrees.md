@@ -24,7 +24,7 @@ up in `git status` in the main checkout, need no `.gitignore` entries, and survi
 
 ## The `manage_worktree` tool
 
-One tool, seven operations, selected by `operation`:
+One tool, selected by `operation`:
 
 | Operation | What it does | Key arguments |
 | --- | --- | --- |
@@ -34,6 +34,7 @@ One tool, seven operations, selected by `operation`:
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
 | `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (retire this session's own retained-idle children under the lane and allow unverified branch deletion), `force_dirty` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
 | `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | `orphaned_delegate_days` (optional; also release delegate-lane locks whose parent session provably cannot act — default 0 keeps the locked-lane rule absolute) |
+| `unlock` | Releases a direct worktree-isolated delegate's lane lock without retiring it, so the parent can switch in and recover its work when the delegate can no longer be reached or revived. The delegate stays resumable and its worktree, branch and uncommitted work stay in place; a later send re-locks the lane. | `id` (required — the `dlg_…` delegate id) |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
 
 Because entering or leaving a worktree changes where every later tool call runs,
@@ -88,9 +89,11 @@ What this means day to day:
   the session closes cleanly.
 - `force` never overrides a lock. Locks and dirty-tree safety are different
   protections: `force_dirty` skips the "are there uncommitted changes here" check on
-  `remove`; unlocking someone else's worktree is a deliberate act (`git worktree
-  unlock`), never a tool flag — with one operator-directed exception: `prune`'s
-  `orphaned_delegate_days`, below.
+  `remove`; unlocking someone else's worktree is a deliberate act, never a tool
+  flag. A parent releases its own unreachable delegate's lane with `unlock` (the
+  delegate stays resumable); a human or agent clears a dead owner's lock with
+  `git worktree unlock` after verifying the owner is gone — with one
+  operator-directed exception: `prune`'s `orphaned_delegate_days`, below.
 - If a session or delegate dies without a clean shutdown — a crash, a kill — its lock
   is left behind. This is intentional fail-safe behavior: a stale lock just means
   nobody has confirmed the work is abandoned yet. The lock names its former owner, so
@@ -120,7 +123,7 @@ What this means day to day:
   lane still has to pass the ordinary removal gates, and a lane holding
   unmerged work is unlocked but kept.
 
-## Disposal: `remove`, `prune`, and `dispose`
+## Disposal and recovery: `remove`, `prune`, `unlock`, and `dispose`
 
 `remove` deletes one named worktree. Before it does, it checks that removal is safe:
 uncommitted changes block it unless you pass `force_dirty`; commits that were never merged
@@ -168,6 +171,18 @@ that delegate gets a clear refusal instead of reviving into a deleted checkout. 
 or whose tree is dirty (pass `force_dirty`) — but unlike the automatic collectors
 below, `dispose` *will* retire a rebase- or squash-merged lane, on the model's
 judgment that the work actually landed.
+
+`unlock` is the non-destructive counterpart a parent uses when a delegate can no
+longer be reached or revived. It releases that direct delegate's `evener:dlg:` lane
+lock and leaves the delegate resumable, with its worktree, branch and uncommitted
+work untouched, so the parent can `switch` in and recover the work. It clears the
+same quiescence ladder dispose does (no running or unfinished work, watch sends,
+outstanding subtree work, or live shells in the lane), holds the same subtree
+handoff fence, and releases a resident runtime non-terminally before the lock
+drops; a later `delegate_send` cold-restores the delegate and re-locks the lane.
+It is parent-only: a session that does not own the delegate cannot unlock its lane.
+`unlock` is on the full `manage_worktree` surface; a worktree-isolated
+coordinator's narrowed surface still exposes only `dispose`.
 
 `dispose` fences the whole delegate subtree for the lane handoff, not only the
 named delegate. While the lane is being unlocked and removed, a descendant
@@ -304,8 +319,12 @@ These are documented trade-offs, not bugs:
 - **A hard crash leaves the lane locked.** There's no automatic recovery from a
   session or delegate dying without a clean shutdown — the lock stays until a human
   or agent verifies the owner is really gone and runs `git worktree unlock`, after
-  which `prune` can collect it if it's otherwise safe to. The one exception is a
-  session's *own* marker on a lane it is not occupying: that marker does not block a
+  which `prune` can collect it if it's otherwise safe to. There are two
+  exceptions. A parent whose *delegate* can no longer be reached or revived can run
+  `manage_worktree unlock`: it releases that delegate's lane lock without retiring
+  the delegate, so the parent can switch in and recover the work while the delegate
+  stays resumable. And a session's *own* marker on a lane it is not occupying does
+  not block a
   `prune` candidate, so `prune` reclaims the lane and releases it — the session itself
   is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
   skips keeps its lock. For a *delegate* marker — a lane owned by another session's

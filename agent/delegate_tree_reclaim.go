@@ -340,6 +340,13 @@ func (c *delegateTreeController) runtimeReclamationIntersectsProcessWorkLocked(m
 			return true
 		}
 	}
+	for id := range members {
+		if c.releasing[id] != nil {
+			// The idle release unhooks and clears pointers BEFORE teardown, so
+			// the claim maps alone cannot see it.
+			return true
+		}
+	}
 	for _, reservation := range c.reservations {
 		if reservation != nil && delegateIDInSet(reservation.delegateID, members) {
 			return true
@@ -538,6 +545,11 @@ func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*de
 	if !ok {
 		return nil, true, nil
 	}
+	if c.laneHandoffIntersectsRuntimeEntriesLocked(entries) {
+		// A lane handoff owns this subtree; do not start a non-terminal
+		// teardown under it. Retry after the handoff releases.
+		return nil, true, nil
+	}
 	if c.subtreeOwnsSharedTaskStoreLocked(entries) {
 		return nil, false, nil
 	}
@@ -659,6 +671,12 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			return false
 		}
 	}
+
+	// The unhook and pointer clear below happen BEFORE teardown, so record the
+	// in-flight window first: a lane handoff that starts during the teardown
+	// must see the subtree as busy rather than as a vacant lane.
+	s.delegateController.beginRuntimeReleaseInFlight(claim.entries)
+	defer s.delegateController.endRuntimeReleaseInFlight(claim.entries)
 
 	// Unhook first — record removal plus live-pointer clear — and only then run
 	// the teardowns, WITHOUT holding the reclamation fence across them. The

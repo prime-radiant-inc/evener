@@ -185,6 +185,14 @@ test("dispose: an already-disposed result never claims a dirty-discard even if f
   );
 });
 
+// --- unlock ------------------------------------------------------------------
+
+test("unlock: summary names the released lane and never reads like a disposal", () => {
+  const d = toolRendererFor("manage_worktree");
+  const args = JSON.stringify({ operation: "unlock", id: "dlg_abc123" });
+  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("Released lane for dlg_abc123");
+});
+
 // --- defensive fallback ------------------------------------------------
 
 test("an unrecognized operation still says which one it was, in words, never the raw tool name", () => {
