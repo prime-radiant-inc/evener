@@ -638,6 +638,33 @@ the lowest-numbered shards any remainder tests. CI's `race-modules / agent-1` an
 cells are the two parts; with `RACE_AGENT_PART` left at `all`, a local
 `make test-race` still runs the agent module as one `go test`.
 
+A shard runner applies a skip pattern with no `/` level itself, by leaving
+the matching tests out of the shards, and hands the shard binaries no
+`-test.skip`. Go's test binary caches one compiled pattern, so a binary given
+both a shard's thousand-name `-test.run` and a `-test.skip` recompiles the run
+pattern for every test and subtest, under a lock its parallel tests share.
+Under `-race` that made the agent shards two to three times slower. A skip that
+names a subtest level still reaches the binary and pays that cost.
+
+Every `scripts/gate/run-module-tests.sh` run (`make test`, `make test-race`)
+ends with a phase summary, green or red, because a green run deletes its module
+logs and CI keeps only this output. Each line is `TIME  <label>:<phase>
+<seconds>s`:
+
+- `gate:check-flags`, `gate:wave1`, `gate:wave2`: the flag validation and each
+  module wave's wall time.
+- `<label>:build`, `list`, `plan`, `shards`: a shard runner's (`agent`, `hub`,
+  `cli`) test-binary compile, test listing, survey and packing, and shard
+  phase. The `shards` line also lists each shard's own wall time as
+  `<shard>:<seconds>s`.
+- `agent:runner-build`, `agent:runner`: building the shard runner and its whole
+  run, so runner overhead outside the phases above shows as the difference.
+- `agent:list-flags`, `agent:enumeration`, `agent:subpkgs` (and `root:`
+  equivalents): the package enumeration and the agent module's unsharded
+  subpackages, compile included.
+
+Seconds are fractional under bash 5 and whole under macOS's bash 3.2.
+
 A sharded package runs under the same test timeout an unsharded one does. `go
 test` gives each package's test binary a ten-minute `-timeout` by default, but
 the shard runner builds the binary once with `go test -c` and runs it itself,
