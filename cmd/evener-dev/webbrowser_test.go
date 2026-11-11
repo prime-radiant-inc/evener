@@ -26,11 +26,26 @@ type fakeGuard struct {
 	exit       chan int
 	termOnce   sync.Once
 	terminated chan struct{}
+	killOnce   sync.Once
+	killed     chan struct{}
+	// onTerminate, when set, runs once the guard's first TERM lands. A test
+	// uses it to make the guard exit immediately after TERM, racing the
+	// gate's timeout event.
+	onTerminate func()
 }
 
 func (g *fakeGuard) Wait() int { return <-g.exit }
 
-func (g *fakeGuard) Terminate() { g.termOnce.Do(func() { close(g.terminated) }) }
+func (g *fakeGuard) Terminate() {
+	g.termOnce.Do(func() {
+		close(g.terminated)
+		if g.onTerminate != nil {
+			g.onTerminate()
+		}
+	})
+}
+
+func (g *fakeGuard) Kill() { g.killOnce.Do(func() { close(g.killed) }) }
 
 // fakeLauncher starts fakeGuards and records what the gate asked of it.
 type fakeLauncher struct {
@@ -40,6 +55,9 @@ type fakeLauncher struct {
 	started chan string
 	// output is what a guard writes to its log when it starts.
 	output map[string]string
+	// terminateExit makes the named guard exit with this status when its
+	// first TERM lands, racing the gate's timeout event.
+	terminateExit map[string]int
 
 	buildStatus int
 	buildOutput string
@@ -60,11 +78,12 @@ type fakeLauncher struct {
 
 func newFakeLauncher() *fakeLauncher {
 	return &fakeLauncher{
-		guards:  map[string]*fakeGuard{},
-		specs:   map[string]guardSpec{},
-		started: make(chan string, len(browserGuards)),
-		output:  map[string]string{},
-		homeEnv: []string{"HOME=/private-go-home"},
+		guards:        map[string]*fakeGuard{},
+		specs:         map[string]guardSpec{},
+		started:       make(chan string, len(browserGuards)),
+		output:        map[string]string{},
+		homeEnv:       []string{"HOME=/private-go-home"},
+		terminateExit: map[string]int{},
 	}
 }
 
@@ -94,7 +113,15 @@ func (l *fakeLauncher) Start(spec guardSpec, log *os.File) (guardProcess, error)
 	if l.startErr != nil {
 		return nil, l.startErr
 	}
-	g := &fakeGuard{name: spec.name, exit: make(chan int, 1), terminated: make(chan struct{})}
+	g := &fakeGuard{
+		name:       spec.name,
+		exit:       make(chan int, 1),
+		terminated: make(chan struct{}),
+		killed:     make(chan struct{}),
+	}
+	if status, ok := l.terminateExit[spec.name]; ok {
+		g.onTerminate = func() { g.exit <- status }
+	}
 	l.mu.Lock()
 	l.guards[spec.name] = g
 	l.specs[spec.name] = spec
