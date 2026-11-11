@@ -111,3 +111,44 @@ func TestModelsListInstanceAppliesLiveListing(t *testing.T) {
 		}
 	}
 }
+
+// Every row, including the hidden and disabled ones, fills the table's ten
+// columns: its note starts under the NOTES header.
+func TestModelsListNoteColumnAlignsOnEveryRowKind(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk")
+	t.Setenv("ANTHROPIC_BASE_URL", gatewayModelsServer(t, 0))
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.anthropic]\napi_key = \"sk\"\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	for _, tc := range []struct {
+		args []string
+		ref  string
+	}{
+		{[]string{"list", "--provider", "anthropic", "--all"}, "anthropic/claude-opus-4-6"}, // disabled row
+		{[]string{"list", "--provider", "cohere", "--all"}, "cohere/"},                      // hidden row
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := runModels(tc.args, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("%v: %v (%s)", tc.args, err, stderr.String())
+		}
+		header := ""
+		for line := range strings.SplitSeq(stdout.String(), "\n") {
+			if strings.HasPrefix(line, "REF") {
+				header = line
+			}
+		}
+		notes := strings.Index(header, "NOTES")
+		row := listedRow(stdout.String(), tc.ref)
+		if notes < 0 || row == "" {
+			t.Fatalf("%s: header or row missing:\n%s", tc.ref, stdout.String())
+		}
+		if len(row) <= notes || row[notes] == ' ' || row[notes-1] != ' ' {
+			t.Fatalf("%s: the note does not start under NOTES (col %d):\n%s", tc.ref, notes, stdout.String())
+		}
+	}
+}

@@ -6,7 +6,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -179,24 +182,53 @@ func TestRestore_RecordsBudgetingWindowAndSource(t *testing.T) {
 	}
 }
 
-// Window, Assumed, Remaining and WindowSource describe one profile: the one the
-// session holds when the sample is taken.
-func TestContextStatus_WindowFieldsDescribeOneProfile(t *testing.T) {
-	sess := windowRecordSession(t)
-	defer sess.Close()
-	// The manager still holds the profile it was built with; the session now
-	// holds a profile with a different, declared window.
-	sess.mu.Lock()
-	sess.profile = WithContextWindow(sess.profile, 4096)
-	want := sess.profile
-	sess.mu.Unlock()
-
-	metrics, _ := sess.ContextStatus()
-	wantSource := want.ContextWindowSource()
-	if metrics.Window != want.ContextWindowSize() || metrics.Assumed || metrics.WindowSource != wantSource {
-		t.Fatalf("metrics = %+v, want window %d from %q, not assumed", metrics, want.ContextWindowSize(), wantSource)
+// After a fallback served the round, the context manager measures against the
+// fallback, so the status pairs the fallback's usage with the fallback's window
+// and source, not the primary's.
+func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&agenttest.ModelTrackingAdapter{
+		Provider: "anthropic",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model == "claude-opus-4-6" {
+				return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 403, "primary denied", nil, nil)
+			}
+			resp := agenttest.FinalResponse("fallback answered")
+			resp.Usage = llm.Usage{InputTokens: 50_000}
+			return resp, nil
+		},
+	})
+	primary := newAnthropicProfile("claude-opus-4-6")
+	fallback := newAnthropicProfile("claude-opus-4-5")
+	if primary.ContextWindowSize() == fallback.ContextWindowSize() {
+		t.Fatalf("fixture needs different windows, both %d", primary.ContextWindowSize())
 	}
-	if metrics.Remaining != max(metrics.Window-metrics.Used, 0) {
-		t.Fatalf("remaining = %d does not follow window %d and used %d", metrics.Remaining, metrics.Window, metrics.Used)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		ModelFallbacks: []string{"claude-opus-4-5"},
+		testOnly:       testConfig{metaFS: afero.NewMemMapFs()},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	metrics, pressure := sess.ContextStatus()
+	if metrics.Window != fallback.ContextWindowSize() || metrics.WindowSource != fallback.ContextWindowSource() {
+		t.Fatalf("window = %d from %q, want the fallback's %d from %q", metrics.Window, metrics.WindowSource, fallback.ContextWindowSize(), fallback.ContextWindowSource())
+	}
+	if metrics.Used < 50_000 || pressure != float64(metrics.Used)/float64(metrics.Window) {
+		t.Fatalf("used %d and pressure %v must both be measured against the fallback window %d", metrics.Used, pressure, metrics.Window)
 	}
 }

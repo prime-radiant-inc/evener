@@ -186,7 +186,7 @@ func TestModelsInspectMasksLiteralAuthHeaders(t *testing.T) {
 	modelsTestEnv(t)
 	modelsFixture(t)
 	path := filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"https://gw.example/v1\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
+	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"" + gatewayModelsServer(t, 0) + "\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

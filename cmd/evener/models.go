@@ -119,7 +119,7 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 		}
 		if hidden {
 			if *all {
-				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\tneeds base_url (hidden)\n", name, protocol)
+				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\t\t\tneeds base_url (hidden)\n", name, protocol)
 			}
 			continue
 		}
@@ -133,11 +133,11 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 			if err != nil {
 				if errors.Is(err, registry.ErrModelDisabled) {
 					if *all {
-						_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\tdisabled\n", name, id)
+						_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\t\t\tdisabled\n", name, id)
 					}
 					continue
 				}
-				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\terror: %v\n", name, id, err)
+				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\t\t\terror: %v\n", name, id, err)
 				continue
 			}
 			if !*all && (res.Model.Hidden || (res.Caps.Tools != nil && !*res.Caps.Tools)) {
