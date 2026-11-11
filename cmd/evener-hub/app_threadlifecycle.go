@@ -68,7 +68,6 @@ func startRefused(err error) (appwire.ThreadStartResponse, error) {
 }
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
-	ctx, trace := withThreadLifecycleLog(ctx, "start", "", nil)
 	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
 		return startRefused(err)
@@ -76,9 +75,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if remote != nil {
 		return remote.StartThread(ctx, forward)
 	}
-	prepared := trace.stage(ctx, "local_spawn_preparation")
 	plan, err := prepareLocalSpawn(ctx, cfg, params)
-	prepared(err)
 	if err != nil {
 		return startRefused(err)
 	}
@@ -93,7 +90,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// this shields only the handler's own awaits.
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
-	spawned := trace.stage(ctx, "spawner_spawn")
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:       plan.resolved.Project,
 		Resolved:      plan.resolved,
@@ -103,7 +99,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		Provider:      plan.modelRef.Provider,
 		Manager:       params.Manager,
 	})
-	spawned(err)
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
@@ -123,9 +118,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}()
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
-		refreshed := trace.stage(ctx, "start_roster_refresh")
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
-		refreshed(refreshErr)
 		if err := refreshErr; err != nil {
 			if !canUseSpawnEntry {
 				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
@@ -182,12 +175,10 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
 	}
 	var threadResp appwire.ThreadReadResponse
-	readDone := trace.stage(ctx, "start_daemon_read")
 	if cfg.Roster != nil && canUseSpawnEntry {
 		if !cfg.Roster.HasConfirmedEntry(entry) {
 			threadResp, err = cfg.Roster.ReadSpawnedThread(ctx, entry, read)
 			if err != nil && threadResp.Thread.ID != "" {
-				readDone(err)
 				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
 			}
 		} else {
@@ -196,7 +187,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	} else {
 		threadResp, err = read(ctx)
 	}
-	readDone(err)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || isSessionRecoveryAdmissionError(err) {
 		return appwire.ThreadStartResponse{}, err
 	}
@@ -236,7 +226,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			ExpectedInstanceID: expectedInstanceID,
 			Input:              params.Input,
 		}
-		turnStarted := trace.stage(ctx, "initial_turn")
 		turnResp, err := withDeletionTargetOwnership(ctx, cfg, ref, "", clientMutationID, func() (appwire.TurnStartResponse, error) {
 			if err := sessionActionRecoveryError(ctx, cfg, ref, "", startEpoch); err != nil {
 				return appwire.TurnStartResponse{}, err
@@ -250,7 +239,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 			return source.StartTurn(ctx, turnParams)
 		})
-		turnStarted(err)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}
@@ -316,7 +304,6 @@ type localSpawnPlan struct {
 // a caller still waiting. Everything it refuses, it refuses before any session
 // exists.
 func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadStartParams) (localSpawnPlan, error) {
-	trace := threadLifecycleFromContext(ctx)
 	if cfg.Spawner == nil {
 		return localSpawnPlan{}, wireRefusal(appwire.Unavailable, errSpawnerNotConfigured)
 	}
@@ -379,15 +366,11 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 	if err != nil {
 		return localSpawnPlan{}, appwire.InvalidParams(err.Error())
 	}
-	modelChecked := trace.stage(ctx, "start_model_validation")
 	modelErr := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir)
-	modelChecked(modelErr)
 	if err := modelErr; err != nil {
 		return localSpawnPlan{}, err
 	}
-	pluginsResolved := trace.stage(ctx, "start_plugin_resolution")
 	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginManager)
-	pluginsResolved(pluginErr)
 	if pluginErr != nil {
 		// A resolver failure is fatal when a selection has to be honoured, and
 		// always when the failure IS the caller leaving: the next thing this
@@ -490,13 +473,6 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			logSessionID = ref.ThreadID
 		}
 	}
-	ctx, trace := withThreadLifecycleLog(ctx, "resume", logSessionID, nil)
-	// These deferred stages use the final local trace after alias resolution,
-	// while retaining their original start times and immutable context snapshots.
-	requestCtx := ctx
-	requestStarted := time.Now()
-	trace.record(requestCtx, "request", "begin", requestStarted, nil, 0, 0)
-	defer func() { trace.record(requestCtx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
 	var cleanupErr error
 	var activeResume *hubcore.ActiveResume
 	requestedRefID := ""
@@ -530,9 +506,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
-		ownershipDone := trace.stage(ctx, "ownership")
 		target, aliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
-		ownershipDone(err)
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
@@ -547,10 +521,8 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		epochs[requestedID] = epoch
 		// Registration now takes the same per-alias ownership tokens as the
 		// confirmed-stopped no-op, so the wait for those tokens can start here.
-		lockDone := trace.stage(ctx, "lock_wait")
 		active, err := cfg.ResumeLocks.RegisterResume(ctx, target, aliases, epochs)
 		if err != nil {
-			lockDone(err)
 			if errors.Is(err, hubcore.ErrResumeInvalidated) {
 				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable(err.Error())}
 			}
@@ -569,16 +541,12 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			// can tell this launch's reservation from an unrelated action's.
 			active.ReleaseOwnership()
 			if !heldStarted.IsZero() {
-				trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 			}
 		}()
 		if err := active.AcquireOwnership(ctx); err != nil {
-			lockDone(err)
 			return appwire.ThreadResumeResponse{}, err
 		}
-		lockDone(nil)
 		heldStarted = time.Now()
-		trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
 		// A deletion record may name any alias in the resolved ownership
 		// group, so the whole group is fenced here, under the locks that make
 		// the check final, before live-owner reuse or launching below.
@@ -594,9 +562,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires a fresh explicit thread/resume request")}
 			}
 		}
-		recheckDone := trace.stage(ctx, "ownership_recheck")
 		currentTarget, currentAliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
-		recheckDone(err)
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
@@ -604,7 +570,6 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable("session ownership changed; refresh before resuming")
 		}
 		sessionID = target
-		ctx, trace = trace.resolved(ctx, sessionID)
 		defer func() {
 			if resumeErr != nil {
 				return
@@ -668,7 +633,6 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	// The request's trace travels in the context, already carrying the resolved
 	// session identity the wrapper stamped. A caller that enters here without
 	// one records nothing: every stage below is nil-safe.
-	trace := threadLifecycleFromContext(ctx)
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -695,9 +659,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 
 	var discoveryErr error
 	if cfg.Roster != nil {
-		discoveryDone := trace.stage(ctx, "discovery")
 		discoveryErr = hubRosterRefresh(ctx, cfg.Roster)
-		discoveryDone(discoveryErr)
 	}
 	if cfg.Roster != nil && cfg.ResumeLocks != nil {
 		// The protocol check below calls lookupDaemonOwner, which refuses an
@@ -705,30 +667,22 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		// read first, while a status probe may still be missing it.
 		retryPendingReplacementConfirmation(ctx, cfg, sources, sessionID)
 	}
-	protocolDone := trace.stage(ctx, "protocol_check")
 	if err := daemonRestartRequiredError(ctx, cfg, "", sessionID, ""); err != nil {
-		protocolDone(err)
 		return appwire.ThreadResumeResponse{}, err
 	}
-	protocolDone(nil)
 	if discoveryErr != nil {
 		// Incomplete discovery cannot authorize a replacement, but a direct
 		// probe can establish that a previously confirmed owner still serves
 		// this session. Keep the global discovery failure for other owners.
 		if owner, ok := liveDaemonForThread(cfg.Roster, sessionID); ok && owner.Protocol == appwire.ProtocolVersion {
-			probeDone := trace.stage(ctx, "owner_probe")
 			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
-				probeDone(err)
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
 			}
-			probeDone(nil)
 			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
 		}
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
 	}
-	ownerDone := trace.stage(ctx, "owner_lookup")
 	owner, _, err := lookupDaemonOwner(ctx, cfg, "", sessionID, true)
-	ownerDone(err)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 	}
@@ -740,9 +694,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errSpawnerNotConfigured)
 	}
-	prepareDone := trace.stage(ctx, "request_preparation")
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
-	prepareDone(err)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
@@ -841,9 +793,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	resumeReq.CompletionOwned = launch.completionOwned
 	resumeReq.ActiveResume = launch.active
-	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
-	resumeDone(err)
 	if err != nil {
 		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
 			launch.cleanupErr = cleanup
@@ -866,19 +816,15 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	replacementConfirmed := false
 	if cfg.Roster != nil {
-		refreshDone := trace.stage(ctx, "post_launch_discovery")
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
-		refreshDone(refreshErr)
 		replacementConfirmed = cfg.Roster.HasConfirmedEntry(entry)
 		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !replacementConfirmed {
 			// A successful scan can still miss an owner whose status probe
 			// failed. Confirm the exact spawned endpoint through its read before
 			// relying on the shared roster for subsequent requests.
-			readDone := trace.stage(ctx, "daemon_read")
 			read, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
 				return readSpawnedLocalThread(ctx, sources, entry)
 			})
-			readDone(err)
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
@@ -936,11 +882,9 @@ func retryPendingReplacementConfirmation(ctx context.Context, cfg hubcore.WebCon
 	if cfg.Roster.HasConfirmedEntry(entry) {
 		return
 	}
-	readDone := threadLifecycleFromContext(ctx).stage(ctx, "daemon_read")
-	_, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+	_, _ = cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
 		return readSpawnedLocalThread(ctx, sources, entry)
 	})
-	readDone(err)
 }
 
 // launchRefusalIsOwnership reports whether a refused launch failed because the
@@ -1175,12 +1119,9 @@ func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID st
 	if cfg.Roster == nil {
 		return err
 	}
-	discoveryDone := threadLifecycleFromContext(ctx).stage(ctx, "failure_discovery")
 	if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
-		discoveryDone(refreshErr)
 		return errors.Join(err, refreshErr)
 	}
-	discoveryDone(nil)
 	blocker, ok := cfg.Roster.Find(sessionID)
 	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
 		return err
@@ -1197,8 +1138,6 @@ func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID st
 // resolve the thread the same way. threadID falls back to sessionID when the
 // rendezvous entry omitted it.
 func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, threadID string) (response appwire.ThreadResumeResponse, readErr error) {
-	readDone := threadLifecycleFromContext(ctx).stage(ctx, "daemon_read")
-	defer func() { readDone(readErr) }()
 	if threadID == "" {
 		threadID = sessionID
 	}

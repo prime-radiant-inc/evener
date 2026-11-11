@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -196,23 +195,11 @@ func TestManagerHumanControlsParity(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			var humanLog, managerLog bytes.Buffer
-			humanCtx, managerCtx := t.Context(), t.Context()
-			if tc.name == "resume" {
-				humanCtx, _ = withThreadLifecycleLog(humanCtx, "resume", "missing", &humanLog)
-				managerCtx, _ = withThreadLifecycleLog(managerCtx, "resume", "missing", &managerLog)
-			}
-			_, humanErr := human.appRPC.Router().Dispatch(humanCtx, appwire.Request{ID: appwire.NewIntID(1), Method: tc.method, Params: raw})
+			_, humanErr := human.appRPC.Router().Dispatch(t.Context(), appwire.Request{ID: appwire.NewIntID(1), Method: tc.method, Params: raw})
 			owner := &sessionOperations{cfg: manager.cfg, sources: manager.sources, navigation: manager.navigation, resolve: manager.resolveTopLevelSessionRef}
-			_, managerErr := owner.Control(managerCtx, tc.request)
+			_, managerErr := owner.Control(t.Context(), tc.request)
 			if (humanErr == nil) != tc.accepted || (managerErr == nil) != tc.accepted {
 				t.Fatalf("human=%v manager=%v accepted=%v", humanErr, managerErr, tc.accepted)
-			}
-			if tc.name == "resume" {
-				for _, output := range []string{humanLog.String(), managerLog.String()} {
-					records := assertThreadLifecycleRecords(t, output)
-					assertThreadLifecycleOutcome(t, records, "request", "error", "failed")
-				}
 			}
 			if !tc.accepted {
 				humanWire, managerWire := appserver.WireError(humanErr), appserver.WireError(managerErr)

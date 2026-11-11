@@ -703,7 +703,6 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
-          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: /tmp/evener-module-tests.retire/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
 
@@ -724,9 +723,9 @@ jobs:
           BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
         run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
 
-      # Survey failure replay is abbreviated. Keep the full surveys, raw
-      # timing-capture shard text and the retirement phase trace, never the
-      # surrounding homes or test binaries. After the timing check so a
+      # Survey failure replay is abbreviated. Keep the full surveys and raw
+      # timing-capture shard text, never the surrounding homes or test
+      # binaries. After the timing check so a
       # timing-only failure still collects them.
       # A job stopped at its time limit can end cancelled rather than failed,
       # and a hang's logs are the ones most worth keeping, so a cancelled job
@@ -747,8 +746,6 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
-            /dev/shm/evener-module-tests.*/retire-overlap-phases.tsv
-            /tmp/evener-module-tests.*/retire-overlap-phases.tsv
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate

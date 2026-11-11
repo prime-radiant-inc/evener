@@ -47,15 +47,6 @@ func TestResumeDaemonPrelaunchCancellationClassification(t *testing.T) {
 			if got := diagnostic.Classify(err.Error()).Source; got != diagnostic.SourceHub {
 				t.Errorf("diagnostic source = %q, want %q", got, diagnostic.SourceHub)
 			}
-			records := threadLifecycleLogRecords(t, log.String())
-			if len(records) != 4 {
-				t.Fatalf("want daemon and launch begin/complete records, got %#v", records)
-			}
-			for _, record := range records {
-				if record["state"] == "complete" && record["error_class"] != tc.class {
-					t.Errorf("completion classification = %#v, want %s", record, tc.class)
-				}
-			}
 		})
 	}
 }
