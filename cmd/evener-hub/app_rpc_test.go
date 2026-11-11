@@ -1079,6 +1079,40 @@ func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
 	}
 }
 
+// TestBareHubConfigKeepsAuthStateUnderItsHubStateRoot pins the endpoint-key
+// half for a config with no provider registry: the auth controller cannot read
+// a state root off a registry, so it must use the caller's HubStateRoot instead
+// of the process-wide XDG default every such server would otherwise share. The
+// fallback credential store follows that root too (credentials.toml beside it),
+// so the whole auth footprint is the one root the caller owns.
+func TestBareHubConfigKeepsAuthStateUnderItsHubStateRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	_, _, _, _, auth, _ := newHubAppServerWithNavigationAndTrace(hubcore.WebConfig{HubStateRoot: root}, nil, nil, nil, nil)
+	if auth == nil {
+		t.Fatal("bare config server did not construct an auth controller")
+	}
+	if auth.stateDir != root {
+		t.Fatalf("auth state dir = %q, want the config's HubStateRoot %q", auth.stateDir, root)
+	}
+	if auth.creds == nil {
+		t.Fatal("bare config server has no credential store")
+	}
+	if got, want := auth.creds.Path(), filepath.Join(filepath.Dir(root), "credentials.toml"); got != want {
+		t.Fatalf("credential store = %q, want the store beside the owned auth root %q", got, want)
+	}
+	if key := endpointFingerprintKey(auth.stateDir); len(key) == 0 {
+		t.Fatal("auth state dir did not yield an endpoint fingerprint key")
+	}
+	info, err := os.Stat(filepath.Join(root, endpointFingerprintKeyFile))
+	if err != nil {
+		t.Fatalf("endpoint fingerprint key under HubStateRoot: %v", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("endpoint fingerprint key mode = %04o, want owner-only", info.Mode().Perm())
+	}
+}
+
 // TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
 // server's auth controller and registry share that server's own state root:
 // an OAuth record under one server's root signs that server in and is
