@@ -39,6 +39,13 @@ func safeMobileOrigin(raw string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	return safeMobileOriginParsed(origin)
+}
+
+// safeMobileOriginParsed is safeMobileOrigin over an origin the caller already
+// parsed. A caller that also has to inspect the parsed hostname parses once
+// instead of re-parsing the canonical string this returns.
+func safeMobileOriginParsed(origin hubendpoint.Origin) (string, bool) {
 	host := strings.TrimRight(origin.Hostname(), ".")
 	if _, err := netip.ParseAddr(host); err != nil {
 		// Browsers apply UTS #46 mappings before interpreting a hostname. Do
