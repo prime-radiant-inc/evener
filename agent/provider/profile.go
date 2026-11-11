@@ -272,16 +272,15 @@ func (p *Profile) ContextWindowSize() int {
 // the session budgets against the context manager's assumed window instead.
 const ContextWindowSourceAssumed = "assumed"
 
-// ContextWindowSource says where ContextWindowSize came from: the registry
-// layer that supplied it (registry.LayerLive, LayerOverlay, LayerConfig,
-// LayerSnapshot), ContextWindowSourceAssumed when the window is unknown, or ""
-// for a profile carrying a window without provenance.
+// ContextWindowSource says where ContextWindowSize came from: "live",
+// "overlay", "config" or "snapshot" (registry.ContextWindowSource),
+// ContextWindowSourceAssumed when the window is unknown, or "" for a profile
+// carrying a window without provenance.
 func (p *Profile) ContextWindowSource() string {
 	if p.ContextWindowSize() <= 0 {
 		return ContextWindowSourceAssumed
 	}
-	layer, _, _ := strings.Cut(p.res.Provenance["ContextWindow"], "/")
-	return layer
+	return registry.ContextWindowSource(p.res.Provenance["ContextWindow"])
 }
 
 // CheapContextWindowSize is the configured cheap model's window, or 0 when no

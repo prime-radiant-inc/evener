@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -89,17 +91,23 @@ func TestModelsListInstanceAppliesLiveListing(t *testing.T) {
 	if err := runModels([]string{"list", "--provider", "gw"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("list: %v (%s)", err, stderr.String())
 	}
-	row := strings.Fields(listedRow(stdout.String(), "gw/wide"))
-	if len(row) == 0 {
+	// Cells are separated by at least two spaces; the columns before COST are
+	// never empty, so a header name locates its cell in the row.
+	cells := func(line string) []string { return regexp.MustCompile(`\s{2,}`).Split(strings.TrimSpace(line), -1) }
+	var header []string
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		if strings.HasPrefix(line, "REF") {
+			header = cells(line)
+		}
+	}
+	row := cells(listedRow(stdout.String(), "gw/wide"))
+	if header == nil || len(row) < len(header)-4 {
 		t.Fatalf("live-only model missing from the listing:\n%s", stdout.String())
 	}
-	for _, want := range []string{"524288", "live", "yes"} {
-		found := false
-		for _, f := range row {
-			found = found || f == want
-		}
-		if !found {
-			t.Fatalf("row %v lacks %q (window, source, verified)", row, want)
+	for column, want := range map[string]string{"CONTEXT": "524288", "CONTEXT SRC": "live", "VERIFIED": "yes"} {
+		i := slices.Index(header, column)
+		if i < 0 || i >= len(row) || row[i] != want {
+			t.Fatalf("column %s = %v, want %s (header %v, row %v)", column, row, want, header, row)
 		}
 	}
 }

@@ -79,7 +79,11 @@ func TestContextStatusParityAcrossMutations(t *testing.T) {
 
 	// An unknown-window profile is assumed at 128000 tokens and clears the
 	// measurement, so the single summary turn is estimated at 256.
-	s.contextMgr.SetProfile(&provider.Profile{})
+	unknown := &provider.Profile{}
+	s.mu.Lock()
+	s.profile = unknown
+	s.mu.Unlock()
+	s.contextMgr.SetProfile(unknown)
 	assertContextStatus(t, s, 256, 128000, true)
 
 	// nil context manager reports zero metrics and pressure.
@@ -89,6 +93,9 @@ func TestContextStatusParityAcrossMutations(t *testing.T) {
 	s.contextMgr = savedMgr
 
 	// A manager with no profile has no window to report.
+	s.mu.Lock()
+	s.profile = nil
+	s.mu.Unlock()
 	s.contextMgr.SetProfile(nil)
 	assertContextStatus(t, s, 0, 0, false)
 }

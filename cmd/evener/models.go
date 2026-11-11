@@ -179,8 +179,7 @@ func windowSource(res registry.Resolved) string {
 	if res.Caps.ContextWindow == nil {
 		return ""
 	}
-	layer, _, _ := strings.Cut(res.Provenance["ContextWindow"], "/")
-	return layer
+	return registry.ContextWindowSource(res.Provenance["ContextWindow"])
 }
 
 // windowVerified reports whether something the user or the instance stated

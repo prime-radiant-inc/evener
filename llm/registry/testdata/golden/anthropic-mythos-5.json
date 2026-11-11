@@ -74,7 +74,7 @@
     "web_search": true
   },
   "provenance": {
-    "ContextWindow": "alias",
+    "ContextWindow": "snapshot/row",
     "Cost": "alias",
     "DefaultEffort": "overlay/glob:*claude-mythos-5*",
     "EffortValues": "alias",

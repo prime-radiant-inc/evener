@@ -178,3 +178,25 @@ func TestRestore_RecordsBudgetingWindowAndSource(t *testing.T) {
 		t.Fatalf("restored meta window = %d from %q, want 500000 from live", got.ContextWindow, got.ContextWindowSource)
 	}
 }
+
+// Window, Assumed, Remaining and WindowSource describe one profile: the one the
+// session holds when the sample is taken.
+func TestContextStatus_WindowFieldsDescribeOneProfile(t *testing.T) {
+	sess := windowRecordSession(t)
+	defer sess.Close()
+	// The manager still holds the profile it was built with; the session now
+	// holds a profile with a different, declared window.
+	sess.mu.Lock()
+	sess.profile = WithContextWindow(sess.profile, 4096)
+	want := sess.profile
+	sess.mu.Unlock()
+
+	metrics, _ := sess.ContextStatus()
+	wantSource := want.ContextWindowSource()
+	if metrics.Window != want.ContextWindowSize() || metrics.Assumed || metrics.WindowSource != wantSource {
+		t.Fatalf("metrics = %+v, want window %d from %q, not assumed", metrics, want.ContextWindowSize(), wantSource)
+	}
+	if metrics.Remaining != max(metrics.Window-metrics.Used, 0) {
+		t.Fatalf("remaining = %d does not follow window %d and used %d", metrics.Remaining, metrics.Window, metrics.Used)
+	}
+}

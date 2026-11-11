@@ -1039,6 +1039,11 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 		facts.ThinkingShape = target.Caps.ThinkingShape
 	}
 	mergeCaps(c, facts, provAlias, prov)
+	// A window the alias imports keeps the source of the target's figure, so
+	// provenance never reports "alias" for a number the alias did not state.
+	if facts.ContextWindow != nil && target.Provenance["ContextWindow"] != "" {
+		prov["ContextWindow"] = target.Provenance["ContextWindow"]
+	}
 	if target.Surface != "" {
 		row.Surface = target.Surface
 		prov["Surface"] = provAlias

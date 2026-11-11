@@ -26,9 +26,15 @@ func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	}
 	s.mu.Lock()
 	hist := append([]schema.Turn{}, s.history...)
+	profile := s.profile
 	s.mu.Unlock()
 	metrics, pressure := s.contextMgr.EstimateStatus(hist, 0)
-	_, metrics.WindowSource = budgetingWindow(s.currentProfile())
+	// The window fields all describe the one profile read with the history, so
+	// a model switch landing mid-sample cannot pair one model's window with
+	// another's source.
+	metrics.Window, metrics.WindowSource = budgetingWindow(profile)
+	metrics.Assumed = metrics.WindowSource == provider.ContextWindowSourceAssumed
+	metrics.Remaining = max(metrics.Window-metrics.Used, 0)
 	return metrics, pressure
 }
 

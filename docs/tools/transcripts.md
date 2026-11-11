@@ -47,7 +47,7 @@ configuration identities for readers that need model history:
 
 `context_window` is the window the session budgets against after the switch (the
 assumed window when the new model's is unknown) and `context_window_source` is where
-it came from: `live`, `overlay`, `config`, `snapshot` or `assumed`. Both are omitted
+it came from: `live`, `overlay`, `config`, `snapshot` (catalog data, including the refreshed models.dev cache; an alias reports the source of its target's figure) or `assumed`. Both are omitted
 on switches recorded before they existed.
 
 Provider fields identify configured provider instances, and model fields identify

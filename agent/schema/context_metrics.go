@@ -11,6 +11,6 @@ type ContextMetrics struct {
 	// figure as an estimate instead of fact.
 	Assumed bool
 	// WindowSource says where Window came from: the registry layer that
-	// supplied it ("live", "overlay", "config", "snapshot") or "assumed".
+	// supplied it ("live", "overlay", "config", "snapshot": catalog data, including the refreshed cache) or "assumed".
 	WindowSource string
 }
