@@ -333,10 +333,11 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
 | Wake yourself later | `job_watch(operation="create", after_seconds=N)` or `repeat_seconds=N`, with a `note`; source defaults to `self` |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` |
-| Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
+| Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` with `max_wait_ms` unset or `0` — returns on delivery; a positive `max_wait_ms` on a still-running delegate is refused as `target_busy`, while one that finishes before admission is started and the wait is honored |
 
 There is no "steer a running delegate and wait for its next reply" primitive: a
-live steer returns on delivery. Let the run finish and read the delegate's
+live steer with `max_wait_ms` unset or `0` returns on delivery, and a positive
+value is refused as `target_busy`. Let the run finish and read the delegate's
 session `transcript_ref`, or resume its next run with
 `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` once it is idle.
 
@@ -724,9 +725,11 @@ legacy aliases such as `main` or `watched`.
 
 Semantics:
 
-- If `to` identifies a running or currently-driven delegate, Evener injects the
-  message into that exact generation. The return `action` is `steered`.
-  The injected steering turn has source `parent`, and the delegate's model reads
+- If `to` identifies a running delegate and `max_wait_ms` is unset or `0`,
+  Evener injects the message into that exact generation. The return `action` is
+  `steered`. A delegate already being driven or otherwise busy is refused
+  `target_busy`. The injected steering turn has source `parent`, and the
+  delegate's model reads
   it after the line `Message from your parent agent:`; clients label it "From
   parent". A message that starts an idle delegate opens its next generation as
   user input, as the original brief does.
@@ -740,8 +743,12 @@ Semantics:
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `max_wait_ms` unset (or `0`) on an idle start returns after admission. A
   positive value waits for that newly started generation's terminal packet up
-  to the bounded wait. A live steer always returns on delivery; a supplied wait
-  is ignored explicitly through `wait_ignored_reason`.
+  to the bounded wait. A live steer returns on delivery with `max_wait_ms` unset
+  or `0`; a positive value on a still-running delegate is refused as
+  `target_busy`, while a delegate that becomes idle before admission is started
+  and the wait is honored. The call-scoped `wait_ignored_reason` field is
+  retained in the result shape for compatibility; `delegate_send` no longer
+  emits it.
 - `max_wait_ms` applies to concrete delegate targets.
 
 Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate sends a non-terminal update without ending its turn with `communicate(end_turn=false)`; an update does not replace the observer callback or final result.
