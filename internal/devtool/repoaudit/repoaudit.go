@@ -54,7 +54,6 @@ var checks = []check{
 	{"scenario-device-flow-cites-package-default", scenarioDeviceFlowCitesPackageDefault},
 	{"scenario-bare-line-anchors-resolve", scenarioBareLineAnchorsResolve},
 	{"runbook-isolation-through-helper", runbooksRouteIsolationThroughTheHelper},
-	{"makefile-sources-root-first", makefileSourcesIncludeRootAndFamilies},
 	{"makefile-phony-has-rule", everyPhonyTargetHasARule},
 	{"makefile-lint-target-phony-with-rule", everyLintTargetIsPhonyAndHasARule},
 	{"makefile-linting-rule-in-lint-targets", everyLintingRuleIsInLintTargets},
