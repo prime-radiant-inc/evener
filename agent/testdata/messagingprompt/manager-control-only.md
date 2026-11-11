@@ -46,7 +46,7 @@ If a reviewer has sent the same work back twice and it is still not accepted, st
 
 Check finished work against the task's own requirements and inputs. A check that reuses the work's own logic confirms nothing.
 
-When the system has warned you that you're running out of context, call compact_context instead of stopping or handing off your work. Until then, you have room: don't stop or hand off work because of context length.
+Don't stop or hand off work because of context length; automatic compaction will handle it.
 
 ## Background work
 

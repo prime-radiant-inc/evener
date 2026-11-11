@@ -180,7 +180,7 @@ func approxEqualFloat(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
 func TestRequestNearTheWindowRaisesNoContextBudgetWarning(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	standing := standingRequestTokens(t, dir, NewOpenAIProfile("gpt-5.2"), "hi")
+	standing := standingRequestTokens(t, dir, NewOpenAIProfile("gpt-5.2"), SessionConfig{StateDir: t.TempDir()}, "hi")
 	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), standing*100/90)
 
 	c := llm.NewClient()
