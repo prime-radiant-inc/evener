@@ -100,11 +100,6 @@ const PROSE = {
 
 const VIEWPORT = { width: 1440, height: 1000 };
 
-// The queue strip's heading. The strip's root is a plain <section> with no
-// testid, so both the presence check and the row dump locate it by this
-// header; one constant keeps the two from drifting.
-const QUEUED_MESSAGES_HEADER = "Queued messages";
-
 // The steered turn's input is rendered only once the daemon's own turn/start
 // push has crossed the hub and React has committed it into the virtualized
 // transcript -- a full round trip that is independent of (and later than) the
@@ -872,19 +867,20 @@ export class Driver {
     return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
   }
 
+  // The historical name for the pending stack's rows. The queue strip is gone;
+  // the stack is the one surface that carries queue rows now.
   queueStripExpr(ref = null) {
     return `(() => {
       const root = ${this.paneOrDocumentExpr(ref)};
       if (!root) return null;
-      const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
-      if (!header) return null;
-      const strip = header.closest("section");
-      const rows = [...strip.querySelectorAll("li")].map((li) => ({
+      const stack = root.querySelector("[data-testid='pending-message-stack']");
+      if (!stack) return null;
+      const rows = [...stack.querySelectorAll("[data-testid='pending-message-row']")].map((li) => ({
         text: li.textContent,
-        kind: li.dataset.kind ?? null,
+        kind: li.dataset.state ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
-      return { header: header.textContent, rows };
+      return { header: "pending messages", rows };
     })()`;
   }
 
@@ -1316,7 +1312,7 @@ export class Driver {
   }
 
   // The same reading for the OTHER two durable stores the pending surfaces are
-  // projected from. PendingChips and the queue strip render send/steer/drain
+  // projected from. The pending stack renders send/steer/drain
   // and queue entries out of the outbox and the accepted-mutation store, but
   // they render them a commit LATER than the durable write: the projection is
   // another IndexedDB round trip plus a React commit, so a poll can see a
@@ -1354,8 +1350,7 @@ export class Driver {
       const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
       if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
       if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
-      if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
-      if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
+      if (pane.querySelector("[data-testid='pending-message-stack']") !== null) return null;
       if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
       if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
       return true;
@@ -2105,7 +2100,7 @@ async function runScenarios(driver) {
   // click is effect-verified and retried: the strip re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
-    locate: () => driver.click("button[aria-label='Edit message']"),
+    locate: () => driver.clickByText("Edit message"),
     effectExpr: `(() => { const state = ${driver.composerStateExpr(driver.sessionA)};
       return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
     label: "Edit message",
@@ -2118,7 +2113,7 @@ async function runScenarios(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue2));
   queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
+    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
     { label: "queue strip with second pass" },
   );
   check(
@@ -2141,7 +2136,7 @@ async function runScenarios(driver) {
   await driver.assertComposerDraft(driver.sessionA, "drainAsSteer", draft("", { chips: [] }));
   await driver.clickQueueStripControl({
     locate: () => driver.clickByText("Steer queue now"),
-    effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return strip === null || strip.rows.length === 0 ? true : null; })()`,
+    effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return !strip || !strip.rows.some((row) => row.kind === "queued" || row.kind === "held") ? true : null; })()`,
     label: "Steer queue now (drain)",
   });
   driver.milestone("drain-committed", {
