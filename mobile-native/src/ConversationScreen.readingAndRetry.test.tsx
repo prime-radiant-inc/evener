@@ -2239,6 +2239,35 @@ it("keeps a Subagent route and its coordinator when following an identity", asyn
 	subscribe.mockRestore();
 });
 
+it("defers an identity change until a sheet above the conversation closes", async () => {
+	vi.mocked(navigation.replace).mockClear();
+	const runtime = getNativeMutationRuntime();
+	const subscribe = vi.spyOn(runtime, "subscribeIdentities");
+	subscribe.mockClear();
+	const { tree, route } = await mount(thread("ref-deferred", "idle"));
+	const listener = subscribe.mock.calls.at(-1)?.[0];
+	if (!listener) throw new Error("conversation did not subscribe to identity changes");
+	navigationState.state = {
+		index: 1,
+		routes: [
+			{ key: route.key, name: "Conversation", params: route.params as object },
+			{ key: "session-info", name: "SessionInfoSheet" },
+		],
+	};
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	act(() => listener({ hubId: "hub-1", from: "ref-deferred", to: "ref-deferred-2" }));
+	expect(navigation.replace).not.toHaveBeenCalled();
+	// Closing the sheet brings the conversation back to the top; the held move
+	// now applies once.
+	navigationState.state = {
+		index: 0,
+		routes: [{ key: route.key, name: "Conversation", params: route.params as object }],
+	};
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	expect(navigation.replace).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "ref-deferred-2" }));
+	subscribe.mockRestore();
+});
+
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const served = thread("ref-model", "idle");
