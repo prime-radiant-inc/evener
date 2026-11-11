@@ -610,6 +610,12 @@ func (c *delegateTreeController) isolatedLaneForDelegate(delegateID string) (iso
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.isolatedLaneForDelegateLocked(delegateID)
+}
+
+// isolatedLaneForDelegateLocked is isolatedLaneForDelegate for a caller that
+// already holds c.mu.
+func (c *delegateTreeController) isolatedLaneForDelegateLocked(delegateID string) (isolationLane, bool) {
 	id := delegateID
 	for {
 		aggregate := c.durable[id]

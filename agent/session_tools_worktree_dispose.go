@@ -438,6 +438,12 @@ func (s *Session) delegateLaneLiveWork(op, action, id string, state delegateWork
 
 	childID := state.descriptor.ChildSessionID
 	sub := s.subagents.get(childID)
+	if state.runtime != nil && (sub == nil || sub.sess == nil) {
+		// The controller still names a resident runtime that is not in the
+		// subagent registry: the operation cannot verify or release it, so no
+		// lane handoff may proceed under it.
+		return nil, fmt.Errorf("manage_worktree %s: %s has a resident runtime that is not tracked in the subagent registry; refusing", op, id)
+	}
 	if sub != nil && sub.sess != nil {
 		if !(allowSpentTeardown && sub.sess.retirementTeardownSpent()) {
 			outstanding, outstandingErr := sub.sess.treeHasOutstandingWork()

@@ -114,11 +114,6 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 	if liveErr != nil {
 		return WorktreeUnlockResult{}, liveErr
 	}
-	if state.runtime != nil && (sub == nil || sub.sess == nil) {
-		// Fail closed rather than release a lane under a resident runtime this
-		// operation cannot verify and evict.
-		return WorktreeUnlockResult{}, untrackedUnlockRuntimeError(id)
-	}
 	// Unlock releases only the direct runtime. A resident descendant sharing the
 	// lane would keep running there after the lock drops, so refuse until the
 	// subtree is quiet rather than evicting a subtree this operation does not
@@ -144,9 +139,6 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 			return WorktreeUnlockResult{}, liveErr
 		}
 		sub = rechecked
-		if state.runtime != nil && (sub == nil || sub.sess == nil) {
-			return WorktreeUnlockResult{}, untrackedUnlockRuntimeError(id)
-		}
 	}
 
 	locked, reason, lockErr := lockStateOf(run, lanePath)
@@ -207,8 +199,4 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 			"Released delegate %s's isolation lane lock at %s without retiring it; the delegate's resumability, worktree, branch and uncommitted work are untouched. The lane is now switchable like any managed worktree, and a later send re-locks it.",
 			id, lanePath),
 	}, nil
-}
-
-func untrackedUnlockRuntimeError(id string) error {
-	return fmt.Errorf("manage_worktree unlock: %s has a resident runtime that is not tracked in the subagent registry; refusing to release its lane", id)
 }

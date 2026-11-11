@@ -32,17 +32,8 @@ func (c *delegateTreeController) delegateHasResidentDescendants(delegateID strin
 // laneOwner. A nested isolated delegate returns false (it has its own lane).
 // Callers hold c.mu.
 func (c *delegateTreeController) descendantSharesLaneLocked(descendantID, laneOwner string) bool {
-	for id := descendantID; id != ""; {
-		aggregate := c.durable[id]
-		if aggregate == nil {
-			return false
-		}
-		if aggregate.Descriptor.Isolation == "worktree" && aggregate.Descriptor.WorkingDir != "" {
-			return id == laneOwner
-		}
-		id = aggregate.Descriptor.ParentDelegateID
-	}
-	return false
+	lane, ok := c.isolatedLaneForDelegateLocked(descendantID)
+	return ok && lane.delegateID == laneOwner
 }
 
 // detachReleasedLaneRuntime clears the controller's pointers to runtime after
@@ -56,14 +47,7 @@ func (c *delegateTreeController) detachReleasedLaneRuntime(delegateID string, ru
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	live := c.live[delegateID]
-	if live == nil {
-		return
-	}
-	// The same invariant reclamation uses: a still-open binding owns its
-	// runtime, and a released binding's exact resident pointer is ours to clear.
-	if live.binding == nil && live.runtime == runtime {
-		c.setResidentRuntimeLocked(live, nil)
+	if c.clearResidentRuntimeIfExactLocked(delegateID, runtime) {
 		c.evidenceVersion++
 	}
 }

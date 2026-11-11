@@ -315,9 +315,7 @@ func (c *delegateTreeController) releaseRetiredRuntimes(exact map[string]*Sessio
 		return ErrRetirementUnavailable
 	}
 	for id, s := range exact {
-		if live := c.live[id]; s != nil && live != nil && live.binding == nil && live.runtime == s {
-			c.setResidentRuntimeLocked(live, nil)
-		}
+		c.clearResidentRuntimeIfExactLocked(id, s)
 	}
 	c.evidenceVersion++
 	return nil

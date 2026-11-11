@@ -45,10 +45,11 @@ func (c *delegateTreeController) beginSubtreeLaneHandoff(delegateID string) lane
 	}
 	members := c.subtreeMembersLocked(delegateID)
 	for id := range members {
-		if c.releasing[id] != nil {
-			// A non-terminal release has unhooked its runtime and cleared the
-			// pointers, but its teardown is still winding down in the lane.
-			// Handing the lane over now would put a new occupant beside it.
+		if c.releasing[id] != nil || c.reclaiming[id] != 0 {
+			// A runtime release is claimed or in flight: it has unhooked its
+			// runtime or is about to, and its teardown can still be winding
+			// down in the lane. Handing the lane over now would put a new
+			// occupant beside it.
 			return laneHandoffBusy
 		}
 	}
