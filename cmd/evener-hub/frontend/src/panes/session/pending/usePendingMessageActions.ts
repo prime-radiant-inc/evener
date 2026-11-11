@@ -42,6 +42,12 @@ type PendingRowKind = "recovery" | "queue" | "local";
 
 function rowKind(row: PendingMessage): PendingRowKind {
   if (row.recovery) return "recovery";
+  const local = row.outbox;
+  if (
+    local?.method === "turn/promoteQueuedAsSteer" &&
+    (row.state === "canceled" || (local.attempted === false && row.state !== "delivering"))
+  )
+    return "local";
   if (row.queueEntryId !== undefined && row.queueIndex !== undefined) return "queue";
   return "local";
 }
