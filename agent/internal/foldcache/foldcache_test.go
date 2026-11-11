@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // intsFold is the test T: a running total plus a call count, so tests can
@@ -446,13 +448,9 @@ func TestCache_WaiterThatObservedNewerBytesRereadsTheJoinedFlight(t *testing.T) 
 		result, err := c.Get(ctx, path, extend)
 		waiter <- getResult{result: result, err: err}
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for c.Stats().Coalesced == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("waiter did not join the in-flight fold")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Until(t, "the waiter to join the in-flight fold", func() bool {
+		return c.Stats().Coalesced > 0
+	})
 	close(release)
 
 	ownerResult := <-owner

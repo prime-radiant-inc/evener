@@ -337,9 +337,23 @@ func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testi
 		t.Fatalf("close jobs journal: %v", err)
 	}
 
-	_, err = LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation})
-	if err == nil || !strings.Contains(err.Error(), "activity continuation is stale") {
-		t.Fatalf("resume after an out-of-order append error = %v, want a stale continuation refusal", err)
+	if _, err = LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation}); err == nil {
+		t.Fatal("resume after an out-of-order append was accepted, want rejection")
+	}
+	// Recovery is a fresh page without the stale token: it must succeed and
+	// render the reordered job exactly once.
+	fresh, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("fresh page after the rejected continuation: %v", err)
+	}
+	rendered := 0
+	for _, entry := range fresh.Root.Entries {
+		if entry.Job != nil && entry.Job.JobID == "job_out_of_order" {
+			rendered++
+		}
+	}
+	if rendered != 1 {
+		t.Fatalf("fresh page rendered job_out_of_order %d times, want exactly once", rendered)
 	}
 }
 
