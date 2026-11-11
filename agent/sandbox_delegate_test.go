@@ -246,6 +246,13 @@ func saveColdRestorableChild(t *testing.T, stateDir string, base schema.SessionM
 	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
 		t.Fatal(err)
 	}
+	writeColdRestorableTranscript(t, stateDir, childID, parentID, task, workdir, depth)
+}
+
+// writeColdRestorableTranscript writes the empty transcript a committed
+// delegate child leaves, without touching its metadata.
+func writeColdRestorableTranscript(t *testing.T, stateDir, childID, parentID, task, workdir string, depth int) {
+	t.Helper()
 	writer, err := transcript.NewWriter(transcriptPath(stateDir, childID), transcript.Header{
 		SessionID:       childID,
 		ParentSessionID: parentID,
