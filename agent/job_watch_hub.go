@@ -693,20 +693,31 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	return nil
 }
 
-// suspendHubWatch reports a single observation-loss episode without ending the
-// durable watch or discarding a pending delivery.
-func (jm *jobManager) suspendHubWatch(watchID string) error {
-	jm.mu.Lock()
+// markHubWatchSuspendedLocked marks an observation-loss episode on a hub
+// watch. It returns the watch's config when this call opened the episode, and
+// nil when there is no such hub watch or the episode was already open, so an
+// episode is noticed at most once whichever suspend opened it.
+func (jm *jobManager) markHubWatchSuspendedLocked(watchID string) *watchConfig {
 	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if !ok || cfg.hubRef == "" || cfg.hubSuspended {
-		jm.mu.Unlock()
 		return nil
 	}
 	cfg.hubSuspended = true
+	return cfg
+}
+
+// suspendHubWatch reports a single observation-loss episode without ending the
+// durable watch or discarding a pending delivery.
+func (jm *jobManager) suspendHubWatch(watchID string) {
+	jm.mu.Lock()
+	cfg := jm.markHubWatchSuspendedLocked(watchID)
+	if cfg == nil {
+		jm.mu.Unlock()
+		return
+	}
 	delivery := jm.watchSendSnapshot(cfg, cfg.hubRef+"#interruption", "observation interrupted: waiting for recovery", events.SessionEvent{SessionID: jm.sessionID})
 	jm.mu.Unlock()
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-	return nil
 }
 
 // suspendHubWatchQuiet marks the episode that suspendHubWatch notices,
@@ -717,9 +728,7 @@ func (jm *jobManager) suspendHubWatch(watchID string) error {
 func (jm *jobManager) suspendHubWatchQuiet(watchID string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok && cfg.hubRef != "" {
-		cfg.hubSuspended = true
-	}
+	jm.markHubWatchSuspendedLocked(watchID)
 }
 
 func (jm *jobManager) resumeHubWatch(watchID string) {
@@ -1305,9 +1314,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				if !retryableHubContinuationRead(err) || failures >= hubWatchStateFailureLimit {
 					return false, err
 				}
-				if err := jm.suspendHubWatch(id); err != nil {
-					return false, err
-				}
+				jm.suspendHubWatch(id)
 				// Retain this exact query and held cut, not a newer snapshot that
 				// may no longer contain the failed terminal candidate. Only call
 				// failures retry, never missing or incompatible evidence below.
