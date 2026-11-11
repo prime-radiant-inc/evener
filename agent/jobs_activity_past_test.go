@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -281,16 +282,13 @@ func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *t
 	}
 }
 
-// TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation pins the
-// order contract the incremental fold's ResumeIndex depends on. An append
-// whose seq is older than one already folded reorders records the earlier
-// page counted, so the path's generation must move and a continuation minted
-// over the old order must be refused rather than applied to a shifted list.
-// Production writers assign seq sequentially; this writes the anomaly
-// directly because no writer path produces it.
-func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "outoforderroot"
+// outOfOrderJobsFixture writes a root whose journal has one page plus one
+// unrendered job, loads the first page, and returns the pieces the pagination
+// regressions mutate before resuming.
+func outOfOrderJobsFixture(t *testing.T) (stateDir, rootID, jobsPath, continuation string) {
+	t.Helper()
+	stateDir = t.TempDir()
+	rootID = "outoforderroot"
 	started := time.Unix(900, 0).UTC()
 	events := make([]jobstore.Event, 0, activityMaxWorkUnits+1)
 	for i := 0; i <= activityMaxWorkUnits; i++ {
@@ -299,7 +297,7 @@ func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testi
 			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
 		})
 	}
-	path := s1cov_writeJobLog(t, stateDir, rootID, events...)
+	jobsPath = s1cov_writeJobLog(t, stateDir, rootID, events...)
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 
 	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
@@ -316,32 +314,45 @@ func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testi
 	if cont.ResumeIndex != activityMaxWorkUnits {
 		t.Fatalf("continuation ResumeIndex = %d, want %d", cont.ResumeIndex, activityMaxWorkUnits)
 	}
+	return stateDir, rootID, jobsPath, first.Root.Branch.Continuation
+}
 
-	older := jobstore.Event{
-		Kind: jobstore.EventJobStarted, Seq: 1, TS: started, JobID: "job_out_of_order",
-		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
-	}
-	line, err := json.Marshal(older)
+func appendJobRecord(t *testing.T, jobsPath string, event jobstore.Event) {
+	t.Helper()
+	line, err := json.Marshal(event)
 	if err != nil {
-		t.Fatalf("marshal out-of-order event: %v", err)
+		t.Fatalf("marshal job event: %v", err)
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	f, err := os.OpenFile(jobsPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open jobs journal: %v", err)
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		_ = f.Close()
-		t.Fatalf("append out-of-order event: %v", err)
+		t.Fatalf("append job event: %v", err)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatalf("close jobs journal: %v", err)
 	}
+}
 
-	if _, err = LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation}); err == nil {
-		t.Fatal("resume after an out-of-order append was accepted, want rejection")
+func appendOutOfOrderJob(t *testing.T, jobsPath, rootID string) {
+	t.Helper()
+	started := time.Unix(900, 0).UTC()
+	appendJobRecord(t, jobsPath, jobstore.Event{
+		Kind: jobstore.EventJobStarted, Seq: 1, TS: started, JobID: "job_out_of_order",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+}
+
+// assertContinuationRejectedAndFreshPageRecovers requires the reordered
+// journal to refuse the old position and a fresh page to render the inserted
+// job exactly once.
+func assertContinuationRejectedAndFreshPageRecovers(t *testing.T, stateDir, rootID, continuation string) {
+	t.Helper()
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation}); err == nil {
+		t.Fatal("resume after the reorder was accepted, want rejection")
 	}
-	// Recovery is a fresh page without the stale token: it must succeed and
-	// render the reordered job exactly once.
 	fresh, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("fresh page after the rejected continuation: %v", err)
@@ -354,6 +365,101 @@ func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testi
 	}
 	if rendered != 1 {
 		t.Fatalf("fresh page rendered job_out_of_order %d times, want exactly once", rendered)
+	}
+}
+
+// TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation pins the
+// order contract the incremental fold's ResumeIndex depends on. An append
+// whose seq is older than one already folded reorders records the earlier
+// page counted, so the path's generation must move and a continuation minted
+// over the old order must be refused rather than applied to a shifted list.
+// Production writers assign seq sequentially; this writes the anomaly
+// directly because no writer path produces it.
+func TestLoadSessionJobActivityTree_OutOfOrderAppendRefusesContinuation(t *testing.T) {
+	stateDir, rootID, jobsPath, continuation := outOfOrderJobsFixture(t)
+	appendOutOfOrderJob(t, jobsPath, rootID)
+	assertContinuationRejectedAndFreshPageRecovers(t, stateDir, rootID, continuation)
+}
+
+// TestLoadSessionJobActivityTree_OutOfOrderAppendWithUnchangedMTimeRefusesContinuation
+// covers the same reorder when the append leaves the journal's mtime unchanged:
+// foldcache cannot resolve the growth incrementally and rebuilds from zero
+// with a zero prior, so the ordering history has to live outside the fold.
+func TestLoadSessionJobActivityTree_OutOfOrderAppendWithUnchangedMTimeRefusesContinuation(t *testing.T) {
+	stateDir, rootID, jobsPath, continuation := outOfOrderJobsFixture(t)
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatalf("stat jobs journal: %v", err)
+	}
+	appendOutOfOrderJob(t, jobsPath, rootID)
+	if err := os.Chtimes(jobsPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("restore jobs journal mtime: %v", err)
+	}
+	assertContinuationRejectedAndFreshPageRecovers(t, stateDir, rootID, continuation)
+}
+
+// TestLoadSessionJobActivityTree_OutOfOrderAppendAfterEvictionRefusesContinuation
+// covers the reorder after foldcache evicted the path's value: the zero-offset
+// rebuild has no prior and no value, but the path's ordering history survives
+// alongside the epoch state.
+func TestLoadSessionJobActivityTree_OutOfOrderAppendAfterEvictionRefusesContinuation(t *testing.T) {
+	originalCache := historicalJobFoldCache
+	historicalJobFoldCache = foldcache.New[historicalJobFold](1)
+	t.Cleanup(func() { historicalJobFoldCache = originalCache })
+
+	stateDir, rootID, jobsPath, continuation := outOfOrderJobsFixture(t)
+	started := time.Unix(901, 0).UTC()
+	otherPath := s1cov_writeJobLog(t, stateDir, "outoforder-evictor", jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_evictor",
+		Type: jobstore.JobShell, OwnerSessionID: "outoforder-evictor", VisibleToSession: "outoforder-evictor", StartedAt: &started,
+	})
+	if _, err := historicalJobFoldCache.Get(context.Background(), otherPath, extendHistoricalJobFold); err != nil {
+		t.Fatalf("evict the target fold: %v", err)
+	}
+	appendOutOfOrderJob(t, jobsPath, rootID)
+	assertContinuationRejectedAndFreshPageRecovers(t, stateDir, rootID, continuation)
+}
+
+// TestLoadSessionJobActivityTree_AppendWithUnchangedMTimeKeepsContinuation is
+// the false-positive guard: an ordinary append at the end can also force a
+// zero-offset rebuild, and it must not move the generation or refuse a
+// continuation whose positions are still valid.
+func TestLoadSessionJobActivityTree_AppendWithUnchangedMTimeKeepsContinuation(t *testing.T) {
+	stateDir, rootID, jobsPath, continuation := outOfOrderJobsFixture(t)
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatalf("stat jobs journal: %v", err)
+	}
+	started := time.Unix(902, 0).UTC()
+	store, err := jobstore.OpenNoSync(jobsPath)
+	if err != nil {
+		t.Fatalf("open jobs journal: %v", err)
+	}
+	if err := store.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_appended",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	}); err != nil {
+		_ = store.Close()
+		t.Fatalf("append job: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close jobs journal: %v", err)
+	}
+	if err := os.Chtimes(jobsPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("restore jobs journal mtime: %v", err)
+	}
+	resumed, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+	if err != nil {
+		t.Fatalf("pure append with unchanged mtime refused a valid continuation: %v", err)
+	}
+	found := false
+	for _, entry := range resumed.Root.Entries {
+		if entry.Job != nil && entry.Job.JobID == "job_appended" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("resumed page did not render the appended job")
 	}
 }
 
