@@ -750,12 +750,26 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 }
 
 func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+	// The pre-admission wait is part of the stop, so it takes closeStopJoinContext's
+	// half budget: one admitted reservation whose drive never commits or aborts
+	// must not consume the whole cascade deadline and leave the joins and
+	// teardown behind the stop running on a nominal budget.
+	var admitCtx context.Context
+	var cancelAdmit context.CancelFunc
+	defer func() {
+		if cancelAdmit != nil {
+			cancelAdmit()
+		}
+	}()
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
 			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
-				if waitErr := waitAttentionStartAdmission(ctx, blocker); waitErr != nil {
+				if admitCtx == nil {
+					admitCtx, cancelAdmit = closeStopJoinContext(ctx)
+				}
+				if waitErr := waitAttentionStartAdmission(admitCtx, blocker); waitErr != nil {
 					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, waitErr
 				}
 				continue
