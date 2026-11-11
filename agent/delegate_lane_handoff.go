@@ -45,11 +45,15 @@ func (c *delegateTreeController) beginSubtreeLaneHandoff(delegateID string) lane
 	}
 	members := c.subtreeMembersLocked(delegateID)
 	for id := range members {
-		if c.releasing[id] != nil || c.reclaiming[id] != 0 {
-			// A runtime release is claimed or in flight: it has unhooked its
-			// runtime or is about to, and its teardown can still be winding
-			// down in the lane. Handing the lane over now would put a new
-			// occupant beside it.
+		if c.releasing[id] != nil {
+			// A non-terminal release has unhooked its runtime and cleared the
+			// pointers, but its teardown is still winding down in the lane.
+			// Handing the lane over now would put a new occupant beside it.
+			// A reclamation claim (c.reclaiming) is deliberately not refused
+			// here: the reclaiming session's own close-time lane cleanup runs
+			// under that claim and must be able to unlock/remove its child
+			// lanes. Independent handoffs still see the reclamation as active
+			// in the quiescence snapshot and refuse there.
 			return laneHandoffBusy
 		}
 	}
