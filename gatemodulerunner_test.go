@@ -1104,6 +1104,8 @@ func TestModuleRunnerRunsAgentSubpackagesInOnePartOnly(t *testing.T) {
 		{"whole", "", true},
 		{"first part", "1/2", false},
 		{"last part", "2/2", true},
+		// The shard runner reads k and m as numbers, so the gate must too.
+		{"last part zero-padded", "02/2", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

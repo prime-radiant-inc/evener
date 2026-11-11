@@ -124,8 +124,10 @@ done
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
 # cost ranking derived from it useless. See cmd/evener-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
-# the sharded split. The -race gate uses it: under -race everything is ~10x
-# slower and CPU-bound, so two shards just oversubscribe each other.
+# the sharded split. A local -race run uses it: under -race everything is ~10x
+# slower and CPU-bound, and eight race shards on one 4-core runner took ~9.5
+# minutes against ~6.7 unsharded. Sharding pays under -race only across
+# runners, which is what CI's split race lane does (AGENT_SHARD_PART).
 AGENT_SHARDS=${AGENT_SHARDS:-1}
 # ROOT_SHARDED, <PREFIX>_SHARDS and ROOT_REST: see scripts/lib/gate-root-shards.sh.
 # The -race gate keeps the hub and CLI sharded: their tests are mostly serial,
@@ -608,7 +610,9 @@ run_module() {
 		# unsharded subpackages in the last part alone, so the split runs them
 		# once. Equal-weight packing hands any remainder tests to the
 		# lowest-numbered shards, so the last part has the least shard work.
-		if [ -n "${AGENT_SHARD_PART:-}" ] && [ "${AGENT_SHARD_PART%%/*}" != "${AGENT_SHARD_PART#*/}" ]; then
+		# k and m compare as numbers, as the shard runner reads them; the
+		# runner has already refused a malformed part.
+		if [ -n "${AGENT_SHARD_PART:-}" ] && [ "${AGENT_SHARD_PART%%/*}" -ne "${AGENT_SHARD_PART#*/}" ]; then
 			return "$shardStatus"
 		fi
 		derive_list_flags "$m" || return $?

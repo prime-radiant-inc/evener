@@ -283,11 +283,12 @@ RACE_AGENT_PART ?= all
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
-##   AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's
-##   ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub
+##   AGENT_SHARDS=0 (unless RACE_AGENT_PART splits it) and AGENT_PARALLEL=6 to
+##   cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub
 ##   shards, no cost survey: under -race the survey costs as much as the run).
 ##   RACE_SCOPE defaults to all; CI uses the
-##   explicit root scope plus agent and nonagent on separate runners. The two
+##   explicit root scope plus two agent parts and nonagent on separate
+##   runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
 ##   RACE_ROOT_PART (root scope only) splits the root module across runners:
 ##   all (default), hub (only cmd/evener-hub's shards), or rest (everything
