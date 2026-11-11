@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -173,3 +174,30 @@ func TestCompactAt_ResumeKeepsPersistedValueUnlessOverridden(t *testing.T) {
 }
 
 func approxEqualFloat(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+
+// A request that has filled most of the window raises no user-facing usage
+// warning: compaction and the self-compact nudge manage the window.
+func TestRequestNearTheWindowRaisesNoContextBudgetWarning(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	standing := standingRequestTokens(t, dir, NewOpenAIProfile("gpt-5.2"), "hi")
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), standing*100/90)
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}})
+	sess := newSession(t, withClient(c), withProfile(profile), withDir(dir), withConfig(SessionConfig{StateDir: t.TempDir()}))
+	captured := captureSessionEvents(sess)
+	if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	for _, w := range warningEvents(<-captured) {
+		// The output-allocation notice shares the code; only the usage
+		// warning carried the percent and token estimate.
+		if w.Code == events.WarningCodeContextBudget && (w.Percent != 0 || w.ApproxTokens != 0) {
+			t.Fatalf("request near the window raised a usage warning: %+v", w)
+		}
+	}
+}

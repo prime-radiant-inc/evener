@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
@@ -80,73 +78,6 @@ func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) Model
 		}
 	}
 	return meta
-}
-
-func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Request) bool {
-	if s == nil || profile == nil {
-		return false
-	}
-	cw := profile.ContextWindowSize()
-	if s.cfg.testOnly.modelCallContextWindowFunc != nil {
-		cw = s.cfg.testOnly.modelCallContextWindowFunc(profile)
-	}
-	// An unknown window warns against the same conservative assumption the
-	// context manager budgets compaction against (issue #4564), so a session
-	// filling a model nothing vouches for still hears about it — framed as an
-	// estimate, never as a fact about the model.
-	assumed := false
-	if cw <= 0 {
-		cw = contextmgr.AssumedContextWindow
-		assumed = true
-	}
-
-	count := llm.EstimateInputTokensForResolved(profile.Resolved(), req)
-	warn, approxTokens, pct := contextUsageWarning(cw, count.Tokens)
-	if !warn {
-		return false
-	}
-
-	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
-	title := "Context budget"
-	hint := "The conversation is nearing the model's context window; compaction will manage it. No action needed."
-	if assumed {
-		msg = fmt.Sprintf("Context usage at ~%d%% of an assumed %dK-token context window (the model's real window is unknown)", pct, cw/1000)
-		title = "Context budget (estimated)"
-		hint = "The model's context window is unknown; usage is measured against a conservative assumed window. Declare context_window in the provider's model row to warn against the real size."
-	}
-	s.emit(events.WarningData{
-		Message: msg,
-		// Same reasoning as warnOutputReduction: an informational context
-		// notice, with an explicit neutral title so the classifier's keyword
-		// fallback cannot stamp its generic "Evener error" title and
-		// session-log hint onto it.
-		Source:            string(diagnostic.SourceEvener),
-		Title:             title,
-		Hint:              hint,
-		Code:              events.WarningCodeContextBudget,
-		ApproxTokens:      approxTokens,
-		ContextWindowSize: cw,
-		Percent:           pct,
-	})
-	return true
-}
-
-// contextUsageWarning decides whether the input tokens for a request have crossed
-// the 80%-of-context-window warning threshold. It is the pure decision core lifted
-// out of maybeWarnContextUsage: given the model's context window and the estimated
-// input token count, it reports whether to warn, the rounded token count, and the
-// percentage of the window used. A non-positive context window never warns.
-func contextUsageWarning(contextWindow int, estimatedTokens int) (warn bool, approxTokens int, percent int) {
-	if contextWindow <= 0 {
-		return false, 0, 0
-	}
-	approx := float64(estimatedTokens)
-	threshold := float64(contextWindow) * 0.8
-	if approx <= threshold {
-		return false, 0, 0
-	}
-	pct := int(math.Round((approx / float64(contextWindow)) * 100.0))
-	return true, int(math.Round(approx)), pct
 }
 
 // effectiveReasoningEffort decides the reasoning effort for one round without

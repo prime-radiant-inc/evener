@@ -44,8 +44,7 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 // standingRequestTokens measures one input's standing request -- the system
 // prompt, the tool schemas, and that input -- by running it through a throwaway
 // session whose context window is wide enough that no warning or compaction
-// interferes, then estimating the captured request's input tokens the way
-// maybeWarnContextUsage does. Warning tests size their window or their history
+// interferes, then estimating the captured request's input tokens. Warning tests size their window or their history
 // from this measurement, so a prompt rewrite cannot move the request across a
 // threshold a hardcoded constant pinned. cfg is the measured session's
 // configuration, since settings such as StateDir add prompt sections. The probe
