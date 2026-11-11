@@ -160,6 +160,8 @@ export interface UseTranscriptScrollResult {
    * anchor (if active) is above the current viewport, "down" otherwise
    * (normal case: new content below, or no error anchor). */
   pillArrowDirection: "up" | "down";
+  /** Whether the reader follows the bottom; reflow captures preserve this. */
+  isFollowingBottom: () => boolean;
   /** Scrolls to the last turn and clears the pill's count/error state -
    * unless an error anchor is active, in which case it jumps to THAT turn's
    * index instead (see "the error anchor" below). The pill's VISIBILITY is
@@ -237,6 +239,14 @@ export function useTranscriptScroll({
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
+  // The long-lived following-bottom intent behind wasAtBottomRef: it survives
+  // passive measurement corrections that leave a following reader a few pixels
+  // short (docs/superpowers/specs/2026-10-04-shared-transcript-reader-reflow-design.md,
+  // "Following the bottom before reflow"), but clears when the reader leaves.
+  const endFollowIntentRef = useRef(true);
+  // One predicate for every following-bottom decision: reflow captures, the
+  // re-anchor, and appended content must agree on whether the reader follows.
+  const isFollowingBottom = useCallback(() => endFollowIntentRef.current || wasAtBottomRef.current, []);
   const pendingInitialEndRef = useRef<string | null>(null);
   const pendingViewAnchorRef = useRef<PendingViewAnchor | null>(null);
   // Reader-gesture state for the bottom-hold correction (see the scroll
@@ -516,6 +526,7 @@ export function useTranscriptScroll({
       // "the error anchor" - the whole point of an anchor is to land THERE).
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
+      endFollowIntentRef.current = false;
       // Mirror into render state like every other wasAtBottomRef write site:
       // the landing is not the bottom, so the pill stays on offer.
       setAwayFromBottom(true);
@@ -534,6 +545,7 @@ export function useTranscriptScroll({
         // so no landing event will fire - confirm arrival from the
         // measurement itself.
         wasAtBottomRef.current = true;
+        endFollowIntentRef.current = true;
         setAwayFromBottom(false);
       } else {
         // The pre-jump measurement is authoritative for the reader's CURRENT
@@ -544,6 +556,7 @@ export function useTranscriptScroll({
         // at-bottom would let an append in the landing window auto-stick and
         // would hide the pill the moment clearPill() runs below.
         wasAtBottomRef.current = false;
+        endFollowIntentRef.current = false;
         setAwayFromBottom(true);
         // scrollToIndex engages the virtualizer's own machinery (scrollState
         // -> measurement during the scroll, the reconcile loop, and the
@@ -693,6 +706,7 @@ export function useTranscriptScroll({
       refForInitRef.current = ref;
       initializedRef.current = false;
       wasAtBottomRef.current = true;
+      endFollowIntentRef.current = true;
       setAwayFromBottom(false);
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
@@ -734,6 +748,7 @@ export function useTranscriptScroll({
       // A retained placement lands after its rows measure, so this geometry
       // can still be estimates that fit the port; its capture says where the reader is.
       wasAtBottomRef.current = (captured ?? initialViewCapture)?.followingBottom ?? isAtBottom(m);
+      endFollowIntentRef.current = wasAtBottomRef.current;
       setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
@@ -822,9 +837,16 @@ export function useTranscriptScroll({
       // trigger - to that same pin event. It always arrives: this branch is only
       // taken when the gap is already past the at-bottom threshold, so the
       // assignment genuinely moves scrollTop and the browser dispatches for it.
+      const atBottom = isAtBottom(m);
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
       if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
+        if (!atBottom) {
+          // The movement report captures the view synchronously; clear the
+          // intent first so the capture records the reader's new position.
+          endFollowIntentRef.current = false;
+          wasAtBottomRef.current = false;
+        }
         if (!gesture?.admitted) {
           pendingViewAnchorRef.current = null;
           readerCallbacksRef.current.onReaderIntent?.();
@@ -839,7 +861,7 @@ export function useTranscriptScroll({
       // it would throw away the position the reader just took. Only end targets
       // are replaced: an index target the caller asked for (a failed-turn jump)
       // must still land on its row.
-      if (isAtBottom(m)) {
+      if (atBottom) {
         pendingEndTargetRef.current = false;
       } else if (pendingEndTargetRef.current && m.scrollTop !== previous.scrollTop) {
         pendingEndTargetRef.current = false;
@@ -862,8 +884,22 @@ export function useTranscriptScroll({
         !pointerDraggingRef.current &&
         m.clientHeight === previous.clientHeight &&
         !layoutCurrent;
-      wasAtBottomRef.current =
-        preserveEndFollow || (isAtBottom(m) && (wasAtBottomRef.current || jumpLanded || layoutCurrent));
+      const wasFollowingBefore = wasAtBottomRef.current;
+      wasAtBottomRef.current = preserveEndFollow || (atBottom && (wasFollowingBefore || jumpLanded || layoutCurrent));
+      // Only a real arrival (not a one-frame clamp) establishes the intent; a
+      // stable-geometry backward move clears it.
+      if (atBottom && (wasFollowingBefore || jumpLanded || gestured)) {
+        endFollowIntentRef.current = true;
+      } else if (!atBottom && pendingInitialEndRef.current !== ref) {
+        if (gestured || pointerDraggingRef.current) {
+          // A reader moving by wheel, touch or key left the end.
+          endFollowIntentRef.current = false;
+        } else if (heightsHeld) {
+          // A scrollbar drag has no gesture marker; stable geometry and a
+          // backward offset is the reader leaving.
+          if (m.scrollTop < previous.scrollTop) endFollowIntentRef.current = false;
+        }
+      }
       setAwayFromBottom(!wasAtBottomRef.current);
       if (wasAtBottomRef.current) clearPill();
       // The error anchor also clears on its own once its failed turn
@@ -937,8 +973,8 @@ export function useTranscriptScroll({
     // the same frame already took the shrunk geometry as its baseline (scroll
     // events dispatch before ResizeObserver delivery), and for a shortfall
     // inside isAtBottom's rounding tolerance, which nothing else would ever
-    // correct. A reader scrolled away has wasAtBottomRef false and is never
-    // moved.
+    // correct. A reader who is not following (neither intent nor
+    // wasAtBottomRef) is never moved.
     let reanchorRetryFrame: number | null = null;
     // Re-run once the frame boundary clears a pending gesture marker (the same
     // frame markGesture schedules its own clear on). Only armed for a growth
@@ -956,23 +992,25 @@ export function useTranscriptScroll({
     function reanchorIfEndLeftView() {
       if (!el) return;
       const m = measure(el);
+      const followingEnd = isFollowingBottom();
       // The same gesture veto the scroll listener applies, but READ rather than
       // consumed: this is not the event a pending gesture caused (content
       // growth fires none), so the marker must survive for the scroll event
       // that the gesture's own movement still delivers.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
       const endLeftView = isEndBelowFold(m);
+      const shouldReanchor = followingEnd && endLeftView;
       // A vetoed correction MUST be retried: the marker can outlive this
       // trigger with no further resize or font event (a stationary
       // middle-button hold, a selection drag), and a dropped correction would
       // leave the reader permanently short of the bottom with wasAtBottomRef
       // still true and no pill to recover with.
-      if (wasAtBottomRef.current && endLeftView && gestured) {
+      if (shouldReanchor && gestured) {
         scheduleReanchorRetry();
         return;
       }
       lastScrollGeometryRef.current = m;
-      if (wasAtBottomRef.current && endLeftView) {
+      if (shouldReanchor) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }
@@ -1139,6 +1177,10 @@ export function useTranscriptScroll({
     if (!initializedRef.current) return;
     const el = listRef.current?.getScrollElement();
     if (!el) return;
+    // A passive measurement correction can leave the geometry a few pixels
+    // short while the reader still follows the end; the intent survives that
+    // gap, so appended content must keep following.
+    const followingEnd = isFollowingBottom();
 
     const currentModel = modelRef.current;
     const prevFirstTurnId = firstTurnIdRef.current;
@@ -1192,7 +1234,7 @@ export function useTranscriptScroll({
       // with the jump-to-latest pill showing. When the reader is following
       // the bottom, re-issuing the end target with the NEW last row keeps that
       // loop pointed at the bottom; a reader scrolled away is left alone.
-      if (wasAtBottomRef.current) {
+      if (followingEnd) {
         pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
       }
@@ -1211,7 +1253,7 @@ export function useTranscriptScroll({
       // later failure doesn't steal it, it stays pending for its own turn
       // once this one clears).
       if (currentModel) {
-        if (wasAtBottomRef.current) {
+        if (followingEnd) {
           for (const t of currentModel.turns) {
             if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
           }
@@ -1229,10 +1271,11 @@ export function useTranscriptScroll({
 
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
-        if (wasAtBottomRef.current) {
+        if (followingEnd) {
           pendingEndTargetRef.current = true;
           scrollToLastRow(listRef, renderedRowCountRef.current);
           wasAtBottomRef.current = true;
+          endFollowIntentRef.current = true;
           baselineItemCountRef.current = itemCount;
         } else {
           setPillCount(unseen);
@@ -1286,6 +1329,7 @@ export function useTranscriptScroll({
     pillNeedsYou: pillVisible && (isAttentionWorthy(model) || askDockPending),
     pillError: errorAnchorIndex !== null,
     pillArrowDirection,
+    isFollowingBottom,
     jumpToBottom,
     captureViewAnchor,
     restoreViewAnchorAfterMeasurement,

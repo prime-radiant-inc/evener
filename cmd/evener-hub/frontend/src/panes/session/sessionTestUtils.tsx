@@ -164,6 +164,10 @@ export function scrollRootOf(container: HTMLElement): HTMLElement {
 }
 
 export function stubScrolledAway(el: HTMLElement) {
+  // A reader reaches this position with a wheel (or scrollbar); the wheel is
+  // what tells the scroll hook the reader left the end rather than a passive
+  // measurement correction moving the content under them.
+  el.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
   // scrollTop is writable (unlike scrollHeight/clientHeight): jumpToBottom
   // pins the true bottom by assigning it directly, and tests observe that.
   Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
