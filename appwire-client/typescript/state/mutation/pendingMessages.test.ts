@@ -308,6 +308,40 @@ test("two identical legacy queue rows pair with two local rows in order", () => 
   expect(rows.every((row) => row.queueEntryId !== undefined)).toBe(true);
 });
 
+test("a legacy queue row merges with an accepted local copy", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, optimistic: [accepted("m1", "turn/queue", "hello")] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "queued", queueEntryId: "q1" });
+  expect(rows[0]?.optimistic).toBeDefined();
+});
+
+test("a legacy queue row merges with a blocked local row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({
+    model,
+    outbox: [local("m1", "turn/queue", "hello", { state: "blockedUnknown" })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "queued", queueEntryId: "q1" });
+});
+
 test("a legacy row with the same text but different image content stays separate", () => {
   const input: InputItem[] = [
     { type: "text", text: "hello" },

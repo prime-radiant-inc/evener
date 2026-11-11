@@ -558,7 +558,6 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       (candidate) =>
         !matchedLocalIds.has(candidate.id) &&
         candidate.method === "queue" &&
-        (candidate.state === "waiting" || candidate.state === "sending") &&
         !candidate.queueEntryId &&
         candidate.textComplete &&
         normalizeText(candidate.text) === normalizeText(row.text) &&
