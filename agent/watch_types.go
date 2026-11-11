@@ -418,6 +418,7 @@ type watchResult struct {
 	Watching           bool
 	OutputMatch        string
 	Events             []string
+	Every              int
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
 	// TimerSeconds and OneShot describe a timer watch; a timer reports its

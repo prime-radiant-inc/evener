@@ -455,6 +455,7 @@ type jobWatchToolResult struct {
 	Watching           bool                     `json:"watching"`
 	OutputMatch        string                   `json:"output_match,omitempty"`
 	Events             []string                 `json:"events,omitempty"`
+	Every              int                      `json:"every,omitempty"`
 	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
 	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
 	AfterSeconds       int                      `json:"after_seconds,omitempty"`
@@ -511,6 +512,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Watching:           res.Watching,
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
+		Every:              res.Every,
 		ProgressIntervalMS: res.ProgressIntervalMS,
 		Note:               res.Note,
 		ReplacedExisting:   res.ReplacedExisting,
@@ -585,6 +587,9 @@ func formatJobWatch(out jobWatchToolResult) string {
 	}
 	if len(out.Events) > 0 {
 		events := "events: " + strings.Join(out.Events, ",")
+		if out.Every > 0 {
+			events += fmt.Sprintf(" every %d", out.Every)
+		}
 		if filter := formatJobWatchEventFilter(out.EventFilter); filter != "" {
 			events += " " + filter
 		}

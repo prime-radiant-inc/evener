@@ -1332,8 +1332,12 @@ Semantics:
 - `max_wait_ms` is the caller-visible wait budget after Evener sends the stop request. It is not a runtime limit and does not delete the job if it expires. A positive `max_wait_ms` is clamped to 1000–60000 ms. Zero or omission means return promptly; negative values fail `invalid_request`.
 - For shell jobs, signal the process/process group where supported.
 - For a delegate, fence the whole stable subtree, cancel its active run and
-  descendant model/shell work, and discard queued deliveries that cannot commit
-  below the stop fence.
+  descendant model/shell work, and preserve an accepted notification already
+  pending at stop across restart: it is neither re-armed as a new stop nor
+  dropped. Stop-bound attention and covered shell notifications that cannot
+  commit below the stop fence are discarded, as are queued deliveries that
+  cannot commit below it. This is distinct from the persistent client Stop
+  hold, which parks execution until the client accepts a new start.
 - If graceful stop needs internal forceful cleanup after timeout, that is an implementation detail of `job_stop`; there is no separate model-facing `job_kill`.
 - Implementations may continue escalation asynchronously after returning `running/stop_pending`; terminal notification remains armed and must report the eventual final state. If an implementation completes escalation before returning, it must still stay within the caller-visible wait budget or return `running/stop_pending`.
 - `job_stop` must actually signal/abort the runtime before finalizing as stopped/cancelled.

@@ -24,6 +24,7 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		Watching:           true,
 		OutputMatch:        cfg.outputMatch,
 		Events:             append([]string(nil), cfg.events...),
+		Every:              cfg.triggerEvery,
 		EventFilter:        cloneWatchEventFilter(cfg.eventFilter),
 		ProgressIntervalMS: progressIntervalMS,
 		TimerSeconds:       cfg.timerSeconds,
