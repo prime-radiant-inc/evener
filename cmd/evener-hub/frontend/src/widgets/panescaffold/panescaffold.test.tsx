@@ -6,7 +6,7 @@ import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { escapeRegExp, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -284,17 +284,29 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
 // composer owns its own dock), the body's scroll padding carries the inset
 // so the last content still clears the home indicator.
 //
-// That inset belongs to the pane's bottom edge. A pane that docks a footer
-// (the session pane's composer row) hands the edge to the footer's top
-// hairline, so the inset there would be a dead band between the last row and
-// the composer. jsdom computes no cascade, so the geometry is pinned by
-// layoutguard's pane-body-composer-gap cases; this pins the declarations.
+// That inset belongs to the pane's bottom edge. Any slot below the body (the
+// session pane's composer footer, or a flush edgeFooter alone) hands the edge
+// to that surface's top hairline, so the inset there would be a dead band
+// between the last row and the surface. The value is declared once, on the
+// body, so the phone breakpoint changes only the token it reads; the pair of
+// selectors below is what decides which bodies get it. jsdom computes no
+// cascade, so the geometry is pinned by layoutguard's
+// pane-body-composer-gap cases; this pins the declarations.
 test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const css = readModuleCss(import.meta.url, "panescaffold.module.css");
-  expect(topRuleBlock(css, ".body")).toContain(
-    "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  // Whitespace collapsed, so reformatting the declaration (a line wrap the
+  // Biome pass is free to choose) cannot fail an assertion about its value.
+  const bodyRule = topRuleBlock(css, ".body").replace(/\s+/g, " ");
+  expect(bodyRule).toContain(
+    "--pane-body-edge-inset: calc( var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)) );",
   );
-  expect(topRuleBlock(css, ".pane:has(> .footer) > .body")).toContain("padding-bottom: 0");
+  expect(topRuleBlock(css, ".body:not(:last-child)")).toContain("padding-bottom: 0");
+  expect(topRuleBlock(css, ".body:last-child")).toContain("padding-bottom: var(--pane-body-edge-inset)");
+  // The phone restates only the value, and must restate it as the phone's own
+  // token: a block that repeated --space-5 would change nothing.
+  expect(mediaBlock(css, "max-width: 899px").replace(/\s+/g, " ")).toContain(
+    "--pane-body-edge-inset: calc( var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)) );",
+  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
