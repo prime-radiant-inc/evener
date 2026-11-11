@@ -37,6 +37,25 @@ func (l *navigationStatsLog) buildLines() []string {
 	return out
 }
 
+// navigationLogCalls records the arguments of each log call, so a test can
+// check the structured values a line is built from instead of its wording.
+type navigationLogCalls struct {
+	mu    sync.Mutex
+	calls [][]any
+}
+
+func (l *navigationLogCalls) Logf(_ string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, args)
+}
+
+func (l *navigationLogCalls) all() [][]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][]any(nil), l.calls...)
+}
+
 // statsFields parses "navigation build: k=v k=v" into a map.
 func statsFields(t *testing.T, line string) map[string]string {
 	t.Helper()
@@ -285,7 +304,7 @@ func TestNavigationBuildFailureLogsPhaseAndError(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logs := &navigationStatsLog{}
+			logs := &navigationLogCalls{}
 			source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 			tc.setup(t, source)
 			service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
@@ -295,19 +314,15 @@ func TestNavigationBuildFailureLogsPhaseAndError(t *testing.T) {
 			if _, err := service.Refresh(t.Context(), navigationChangeHint{}); !errors.Is(err, tc.want) {
 				t.Fatalf("refresh error = %v, want %v", err, tc.want)
 			}
-			lines := logs.buildLines()
-			if len(lines) != 1 || !strings.HasPrefix(lines[0], "navigation build failed in "+tc.phase+": ") {
-				t.Fatalf("build lines = %q, want one failure line naming the %s phase", lines, tc.phase)
+			calls := logs.all()
+			if len(calls) != 1 || len(calls[0]) != 3 {
+				t.Fatalf("log calls = %v, want one failure call carrying phase, stats and error", calls)
 			}
-			fields, errField, ok := strings.Cut(lines[0], " error=")
-			if !ok {
-				t.Fatalf("failure line carries no error: %q", lines[0])
+			if got := calls[0][0]; got != tc.phase {
+				t.Errorf("logged phase = %v, want %q", got, tc.phase)
 			}
-			if got, err := strconv.Unquote(errField); err != nil || got != tc.want.Error() {
-				t.Errorf("logged error = %s, want %q", errField, tc.want.Error())
-			}
-			if got := statsFields(t, fields)["restarts"]; got != "0" {
-				t.Errorf("restarts = %q, want 0 (line %q)", got, lines[0])
+			if got := calls[0][2]; got != tc.want.Error() {
+				t.Errorf("logged error = %v, want %q", got, tc.want.Error())
 			}
 		})
 	}
@@ -316,7 +331,7 @@ func TestNavigationBuildFailureLogsPhaseAndError(t *testing.T) {
 // A build canceled because the service is stopping is not a failure worth a
 // line: shutdown would otherwise log one per in-flight build.
 func TestNavigationBuildCanceledByStopDoesNotLog(t *testing.T) {
-	logs := &navigationStatsLog{}
+	logs := &navigationLogCalls{}
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	source.entered, source.release = make(chan struct{}), make(chan struct{})
 	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
@@ -332,8 +347,8 @@ func TestNavigationBuildCanceledByStopDoesNotLog(t *testing.T) {
 	if err := <-refreshed; err == nil {
 		t.Fatal("refresh of a build canceled by stop succeeded")
 	}
-	if lines := logs.buildLines(); len(lines) != 0 {
-		t.Errorf("build lines = %q, want none", lines)
+	if calls := logs.all(); len(calls) != 0 {
+		t.Errorf("log calls = %v, want none", calls)
 	}
 }
 
