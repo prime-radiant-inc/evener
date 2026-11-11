@@ -193,8 +193,10 @@ test("Send on a recovery-fenced session resumes, reconciles, and drains exactly 
     },
   });
   fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  const resumedOnce = deferred<void>();
   fake.on("thread/resume", () => {
     resumed = true;
+    resumedOnce.resolve();
     return idleShape();
   });
   const drained = deferred<void>();
@@ -234,10 +236,12 @@ test("Send on a recovery-fenced session resumes, reconciles, and drains exactly 
   expect(submitButton().disabled).toBe(false);
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(resumed).toBe(true));
+  await act(async () => {
+    await resumedOnce.promise;
+  });
   await flushPendingTurnsProjectionForTests();
-  // The drain is the completion signal this test asserts on: wait for the
-  // turn/start call itself instead of sampling the calls after a flush.
+  // Wait for the turn/start call itself rather than sampling the calls after
+  // a flush: this call is what the assertions below count.
   await act(async () => {
     await drained.promise;
   });
@@ -287,21 +291,29 @@ test("a failed resume toasts, keeps the pressed row parked, and a later press re
       queue: { revision: 0 },
     },
   });
+  const resumedAgain = deferred<void>();
   fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
   fake.on("thread/resume", () => {
     if (failResume) throw new Error("resume rejected");
     resumed = true;
+    resumedAgain.resolve();
     return idleShape();
   });
-  fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: `thr_${ref}`,
-      projectionState: "reflected",
-    },
-    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-  }));
+  let drainedStarts = 0;
+  const drainedTwice = deferred<void>();
+  fake.on("turn/start", (params) => {
+    drainedStarts += 1;
+    if (drainedStarts === 2) drainedTwice.resolve();
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   const editor = textarea();
   await user.click(editor);
@@ -325,8 +337,13 @@ test("a failed resume toasts, keeps the pressed row parked, and a later press re
   expect(submitButton().disabled).toBe(false);
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(resumed).toBe(true));
+  await act(async () => {
+    await resumedAgain.promise;
+  });
   await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    await drainedTwice.promise;
+  });
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(2);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
 });

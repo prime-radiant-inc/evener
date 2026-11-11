@@ -804,8 +804,10 @@ test("two offline edits consolidate one durable owner and preserve typing during
     expect((await storage.getRecovery(first.clientMutationId))?.composerText).toBe("first newer\n\nsecond");
     expect(await storage.listOutbox("root")).toEqual([]);
     const deliveredInputs: InputItem[][] = [];
+    const delivered = deferred<void>();
     fake.on("turn/start", (params) => {
       deliveredInputs.push(params.input ?? []);
+      delivered.resolve();
       return {
         turn: { id: "combined", status: "inProgress", itemsView: "full", items: [] },
         receipt: appliedReceipt(params.clientMutationId, "thread-a"),
@@ -817,7 +819,10 @@ test("two offline edits consolidate one durable owner and preserve typing during
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    await act(async () => {
+      await delivered.promise;
+    });
+    expect(deliveredInputs).toHaveLength(1);
     expect(deliveredInputs).toEqual([[{ type: "text", text: "first newer\n\nsecond" }]]);
     expect(await storage.listRecovery("root")).toEqual([]);
   } finally {
@@ -924,8 +929,10 @@ test("recorded literal survives Edit beside a current image and Send", async () 
     }),
   );
   const deliveredInputs: InputItem[][] = [];
+  const delivered = deferred<void>();
   fake.on("turn/start", (params) => {
     deliveredInputs.push(params.input ?? []);
+    delivered.resolve();
     expect(params.clientMutationId).not.toBe(record.clientMutationId);
     return {
       turn: { id: "literal-revision", status: "inProgress", itemsView: "full", items: [] },
@@ -938,7 +945,10 @@ test("recorded literal survives Edit beside a current image and Send", async () 
   });
   await user.click(screen.getByRole("button", { name: "Send" }));
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+  await act(async () => {
+    await delivered.promise;
+  });
+  expect(deliveredInputs).toHaveLength(1);
   expect(deliveredInputs).toEqual([
     [
       { type: "text", text: "current (attached image 2: current.png)\n\nliteral [image 1]" },
