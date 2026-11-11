@@ -189,6 +189,21 @@ test("collapsing the details from the body's action returns focus to the row", a
   expect(document.activeElement).toBe(screen.getByRole("switch", { name: "alpha" }));
 });
 
+test("Escape inside the expanded details collapses them", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const detailsAction = screen.getAllByRole("button", { name: "Details" })[0];
+  if (!(detailsAction instanceof HTMLElement)) throw new Error("no Details action renders");
+  await user.click(detailsAction);
+  const body = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(body instanceof HTMLElement)) throw new Error("no detail body expanded");
+  // The keyboard sits inside the body, the way it does after tabbing in.
+  within(body).getByRole("button", { name: "Hide details" }).focus();
+  await user.keyboard("{Escape}");
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();

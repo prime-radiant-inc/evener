@@ -266,6 +266,57 @@ test("plugin Details expand inline and preserve the mobile selection draft", asy
   expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
 });
 
+test("Escape inside the expanded details collapses them without closing the selection sheet", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  const pluginClient = new FakeClient();
+  pluginClient.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((target) => ({ ...target, components: { skills: ["draft-skill"] } })),
+  }));
+  renderRows({
+    pluginClient,
+    onPluginSelectionChange,
+    pluginPreview: {
+      status: "ready",
+      response: {
+        plugins: [
+          {
+            name: "alpha",
+            source: "directory",
+            path: "/tmp/alpha",
+            selected: true,
+            skillCount: 1,
+            agentCount: 0,
+            commandCount: 0,
+            hookCount: 0,
+            mcpCount: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Plugins: 1 of 1" }));
+  const parent = screen.getByRole("dialog", { name: "Plugins for this session" });
+  await user.click(within(parent).getByRole("button", { name: "Details" }));
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no detail body expanded");
+  // A draft change made from inside the details, with the keyboard still in
+  // the body: deselecting the candidate through its own switch.
+  const included = within(details).getByRole("switch", { name: "Included in this session" });
+  await user.click(included);
+  expect(included.getAttribute("aria-checked")).toBe("false");
+
+  await user.keyboard("{Escape}");
+
+  // Escape dismisses the details, not the sheet over the draft.
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBe(parent);
+  expect(within(parent).getByRole("switch", { name: "alpha" }).getAttribute("aria-checked")).toBe("false");
+  await user.click(within(parent).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledExactlyOnceWith({ mode: "explicit", names: [] });
+});
+
 test("plugin preview error allows only safe removal from the last preview and exposes retry", async () => {
   const user = userEvent.setup();
   const onPluginRetry = vi.fn();
