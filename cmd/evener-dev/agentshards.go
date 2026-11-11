@@ -594,6 +594,11 @@ func runShards(cfg shardsConfig) int {
 		// This still partitions correctly, it is just unbalanced.
 		costs = equalWeights(listOut)
 	}
+	shardSkip := cfg.skip
+	if skip, ok := topLevelSkip(cfg.skip); ok {
+		costs = slices.DeleteFunc(costs, func(c testCost) bool { return skip.MatchString(c.name) })
+		shardSkip = ""
+	}
 	if len(costs) == 0 {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: found no tests to shard\n", cfg.label)
 		return 1
@@ -705,9 +710,11 @@ func runShards(cfg shardsConfig) int {
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
 		// The skip reaches the shards, not just the survey: a cached survey
 		// means no survey runs at all, and the shards would then run the very
-		// test the operator asked to skip.
-		if cfg.skip != "" {
-			args = append(args, "-test.skip", cfg.skip)
+		// test the operator asked to skip. A top-level skip already reached
+		// them through the packing (topLevelSkip); only a subtest-level one is
+		// still handed to the binary.
+		if shardSkip != "" {
+			args = append(args, "-test.skip", shardSkip)
 		}
 		args = append(args, extraFlags...)
 		// The capture's -test.v goes AFTER the caller's flags so it wins: it is
@@ -848,6 +855,30 @@ func runShards(cfg shardsConfig) int {
 	}
 	green = true
 	return 0
+}
+
+// topLevelSkip compiles a skip pattern that names no subtest level, the only
+// kind the runner can apply to the test names it packs. Go splits a skip on
+// '/' into one pattern per level, and a pattern with a single level skips a
+// test exactly when it matches the test's top-level name, so dropping those
+// names before packing skips the same tests.
+//
+// It is applied here rather than handed to the shards because a shard binary
+// matching both its -test.run and a -test.skip recompiles the run pattern for
+// every test and subtest: testing's MatchString caches one compiled pattern,
+// and a shard's run pattern names a thousand tests. That work runs under a
+// lock every parallel test shares, and under -race it stretched the agent
+// shards 2-3x. A pattern with a '/' anywhere, or one that does not compile,
+// is left for the binary to apply or reject.
+func topLevelSkip(skip string) (*regexp.Regexp, bool) {
+	if skip == "" || strings.Contains(skip, "/") {
+		return nil, false
+	}
+	re, err := regexp.Compile(skip)
+	if err != nil {
+		return nil, false
+	}
+	return re, true
 }
 
 // effectiveGoflags is what the toolchain will actually apply, which is the

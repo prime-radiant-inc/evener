@@ -669,6 +669,51 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	}
 }
 
+// TestAgentShardsAppliesATopLevelSkipWhilePacking pins how the skip reaches a
+// shard. Go's test binary caches one compiled pattern, so a shard given both
+// its long -test.run and a -test.skip recompiles the run pattern for every
+// test and subtest it names, under a lock every parallel test shares: under
+// -race that stretched the agent shards 2-3x. A skip with no subtest level
+// matches exactly the top-level names it drops, so the runner leaves those
+// tests out of the packing and hands the shards no -test.skip; a skip that
+// names a subtest level still has to reach the binary.
+func TestAgentShardsAppliesATopLevelSkipWhilePacking(t *testing.T) {
+	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
+	for _, tc := range []struct {
+		name, skip, wantShardSkip string
+		wantRC                    int
+	}{
+		{name: "top level", skip: "^TestFixtureBeta$", wantShardSkip: ""},
+		// Beta fails at its top level, so a subtest-level skip leaves it red:
+		// what matters is that the binary received the pattern.
+		{name: "subtest level", skip: "TestFixtureGamma/never", wantShardSkip: "TestFixtureGamma/never", wantRC: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.skip = tc.skip
+			cfg.noSurvey = true
+			dir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_SKIP_DIR", dir)
+			if rc := runShards(cfg); rc != tc.wantRC {
+				t.Fatalf("runShards = %d, want %d\nstdout:\n%s\nstderr:\n%s", rc, tc.wantRC, stdout, stderr)
+			}
+			records, err := os.ReadDir(dir)
+			if err != nil || len(records) != cfg.count {
+				t.Fatalf("recorded %d shard skips (err %v), want %d", len(records), err, cfg.count)
+			}
+			for _, record := range records {
+				data, err := os.ReadFile(filepath.Join(dir, record.Name()))
+				if err != nil {
+					t.Fatalf("reading %s: %v", record.Name(), err)
+				}
+				if string(data) != tc.wantShardSkip {
+					t.Fatalf("a shard ran under -test.skip %q, want %q", data, tc.wantShardSkip)
+				}
+			}
+		})
+	}
+}
+
 // TestAgentShardsBoundsTotalShardConcurrency is the issue #1191 regression:
 // each shard is one OS process, and the runner used to start all of them at
 // once. AGENT_SHARD_PARALLEL therefore bounded only the tests within a shard,
