@@ -168,6 +168,9 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	resultErrors := map[string]bool{}
 
 	for _, e := range doc.Entries {
+		if isFoldCopy(e) {
+			continue
+		}
 		for _, part := range e.Turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentToolCall:
@@ -214,6 +217,9 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 
 	if final := finalEndTurnIndex(doc.Entries, resultTool); final >= 0 {
 		for _, e := range doc.Entries[final+1:] {
+			if isFoldCopy(e) {
+				continue
+			}
 			switch e.Turn.Kind {
 			case schema.TurnUserInput:
 				res.UserCorrections++
@@ -290,7 +296,7 @@ func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[
 func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 	last := -1
 	for i, e := range entries {
-		if e.Turn.Kind != schema.TurnAssistant {
+		if isFoldCopy(e) || e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
 		for _, part := range e.Turn.Message.Content {

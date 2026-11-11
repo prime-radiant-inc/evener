@@ -50,6 +50,12 @@ func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, err
 	return doc, nil
 }
 
+// isFoldCopy reports whether e is a copy a compaction fold re-appended after
+// its markers; its original entry already sits earlier in the transcript.
+func isFoldCopy(e transcript.Entry) bool {
+	return e.Turn.OriginalOrdinal != nil
+}
+
 // CountResult is the structural tool-invocation count plus the assistant-prose
 // mention count, kept separate so a tool named in text is never conflated with
 // a tool actually called.
@@ -74,6 +80,9 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 	}
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
 	for _, e := range doc.Entries {
+		if isFoldCopy(e) {
+			continue
+		}
 		for _, part := range e.Turn.Message.Content {
 			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == tool {
 				res.Calls++

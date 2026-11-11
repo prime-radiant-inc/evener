@@ -249,7 +249,7 @@ func sessionModels(headerModel, metaModel string) []string {
 // "none", not guessed at.
 func outcomeHint(doc transcriptDoc, resultTool string) string {
 	for _, e := range slices.Backward(doc.Entries) {
-		if e.Turn.Kind != schema.TurnAssistant {
+		if isFoldCopy(e) || e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
 		var resultCall *llm.ToolCallData
