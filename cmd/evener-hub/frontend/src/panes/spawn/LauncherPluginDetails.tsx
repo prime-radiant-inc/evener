@@ -17,6 +17,7 @@ import { Switch, useFocusRehome } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../plugins/PluginContents";
 import { PluginDetail, type PluginMetadataRow } from "../plugins/PluginDetail";
+import { pluginDetailBodyId } from "../plugins/pluginRowFocus";
 import styles from "./pluginSelection.module.css";
 import { usePluginComponents } from "./usePluginComponents";
 
@@ -84,6 +85,7 @@ export function LauncherPluginDetails({
   return (
     <div ref={focusRoot} className={CLASS.detailBody}>
       <PluginDetail
+        id={pluginDetailBodyId(candidate.name)}
         mode="launcher"
         description={candidate.description}
         contents={contentsBlock}

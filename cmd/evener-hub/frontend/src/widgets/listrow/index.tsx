@@ -119,11 +119,15 @@ export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
       // Invariant: the container is never a button and carries no click
       // handler - the main area owns the row's onSelect, so the trailing
       // control swallows its own clicks and never selects the row.
+      // Expansion state belongs on that main button (the opener), not the
+      // container: assistive tech announces it from the control that toggles.
       return (
         <div ref={ref as Ref<HTMLDivElement>} {...rest} className={className}>
           <button
             type="button"
             className={mainClassName}
+            aria-expanded={rest["aria-expanded"]}
+            aria-controls={rest["aria-controls"]}
             onClick={isAriaRefusal(rest["aria-disabled"]) ? refuseClick : onSelect}
             disabled={disabled}
           >

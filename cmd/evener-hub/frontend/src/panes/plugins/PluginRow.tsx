@@ -11,11 +11,12 @@ import type {
   PluginLaunchCandidate,
 } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
-import type { KeyboardEvent, ReactElement } from "react";
+import type { ReactElement } from "react";
 import { Button, type CadenceState, Chip, ListRow, StatusDot, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { countsSummary, hookTotal } from "./pluginCounts";
 import styles from "./pluginRow.module.css";
+import { handleRowEscape, pluginDetailBodyId } from "./pluginRowFocus";
 import { pluginStatusChips } from "./pluginStatusChips";
 
 const CLASS = {
@@ -51,10 +52,13 @@ function componentsCounts(components: PluginComponents): string {
 export function InstalledPluginRow({
   entry,
   components,
+  expanded = false,
   onOpen,
 }: {
   entry: PluginEntry;
   components?: PluginComponentsEntry;
+  /** Whether this row's detail body is expanded under it. */
+  expanded?: boolean;
   onOpen: () => void;
 }): ReactElement {
   const chips = pluginStatusChips(entry);
@@ -66,6 +70,9 @@ export function InstalledPluginRow({
     <ListRow
       data-kind="plugin-row"
       data-mode="installed"
+      aria-expanded={expanded}
+      aria-controls={expanded ? pluginDetailBodyId(entry.plugin, entry.marketplace) : undefined}
+      onKeyDown={(event) => handleRowEscape(event, expanded, onOpen)}
       leading={<StatusDot state={pluginStatus(entry)} />}
       label={entry.plugin}
       chips={chips.length > 0 ? chips : undefined}
@@ -87,12 +94,19 @@ export function InstalledPluginRow({
 
 export function CatalogPluginRow({
   plugin,
+  detailBodyId,
+  expanded = false,
   installed,
   onOpen,
   onInstall,
   installDisabled,
 }: {
   plugin: MarketplaceCatalogPlugin;
+  /** The id of this row's detail body when expanded (aria-controls); absent
+   * for a caller that never expands the row. */
+  detailBodyId?: string;
+  /** Whether this row's detail body is expanded under it. */
+  expanded?: boolean;
   installed: boolean;
   onOpen: () => void;
   onInstall: () => void;
@@ -102,6 +116,9 @@ export function CatalogPluginRow({
     <ListRow
       data-kind="plugin-row"
       data-mode="catalog"
+      aria-expanded={expanded}
+      aria-controls={expanded ? detailBodyId : undefined}
+      onKeyDown={(event) => handleRowEscape(event, expanded, onOpen)}
       label={plugin.name}
       chips={installed ? <Chip kind="installed">Installed</Chip> : undefined}
       meta={<span data-kind="plugin-meta">{[plugin.description, plugin.category].filter(Boolean).join(" · ")}</span>}
@@ -144,18 +161,6 @@ export function LauncherPluginRow({
   onOpen: () => void;
 }): ReactElement {
   const source = launcherSource(candidate);
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    // Opening the details leaves focus on the row - the old nested sheet took
-    // focus on mount, so its Escape never had to reach from here. The row
-    // owns what it opened: while expanded, Escape on the row dismisses the
-    // details (preventDefault per OverlayPanel's contract) instead of bubbling
-    // to an ancestor overlay such as the mobile selection sheet.
-    if (expanded && event.key === "Escape" && !event.defaultPrevented) {
-      event.preventDefault();
-      onOpen();
-    }
-  }
-
   return (
     // data-plugin names the row to the focus rehome (pluginRowFocus.ts): the
     // row's switch survives the details collapsing, so the keyboard has a
@@ -166,7 +171,7 @@ export function LauncherPluginRow({
       data-kind="plugin-row"
       data-mode="launcher"
       data-plugin={candidate.name}
-      onKeyDown={handleKeyDown}
+      onKeyDown={(event) => handleRowEscape(event, expanded, onOpen)}
     >
       <Switch
         checked={selected}
@@ -189,7 +194,14 @@ export function LauncherPluginRow({
             </span>
             {candidate.description && <span className={CLASS.description}>{candidate.description}</span>}
             <span className={CLASS.details}>
-              <Button variant="link" size="xs" type="button" onClick={onOpen}>
+              <Button
+                variant="link"
+                size="xs"
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={expanded ? pluginDetailBodyId(candidate.name) : undefined}
+                onClick={onOpen}
+              >
                 {expanded ? "Hide details" : "Details"}
               </Button>
             </span>
