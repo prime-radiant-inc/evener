@@ -168,6 +168,12 @@ test("the card draws exactly one hairline border, so a seamless field inside is 
   expect(rule).toMatch(/border:\s*1px solid var\(--edge\)/);
 });
 
+test("the field slot stretches the caller's field across the card", () => {
+  const rule = /\.field\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toMatch(/display:\s*flex/);
+  expect(rule).toMatch(/flex-direction:\s*column/);
+});
+
 test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
   const css = moduleCss();
   const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");

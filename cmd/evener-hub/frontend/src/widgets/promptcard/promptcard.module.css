@@ -29,6 +29,8 @@
 /* The field's own box is the caller's; this slot only gives it a shrinkable
  * column in the stacked shape and the room left over in the folded one. */
 .field {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 
