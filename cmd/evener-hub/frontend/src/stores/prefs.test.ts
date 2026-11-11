@@ -15,6 +15,8 @@ import {
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MIN_TOUCH,
+  sidebarWidthMin,
   usePrefsStore,
 } from "./prefs";
 
@@ -447,6 +449,36 @@ describe("sidebarWidth", () => {
 
   test("clampSidebarWidth keeps an in-bounds value untouched", () => {
     expect(clampSidebarWidth(333)).toBe(333);
+  });
+
+  // A coarse pointer makes each icon button 44px instead of 32px, so the
+  // header's own content needs a wider rail than 200px (measured in Chrome:
+  // 232-249px depending on the font-size pref). The floor follows the input,
+  // or Hide sidebar paints outside the sidebar.
+  test("clampSidebarWidth holds the touch floor when the pointer is coarse", () => {
+    const { mql } = fakeMatchMedia(true);
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    expect(sidebarWidthMin()).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
+    expect(clampSidebarWidth(SIDEBAR_WIDTH_MIN)).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
+    expect(clampSidebarWidth(10)).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
+    // The touch floor is a floor, not a cap.
+    expect(clampSidebarWidth(400)).toBe(400);
+    vi.unstubAllGlobals();
+  });
+
+  test("a width persisted below the touch floor is raised on read", () => {
+    const { mql } = fakeMatchMedia(true);
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    localStorage.setItem(KEY("sidebarWidth"), String(SIDEBAR_WIDTH_MIN));
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
+    vi.unstubAllGlobals();
   });
 });
 

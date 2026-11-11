@@ -284,9 +284,25 @@ export const SIDEBAR_WIDTH_MIN = 200;
 export const SIDEBAR_WIDTH_MAX = 560;
 export const SIDEBAR_WIDTH_DEFAULT = 280;
 
+// SIDEBAR_WIDTH_MIN_TOUCH is that same measurement on a coarse pointer, where
+// each icon button takes the 44px tap floor instead of its 32px square and the
+// row no longer fits at 200px. Measured in a real browser, the row needs
+// 232/237/242/249px at the s/m/l/xl font-size prefs, so this is the smallest
+// 16px-grid step that fits all four with the wordmark intact. Below it the
+// row's content overflows the rail and Hide sidebar paints outside the sidebar.
+export const SIDEBAR_WIDTH_MIN_TOUCH = 256;
+
+/** The width floor for this input. A touch target is 44px, not 32px, so the
+ * header's own content sets a higher floor there. Read at call time rather than
+ * captured, because a 2-in-1 can gain or lose a touchscreen mid-session. */
+export function sidebarWidthMin(): number {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return SIDEBAR_WIDTH_MIN;
+  return window.matchMedia("(any-pointer: coarse)").matches ? SIDEBAR_WIDTH_MIN_TOUCH : SIDEBAR_WIDTH_MIN;
+}
+
 export function clampSidebarWidth(value: number): number {
   if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
-  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, value)));
+  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(sidebarWidthMin(), value)));
 }
 
 // Numeric prefs persist as a plain base-10 string. Anything unparseable
