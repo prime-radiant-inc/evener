@@ -135,6 +135,23 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 	}
 }
 
+// applyQuotaToPolicy shares this session's rate-limit cooldown with every
+// other session on the host retrying the same provider instance. Only
+// wall-budgeted rate limits consult it; a root turn claims an opening before a
+// delegate does. A nil coordinator leaves the policy's per-session wall budget
+// as the only bound.
+func (s *Session) applyQuotaToPolicy(policy llm.RetryPolicy, profile *provider.Profile) llm.RetryPolicy {
+	if s.cfg.QuotaCoordinator == nil || profile == nil {
+		return policy
+	}
+	policy.Quota = s.cfg.QuotaCoordinator
+	policy.QuotaKey = profile.ID()
+	if s.isSubagentSession() {
+		policy.QuotaLane = llm.QuotaLaneDelegate
+	}
+	return policy
+}
+
 // callModel runs one retry group against req's model and records what every
 // attempt did into group, which the caller owns (one group per invocation).
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
@@ -158,6 +175,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}()
 	group.Model = req.Model
 	group.Provider = req.Provider
+	policy = s.applyQuotaToPolicy(policy, profile)
 	// Announce every retry before its backoff sleep. Both paths below share this
 	// policy, so a rejection at stream open and a mid-stream truncation report
 	// alike. Without it the whole retry chain is silent on the event bus: a

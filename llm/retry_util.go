@@ -85,7 +85,8 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if !retryableError(err) {
 			return zero, err
 		}
-		if policy.WallBudgetedRateLimit(err) {
+		wallBudgeted := policy.WallBudgetedRateLimit(err)
+		if wallBudgeted {
 			if !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
@@ -97,8 +98,9 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if !ok {
 			return zero, err
 		}
-		if policy.WallBudgetedRateLimit(err) {
-			remaining := rateLimitRemaining(ctx, policy, start, ownerBudget)
+		var remaining time.Duration
+		if wallBudgeted {
+			remaining = rateLimitRemaining(ctx, policy, start, ownerBudget)
 			if remaining <= 0 {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
@@ -112,10 +114,26 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if policy.OnRetry != nil {
 			policy.OnRetry(err, attempt+1, delay)
 		}
-		if err := sleep(ctx, delay); err != nil {
-			return zero, err
+		var waitErr error
+		if wallBudgeted && policy.Quota != nil && policy.QuotaKey != "" {
+			waitErr = policy.Quota.Wait(ctx, QuotaWait{
+				Key:      policy.QuotaKey,
+				Lane:     policy.QuotaLane,
+				Cooldown: delay,
+				Budget:   remaining,
+			}, sleep)
+			if waitErr != nil {
+				if ctx.Err() != nil || errors.Is(waitErr, errQuotaWaitExhausted) {
+					return zero, rateLimitBudgetExhausted(ctx, err)
+				}
+			}
+		} else {
+			waitErr = sleep(ctx, delay)
 		}
-		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
+		if waitErr != nil {
+			return zero, waitErr
+		}
+		if wallBudgeted && rateLimitRemaining(ctx, policy, start, ownerBudget) <= 0 {
 			return zero, rateLimitBudgetExhausted(ctx, err)
 		}
 	}

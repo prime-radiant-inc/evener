@@ -709,6 +709,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
+		QuotaCoordinator:            hostQuotaCoordinator(),
 	}
 	applyMaxSubagentDepth(&sessionCfg, *lf.maxSubagentDepth)
 	if *lf.maxConcurrentDelegates >= 0 {
@@ -762,6 +763,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
+			QuotaCoordinator:            sessionCfg.QuotaCoordinator,
 			// See RestoreSessionConfig.ExportATIFPath.
 			ExportATIFPath:            sessionCfg.ExportATIFPath,
 			ExportATIFProviderHandles: sessionCfg.ExportATIFProviderHandles,
