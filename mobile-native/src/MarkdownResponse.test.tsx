@@ -108,10 +108,10 @@ it("keeps tables in the system font and ink-hi, unlike the serif prose", () => {
 	mode.scheme = "light";
 	const light = markdownStyle("| a |\n|---|\n| 1 |").table;
 	expect(light.fontFamily).toBeUndefined();
-	expect(light.color).toBe("#1C1C1E");
+	expect(light.color).toBe("#1A1D23");
 
 	mode.scheme = "dark";
-	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F5F5F7");
+	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F1F3F6");
 });
 
 it("stays selectable with its Copy response item by default, for the task and subagent sheets", () => {

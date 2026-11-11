@@ -13,6 +13,7 @@
   },
   "files": [
     "index.ts",
+    "palette.ts",
     "historyPaging.ts",
     "historyServing.ts",
     "client.ts",
