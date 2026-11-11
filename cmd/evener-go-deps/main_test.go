@@ -128,3 +128,33 @@ func TestListModulesUnchangedGraph(t *testing.T) {
 		t.Fatalf("unchanged live graph reported changes: %+v", changes)
 	}
 }
+
+// The default test path must not touch the network or the real workspace's
+// module cache: downloading is opt-in for the CI license listing.
+func TestListModulesDoesNotDownload(t *testing.T) {
+	saved := downloadModules
+	t.Cleanup(func() { downloadModules = saved })
+	downloaded := false
+	downloadModules = func(string) { downloaded = true }
+	if _, err := listModules("."); err != nil {
+		t.Fatalf("listModules: %v", err)
+	}
+	if downloaded {
+		t.Fatal("listModules downloaded the module graph on the default path")
+	}
+}
+
+func TestComparisonBase(t *testing.T) {
+	if _, compare, err := comparisonBase("pull_request", ""); err == nil || compare {
+		t.Fatalf("pull request without a base = compare %v err %v, want a refusal", compare, err)
+	}
+	if _, compare, err := comparisonBase("workflow_dispatch", ""); err == nil || compare {
+		t.Fatalf("dispatch without a base = compare %v err %v, want a refusal", compare, err)
+	}
+	if base, compare, err := comparisonBase("workflow_dispatch", " base-sha "); err != nil || !compare || base != "base-sha" {
+		t.Fatalf("dispatch with a base = %q compare %v err %v", base, compare, err)
+	}
+	if _, compare, err := comparisonBase("push", ""); err != nil || compare {
+		t.Fatalf("push = compare %v err %v, want no comparison", compare, err)
+	}
+}

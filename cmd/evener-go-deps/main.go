@@ -37,32 +37,37 @@ type change struct {
 }
 
 func main() {
-	event := flag.String("event", "", "GitHub event name; only pull_request is checked")
+	event := flag.String("event", "", "GitHub event name; pull_request and workflow_dispatch are checked")
 	base := flag.String("base", "", "base git revision to compare against")
 	acknowledged := flag.Bool("acknowledged", false, "a reviewer acknowledged the dependency change")
+	download := flag.Bool("download", false, "download the module graph first so license files are available")
 	flag.Parse()
 
-	if *event != "pull_request" {
+	baseRevision, compare, err := comparisonBase(*event, *base)
+	if err != nil {
+		fail("%v", err)
+	}
+	if !compare {
 		fmt.Printf("event %q is not a pull request; no dependency review needed\n", *event)
 		return
 	}
-	if strings.TrimSpace(*base) == "" {
-		fail("--base is required on a pull request")
+	if *download {
+		downloadModules(".")
 	}
 	head, err := listModules(".")
 	if err != nil {
 		fail("list the head module graph: %v", err)
 	}
-	baseModules, err := listModulesAt(*base)
+	baseModules, err := listModulesAt(baseRevision, *download)
 	if err != nil {
-		fail("list the base module graph at %s: %v", *base, err)
+		fail("list the base module graph at %s: %v", baseRevision, err)
 	}
 	changes := diffModules(baseModules, head)
 	if len(changes) == 0 {
 		fmt.Println("no Go module changes against the base")
 		return
 	}
-	summary := renderChanges(*base, changes)
+	summary := renderChanges(baseRevision, changes)
 	fmt.Println(summary)
 	if summaryPath := os.Getenv("GITHUB_STEP_SUMMARY"); summaryPath != "" {
 		if file, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
@@ -77,13 +82,37 @@ func main() {
 	fmt.Println("\nGo dependency changes acknowledged by a reviewer label or approval.")
 }
 
+// comparisonBase decides whether this event reviews the module graph, and
+// against what. A pull request and a manual dispatch both need a base: a
+// dispatch without one is refused rather than silently skipping the check. The
+// push and merge_group events are already covered by the PR checks.
+func comparisonBase(event, base string) (string, bool, error) {
+	base = strings.TrimSpace(base)
+	switch event {
+	case "pull_request":
+		if base == "" {
+			return "", false, errors.New("--base is required on a pull request")
+		}
+		return base, true, nil
+	case "workflow_dispatch":
+		if base == "" {
+			return "", false, errors.New("--base is required for workflow_dispatch; pass the base input")
+		}
+		return base, true, nil
+	default:
+		return "", false, nil
+	}
+}
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }
 
-// listModules reads the module graph in dir.
-func listModules(dir string) ([]module, error) {
+// downloadModules fills the module cache so every module in the graph has a
+// license file. It is a seam so tests can prove the default path does not
+// download.
+var downloadModules = func(dir string) {
 	// A module that no package imports is still in the graph but not in the
 	// module cache, so its license file would be unavailable. Downloading the
 	// graph is best-effort: a failure leaves those licenses "unknown" while the
@@ -92,7 +121,12 @@ func listModules(dir string) ([]module, error) {
 	download.Dir = dir
 	download.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
 	_ = download.Run()
+}
 
+// listModules reads the module graph in dir. It downloads nothing: the default
+// test path is deterministic and offline once the module cache holds go.mod's
+// graph.
+func listModules(dir string) ([]module, error) {
 	cmd := exec.CommandContext(context.Background(), "go", "list", "-m", "-json", "all")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
@@ -124,7 +158,7 @@ func decodeModules(reader io.Reader) ([]module, error) {
 }
 
 // listModulesAt builds a detached worktree at revision and reads its graph.
-func listModulesAt(revision string) ([]module, error) {
+func listModulesAt(revision string, download bool) ([]module, error) {
 	dir, err := os.MkdirTemp("", "evener-go-deps-base-*")
 	if err != nil {
 		return nil, err
@@ -137,6 +171,9 @@ func listModulesAt(revision string) ([]module, error) {
 	defer func() {
 		_ = exec.CommandContext(context.Background(), "git", "worktree", "remove", "--force", dir).Run()
 	}()
+	if download {
+		downloadModules(dir)
+	}
 	return listModules(dir)
 }
 

@@ -9,6 +9,14 @@ on:
   # scripts/ops/pr-ci-watchdog.sh), and a workflow without this trigger cannot
   # be re-dispatched for the pushed head.
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Base SHA or ref for the Go dependency review"
+        required: false
+      acknowledged:
+        description: "A reviewer acknowledged the Go dependency changes"
+        type: boolean
+        default: false
   # The merge queue tests each queued PR on top of main and the PRs ahead of
   # it, and main requires the same checks on that candidate.
   merge_group:
@@ -548,13 +556,15 @@ jobs:
       - name: Compare the Go module graph with the base
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
           ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged }}
+          ACK_INPUT: ${{ github.event.inputs.acknowledged }}
         run: |
           go run ./cmd/evener-go-deps \
             --event "$EVENT_NAME" \
             --base "$BASE_SHA" \
-            --acknowledged="${ACKNOWLEDGED:-false}"
+            --acknowledged="${ACKNOWLEDGED:-${ACK_INPUT:-false}}" \
+            --download
 
       - uses: ./.github/actions/go-cache-save
         if: ${{ !cancelled() }}
