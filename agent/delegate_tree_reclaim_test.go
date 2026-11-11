@@ -49,6 +49,29 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 	}
 }
 
+func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 2
+	seedDelegateReclaimRuntime(t, c, "dlg_fenced", "", time.Unix(10, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_free", "", time.Unix(9, 0).UTC(), false, false)
+	if admission := c.beginSubtreeLaneHandoff("dlg_fenced"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired", admission)
+	}
+	defer c.endSubtreeLaneHandoff("dlg_fenced")
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("capacity reclamation claimed nothing with one free candidate")
+	}
+	defer func() { _ = c.AbortRuntimeReclamation(claim) }()
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, []string{"dlg_free"}) {
+		t.Fatalf("claimed runtimes = %v, want only the unfenced dlg_free", got)
+	}
+}
+
 // TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused pins the
 // other half of claimableRuntimeSubtreeLocked's terminal check. A member that
 // was created but has never run sits in PhaseIdle, so the phase clause alone

@@ -155,28 +155,6 @@ func (c *delegateTreeController) endRuntimeReleaseInFlight(entries []delegateRun
 	c.evidenceVersion++
 }
 
-// laneHandoffIntersectsRuntimeEntriesLocked reports whether a lane handoff
-// rooted at one of the entries, or an ancestor of one, is in flight. Callers
-// hold c.mu.
-func (c *delegateTreeController) laneHandoffIntersectsRuntimeEntriesLocked(entries []delegateRuntimeReclamationEntry) bool {
-	if c == nil || len(c.laneHandoffs) == 0 || len(entries) == 0 {
-		return false
-	}
-	for root := range c.laneHandoffs {
-		for _, entry := range entries {
-			if entry.delegateID == root {
-				return true
-			}
-		}
-	}
-	for _, entry := range entries {
-		if c.laneHandoffCoveredByAncestorLocked(entry.delegateID) {
-			return true
-		}
-	}
-	return false
-}
-
 // laneHandoffCoveredByAncestorLocked reports whether an in-flight handoff
 // rooted at a strict ancestor already fences delegateID. Callers must hold c.mu.
 func (c *delegateTreeController) laneHandoffCoveredByAncestorLocked(delegateID string) bool {

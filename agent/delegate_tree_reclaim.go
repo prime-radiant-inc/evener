@@ -266,6 +266,13 @@ func (c *delegateTreeController) isResidentTerminalRuntimeLocked(id string, aggr
 
 func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([]delegateRuntimeReclamationEntry, bool) {
 	members := c.subtreeMembersLocked(rootID)
+	for id := range members {
+		if c.laneHandoffCoversLocked(id) {
+			// A lane handoff owns this subtree; a terminal reclaim would tear
+			// down runtimes the handoff is about to hand over.
+			return nil, false
+		}
+	}
 	if c.runtimeReclamationIntersectsProcessWorkLocked(members) {
 		return nil, false
 	}
@@ -541,11 +548,6 @@ func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*de
 	}
 	entries, ok := c.claimableRuntimeSubtreeLocked(delegateID)
 	if !ok {
-		return nil, true, nil
-	}
-	if c.laneHandoffIntersectsRuntimeEntriesLocked(entries) {
-		// A lane handoff owns this subtree; do not start a non-terminal
-		// teardown under it. Retry after the handoff releases.
 		return nil, true, nil
 	}
 	if c.subtreeOwnsSharedTaskStoreLocked(entries) {
