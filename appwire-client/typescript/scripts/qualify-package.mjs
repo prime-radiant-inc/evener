@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { createConsumerDir } from "./consumer-fixture.mjs";
 import { consumerPackageUsage, entrySurface } from "./consumer-value-imports.mjs";
 import { reachableModules } from "./declaration-reachability.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
+const consumerDir = createConsumerDir();
 const run = (command, args, cwd) =>
   execFileSync(command, args, {
     cwd,
