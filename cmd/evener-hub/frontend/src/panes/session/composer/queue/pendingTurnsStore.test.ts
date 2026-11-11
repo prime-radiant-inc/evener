@@ -1530,13 +1530,34 @@ test("useRetryPendingState reports own unresolved input when loaded", async () =
 
 // A carried consumed row must not change the snapshot identity on a plain
 // re-read: useSyncExternalStore compares with Object.is, so a fresh array per
-// call rerenders forever.
-test("usePendingMessages keeps one snapshot while nothing changes", async () => {
+// call rerenders forever. The row has to actually exist for that to be under
+// test, so this consumes a real queue entry first.
+test("usePendingMessages keeps one snapshot while a carried row exists", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  await connect();
+  const fake = await connect({
+    evener: {
+      ...thread().evener,
+      mutationStateAuthoritative: true,
+      queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+    },
+  });
+  expect(consumedQueueEntriesFor("ref_a")).toHaveLength(0);
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thread_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+      consumedClientMutationIds: ["m9"],
+    },
+  } as never);
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
+  expect(consumedQueueEntriesFor("ref_a")).toHaveLength(1);
+
   const pending = renderHook(() => usePendingMessages("ref_a"));
-  await flushPendingTurnsProjectionForTests();
   const first = pending.result.current;
   expect(pending.result.current).toBe(first);
   expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));

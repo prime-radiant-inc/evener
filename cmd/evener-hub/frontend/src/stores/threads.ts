@@ -5943,6 +5943,20 @@ function publishThreadHydration(
   return backgroundModel;
 }
 
+// The identity set each ref last replayed with. A repository read that proves
+// the same set again has nothing new to ask the journal, and these reads are
+// frequent (every end/final/repair read), each costing a full optimistic-store
+// scan when it runs.
+const acceptedCopyReplayKeys = new Map<string, string>();
+
+function shouldReplayAcceptedCopies(ref: string, response: ThreadReadResponse): boolean {
+  const ids = [...collectAuthoritativeMutationIds(response)].sort();
+  const key = ids.join("\u0000");
+  if (acceptedCopyReplayKeys.get(ref) === key) return false;
+  acceptedCopyReplayKeys.set(ref, key);
+  return true;
+}
+
 // Admission comes from a fresh accepted server read, not generic model publication.
 // Clearing an obligation still requires tracked mutation reconciliation below;
 // a repository end/final read cannot prove uncertain outbox rows absent.
@@ -5960,7 +5974,7 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     return { mutationAuthorityRefs };
   });
   const runtime = getMutationRuntime();
-  if (runtime && authoritative) {
+  if (runtime && authoritative && shouldReplayAcceptedCopies(ref, response)) {
     const recorded = transcriptMutationIds(model);
     // An older daemon can omit consumed ids for a promotion. These reads are
     // accepted history, so they are the same boundary as a tracked hydration:
@@ -7572,10 +7586,18 @@ export function consumedQueueEntriesFor(ref: string): ConsumedQueueEntry[] {
 function pruneConsumedQueueRows(ref: string, model: ThreadModel | undefined): void {
   const entry = consumedQueueRows.get(ref);
   if (!entry) return;
+  // A drain or promotion records its own mutation id and names the queue
+  // entries it owns, so an entry is delivered when a recorded owner claims it.
+  // The consumed entry's own id is the fallback for direct delivery.
   const recorded = transcriptMutationIds(model);
+  const owners = new Set<string>();
+  for (const mutation of model?.pendingMutations ?? []) {
+    if (!recorded.has(mutation.clientMutationId)) continue;
+    for (const id of mutation.queueEntryIds ?? []) owners.add(id);
+  }
   let changed = false;
   for (const [entryId, row] of entry.rows) {
-    if (!recorded.has(row.clientMutationId)) continue;
+    if (!recorded.has(row.clientMutationId) && !owners.has(entryId)) continue;
     entry.rows.delete(entryId);
     changed = true;
   }
@@ -7586,6 +7608,7 @@ function pruneConsumedQueueRows(ref: string, model: ThreadModel | undefined): vo
 
 function forgetConsumedQueueRows(ref: string): void {
   consumedQueueRows.delete(ref);
+  acceptedCopyReplayKeys.delete(ref);
 }
 
 // A consumed queue identity retires only when an accepted authoritative

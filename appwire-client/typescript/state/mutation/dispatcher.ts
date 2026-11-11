@@ -200,7 +200,11 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       await this.#reconcileAcceptedCopiesNow(targetRef, ids);
       const next = this.#acceptedCopyReplayAuthority.get(targetRef);
       this.#acceptedCopyReplayAuthority.delete(targetRef);
-      if (!next || next === ids) return;
+      // Every caller passes a freshly built set, so identity never proves
+      // equality. A pass that adds no authority has nothing left to replay.
+      if (!next) return;
+      const added = [...next].filter((id) => !ids.has(id));
+      if (added.length === 0) return;
       ids = next;
     }
   }

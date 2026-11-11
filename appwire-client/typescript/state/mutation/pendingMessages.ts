@@ -546,6 +546,15 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     for (const id of mutation.queueEntryIds ?? []) pendingEntryIds.add(id);
   }
   const pendingKnown = model?.pendingMutations !== undefined;
+  // A drain, promotion or delivery that consumed an entry records ITS OWN
+  // mutation id in the transcript, never the consumed entry's. The daemon does
+  // name the lineage: a pending mutation carries the queueEntryIds it owns. So
+  // an entry is delivered when a recorded mutation owns it, or when the
+  // consumed entry's own id landed (an older daemon that never promoted it).
+  const recordedOwnerOf = (entryId: string): boolean =>
+    (model?.pendingMutations ?? []).some(
+      (mutation) => (mutation.queueEntryIds ?? []).includes(entryId) && transcriptIds.has(mutation.clientMutationId),
+    );
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
   const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
@@ -555,7 +564,11 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     (entry) =>
       !queuedEntryIds.has(entry.entryId) &&
       !pendingEntryIds.has(entry.entryId) &&
-      !(mutationStateAuthoritative && mutationSnapshotCurrent && transcriptIds.has(entry.clientMutationId)),
+      !(
+        mutationStateAuthoritative &&
+        mutationSnapshotCurrent &&
+        (transcriptIds.has(entry.clientMutationId) || recordedOwnerOf(entry.entryId))
+      ),
   );
 
   const families = new Map<string, LocalFamily<A>>();

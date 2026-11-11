@@ -267,7 +267,7 @@ test("a consumed queue row this client never owned stays visible", () => {
     ],
   });
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ text: "queued elsewhere", state: "delivering" });
+  expect(rows[0]).toMatchObject({ id: "queue:q1", text: "queued elsewhere", state: "delivering" });
   expect(rows[0]?.queueEntryIds).toEqual(["q1"]);
 });
 
@@ -313,6 +313,66 @@ test("a carried row stays when the snapshot records a different mutation", () =>
         items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "other" }],
       },
     ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
+// A drain or promotion records ITS OWN mutation id, and names the entries it
+// owns in pendingMutations. The consumed entry's id never reaches the
+// transcript, so ownership is what retires the carried row.
+test("a carried row leaves once a recorded mutation owns its queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/promoteQueuedAsSteer", "queued elsewhere", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          { id: "i1", turnId: "t1", type: "userMessage", text: "queued elsewhere", clientMutationId: "consumer" },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+test("a carried row stays while its recorded owner is still only pending", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/promoteQueuedAsSteer", "queued elsewhere", { queueEntryIds: ["q1"] })],
   });
   const rows = project({
     model,
