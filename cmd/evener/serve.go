@@ -1219,7 +1219,7 @@ func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []
 	for _, d := range data {
 		out = append(out, appwire.SandboxEscalationRequested{
 			EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
-			DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+			DeniedPath: d.DeniedPath, RequestedPath: d.RequestedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
 		})
 	}
 	return out

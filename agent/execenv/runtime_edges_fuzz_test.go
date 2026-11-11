@@ -237,7 +237,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		grantPolicy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}
 		grantFS := newSandboxFS(&grantPolicy, "")
-		grantFS.grant = file
+		grantFS.grant = literalGrant(file)
 		if _, _, err := grantFS.grantedWriteParent("write_file", file); err == nil {
 			t.Fatal("canonical recheck failure did not deny granted write")
 		}

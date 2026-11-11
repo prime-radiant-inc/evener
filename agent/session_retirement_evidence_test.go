@@ -1419,10 +1419,10 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 					<-resume
 				}
 				grant, ok := invocationGrant(ctx)
-				if !ok || grant != outside {
+				if !ok || grant.path != outside {
 					return tooldefs.ExecResult{IsError: true, Err: errors.New("original invocation grant missing")}
 				}
-				return root.reg.ExecuteCall(ctx, env.WithSandboxInvocationGrant(grant), call)
+				return root.reg.ExecuteCall(ctx, env.WithSandboxInvocationGrant(grant.path, grant.target), call)
 			}
 			if order == "claim-first" {
 				claim, state, err := c.TryClaim(true)

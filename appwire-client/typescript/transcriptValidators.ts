@@ -550,7 +550,9 @@ function validEscalation(value: unknown): boolean {
     ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath"].every(
       (key) => typeof value[key] === "string",
     ) &&
-    ["command", "outputSoFar"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    ["requestedPath", "command", "outputSoFar"].every(
+      (key) => value[key] === undefined || typeof value[key] === "string",
+    ) &&
     (value.partiallyRan === undefined || typeof value.partiallyRan === "boolean")
   );
 }

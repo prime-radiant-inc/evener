@@ -745,7 +745,7 @@ func pfsAssertOffMutator(t *testing.T) {
 
 func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, model *pfsModel, mode sandbox.Mode, a, b byte) {
 	t.Helper()
-	grant, ok := env.WithSandboxInvocationGrant(fixture.grant).(*LocalExecutionEnvironment)
+	grant, ok := env.WithSandboxInvocationGrant(fixture.grant, fixture.grant).(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatal("local environment grant did not return a local environment")
 	}
@@ -770,7 +770,7 @@ func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixtur
 		pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialOutsideReadRoots, false, "restricted grant read outside sibling")
 	}
 
-	maskedGrant, ok := env.WithSandboxInvocationGrant(fixture.maskedSentinel).(*LocalExecutionEnvironment)
+	maskedGrant, ok := env.WithSandboxInvocationGrant(fixture.maskedSentinel, fixture.maskedSentinel).(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatal("masked local grant did not return a local environment")
 	}
@@ -778,7 +778,7 @@ func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixtur
 	got, err = maskedGrant.ReadFileRaw(fixture.maskedSentinel)
 	pfsMustNoBytesAndDenied(t, got, err, sandbox.DenialMasked, true, "grant read masked sentinel")
 
-	protectedGrant, ok := env.WithSandboxInvocationGrant(fixture.protected).(*LocalExecutionEnvironment)
+	protectedGrant, ok := env.WithSandboxInvocationGrant(fixture.protected, fixture.protected).(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatal("protected local grant did not return a local environment")
 	}

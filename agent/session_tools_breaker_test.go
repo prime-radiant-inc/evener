@@ -76,11 +76,12 @@ func TestRerunToolWithGrant_RepeatedApprovalsKeepTheCallDispatchable(t *testing.
 
 	const secret = "TOP-SECRET-PAYLOAD"
 	denied := &sandbox.DeniedError{
-		Mode:       sandbox.ModeRestricted,
-		Tool:       "read_file",
-		Path:       "/outside/secret.txt",
-		Reason:     "outside the readable roots",
-		ReasonKind: sandbox.DenialOutsideReadRoots,
+		Mode:        sandbox.ModeRestricted,
+		Tool:        "read_file",
+		Path:        "/outside/secret.txt",
+		Reason:      "outside the readable roots",
+		ReasonKind:  sandbox.DenialOutsideReadRoots,
+		GrantTarget: "/outside/secret.txt",
 	}
 	dispatches := 0
 	s.registerTool("read_file", "denied unless this one invocation was granted", map[string]any{"type": "object"},

@@ -321,9 +321,20 @@ func TestE2E_ManagerNoBrowserSandboxApproval(t *testing.T) {
 	if !managerToolResult(statusRound, &status) || status.Read == nil || len(status.Read.Thread.Evener.PendingEscalations) != 1 {
 		t.Fatalf("Manager status did not expose pending sandbox approval: read=%+v messages=%v", status.Read, statusRound.Texts())
 	}
+	// The card names where the approved write lands: the temp dir's symlinks
+	// resolved (macOS's /var → /private/var), with the worker's own spelling
+	// noted whenever resolution changed it.
+	resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(outside))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTarget, wantRequested := filepath.Join(resolvedDir, filepath.Base(outside)), ""
+	if wantTarget != outside {
+		wantRequested = outside
+	}
 	escalation := status.Read.Thread.Evener.PendingEscalations[0]
-	if escalation.EscalationID == "" || escalation.DeniedPath != outside || escalation.Tool != "write_file" {
-		t.Fatalf("approval does not belong to worker's denied write: %+v", escalation)
+	if escalation.EscalationID == "" || escalation.DeniedPath != wantTarget || escalation.RequestedPath != wantRequested || escalation.Tool != "write_file" {
+		t.Fatalf("approval does not belong to worker's denied write (want target %q requested as %q): %+v", wantTarget, wantRequested, escalation)
 	}
 	if data, err := os.ReadFile(outside); err != nil || string(data) != "before approval\n" {
 		t.Fatalf("worker wrote before approval: data=%q err=%v", data, err)
