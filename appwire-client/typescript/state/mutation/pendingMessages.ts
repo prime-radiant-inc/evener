@@ -130,7 +130,12 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
 
 export interface ConsumedQueueEntry {
   entryId: string;
+  // The queue command that produced this entry. A recorded item carrying this
+  // identity proves the message landed; any other recorded item does not.
+  clientMutationId: string;
   text: string;
+  // False when the content came from the daemon's truncated preview.
+  textComplete: boolean;
   imageCount: number;
   skillNames: readonly string[];
   commandNames: readonly string[];
@@ -551,7 +556,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     (entry) =>
       !queuedEntryIds.has(entry.entryId) &&
       !pendingEntryIds.has(entry.entryId) &&
-      !(mutationStateAuthoritative && mutationSnapshotCurrent && deliveredAny),
+      !(mutationStateAuthoritative && mutationSnapshotCurrent && transcriptIds.has(entry.clientMutationId)),
   );
 
   const families = new Map<string, LocalFamily<A>>();
@@ -802,27 +807,32 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     )
     .map(drainFallback);
 
-  const carriedRows: PendingMessage<A>[] = carriedConsumed.map((entry) => ({
-    id: `queue:${entry.entryId}`,
-    ref,
-    method: "queue",
-    state: "delivering",
-    text: entry.text,
-    displayText: pendingEntryPreview({
+  // A local row that already owns this entry is the message's one
+  // representation; carrying it again would show the same text twice.
+  const ownedEntryIds = new Set(all.flatMap((row) => row.queueEntryIds));
+  const carriedRows: PendingMessage<A>[] = carriedConsumed
+    .filter((entry) => !ownedEntryIds.has(entry.entryId))
+    .map((entry) => ({
+      id: `queue:${entry.entryId}`,
+      ref,
+      method: "queue",
+      state: "delivering",
       text: entry.text,
+      displayText: pendingEntryPreview({
+        text: entry.text,
+        imageCount: entry.imageCount,
+        skillNames: entry.skillNames,
+        commandNames: entry.commandNames,
+      }),
+      textComplete: entry.textComplete,
+      images: [],
       imageCount: entry.imageCount,
-      skillNames: entry.skillNames,
-      commandNames: entry.commandNames,
-    }),
-    textComplete: true,
-    images: [],
-    imageCount: entry.imageCount,
-    skillNames: [...entry.skillNames],
-    commandNames: [...entry.commandNames],
-    ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
-    fromThisClient: false,
-    queueEntryIds: [entry.entryId],
-  }));
+      skillNames: [...entry.skillNames],
+      commandNames: [...entry.commandNames],
+      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+      fromThisClient: false,
+      queueEntryIds: [entry.entryId],
+    }));
 
-  return [...all, ...carriedRows].sort(compareRows);
+  return mergeLineageRows([...all, ...carriedRows]).sort(compareRows);
 }

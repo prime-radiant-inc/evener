@@ -13,6 +13,7 @@ import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import {
+  consumedQueueEntriesFor,
   hasBlockedUnknown,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -32,6 +33,7 @@ import {
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   useBlockedMutationEntries,
+  usePendingMessages,
   usePendingTurnEntries,
   useRecoveryEntries,
   useRetryPendingState,
@@ -1524,4 +1526,18 @@ test("useRetryPendingState reports own unresolved input when loaded", async () =
     await allocatePendingRow(storage);
   });
   expect(pending.result.current).toEqual({ loaded: true, unresolved: true });
+});
+
+// A carried consumed row must not change the snapshot identity on a plain
+// re-read: useSyncExternalStore compares with Object.is, so a fresh array per
+// call rerenders forever.
+test("usePendingMessages keeps one snapshot while nothing changes", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const pending = renderHook(() => usePendingMessages("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+  const first = pending.result.current;
+  expect(pending.result.current).toBe(first);
+  expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));
 });

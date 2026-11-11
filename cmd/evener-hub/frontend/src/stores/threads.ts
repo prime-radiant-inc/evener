@@ -2107,6 +2107,7 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // next reload from painting pre-clear content from the shell.
   noteEntryRouteRetirement(targetRef);
   deleteCachedRefs([targetRef]);
+  forgetConsumedQueueRows(targetRef);
   // A clear response is a newer authoritative cut than any thread/read that
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
@@ -2242,6 +2243,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // flush=false, so this cannot start a second retirement.
   if (flush && retireEntryTranscriptIfUnowned(ref)) return;
   cacheLifetimeHeld.delete(ref);
+  forgetConsumedQueueRows(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   // A read still on the wire when the pin left belongs to the lifetime this
@@ -5947,6 +5949,9 @@ function publishThreadHydration(
 function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse, model: ThreadModel): void {
   const authoritative = response.thread.evener.mutationStateAuthoritative === true;
   threadsStore.setState((state) => {
+    // Every repository read would otherwise mint a new set and wake every
+    // pending subscription on this ref; only a membership change matters.
+    if (state.mutationAuthorityRefs.has(ref) === authoritative) return state;
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (authoritative) mutationAuthorityRefs.add(ref);
     else mutationAuthorityRefs.delete(ref);
@@ -5955,12 +5960,13 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     return { mutationAuthorityRefs };
   });
   const runtime = getMutationRuntime();
-  const snapshotFresh = threadsStore.getState().mutationSnapshotRefs.has(ref);
-  if (runtime && authoritative && snapshotFresh) {
+  if (runtime && authoritative) {
     const recorded = transcriptMutationIds(model);
     // An older daemon can omit consumed ids for a promotion. These reads are
     // accepted history, so they are the same boundary as a tracked hydration:
-    // ask the journal whether an absent retained source was delivered.
+    // ask the journal whether an absent retained source was delivered. An
+    // overlapping tracked publication re-asks for the same ref; the
+    // dispatcher coalesces that.
     if (recorded.size > 0) {
       void runtime.dispatcher.reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(response));
     }
@@ -5988,6 +5994,7 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  pruneConsumedQueueRows(ref, published);
   const snapshotCurrent =
     mutationStateGeneration === undefined || (mutationStateGenerations.get(ref) ?? 0) === mutationStateGeneration;
   threadsStore.setState((state) => {
@@ -6742,7 +6749,11 @@ function handleNotification(n: AnyNotification): void {
       // A queue frame proves the transition, not that the replacement is
       // visible. Keep the display copy and ask its hydration owner for the
       // authoritative snapshot that names the message it became.
-      consumeQueueRows(settlementRef, previousThreads.get(settlementRef), consumed);
+      consumeQueueRows(
+        settlementRef,
+        previousThreads.get(settlementRef) ?? threadsStore.getState().watchedThreads.get(settlementRef),
+        consumed,
+      );
       noteMutationStateChange(settlementRef);
       threadsStore.setState((state) => {
         if (!state.mutationSnapshotRefs.has(settlementRef)) return state;
@@ -7503,6 +7514,9 @@ const pendingConsumedSettlements = new Map<string, Set<string>>();
 // Queue rows another client's transition consumed, kept visible here because
 // this client never held a local copy of them. Keyed by ref, then entry id.
 const consumedQueueRows = new Map<string, Map<string, ConsumedQueueEntry>>();
+// The array handed to the projection. Kept stable per ref so the pending
+// stack's snapshot comparison sees one identity until the rows change.
+const consumedQueueRowList = new Map<string, ConsumedQueueEntry[]>();
 
 function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consumed: readonly string[]): void {
   const queue = previous?.queue;
@@ -7514,34 +7528,61 @@ function consumeQueueRows(ref: string, previous: ThreadModel | undefined, consum
     const mutationId = queue.clientMutationIds?.[index];
     if (!entryId || !mutationId || !consumedIds.has(mutationId)) continue;
     rows ??= new Map();
+    const fullText = queue.texts?.[index];
     rows.set(entryId, {
       entryId,
-      text: queue.texts?.[index] ?? queue.preview?.[index] ?? "",
+      clientMutationId: mutationId,
+      text: fullText ?? queue.preview?.[index] ?? "",
+      textComplete: fullText !== undefined,
       imageCount: parseImagePlaceholder(queue.preview?.[index]),
       skillNames: queue.skillNames?.[index] ?? [],
       commandNames: queue.commandNames?.[index] ?? [],
     });
   }
-  if (rows && rows.size > 0) consumedQueueRows.set(ref, rows);
+  if (rows && rows.size > 0) {
+    consumedQueueRows.set(ref, rows);
+    consumedQueueRowList.delete(ref);
+  }
 }
 
 // The consumed rows still awaiting an authoritative replacement. A published,
-// current, mutation-authoritative snapshot that already records a user item
-// settles them: the projection hides them from then on.
+// current, mutation-authoritative snapshot that records the entry's own
+// identity settles them: the projection hides them from then on.
+const NO_CONSUMED_QUEUE_ENTRIES: ConsumedQueueEntry[] = [];
+
 export function consumedQueueEntriesFor(ref: string): ConsumedQueueEntry[] {
   const rows = consumedQueueRows.get(ref);
-  if (!rows) return [];
-  const state = threadsStore.getState();
-  const model = state.threads.get(ref);
-  const settled =
-    state.mutationSnapshotRefs.has(ref) &&
-    state.mutationAuthorityRefs.has(ref) &&
-    transcriptMutationIds(model).size > 0;
-  if (settled) {
-    consumedQueueRows.delete(ref);
-    return [];
+  if (!rows) return NO_CONSUMED_QUEUE_ENTRIES;
+  const cached = consumedQueueRowList.get(ref);
+  if (cached) return cached;
+  // Stable for the pending stack's snapshot comparison: rebuilt only when a
+  // new consumption changes the map, never on a plain read.
+  const list = [...rows.values()];
+  consumedQueueRowList.set(ref, list);
+  return list;
+}
+
+// Retire carried rows the model proves landed. Called from the publication
+// path, never from a render, so a discarded concurrent render cannot delete a
+// row that never reached the screen.
+function pruneConsumedQueueRows(ref: string, model: ThreadModel | undefined): void {
+  const rows = consumedQueueRows.get(ref);
+  if (!rows) return;
+  const recorded = transcriptMutationIds(model);
+  let changed = false;
+  for (const [entryId, entry] of rows) {
+    if (!recorded.has(entry.clientMutationId)) continue;
+    rows.delete(entryId);
+    changed = true;
   }
-  return [...rows.values()];
+  if (!changed) return;
+  if (rows.size === 0) consumedQueueRows.delete(ref);
+  consumedQueueRowList.delete(ref);
+}
+
+function forgetConsumedQueueRows(ref: string): void {
+  if (!consumedQueueRows.delete(ref)) return;
+  consumedQueueRowList.delete(ref);
 }
 
 // A consumed queue identity retires only when an accepted authoritative
@@ -9410,6 +9451,8 @@ export function resetThreadsStoreForTests(): void {
   replayAcceptedCopiesOnReady = false;
   acceptedCopyReplayRefs.clear();
   pendingConsumedSettlements.clear();
+  consumedQueueRows.clear();
+  consumedQueueRowList.clear();
   resetThreadOwnersForTests();
   cacheLifetimeHeld.clear();
   // A pre-reset ensure may still await the cache. Do not reuse its generation
@@ -9431,6 +9474,8 @@ export function resetThreadsStoreForTests(): void {
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
   releaseThreadSubscriptions();
+  consumedQueueRows.clear();
+  consumedQueueRowList.clear();
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;

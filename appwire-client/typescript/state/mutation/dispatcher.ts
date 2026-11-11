@@ -108,6 +108,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions<A>["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
+  readonly #acceptedCopyReplays = new Map<string, Promise<void>>();
 
   constructor(storage: MutationOutboxStorage<A>, options: MutationDispatcherOptions<A>) {
     this.#storage = storage;
@@ -172,6 +173,21 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   // one was offline". Replaying the original mutation asks the daemon's
   // journal which one it is; only a terminal projection retires the copy.
   async reconcileAcceptedCopies(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+    // Two boundaries (a tracked publication and a repository read) can ask for
+    // the same ref in the same step. Each replay is a journal round trip, so
+    // join the one already running instead of asking twice.
+    const running = this.#acceptedCopyReplays.get(targetRef);
+    if (running) return running;
+    const replay = this.#reconcileAcceptedCopiesNow(targetRef, authoritativeIds);
+    this.#acceptedCopyReplays.set(targetRef, replay);
+    try {
+      await replay;
+    } finally {
+      if (this.#acceptedCopyReplays.get(targetRef) === replay) this.#acceptedCopyReplays.delete(targetRef);
+    }
+  }
+
+  async #reconcileAcceptedCopiesNow(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
     const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
     if (!accepted) return;
     await Promise.all(
