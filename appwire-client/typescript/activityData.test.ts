@@ -472,6 +472,18 @@ describe("parseActivityTree", () => {
     });
   });
 
+  it("drops a delegate's turns field: activity patches cover whole delegates only", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    Object.assign(getRootDelegateWire(wire), {
+      terminal: true,
+      child: undefined,
+      turns: [jobFixture({ jobId: "turn_live", type: "turn", terminal: false, description: "live turn" })],
+    });
+    const tree = parseActivityTree(wire) as ActivityTree;
+    const delegate = assertDefined(getDelegateEntry(tree, 1)?.delegate, "expected root delegate");
+    expect(delegate).not.toHaveProperty("turns");
+  });
+
   it("retains a valid transcriptRef on shell jobs", () => {
     const tree = cloneWire(VALID_TREE_WIRE);
     getRootShellWire(tree).transcriptRef = "job:job_activity";
@@ -708,64 +720,18 @@ describe("defaultExpandedIDs", () => {
     ]);
   });
 
-  it("uses active turns for turn-container expansion even after the container closes", () => {
-    const wire = cloneWire(VALID_TREE_WIRE);
-    const rootDelegate = getRootDelegateWire(wire);
-    Object.assign(rootDelegate, {
-      type: "agent",
-      terminal: true,
-      child: undefined,
-      turns: [
-        {
-          jobId: "turn-live",
-          ownerSessionId: "sess_root",
-          ownerRef: "ref_root",
-          type: "turn",
-          status: "running",
-          terminal: false,
-          background: false,
-          hasOutput: false,
-          description: "live turn",
-          startedAt: "2026-08-03T00:05:00Z",
-          outputBytes: 0,
-        },
-      ],
-    });
-    const tree = parseActivityTree(wire) as ActivityTree;
-    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
-    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
-    expect(delegateHasActiveWork(entry.delegate)).toBe(true);
-    expect(defaultExpandedIDs(tree)).toContain(
-      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
-    );
-  });
-
-  // The same shape as the closed container below, minus the type the wire is
-  // free to omit: without it this is the stable form, whose running state is
-  // its own rather than a turn's.
+  // The type is optional on the wire, and it no longer selects a different
+  // delegate shape: the running state is the delegate's own.
   it("expands a running delegate whose type the wire omitted", () => {
     const wire = cloneWire(VALID_TREE_WIRE);
     const rootDelegate = getRootDelegateWire(wire);
-    Object.assign(rootDelegate, { terminal: false, turns: [], child: undefined });
+    Object.assign(rootDelegate, { terminal: false, child: undefined });
     delete (rootDelegate as { type?: string }).type;
     const tree = parseActivityTree(wire) as ActivityTree;
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(true);
     expect(defaultExpandedIDs(tree)).toContain(
-      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
-    );
-  });
-
-  it("does not expand an empty closed turn container", () => {
-    const wire = cloneWire(VALID_TREE_WIRE);
-    const rootDelegate = getRootDelegateWire(wire);
-    Object.assign(rootDelegate, { type: "agent", terminal: false, turns: [], child: undefined });
-    const tree = parseActivityTree(wire) as ActivityTree;
-    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
-    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
-    expect(delegateHasActiveWork(entry.delegate)).toBe(false);
-    expect(defaultExpandedIDs(tree)).not.toContain(
       activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
     );
   });

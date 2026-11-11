@@ -1176,7 +1176,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		DurationMS:          appwire.ClonePointer(status.DurationMS),
 		DelegationAllowance: descriptor.DelegationAllowance,
 		ParentWatchGranted:  descriptor.ParentWatchGranted,
-		Turns:               []appwire.JobActivityJob{},
 	}
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
@@ -1445,13 +1444,7 @@ func aggregateActivity(entries []appwire.JobActivityEntry, branch appwire.JobAct
 		if entry.Delegate == nil {
 			continue
 		}
-		if entry.Delegate.Type == "delegate" {
-			addJob(appwire.JobActivityJob{Terminal: entry.Delegate.Terminal, Outcome: activityDelegateOutcome(entry.Delegate.Outcome)})
-		} else {
-			for _, turn := range entry.Delegate.Turns {
-				addJob(turn)
-			}
-		}
+		addJob(appwire.JobActivityJob{Terminal: entry.Delegate.Terminal, Outcome: activityDelegateOutcome(entry.Delegate.Outcome)})
 		if !activityBranchComplete(entry.Delegate.Branch) {
 			counts.Complete = false
 		}
@@ -1898,9 +1891,8 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		JobID:          rec.JobID,
 		OwnerSessionID: rec.OwnerSessionID,
 		OwnerRef:       ownerRef,
-		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs
-		// (their records never store one) and passes through a stored ref
-		// (delegate turns point at the child session) unchanged.
+		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs;
+		// their records never store one.
 		TranscriptRef: jobTranscriptRef(rec),
 		Type:          string(rec.Type),
 		Status:        string(rec.Status),

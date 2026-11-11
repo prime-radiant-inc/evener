@@ -816,10 +816,10 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 // The current shape is a decoded activity tree: JobsListResponse.Data is `any`,
 // so the wire tree arrives as nested map[string]any/[]any rather than typed
 // appwire.JobActivity* nodes. The walk follows ONLY the structural containers
-// JobActivityTree declares (root, entries, job, delegate, delegate.child,
-// delegate.turns) and rewrites ONLY the ref fields those nodes declare (a
-// session's ref; a job's ownerRef and transcriptRef; a delegate's childRef). No
-// other key is ever treated as a ref, so a key literally named "ref" or
+// JobActivityTree declares (root, entries, job, delegate, delegate.child) and
+// rewrites ONLY the ref fields those nodes declare (a session's ref; a job's
+// ownerRef and transcriptRef; a delegate's childRef). No other key is ever
+// treated as a ref, so a key literally named "ref" or
 // "transcriptRef" inside an opaque payload — a delegate's message or
 // structuredResult, which are json.RawMessage on the typed struct, or an
 // undeclared key such as a delegate-level "transcriptRef" (JobActivityDelegate
@@ -903,8 +903,8 @@ func activityTreeRecognized(node map[string]any) bool {
 // activityTreeRecognized also decodes as a complete appwire.JobActivityTree.
 //
 // The discriminator test pins only `revision` and `root`, but the walk follows
-// every container JobActivityTree declares (root/entries/job/delegate/child/
-// turns) and rewrites the ref fields those nodes own. A payload can satisfy the
+// every container JobActivityTree declares (root/entries/job/delegate/child)
+// and rewrites the ref fields those nodes own. A payload can satisfy the
 // discriminators and still be malformed as a tree — `entries` an object where
 // the wire type is a []JobActivityEntry, a declared node carrying another type,
 // a `revision` that overflows the uint64 field. Walking such a payload re-points
@@ -929,8 +929,8 @@ func activityTreeDecodable(node map[string]any) bool {
 
 // translateLegacyJobRefs rewrites the declared ref field of each element of the
 // retired flat jobs array. EvenerJobInfo's only ref-valued field is
-// transcriptRef: a session ref for a delegate turn and the opaque "job:<id>"
-// for a shell job. Every other key is an id, not an address, so only
+// transcriptRef: a session ref or the opaque "job:<id>" for a shell job.
+// Every other key is an id, not an address, so only
 // transcriptRef is a candidate and translateActivityRefField leaves a value it
 // cannot address (a bare id, an opaque "job:" ref) untouched.
 func (s *RemoteHubSource) translateLegacyJobRefs(jobs []any) {
@@ -968,8 +968,7 @@ func (s *RemoteHubSource) translateActivityEntry(value any) {
 }
 
 // translateActivityJob rewrites the ref fields one JobActivityJob node
-// declares: its owner session ref and its transcript ref (a session ref for a
-// delegate turn, the opaque "job:<id>" for a shell job).
+// declares: its owner session ref and its opaque "job:<id>" transcript ref.
 func (s *RemoteHubSource) translateActivityJob(value any) {
 	job, ok := value.(map[string]any)
 	if !ok {
@@ -980,11 +979,10 @@ func (s *RemoteHubSource) translateActivityJob(value any) {
 }
 
 // translateActivityDelegate rewrites a JobActivityDelegate node's childRef,
-// then recurses into its child session and its delegate turns. The delegate
-// node declares childRef as its only ref field (appwire.JobActivityDelegate),
-// so a delegate-level "transcriptRef" is not a declared address and is
-// deliberately left byte-for-byte; the turn nodes that DO declare transcriptRef
-// are rewritten by translateActivityJob.
+// then recurses into its child session. The delegate node declares childRef as
+// its only ref field (appwire.JobActivityDelegate), so a delegate-level
+// "transcriptRef" is not a declared address and is deliberately left
+// byte-for-byte. The wire type has no turn containers.
 func (s *RemoteHubSource) translateActivityDelegate(value any) {
 	delegate, ok := value.(map[string]any)
 	if !ok {
@@ -992,9 +990,6 @@ func (s *RemoteHubSource) translateActivityDelegate(value any) {
 	}
 	s.translateActivityRefField(delegate, "childRef")
 	s.translateActivitySession(delegate["child"])
-	for _, turn := range activityChildren(delegate["turns"]) {
-		s.translateActivityJob(turn)
-	}
 }
 
 // translateActivityRefField rewrites one declared ref field in place when its

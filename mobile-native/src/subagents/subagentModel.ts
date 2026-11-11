@@ -13,7 +13,6 @@ import {
 	formatTokenCount,
 	isActivityFailure,
 	isFailedDelegateOutcome,
-	isTurnContainer,
 	jobIsFailed,
 	jobStatusDisplay,
 	plainQuoteLine,
@@ -24,6 +23,7 @@ import {
 	type ActivitySessionNode,
 	type ActivityTree,
 	type SessionActivityCounts,
+	type StableDelegateState,
 } from "@evener/appwire-client";
 import { hubTime, waitingOnSubagents } from "../board/attention";
 import type { SubagentTally } from "../session/sessionState";
@@ -63,21 +63,15 @@ export function isStoppedStatus(status: string | undefined): boolean {
 }
 
 /** The delegate fields the state rule reads. The Agents list passes its
- * ActivityDelegate (turns included); other row consumers may pass a stable delegate
- * shape without turns. Summary counts remain the domain's authority. */
-export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "status" | "turns">;
+ * ActivityDelegate; other row consumers may pass the same whole-delegate
+ * shape. Summary counts remain the domain's authority. */
+export type SubagentStateSource = StableDelegateState;
 
 /** Running, failed or done, as the hub's job counts are (active, failed,
  * completed; agent/jobs_activity.go aggregateActivity): the subagent's own
- * outcome, never its children's (ruling 4). A stable delegate runs until its
- * run is terminal; a turn container (the wire allows one, though the daemon
- * builds none today) is read by its turns. */
+ * outcome, never its children's (ruling 4). A delegate runs until its run is
+ * terminal. */
 export function subagentState(delegate: SubagentStateSource): SubagentState {
-	if (isTurnContainer(delegate)) {
-		const turns = delegate.turns ?? [];
-		if (turns.some((turn) => !turn.terminal)) return "running";
-		return turns.some(jobIsFailed) ? "failed" : "done";
-	}
 	if (delegate.terminal !== true) return "running";
 	// The daemon sets an outcome with every terminal run; a record with only a
 	// status still reads by that status.

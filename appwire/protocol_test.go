@@ -413,6 +413,21 @@ func TestJobsListReplacementTreeWireShape(t *testing.T) {
 			t.Fatalf("wire %s missing %s", got, want)
 		}
 	}
+	if bytes.Contains(got, []byte(`"turns"`)) {
+		t.Fatalf("delegate wire still serializes a turn container: %s", got)
+	}
+}
+
+// TestJobActivityDelegateWireDropsTurnContainer pins legacy-payload tolerance
+// for the whole-delegate activity contract: a delegate has no turns field, so a
+// payload that still carries one decodes without it and re-serializes without it.
+func TestJobActivityDelegateWireDropsTurnContainer(t *testing.T) {
+	raw := []byte(`{"delegateId":"dlg_1","childSessionId":"child","childRef":"local:child","branch":{},"turns":[{"jobId":"turn_1"}]}`)
+	var delegate JobActivityDelegate
+	if err := json.Unmarshal(raw, &delegate); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONKeys(t, delegate, "branch", "childRef", "childSessionId", "delegateId")
 }
 
 // TestConnectionAndReservedMethodsCataloged pins the special cases the router

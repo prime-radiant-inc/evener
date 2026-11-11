@@ -798,7 +798,6 @@ func TestRemoteHubJobsListPreservesUndecodableTreePayloads(t *testing.T) {
 		{"branch is not an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","branch":"x"}}`},
 		{"revision overflows uint64", `{"revision":1e300,"root":{"sessionId":"S","ref":"local:th_1","entries":[]}}`},
 		{"delegate child is not an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":[{"kind":"delegate","delegate":{"delegateId":"dlg_1","childRef":"local:th_1","child":"local:th_1"}}]}}`},
-		{"delegate turn carries a non-string job id", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":[{"kind":"delegate","delegate":{"delegateId":"dlg_1","childRef":"local:th_1","turns":[{"jobId":7,"ownerRef":"local:th_1"}]}}]}}`},
 	}
 
 	for _, tc := range cases {
@@ -885,7 +884,6 @@ func TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees(t *testing.T) {
 					{"kind": "delegate", "delegate": {
 						"delegateId": "dlg_1",
 						"childRef": "local:child",
-						"turns": [{"jobId": "turn_1", "ownerRef": "local:root", "transcriptRef": "local:child"}],
 						"child": {"sessionId": "child", "ref": "local:child", "entries": [
 							{"kind": "shell", "job": {"jobId": "job_b", "ownerRef": "local:child", "transcriptRef": "job:job_b"}}
 						]}
@@ -919,17 +917,6 @@ func TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees(t *testing.T) {
 		delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
 		if delegate["childRef"] != "host:child" {
 			t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
-		}
-		turns, ok := delegate["turns"].([]any)
-		if !ok || len(turns) != 1 {
-			t.Fatalf("delegate.turns = %#v, want one turn", delegate["turns"])
-		}
-		turn := activityMap(t, turns[0], "turn 0")
-		if turn["ownerRef"] != "host:root" {
-			t.Errorf("turn ownerRef = %v, want %q", turn["ownerRef"], "host:root")
-		}
-		if turn["transcriptRef"] != "host:child" {
-			t.Errorf("turn transcriptRef = %v, want %q", turn["transcriptRef"], "host:child")
 		}
 		child := activityMap(t, delegate["child"], "child session")
 		if child["ref"] != "host:child" {

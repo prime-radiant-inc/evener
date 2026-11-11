@@ -2098,7 +2098,6 @@ export interface JobActivityDelegate {
   delegationAllowance?: number;
   parentWatchGranted?: boolean;
   worktree?: JobActivityWorktree;
-  turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
   /**
