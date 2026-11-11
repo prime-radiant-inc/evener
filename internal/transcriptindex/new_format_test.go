@@ -290,12 +290,14 @@ func TestReplayOverAnAwaitingEntryAheadRebuilds(t *testing.T) {
 }
 
 // Header-derived prelude items are keyed apptranscript-item-v2:prelude:header:<part>
-// at {entry: 0, item: part}, with no version: the header never changes.
+// at {entry: 0, item: part}, with a stable nonzero version so an item a window
+// budget elides settles and can be fetched. The header never changes, so the
+// version never moves.
 func TestHeaderPreludeItemsKeyAtTheHeader(t *testing.T) {
 	candidates := indexedCandidates(t, newFormatFixture(t, "new format session"), -1)
 	header := candidates[0]
-	if header.Position != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) || header.Item.TranscriptKey != "apptranscript-item-v2:prelude:header:0" || header.Item.Version != 0 {
-		t.Fatalf("header prelude item = %s, want key apptranscript-item-v2:prelude:header:0 at entry 0, version 0", dump(header.Item))
+	if header.Position != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) || header.Item.TranscriptKey != "apptranscript-item-v2:prelude:header:0" || header.Item.Version != 1 {
+		t.Fatalf("header prelude item = %s, want key apptranscript-item-v2:prelude:header:0 at entry 0, version 1", dump(header.Item))
 	}
 	if got := ItemKey("anything", appwire.ThreadItemPosition{Entry: 0, Item: 2}); got != "apptranscript-item-v2:prelude:header:2" {
 		t.Fatalf("ItemKey at the header = %q", got)
