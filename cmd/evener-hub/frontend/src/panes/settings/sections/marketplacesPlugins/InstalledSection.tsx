@@ -81,7 +81,12 @@ export function InstalledSection({ expanded, onToggle, onBrowse }: InstalledSect
               // split row and the whole-row button remount), but this <li>
               // does.
               <li key={key} data-plugin={p.plugin} data-marketplace={p.marketplace}>
-                <InstalledPluginRow entry={p} components={pluginComponents.get(key)} onOpen={() => onToggle(pair)} />
+                <InstalledPluginRow
+                  entry={p}
+                  components={pluginComponents.get(key)}
+                  expanded={isExpanded}
+                  onOpen={() => onToggle(pair)}
+                />
                 {isExpanded && expanded !== null && (
                   <PluginDetailBody target={expanded} onCollapse={() => onToggle(pair)} />
                 )}

@@ -536,6 +536,70 @@ test("switching segments while a row's details are expanded collapses them", asy
   expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
 });
 
+test("Escape on the expanded row collapses its details and marks the key handled", async () => {
+  const user = userEvent.setup();
+  connectSeededClient();
+  const parentKeys: boolean[] = [];
+  // The pane's own Escape listener sits at the document; a bubbled event that
+  // arrives already handled is what keeps the pane open.
+  const listener = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") parentKeys.push(event.defaultPrevented);
+  };
+  document.addEventListener("keydown", listener);
+  render(<MarketplacesPluginsSection />);
+  const row = await screen.findByRole("button", { name: /linter/ });
+  await user.click(row);
+  expect(document.querySelector('[data-kind="plugin-detail"]')).not.toBeNull();
+  row.focus();
+
+  await user.keyboard("{Escape}");
+  document.removeEventListener("keydown", listener);
+
+  // The row dismisses the details it opened - an ancestor (the Settings pane)
+  // sees the Escape already handled and keeps itself open.
+  expect(document.querySelector('[data-kind="plugin-detail"]')).toBeNull();
+  expect(parentKeys).toEqual([true]);
+  expect(row.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("an expandable installed row exposes its expansion state and points at its body", async () => {
+  const user = userEvent.setup();
+  connectSeededClient();
+  render(<MarketplacesPluginsSection />);
+  const row = await screen.findByRole("button", { name: /linter/ });
+  expect(row.getAttribute("aria-expanded")).toBe("false");
+  expect(row.getAttribute("aria-controls")).toBeNull();
+
+  await user.click(row);
+
+  expect(row.getAttribute("aria-expanded")).toBe("true");
+  const controls = row.getAttribute("aria-controls");
+  expect(controls).not.toBeNull();
+  expect(document.getElementById(controls ?? "")?.getAttribute("data-kind")).toBe("plugin-detail");
+});
+
+test("a catalog row's opener exposes its expansion state on the button itself", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("button", { name: "Install" });
+
+  // A not-installed catalog row splits around its Install control; the
+  // opener is the main-area button, and the expansion state belongs there.
+  const opener = screen.getByRole("button", { name: /formatter/ });
+  expect(opener.getAttribute("aria-expanded")).toBe("false");
+  await user.click(opener);
+
+  expect(opener.getAttribute("aria-expanded")).toBe("true");
+  const controls = opener.getAttribute("aria-controls");
+  expect(controls).not.toBeNull();
+  expect(document.getElementById(controls ?? "")?.getAttribute("data-kind")).toBe("plugin-detail");
+});
+
 test("switching segments while the marketplace sheet is open closes it", async () => {
   connectSeededClient();
   render(<MarketplacesPluginsSection />);

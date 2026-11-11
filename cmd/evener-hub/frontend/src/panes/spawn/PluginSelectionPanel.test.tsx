@@ -221,6 +221,21 @@ test("Escape on the expanded row right after opening its details collapses them"
   expect(detailsAction).toBeTruthy();
 });
 
+test("the Details action exposes its expansion state and the body it opens", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const detailsAction = screen.getAllByRole("button", { name: "Details" })[0];
+  if (!(detailsAction instanceof HTMLElement)) throw new Error("no Details action renders");
+  expect(detailsAction.getAttribute("aria-expanded")).toBe("false");
+
+  await user.click(detailsAction);
+
+  expect(detailsAction.getAttribute("aria-expanded")).toBe("true");
+  const controls = detailsAction.getAttribute("aria-controls");
+  expect(controls).not.toBeNull();
+  expect(document.getElementById(controls ?? "")?.getAttribute("data-kind")).toBe("plugin-detail");
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();

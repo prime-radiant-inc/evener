@@ -13,6 +13,7 @@ import { Button, ConfirmDialog, Switch, useFocusRehome, useToasts } from "../../
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../../../plugins/PluginContents";
 import { PluginDetail, type PluginMetadataRow } from "../../../plugins/PluginDetail";
+import { pluginDetailBodyId } from "../../../plugins/pluginRowFocus";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -186,6 +187,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
   return (
     <div ref={focusRoot} className={CLASS.detail}>
       <PluginDetail
+        id={pluginDetailBodyId(target.plugin, target.marketplace)}
         mode={mode}
         description={description}
         chips={chips.length > 0 ? chips : undefined}

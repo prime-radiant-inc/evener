@@ -21,7 +21,7 @@ import {
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
-import { samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
+import { pluginDetailBodyId, samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
@@ -345,6 +345,8 @@ function MarketplaceNode({
                 <li key={p.name} data-plugin={p.name} data-marketplace={marketplace.name}>
                   <CatalogPluginRow
                     plugin={p}
+                    detailBodyId={pluginDetailBodyId(p.name, marketplace.name)}
+                    expanded={isRowExpanded}
                     installed={isInstalled(p.name, marketplace.name)}
                     installDisabled={installDisabled}
                     // The main area expands the row's details inline; the body

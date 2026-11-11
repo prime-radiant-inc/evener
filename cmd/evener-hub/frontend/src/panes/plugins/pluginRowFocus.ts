@@ -11,8 +11,29 @@
 // first tabbable inside the row either way.
 
 import { pluginComponentsKey } from "@evener/appwire-client/state/extensions";
-import { type RefObject, useEffect, useRef } from "react";
+import { type KeyboardEvent, type RefObject, useEffect, useRef } from "react";
 import { rehomeFocus } from "../../widgets";
+
+/** The id an expanded row's detail body carries, so its opener can point at
+ * it with aria-controls. One function for opener and body, so the two cannot
+ * disagree. The launcher addresses a row by name alone. */
+export function pluginDetailBodyId(plugin: string, marketplace?: string): string {
+  const name = encodeURIComponent(plugin);
+  return marketplace === undefined
+    ? `plugin-details-${name}`
+    : `plugin-details-${name}-${encodeURIComponent(marketplace)}`;
+}
+
+/** The expanded row owns Escape for the details it opened: opening leaves
+ * focus on the row, so Escape from the row must dismiss the details rather
+ * than bubble to an ancestor overlay or pane. preventDefault is OverlayPanel's
+ * own contract - the ancestor sees the Escape handled and keeps itself open. */
+export function handleRowEscape(event: KeyboardEvent<HTMLElement>, expanded: boolean, onOpen: () => void): void {
+  if (expanded && event.key === "Escape" && !event.defaultPrevented) {
+    event.preventDefault();
+    onOpen();
+  }
+}
 
 /** The settings lists address a row by the plugin@marketplace pair; one
  * comparison, so the accordion and the row lookup cannot drift apart. */

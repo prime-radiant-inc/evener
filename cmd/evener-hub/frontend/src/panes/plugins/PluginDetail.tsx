@@ -15,6 +15,9 @@ export interface PluginMetadataRow extends PropertyListRow {
 }
 
 export interface PluginDetailProps {
+  /** The expanded region's DOM id, so the row's opener can point here with
+   * aria-controls. */
+  id?: string;
   mode: "installed" | "catalog" | "launcher";
   description?: string;
   chips?: ReactNode;
@@ -32,6 +35,7 @@ export interface PluginDetailProps {
  * expansion mounts under that row (the slide-out sheet is gone). The caller
  * owns reads and contextual actions, never a second body. */
 export function PluginDetail({
+  id,
   mode,
   description,
   chips,
@@ -54,7 +58,7 @@ export function PluginDetail({
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: Escape is the keyboard dismissal path for the expanded body, the same contract OverlayPanel gives its own panels; every pointer action inside stays on real controls
-    <div data-kind="plugin-detail" data-mode={mode} onKeyDown={handleKeyDown}>
+    <div id={id} data-kind="plugin-detail" data-mode={mode} onKeyDown={handleKeyDown}>
       {chips !== undefined && <div className={CLASS.chips}>{chips}</div>}
       {description !== undefined && <p className={CLASS.description}>{description}</p>}
       {contents}
