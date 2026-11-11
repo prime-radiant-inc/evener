@@ -12,7 +12,8 @@ import (
 const (
 	// A completed build is logged when it took at least this long, or when no
 	// build has been logged for navigationBuildStatsInterval (measured from the
-	// service's start, so the first build alone never logs). Timeouts always log.
+	// service's start, so the first build alone never logs). Timeouts and other
+	// failures always log; a build canceled by the service stopping does not.
 	navigationBuildStatsSlow     = 500 * time.Millisecond
 	navigationBuildStatsInterval = 10 * time.Minute
 )
@@ -102,4 +103,11 @@ func (l *navigationBuildStatsLog) timedOut(stats navigationBuildStats) {
 		return
 	}
 	l.logf("navigation build timed out in %s: %s", stats.phase, stats.fields())
+}
+
+func (l *navigationBuildStatsLog) failed(stats navigationBuildStats, err error) {
+	if l.logf == nil {
+		return
+	}
+	l.logf("navigation build failed in %s: %s error=%q", stats.phase, stats.fields(), err.Error())
 }
