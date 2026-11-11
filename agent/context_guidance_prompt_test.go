@@ -43,7 +43,7 @@ func TestContextLengthGuidanceFollowsTheCompactTool(t *testing.T) {
 				t.Fatal(err)
 			}
 			var paragraph string
-			for _, p := range strings.Split(system.String(), "\n\n") {
+			for p := range strings.SplitSeq(system.String(), "\n\n") {
 				if strings.Contains(p, "because of context length") {
 					paragraph = p
 				}
