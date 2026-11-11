@@ -311,8 +311,15 @@ func TestBaseSubagentToolPolicyCanDelegate(t *testing.T) {
 	if allowed != nil {
 		t.Fatalf("expected nil allowed for can-delegate untyped")
 	}
-	if denied != nil {
-		t.Fatalf("expected nil denied for can-delegate untyped")
+	for _, kept := range []string{"delegate", "job_watch"} {
+		if hasString(denied, kept) {
+			t.Fatalf("%s must not be denied for can-delegate untyped (got %v)", kept, denied)
+		}
+	}
+	for _, forbidden := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !hasString(denied, forbidden) {
+			t.Fatalf("%s must be denied for every subagent (got %v)", forbidden, denied)
+		}
 	}
 }
 

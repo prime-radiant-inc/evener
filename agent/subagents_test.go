@@ -947,10 +947,12 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	})
 }
 
-// Issue #6080: only the coordinator writes the session URL list. The builtin
-// default role is all-tools, so the registry gate on a prepared child is the
-// behavior that matters, not only the base policy's allow/deny lists.
-func TestSubagentRegistryHasNoCoordinatorOnlyTools(t *testing.T) {
+// Issue #6080: only the coordinator writes the session URL list. A stable
+// delegate's frozen ceiling is computed by the policy and must not carry the
+// URL tools, whichever role (including the all-tools default) it names. The
+// session-init gate is covered separately by the in-process and restored-ceiling
+// tests below, which bypass the ceiling.
+func TestStableSubagentCeilingHasNoSessionURLTools(t *testing.T) {
 	t.Parallel()
 	coordinatorAgents := coordinatorWorkflowPublicAgentsForTest(t)
 	for _, agentType := range []string{"", "default", "subagent", "explorer", "implementer"} {
@@ -1016,6 +1018,31 @@ func TestApplyChildToolPolicyRefusesProtectedGrants(t *testing.T) {
 	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
 		if _, _, _, err := parent.applyChildToolPolicy(&SessionConfig{}, nil, nil, false, []string{name}); err == nil {
 			t.Errorf("%s was grantable to a subagent", name)
+		}
+	}
+}
+
+// A delegate restored from a descriptor written before the protected-tool rule
+// still carries urls_add in its frozen ceiling. The session-init gate is the
+// only removal on that path, and it must leave the child without the tool.
+func TestRestoredSubagentCeilingCannotServeSessionURLTools(t *testing.T) {
+	child := newSession(t, withConfig(SessionConfig{
+		StateDir: t.TempDir(),
+		spawn: spawnConfig{
+			parentSessionID: "01PARENTSESSION00000000010",
+			depth:           1,
+			toolNameCeiling: []string{"urls_add", "urls_remove", "read_file", "communicate", "task_list"},
+		},
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+	for _, name := range []string{"urls_add", "urls_remove"} {
+		if child.reg.Get(name) != nil {
+			t.Errorf("restored child serving the old ceiling has %q; only the coordinator writes session links", name)
 		}
 	}
 }
