@@ -1158,10 +1158,25 @@ func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, 
 	// A window the curated alias row declares describes that alias (a 1M
 	// variant of a base model), while the wire id's live row describes the
 	// base model. Only a live row listed under the alias's own id outranks it.
-	if byWireID && prov["ContextWindow"] == LayerOverlay+"/row" {
+	if byWireID && r.overlayRowDeclaresWindow(rec, hit.rowID) {
 		caps.ContextWindow = nil
 	}
 	mergeCaps(c, caps, LayerLive, prov)
+}
+
+// overlayRowDeclaresWindow reports whether the curated overlay's row rowID
+// states a context window itself, as opposed to inheriting one from an alias
+// target or a glob.
+func (r *Registry) overlayRowDeclaresWindow(rec *record, rowID string) bool {
+	for _, layer := range rec.layers {
+		if layer.tag != LayerOverlay {
+			continue
+		}
+		if row, ok := layer.rows[rowID]; ok && row.Caps.ContextWindow != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // transportShape assembles the unexpanded transport for rec resolving row on

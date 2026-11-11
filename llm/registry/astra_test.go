@@ -111,3 +111,19 @@ func TestConfigAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
 		t.Fatalf("config alias window lost to the base live row: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
 	}
 }
+
+// A window the alias merely inherits from a cross-provider target is the
+// target's figure: the alias's own provider listing, found by the shared wire
+// id, outranks it. Only a window declared on the alias row itself is protected.
+func TestInheritedAliasWindowYieldsToLiveRowOfWireID(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai\"\n[providers.mine.models.\"sol-alias\"]\nalias_of = \"anthropic/claude-mythos-preview\"\nwire_id = \"claude-mythos-preview\"\n")
+	res := mustResolve(t, r, "mine/sol-alias")
+	if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" {
+		t.Fatalf("fixture must inherit the target's overlay window: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+	r.ApplyLive("mine", []Model{{ID: "claude-mythos-preview", Caps: Caps{ContextWindow: new(524288)}}})
+	res = mustResolve(t, r, "mine/sol-alias")
+	if *res.Caps.ContextWindow != 524288 || res.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("a live row for the wire id must beat an inherited window: %v %v", *res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+}
