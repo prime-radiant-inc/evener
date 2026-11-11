@@ -227,11 +227,13 @@ function wantedScrollTop(before, after) {
 
 function assertReadingContinuity(before, after, label) {
   assert.ok(before && after, `${label} has independently observed source entries`);
-  assert.equal(after.entry, before.entry, `${label} preserves the semantic entry`);
   assert.equal(after.useful, true, `${label} keeps actual nonblank text in the viewport`);
   if (before.followingBottom) {
+    // A bottom follower's contract is the end; see settledReadingContinuity
+    // for why the top-crossing entry is not stable across Return's reflow.
     assert.ok(after.scrollHeight - after.viewport - after.scrollTop <= 1.5, `${label} keeps end following`);
   } else {
+    assert.equal(after.entry, before.entry, `${label} preserves the semantic entry`);
     const wantedScroll = wantedScrollTop(before, after);
     if (wantedScroll !== null) assert.ok(Math.abs(after.scrollTop - wantedScroll) <= 2,
       `${label} preserves feasible within-entry progress, actual ${after.scrollTop}, wanted ${wantedScroll}`);
@@ -254,10 +256,17 @@ async function settledReadingContinuity(before, portExpr, label) {
     const before = ${q(before)};
     const after = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point:after };
-    if (!before || !after?.useful || after.entry !== before.entry) return null;
+    if (!before || !after?.useful) return null;
     if (before.followingBottom) {
+      // The awaited state for a bottom follower is the restored end. Its
+      // top-crossing entry is not stable across the width change Return
+      // performs: the same scroll position resolves to different entries once
+      // row heights re-measure, and new content appended while the reader
+      // follows the end moves it again. Requiring entry identity here waited
+      // past a correct restoration (#6057).
       return after.scrollHeight - after.viewport - after.scrollTop <= 1.5 ? after : null;
     }
+    if (after.entry !== before.entry) return null;
     ${wantedReadingOffset.toString()}
     ${wantedScrollTop.toString()}
     const wantedScroll = wantedScrollTop(before, after);
@@ -665,8 +674,11 @@ async function assertColumnConversations() {
 async function returnToSource() {
   const removedInspectorId = fixture.inspectorPaneId;
   assert.ok(removedInspectorId, "Return begins with an actual inspector");
-  const beforeReturnAnchor = await sourceAnchor();
   const beforeReturnPoint = await settledReadingPoint(sourcePortExpr, "Before Return");
+  // The settled point's own row is the reader's row. A separate sourceAnchor
+  // read can land during the remount transient where only the first row is
+  // mounted, recording a row the settled reading point never held (#6057).
+  const beforeReturnAnchor = beforeReturnPoint.row;
   await read('window.__cascadeTraceSource?.("before-return")');
   await driver.clickByText("Return to previous view");
   await read('window.__cascadeTraceSource?.("after-return-click")');
@@ -681,7 +693,19 @@ async function returnToSource() {
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount);
   const afterReturnPoint = await settledReadingContinuity(beforeReturnPoint, sourcePortExpr, "Return");
   readingPoints.push({ kind:"return", before:beforeReturnPoint, after:afterReturnPoint, sourceRow:beforeReturnAnchor });
-  assert.equal(await sourceAnchor(), beforeReturnAnchor, "Return preserves the visible source row");
+  if (beforeReturnPoint.followingBottom) {
+    // Read the live port again rather than reusing the wait's own snapshot: a
+    // reader who stopped following between the wait and this check must fail.
+    const returnedEndGap = await read(`(() => {
+      const port = ${sourcePortExpr};
+      return port ? port.scrollHeight - port.clientHeight - port.scrollTop : null;
+    })()`);
+    assert.ok(returnedEndGap !== null && returnedEndGap <= 1.5,
+      `Return keeps the source reader following the end, live gap ${returnedEndGap}px`);
+  } else {
+    assert.ok(beforeReturnAnchor, "Return begins with a visible source row");
+    assert.equal(await sourceAnchor(), beforeReturnAnchor, "Return preserves the visible source row");
+  }
   assertReadingContinuity(beforeReturnPoint, afterReturnPoint, "Return");
   await assertSourceDom();
   fixture.inspectorPaneId = null;
@@ -727,8 +751,8 @@ async function holdCanvasCompletion() {
 // `buttonExpr` is a page expression evaluating to the button (or null);
 // `inline` is the scrollIntoView inline mode the caller's surface needs.
 async function clickWhenReady(buttonExpr, label, inline) {
-  await wait(`(() => {
-    const button = ${buttonExpr};
+  await wait(`(async () => {
+    const button = await (${buttonExpr});
     if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
     button.scrollIntoView({ block: "center", inline: ${q(inline)} });
     const r = button.getBoundingClientRect();
@@ -1296,26 +1320,37 @@ function placement(layout, id) {
 // with - its prompt or its stated intent, either renders in the row - and
 // only that row's transcript_ref opens this child.
 async function openChildConversationFromDelegateRow() {
-  await read("window.__cascadeDelegateRowScan = { stepped: false }");
-  await clickWhenReady(`(() => {
+  await clickWhenReady(`(async () => {
     const pane = ${driver.paneScopeExpr(fixture.rootRef)};
     if (!pane) return null;
-    const row = [...pane.querySelectorAll('[data-testid="tool-row"]')]
-      .find(node => node.textContent.includes(${q("CASCADE_ROLE_1_SENTINEL")})
-        || node.textContent.includes(${q("Creating the next real cascade browser scope")}));
-    const button = row?.querySelector('button[aria-label="Open conversation"]');
-    if (button) return button;
+    const findButton = () => {
+      const row = [...pane.querySelectorAll('[data-testid="tool-row"]')]
+        .find(node => node.textContent.includes(${q("CASCADE_ROLE_1_SENTINEL")})
+          || node.textContent.includes(${q("Creating the next real cascade browser scope")}));
+      return row?.querySelector('button[aria-label="Open conversation"]') ?? null;
+    };
+    const mounted = findButton();
+    if (mounted) return mounted;
     const port = pane.querySelector('[data-testid="transcript-virtual-list"] > div');
-    const scan = window.__cascadeDelegateRowScan;
-    if (!port || !scan) return null;
-    if (!scan.stepped) { port.scrollTop = 0; scan.stepped = true; }
-    else port.scrollTop = Math.min(port.scrollTop + port.clientHeight * 0.5, port.scrollHeight - port.clientHeight);
-    return null;
+    if (!port || port.clientHeight <= 0) return null;
+    // Walk the real virtualizer's port in the page, one half-viewport per
+    // frame. One step per driver poll made a 54k-px transcript longer than the
+    // wait budget under load, while the row sat a few frames away (#6057).
+    const step = Math.max(1, port.clientHeight * 0.5);
+    const end = port.scrollHeight - port.clientHeight;
+    for (let top = 0; ; top += step) {
+      port.scrollTop = Math.min(top, end);
+      await new Promise(requestAnimationFrame);
+      const button = findButton();
+      if (button) return button;
+      if (top >= end) return null;
+    }
   })()`, "Open conversation in the actual root delegate row", "nearest");
   // Return the reader to the bottom it came from: the scan mounted every
   // paging delegate's card, and each card's child watch queues a slow read
   // at the hub - leaving them mounted would park the just-opened child
-  // conversation's own read behind the whole queue.
+  // conversation's own read behind the whole queue. Restore the same surface
+  // the scan walked.
   await read(`(() => { const port = ${sourcePortExpr}; if (port) port.scrollTop = port.scrollHeight; })()`);
 }
 
