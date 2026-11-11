@@ -229,6 +229,7 @@ export function captureElementView(
   measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
   measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,
   positioningRevision?: number,
+  followingBottomIntent = false,
 ): CapturedTranscriptView {
   const metrics = measure(el);
   const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
@@ -238,7 +239,9 @@ export function captureElementView(
     anchorId: firstVisible?.id,
     anchorOffset: firstVisible?.offset ?? 0,
     normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
-    followingBottom: isAtBottom(metrics),
+    // The sample can be a measurement frame short of the end; the owner's
+    // intent keeps a following capture on the end through a reflow.
+    followingBottom: followingBottomIntent || isAtBottom(metrics),
     focusedEntryId: focusMetadata?.anchorId,
     ...(positioningRevision !== undefined ? { positioningRevision } : {}),
     ...(firstVisible?.height && firstVisible.height > 0 && el.clientWidth > 0 && el.clientHeight > 0

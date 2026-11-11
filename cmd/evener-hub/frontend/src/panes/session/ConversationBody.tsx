@@ -413,6 +413,7 @@ function StandardConversationBody({
         viewId={seat.readView?.id}
         initialViewCapture={seat.readView?.getCapture()}
         readView={seat.readView ?? undefined}
+        followingBottom={flow.isFollowingBottom}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

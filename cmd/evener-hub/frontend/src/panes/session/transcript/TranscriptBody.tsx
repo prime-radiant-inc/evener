@@ -341,6 +341,8 @@ export interface TranscriptBodyProps {
   sourcePaneId?: string;
   initialViewCapture?: CapturedTranscriptView;
   readView?: TranscriptReadView;
+  /** The owning reader's following-bottom intent, used by reflow captures. */
+  followingBottom?: () => boolean;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -364,6 +366,7 @@ export function TranscriptBody({
   sourcePaneId: explicitSourcePaneId,
   initialViewCapture,
   readView,
+  followingBottom,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const inheritedSourcePaneId = useContext(TranscriptSourcePaneContext);
@@ -416,6 +419,7 @@ export function TranscriptBody({
     viewKey: configFingerprint(config),
     initialViewCapture,
     readView,
+    followingBottom,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores

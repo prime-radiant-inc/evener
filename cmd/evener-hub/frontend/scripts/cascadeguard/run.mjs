@@ -1131,11 +1131,16 @@ async function dottedAncestorJourney() {
   await pinSourceDom();
   // A remounted reader shows its first rows at the top before it moves to the
   // end of the transcript; Return's baseline is the settled end, not that
-  // interval.
-  await wait(`(() => {
+  // interval. A single read can land between the virtualizer's own scroll to
+  // the end and the reading-point restore that follows it, so require two
+  // consecutive at-end samples instead of catching one transient write. A null
+  // while short keeps the barrier waiting rather than settling on "not yet".
+  await driver.settleExpression(`(() => {
     const port = ${sourcePortExpr};
-    return port && port.clientHeight > 0 && port.scrollHeight - port.clientHeight - port.scrollTop <= 4;
-  })()`, "the remounted source reader rests at the end of its transcript");
+    if (!port || port.clientHeight <= 0) return null;
+    const gap = port.scrollHeight - port.clientHeight - port.scrollTop;
+    return gap <= 4 ? true : null;
+  })()`, { label: "the remounted source reader rests at the end of its transcript" });
   await returnToSource();
 }
 

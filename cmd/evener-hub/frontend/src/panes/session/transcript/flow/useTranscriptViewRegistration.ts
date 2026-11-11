@@ -41,6 +41,8 @@ export interface UseTranscriptViewRegistrationOptions {
   canRestoreFocus?: () => boolean;
   focusFallback?: () => void;
   announce?: (summary: string) => void;
+  /** Reads the owning reader's live following-bottom intent for reflow captures. */
+  followingBottom?: () => boolean;
 }
 
 export interface UseTranscriptViewRegistrationResult {
@@ -154,6 +156,7 @@ export function useTranscriptViewRegistration(
         measure,
         measureAnchors,
         currentOptions.readView?.positioningRevision,
+        currentOptions.followingBottom?.(),
       );
       completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
       return;
@@ -224,6 +227,7 @@ export function useTranscriptViewRegistration(
       measure,
       measureAnchors,
       currentOptions.readView?.positioningRevision,
+      currentOptions.followingBottom?.(),
     );
     completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
   }, []);
@@ -243,6 +247,7 @@ export function useTranscriptViewRegistration(
       currentOptions.measure,
       currentOptions.measureAnchors,
       currentOptions.readView?.positioningRevision,
+      currentOptions.followingBottom?.(),
     );
     latestCaptureRef.current = next;
     return next;
@@ -346,6 +351,7 @@ export function useTranscriptViewRegistration(
           currentOptions.measure,
           currentOptions.measureAnchors,
           readView.positioningRevision,
+          currentOptions.followingBottom?.(),
         );
       }
     });
