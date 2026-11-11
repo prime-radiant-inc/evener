@@ -123,9 +123,10 @@ losing the conversation that made the evidence relevant.
   chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
   where the desktop status bar puts them, and that line is the pane's bottom edge: on
   the phone the chips fill the home-indicator band themselves, so the dock reserves no
-  space below them. The
-  composer dock owns the home-indicator band; the inset yields when the on-screen
-  keyboard covers that area. The working-directory strip stays desktop-only: a phone
+  space below them. The composer dock owns the home-indicator band, and that band is one
+  token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
+  var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
+  on-screen keyboard covers the band. The working-directory strip stays desktop-only: a phone
   reads the session's working directory and branch through the session menu's Overview
   (About) and never stacks a second strip below the composer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
@@ -471,6 +472,10 @@ grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
 `--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
 Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
+`--dock-clearance` is the home-indicator band a bottom dock keeps its content
+clear of, `max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))`:
+0 off a phone, and it yields as the on-screen keyboard rises so a dock spends
+the band once rather than padding under it.
 
 **Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
 for how far apart two things sit: `--rhythm-line` (4px, inside one item, an intent line above
@@ -1122,7 +1127,7 @@ query, so desktop sizing never changes; `src/styles/display-gates.test.ts`
 fails if a widget's `var(--tap-min)` sits under any other gate.
 
 When a form has one primary completion action, the mobile action band may be
-fixed above `env(safe-area-inset-bottom)`. It is a raised surface with a top
+fixed above `var(--dock-clearance)`. It is a raised surface with a top
 edge and no shadow; the primary control is at least 52px tall and adjacent
 secondary controls are at least 44px. The form body reserves the band's space
 so content is never covered, and the desktop action layout remains unchanged.

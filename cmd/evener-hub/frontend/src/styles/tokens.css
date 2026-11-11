@@ -151,6 +151,14 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* The home-indicator band a docked surface must keep its content clear of.
+   * Zero off a phone. It yields as the on-screen keyboard rises over that
+   * band (useKeyboardInset writes --keyboard-inset on the root), so a dock
+   * spends the band once instead of twice. Declared here so every dock reads
+   * one value: calc(var(--space-N) + var(--dock-clearance)), or the token
+   * alone where the band is the whole inset. */
+  --dock-clearance: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+
   /* Vertical rhythm, named by what sits on either side (docs/web-ui/
    * typography-spacing-critique-2026-09-06.md R3). */
   --rhythm-line: var(--space-1); /* 4: inside one item (intent -> call) */

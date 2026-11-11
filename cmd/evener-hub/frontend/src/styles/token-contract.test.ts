@@ -1410,6 +1410,20 @@ test("the declared set spans module-local custom properties, not just tokens.css
   expect(DECLARED_CUSTOM_PROPERTIES.has("--radius-sm")).toBe(false);
 });
 
+// --dock-clearance is the home-indicator band every dock keeps its content
+// clear of. The name-level scan above passes on a declaration with any value,
+// including an empty one, so a broken value would silently reduce every dock's
+// padding to its bare spacing step; several docks read the token on its own,
+// with no step to fall back to. This pins the value itself, and the keyboard
+// term in it: the band must yield to the on-screen keyboard rather than pad
+// under it.
+test("--dock-clearance is the keyboard-yielding home-indicator band", () => {
+  const declaration = TOKENS_CSS.match(/--dock-clearance:\s*([^;]+);/)?.[1]
+    ?.replace(/\s+/g, " ")
+    .trim();
+  expect(declaration).toBe("max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))");
+});
+
 test("catches a fallback-less var() naming an undeclared token", () => {
   const declared = new Set(["--radius-chip"]);
   expect(undefinedTokenViolations(".tile { border-radius: var(--radius-sm); }", declared)).toEqual(["--radius-sm"]);
