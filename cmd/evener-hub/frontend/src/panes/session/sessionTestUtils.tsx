@@ -164,15 +164,24 @@ export function scrollRootOf(container: HTMLElement): HTMLElement {
 }
 
 export function stubScrolledAway(el: HTMLElement) {
-  // A reader reaches this position with a wheel (or scrollbar); the wheel is
-  // what tells the scroll hook the reader left the end rather than a passive
-  // measurement correction moving the content under them.
-  el.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
-  // scrollTop is writable (unlike scrollHeight/clientHeight): jumpToBottom
-  // pins the true bottom by assigning it directly, and tests observe that.
-  Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
+  // Give the port real scrollable geometry and put the reader at the bottom
+  // before the wheel: an upward wheel at scrollTop 0 cannot move the port, so
+  // the gesture would be ignored and the following-bottom intent would stay
+  // set for a reader who did leave.
   Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 4500 });
+  // A reader reaches this position with a wheel (or scrollbar); the wheel is
+  // what tells the scroll hook the reader left the end rather than a passive
+  // measurement correction moving the content under them. Both the wheel and
+  // the scroll it causes update React state, so they run inside act.
+  act(() => {
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    // scrollTop is writable (unlike scrollHeight/clientHeight): jumpToBottom
+    // pins the true bottom by assigning it directly, and tests observe that.
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
 }
 
 // The hub pushes evener/thread/resync when its roster discovers the old daemon
