@@ -76,7 +76,8 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
-import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import { getNativeMutationRuntime, nativeMutationTargetKey, subscribeNativeIdentities } from "./nativeMutationRuntime";
+import { drafts } from "./nativeDrafts";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
@@ -342,6 +343,8 @@ export type Routes = {
 type ReviewSheetParams = {
 	hubId: string;
 	sessionRef: string;
+	/** The ref a resumed session moved to; absent means sessionRef. */
+	messageSessionRef?: string;
 	path: string;
 	sessionTitle: string;
 	root?: "artifacts" | "scratch";
@@ -743,8 +746,31 @@ function ConversationScreenView({
 	// currently covers. The draft does not follow: it belongs to the session
 	// that owns it.
 	useEffect(() => {
-		return getNativeMutationRuntime().subscribeIdentities((change) => {
+		return subscribeNativeIdentities((change) => {
 			if (nativeMutationTargetKey(change.hubId, change.from) !== recovery.targetKey) return;
+			// A composed draft never follows an identity change (Jesse's
+			// 2026-11-11 ruling). With no unsent composition at the retired ref,
+			// the settlement markers can move with the delivered message so its
+			// resend receipt still settles; otherwise the draft keeps all of it.
+			try {
+				const record = drafts.open({ hubId: change.hubId, sessionRef: change.from }).getSnapshot().record;
+				const noComposedDraft =
+					record.draft === "" &&
+					(record.images?.length ?? 0) === 0 &&
+					(record.parkedCompositions?.length ?? 0) === 0 &&
+					(record.composer?.skillNames?.length ?? 0) === 0 &&
+					(record.composer?.commandNames?.length ?? 0) === 0 &&
+					(record.composer?.mentions?.length ?? 0) === 0;
+				if (noComposedDraft) {
+					drafts.handoff(
+						{ hubId: change.hubId, sessionRef: change.from },
+						{ hubId: change.hubId, sessionRef: change.to },
+					);
+				}
+			} catch {
+				// Draft storage is unavailable; the screen still follows and the
+				// recovery surface owns the visible failure.
+			}
 			// Keep the route this screen was opened on: a Subagent route carries
 			// its coordinator here, and a Conversation route its title. The
 			// navigation state has the full params the session view reconstructed.
@@ -752,7 +778,7 @@ function ConversationScreenView({
 			const replace = navigation.replace as unknown as (name: string, params: object) => void;
 			replace(current?.name ?? "Conversation", { ...(current?.params ?? route.params), ref: change.to });
 		});
-	}, [navigation, recovery.targetKey, route.key, route.params]);
+	}, [navigation, recovery.targetKey, route.key, route.params, recoveryAvailable]);
 	// Focus is permission for this view's actions, not ownership of the
 	// canonical data. A mounted view that comes back in front observes the
 	// shared store and asks for a read only when canonical authority is

@@ -36,7 +36,7 @@ import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubProfiles } from "../connection";
-import { getNativeMutationRuntime } from "../nativeMutationRuntime";
+import { subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
@@ -97,7 +97,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const resolvedRef = useRef(sessionRef);
 	useEffect(() => {
 		resolvedRef.current = sessionRef;
-		return getNativeMutationRuntime().subscribeIdentities((change) => {
+		return subscribeNativeIdentities((change) => {
 			if (change.hubId === hubId && change.from === resolvedRef.current) resolvedRef.current = change.to;
 		});
 	}, [hubId, sessionRef]);
@@ -456,9 +456,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const endSelection = useCallback(() => setSelecting(null), []);
 	const sheetParams = () => ({
 		hubId,
-		sessionRef: resolvedRef.current,
+		sessionRef,
 		path,
 		sessionTitle,
+		...(resolvedRef.current !== sessionRef ? { messageSessionRef: resolvedRef.current } : {}),
 		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
 	});
 	// The rows keep one callback; it reaches this render's values through the ref.
@@ -470,7 +471,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				setSelecting(null);
 				navigation.navigate("CommentSheet", {
 					hubId,
-					sessionRef: resolvedRef.current,
+					sessionRef,
 					path,
 					...(reference.root !== undefined ? { root: reference.root } : {}),
 					blockIndex: block.index,

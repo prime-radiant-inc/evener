@@ -132,15 +132,13 @@ vi.mock("expo-secure-store", () => ({
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("../nativeMutationRuntime", async (original) => ({
 	...(await original<typeof import("../nativeMutationRuntime")>()),
-	getNativeMutationRuntime: () => ({
-		subscribeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
-			identity.listeners.push(listener);
-			return () => {
-				const index = identity.listeners.indexOf(listener);
-				if (index >= 0) identity.listeners.splice(index, 1);
-			};
-		},
-	}),
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		identity.listeners.push(listener);
+		return () => {
+			const index = identity.listeners.indexOf(listener);
+			if (index >= 0) identity.listeners.splice(index, 1);
+		};
+	},
 }));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),

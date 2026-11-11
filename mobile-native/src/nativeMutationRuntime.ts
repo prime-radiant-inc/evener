@@ -982,3 +982,14 @@ export function getNativeMutationRuntime(): NativeMutationRuntime {
 	sharedNativeMutationRuntime ??= createNativeMutationRuntime();
 	return sharedNativeMutationRuntime;
 }
+
+/** Subscribe to identity changes without making a screen's effect depend on
+ * opening the mutations database. The recovery surface owns that failure and
+ * its Retry; a screen with no runtime simply has no identity to follow. */
+export function subscribeNativeIdentities(listener: NativeMutationIdentityListener): () => void {
+	try {
+		return getNativeMutationRuntime().subscribeIdentities(listener);
+	} catch {
+		return () => {};
+	}
+}

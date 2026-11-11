@@ -58,6 +58,8 @@ vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory 
 vi.mock("../nativeMutationRuntime", async (original) => ({
 	...(await original<typeof import("../nativeMutationRuntime")>()),
 	getNativeMutationRuntime: () => harness.runtime,
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) =>
+		(harness.runtime as NativeMutationRuntime).subscribeIdentities(listener),
 }));
 
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";

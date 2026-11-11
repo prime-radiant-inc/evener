@@ -2188,6 +2188,32 @@ it("follows a published identity change without moving the draft", async () => {
 	subscribe.mockRestore();
 });
 
+it("moves a delivered resend's settlement markers when the draft has no unsent text", async () => {
+	const runtime = getNativeMutationRuntime();
+	const subscribe = vi.spyOn(runtime, "subscribeIdentities");
+	subscribe.mockClear();
+	await mount(thread("ref-settlement", "idle"));
+	const listener = subscribe.mock.calls.at(-1)?.[0];
+	if (!listener) throw new Error("conversation did not subscribe to identity changes");
+	const from = { hubId: "hub-1", sessionRef: "ref-settlement" };
+	const to = { hubId: "hub-1", sessionRef: "ref-settlement-2" };
+	act(() => {
+		drafts.open(from).adopt({
+			draft: "",
+			unconfirmed: "the sent words",
+			unconfirmedComposer: { recoveryIds: ["capture-1"] },
+		});
+	});
+	act(() => listener({ hubId: "hub-1", from: from.sessionRef, to: to.sessionRef }));
+	expect(nativeDrafts().read(to)).toMatchObject({
+		draft: "",
+		unconfirmed: "the sent words",
+		unconfirmedComposer: { recoveryIds: ["capture-1"] },
+	});
+	expect(nativeDrafts().read(from)).toMatchObject({ draft: "", unconfirmed: null });
+	subscribe.mockRestore();
+});
+
 it("keeps a Subagent route and its coordinator when following an identity", async () => {
 	vi.mocked(navigation.replace).mockClear();
 	const runtime = getNativeMutationRuntime();
