@@ -104,6 +104,49 @@ func TestWebChecksVerdictsCarryEachChecksWallTime(t *testing.T) {
 	}
 }
 
+// A check that never exits is a hang, not a slow gate: the gate TERMs it,
+// KILLs it after the grace, and reports the wedged check by name with its own
+// status instead of waiting forever.
+func TestWebChecksTimeOutAWedgedCheck(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 200 * time.Millisecond
+	gate.killGrace = 100 * time.Millisecond
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	wedged := started["test"]
+	select {
+	case <-wedged.terminated:
+	case <-time.After(tripwire):
+		t.Fatal("the wedged check was never TERMed")
+	}
+	select {
+	case <-wedged.killed:
+	case <-time.After(tripwire):
+		t.Fatal("the wedged check was never KILLed after its grace")
+	}
+	wedged.exit <- 137
+
+	r := tg.await(t)
+	if r.status != webCheckTimedOutStatus || !r.keep {
+		t.Fatalf("result = %+v, want the timeout status and the scratch kept", r)
+	}
+	if want := "FAIL  web-test (timed out after 200ms, 0.0s, killed)\n"; !strings.Contains(tg.stderr.String(), want) {
+		t.Fatalf("stderr = %q, want it to contain %q", tg.stderr.String(), want)
+	}
+}
+
 // An interrupt TERMs every running check: none of them is exempt.
 func TestWebChecksInterruptTermsEveryCheck(t *testing.T) {
 	launcher := newFakeLauncher()

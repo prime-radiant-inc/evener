@@ -26,11 +26,15 @@ type fakeGuard struct {
 	exit       chan int
 	termOnce   sync.Once
 	terminated chan struct{}
+	killOnce   sync.Once
+	killed     chan struct{}
 }
 
 func (g *fakeGuard) Wait() int { return <-g.exit }
 
 func (g *fakeGuard) Terminate() { g.termOnce.Do(func() { close(g.terminated) }) }
+
+func (g *fakeGuard) Kill() { g.killOnce.Do(func() { close(g.killed) }) }
 
 // fakeLauncher starts fakeGuards and records what the gate asked of it.
 type fakeLauncher struct {
@@ -94,7 +98,12 @@ func (l *fakeLauncher) Start(spec guardSpec, log *os.File) (guardProcess, error)
 	if l.startErr != nil {
 		return nil, l.startErr
 	}
-	g := &fakeGuard{name: spec.name, exit: make(chan int, 1), terminated: make(chan struct{})}
+	g := &fakeGuard{
+		name:       spec.name,
+		exit:       make(chan int, 1),
+		terminated: make(chan struct{}),
+		killed:     make(chan struct{}),
+	}
 	l.mu.Lock()
 	l.guards[spec.name] = g
 	l.specs[spec.name] = spec
