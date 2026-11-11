@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,7 +59,8 @@ func writeShellJobLogFast(t *testing.T, stateDir, sessID string, n int, backgrou
 		t.Fatal(err)
 	}
 	defer f.Close()
-	enc := json.NewEncoder(f)
+	buffered := bufio.NewWriter(f)
+	enc := json.NewEncoder(buffered)
 	started := time.Unix(1_600_000_000, 0).UTC()
 	for i := range n {
 		jobID := fmt.Sprintf("job_%06d", i)
@@ -68,6 +72,9 @@ func writeShellJobLogFast(t *testing.T, stateDir, sessID string, n int, backgrou
 		if err := enc.Encode(event); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := buffered.Flush(); err != nil {
+		t.Fatal(err)
 	}
 	return path
 }
@@ -83,11 +90,11 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	rootID := "tuesdayroot"
 	totalJobs := 200_000
 	if raceDetectorEnabled {
-		// The walk copies every record on every page, ~100 pages at full
-		// scale: 42s under -race on a CI runner, run one test at a time. Three
-		// full pages and a partial fourth still take every continuation step
-		// the walk has, so the race detector sees the same paths, and the
-		// uninstrumented run keeps the Tuesday-sized history.
+		// Pages cost the page, but writing and decoding 200k events once still
+		// takes about 7s of CPU under -race, about 20s of wall time on a
+		// developer machine. Three full pages and a partial fourth take every
+		// continuation step the walk has, so the race detector sees the same
+		// paths, and the uninstrumented run keeps the Tuesday-sized history.
 		totalJobs = 3*activityMaxWorkUnits + 1
 	}
 	jobsPath := writeJobLogFast(t, stateDir, rootID, totalJobs)
@@ -101,8 +108,8 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	if err != nil {
 		t.Fatalf("loadCachedJobRecords: %v", err)
 	}
-	if len(records) != totalJobs {
-		t.Fatalf("loaded %d records, want the complete %d — a ceiling truncated legitimate history", len(records), totalJobs)
+	if records.len() != totalJobs {
+		t.Fatalf("loaded %d records, want the complete %d — a ceiling truncated legitimate history", records.len(), totalJobs)
 	}
 
 	// PROJECTION still paginates one response at a time (activityMaxWorkUnits
@@ -145,6 +152,59 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	}
 }
 
+// TestLoadSessionJobActivityTree_PageCostDoesNotGrowWithHistory is crux (g):
+// serving one page of an unchanged journal costs the page, not the history
+// behind it. The same mid-history page is served from a short history and
+// from one four times longer; the runtime's own allocation count (no
+// instrumentation the code under test could misreport) must stay flat
+// between them. Copying, filtering or re-indexing every record per page
+// allocates at least once per record, so the longer history would show tens
+// of thousands of extra allocations.
+//
+// Not parallel: testing.AllocsPerRun counts every allocation in the process.
+func TestLoadSessionJobActivityTree_PageCostDoesNotGrowWithHistory(t *testing.T) {
+	const shortHistory = 3 * activityMaxWorkUnits
+	const longHistory = 12 * activityMaxWorkUnits
+	short := secondPageAllocations(t, "shorthistory", shortHistory)
+	long := secondPageAllocations(t, "longhistory", longHistory)
+	t.Logf("page allocations: %.0f with %d jobs, %.0f with %d jobs", short, shortHistory, long, longHistory)
+	// One allocation per hundred extra records is far below anything that
+	// visits each record, and far above run-to-run noise in a fixed page.
+	if growth := long - short; growth > (longHistory-shortHistory)/100 {
+		t.Fatalf("a page of a %d-job history allocated %.0f times, %.0f more than the same page of a %d-job history: page cost grows with history",
+			longHistory, long, growth, shortHistory)
+	}
+}
+
+// secondPageAllocations writes a totalJobs history for rootID and returns
+// the allocations one request for its second page makes once the journal is
+// folded.
+func secondPageAllocations(t *testing.T, rootID string, totalJobs int) float64 {
+	t.Helper()
+	stateDir := t.TempDir()
+	writeJobLogFast(t, stateDir, rootID, totalJobs)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	ref := "local:" + rootID
+	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if !first.Root.Branch.Truncated || first.Root.Branch.Continuation == "" {
+		t.Fatalf("first page of %d jobs did not continue", totalJobs)
+	}
+	params := appwire.JobsListParams{Ref: ref, Continuation: first.Root.Branch.Continuation}
+	var pageErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, params); err != nil {
+			pageErr = err
+		}
+	})
+	if pageErr != nil {
+		t.Fatalf("second page: %v", pageErr)
+	}
+	return allocs
+}
+
 // TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta is crux
 // (b): incrementality proven via an instrumented scan seam, not assumed —
 // the second request after an append must read ONLY the delta (a nonzero
@@ -177,8 +237,8 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 	if err != nil {
 		t.Fatalf("first loadCachedJobRecords: %v", err)
 	}
-	if len(first) != 2 {
-		t.Fatalf("first load = %d records, want 2", len(first))
+	if first.len() != 2 {
+		t.Fatalf("first load = %d records, want 2", first.len())
 	}
 	if len(calls) != 1 || calls[0].fromOffset != 0 || calls[0].eventsRead != 2 {
 		t.Fatalf("calls after first load = %+v, want exactly one call reading from offset 0 with 2 events", calls)
@@ -196,8 +256,8 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 	if err != nil {
 		t.Fatalf("second loadCachedJobRecords: %v", err)
 	}
-	if len(second) != 3 {
-		t.Fatalf("second load = %d records, want 3 (2 old + 1 new)", len(second))
+	if second.len() != 3 {
+		t.Fatalf("second load = %d records, want 3 (2 old + 1 new)", second.len())
 	}
 	if len(calls) != 2 {
 		t.Fatalf("scanJobJournal called %d times total, want exactly 2", len(calls))
@@ -230,8 +290,8 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 	if err != nil {
 		t.Fatalf("first loadCachedJobRecords: %v", err)
 	}
-	if len(first) != 3 {
-		t.Fatalf("first load = %d records, want 3", len(first))
+	if first.len() != 3 {
+		t.Fatalf("first load = %d records, want 3", first.len())
 	}
 
 	time.Sleep(1100 * time.Millisecond)
@@ -250,8 +310,8 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 	if err != nil {
 		t.Fatalf("second loadCachedJobRecords: %v", err)
 	}
-	if len(second) != 1 || second[0].JobID != "job_new_x" {
-		t.Fatalf("second load = %+v, want exactly the 1 new job and none of the 3 old ones", second)
+	if !reflect.DeepEqual(activityRecordIDs(slices.Collect(second.all())), []string{"job_new_x"}) {
+		t.Fatalf("second load = %v, want exactly the 1 new job and none of the 3 old ones", activityRecordIDs(slices.Collect(second.all())))
 	}
 	if secondEpoch == firstEpoch {
 		t.Fatalf("epoch unchanged (%d) across a rewrite, want it bumped so an in-flight continuation is detectably stale", firstEpoch)
@@ -329,7 +389,7 @@ func TestLoadCachedJobRecords_ConcurrentRequestsShareOneFullScan(t *testing.T) {
 
 	const n = 20
 	var wg sync.WaitGroup
-	results := make([][]*jobstore.JobRecord, n)
+	results := make([]*activityJobList, n)
 	errs := make([]error, n)
 	for i := range n {
 		wg.Add(1)
@@ -344,8 +404,8 @@ func TestLoadCachedJobRecords_ConcurrentRequestsShareOneFullScan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadCachedJobRecords[%d]: %v", i, err)
 		}
-		if len(results[i]) != 50 {
-			t.Fatalf("results[%d] = %d records, want 50", i, len(results[i]))
+		if results[i].len() != 50 {
+			t.Fatalf("results[%d] = %d records, want 50", i, results[i].len())
 		}
 	}
 	if got := scanCalls.Load(); got != 1 {

@@ -52,24 +52,23 @@ func TestActivityUsageFromCumulative(t *testing.T) {
 	}
 }
 
-func TestActivityOwnedRecords(t *testing.T) {
+func TestActivityJobList_SessionSeesItsOwnAndUnownedRecords(t *testing.T) {
 	t.Parallel()
-	// Empty sessionID or no records returns records as-is.
-	if got := activityOwnedRecords("", nil); len(got) != 0 {
-		t.Fatalf("empty sessionID with nil records = %v", got)
+	var empty *activityJobList
+	if got := slices.Collect(empty.records("", activityShellJob, 0)); len(got) != 0 {
+		t.Fatalf("nil list yielded %v", activityRecordIDs(got))
 	}
-	recs := []*jobstore.JobRecord{
-		{JobID: "a", OwnerSessionID: "root"},
-		{JobID: "b", OwnerSessionID: "other"},
-		{JobID: "c", OwnerSessionID: ""}, // empty owner = owned by all
-		nil,                              // nil record is skipped
+	list := newActivityJobList([]*jobstore.JobRecord{
+		{JobID: "a", Type: jobstore.JobShell, OwnerSessionID: "root"},
+		{JobID: "b", Type: jobstore.JobShell, OwnerSessionID: "other"},
+		{JobID: "c", Type: jobstore.JobShell, OwnerSessionID: ""}, // empty owner = owned by all
+		nil, // nil record is skipped
+	})
+	if got := activityRecordIDs(slices.Collect(list.records("root", activityShellJob, 0))); !reflect.DeepEqual(got, []string{"a", "c"}) {
+		t.Fatalf("root sees %v, want [a c]", got)
 	}
-	got := activityOwnedRecords("root", recs)
-	if len(got) != 2 {
-		t.Fatalf("got %d records, want 2 (root-owned + empty-owner), ids=%v", len(got), activityRecordIDs(got))
-	}
-	if got[0].JobID != "a" || got[1].JobID != "c" {
-		t.Fatalf("ids = %v, want [a c]", activityRecordIDs(got))
+	if got := activityRecordIDs(slices.Collect(list.records("", activityShellJob, 0))); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("an unnamed session sees %v, want every record", got)
 	}
 }
 
@@ -975,7 +974,7 @@ func TestProjectActivitySession_UnsupportedJobType(t *testing.T) {
 	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root",
-		Jobs: []*jobstore.JobRecord{{JobID: "j1", Type: jobstore.JobType("unknown"), OwnerSessionID: "root", Status: jobstore.StatusRunning}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "j1", Type: jobstore.JobType("unknown"), OwnerSessionID: "root", Status: jobstore.StatusRunning}}),
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	if len(got.Entries) != 0 {
@@ -1088,7 +1087,7 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	t.Parallel()
 	base := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root", Revision: 7,
-		Jobs:        []*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}},
+		Jobs:        newActivityJobList([]*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}}),
 		Delegates:   map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "task")},
 		Diagnostics: []string{"diag1"},
 	}
@@ -1097,7 +1096,7 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	if len(filtered.Delegates) != 1 || filtered.Delegates["dlg_1"].descriptor.ChildSessionID != "child" {
 		t.Fatalf("filtered stable delegates = %+v", filtered.Delegates)
 	}
-	if len(filtered.Jobs) != 0 {
+	if filtered.Jobs.len() != 0 {
 		t.Fatalf("filtered jobs = %v, want empty (filtered to delegate only)", filtered.Jobs)
 	}
 	if len(filtered.Children) != 1 || filtered.Children["child"] != child {
