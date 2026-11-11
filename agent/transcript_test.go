@@ -1283,10 +1283,16 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Use a window large enough for the base prompt but small enough for the
-	// accumulated tool results to force compaction.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
-	profile = withTestSessionNamer(c, profile)
+	// Size the window from this session's own standing request. The system
+	// prompt states host facts (temp paths, toolchain probes), so a fixed
+	// window lands on different sides of the fit on different hosts. The
+	// window must hold the standing request plus a checkpoint and two reads
+	// of big.txt (about 2.5k tokens) yet stay small enough that the first read
+	// crosses the compaction threshold (lost above about 5.2k); 3.8k sits
+	// inside that band with margin both ways.
+	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
+	standing := standingRequestTokens(t, dir, profile, SessionConfig{StateDir: t.TempDir()}, "read the big file")
+	profile = WithContextWindow(profile, standing+3_800)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,
