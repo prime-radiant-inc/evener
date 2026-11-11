@@ -88,14 +88,14 @@ func TestServeRejectsBadLaunchSettingsBeforeBuildingAClient(t *testing.T) {
 
 func TestResolveLaunchSettingsCarriesTheFlagValues(t *testing.T) {
 	t.Setenv(envvars.EVENEROpenAIResponsesContinuation.Name, "")
-	got, err := resolveLaunchSettings("5m", "on", " auto ")
+	got, err := resolveLaunchSettings("5m", "on", " auto ", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.apiLogEnabled || got.openAIResponsesContinuation != "auto" {
 		t.Fatalf("settings = %+v", got)
 	}
-	got, err = resolveLaunchSettings("", "", "")
+	got, err = resolveLaunchSettings("", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

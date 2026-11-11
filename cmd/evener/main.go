@@ -263,6 +263,7 @@ func mainWithDeps(deps mainDeps) {
 		resultToolName:              *flags.resultToolName,
 		reasoningEffort:             *flags.reasoningEffort,
 		contextStrategy:             *flags.contextStrategy,
+		compactAtPercent:            *flags.compactAtPercent,
 		exportATIF:                  *flags.exportATIF,
 		exportATIFProviderHandles:   *flags.exportATIFProviderHandles,
 		outputSchema:                *flags.outputSchema,

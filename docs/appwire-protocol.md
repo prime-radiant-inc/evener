@@ -2481,6 +2481,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `agent` | string | yes |  |
 | `reasoningEffort` | string | yes |  |
 | `contextStrategy` | string | yes |  |
+| `compactAtPercent` | \*int | yes |  |
 | `openAIResponsesContinuation` | string | yes |  |
 | `providerIdleTimeout` | string | yes |  |
 | `sandbox` | string | yes |  |
