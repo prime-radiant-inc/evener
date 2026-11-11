@@ -571,8 +571,10 @@ test.each(["read", "page"])("a versionless recorded header survives %s ingestion
   fixtures.push(fixture);
   const repo = repository(fixture.cache);
   const reader = repo.attachReader();
-  // The daemon's immutable header has a stable key/position but version zero,
-  // omitted by Go's JSON encoder (TestHeaderPreludeItemsKeyAtTheHeader).
+  // A header from a pre-fix daemon has a stable key/position but version zero,
+  // omitted by Go's JSON encoder. The current wire gives the immutable header
+  // a stable nonzero version (TestHeaderPreludeItemsKeyAtTheHeader); this case
+  // pins that a versionless header still survives ingestion and local reopen.
   const header: ThreadItem = {
     id: "item_system_prompt",
     type: "systemMessage",
