@@ -1,5 +1,5 @@
 {
- "_": "Per-package test budgets for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md, \"The Test Timing Ratchet\"). \"packages\" holds each Go package's test CPU seconds: the user+system time of its test binary (and every child it waited for), which go test -exec evener-dev test-cpu-exec reports, or for a sharded package (agent, cmd/evener-hub, cmd/evener) its shard processes' CPU summed. \"wallPackages\" holds each row's wall seconds: the package-level Elapsed of go test -json, a sharded package's shard phase, and the frontend's vitest assertion durations under the single key \"web\". scripts/gate/test-timing-budget.sh fails a package at 1.5x its CPU budget and warns at 1.1x, fails it at 2.5x its wall budget (the backstop for a package that got slower by waiting), and holds a row with no CPU measurement (web) to 1.5x/1.1x of its wall budget; failure limits scale by the run's median ratio, CPU for CPU limits and wall for wall limits and per-test ceilings. The top-level \"metric\" marker is what keeps the ratios enforced; without it every ratio downgrades to a warning. Each number is the slowest seen across recent green CI runs of the tests lanes on main, floored at 2s for Go packages. Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` on a CI-class host. Emptying both maps puts the ratchet back in its no-baseline state, where the gate stays warn-only everywhere, CI included.",
+ "_": "Per-package test budgets for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md, \"The Test Timing Ratchet\"). \"packages\" holds each Go package's test CPU seconds: the user+system time of its test binary (and every child it waited for), which go test -exec evener-dev test-cpu-exec reports, or for a sharded package (agent, cmd/evener-hub, cmd/evener) its shard processes' CPU summed. \"wallPackages\" holds each row's wall seconds: the package-level Elapsed of go test -json, a sharded package's shard phase, and the frontend's vitest assertion durations under the single key \"web\". scripts/gate/test-timing-budget.sh fails a package at 1.5x its CPU budget and warns at 1.1x, fails it at 2.5x its wall budget (the backstop for a package that got slower by waiting), and holds a row with no CPU measurement (web) to 1.5x/1.1x of its wall budget; failure limits scale by the run's median ratio, CPU for CPU limits and wall for wall limits and per-test ceilings. The top-level \"metric\" marker is what keeps the ratios enforced; without it every ratio downgrades to a warning. Each CPU number is the slowest seen across recent green CI runs of the tests lanes on main, floored at 2s for Go packages; each wall number is the matching wall budget, floored the same way and corrected from measured CI wall time when it is stale. Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` on a CI-class host. Emptying both maps puts the ratchet back in its no-baseline state, where the gate stays warn-only everywhere, CI included.",
  "perTestCeilingSeconds": 3,
  "_perTestCeiling": "Per-test ceilings by test name (flattened 2026-11-09 from the seven named classes). A test named here - or a subtest of one (Name/sub) - is compared STRICTLY against its ceiling, and a breach FAILs the check under --check in a CI-shaped environment or --strict. A test named nowhere keeps the flat perTestCeilingSeconds above and stays warn-only in every mode, --strict included, so the unnamed backlog cannot red the gate. A name listed twice is a malformed-config FAIL, so one test can never carry two ceilings. Each number is the ceiling its class carried; the classes only decided which tests shared one, and the per-test names are what the check enforces.",
  "perTestCeiling": {
@@ -313,7 +313,7 @@
   "primeradiant.com/evener/agent/sandbox/sandboxtest": 2.0,
   "primeradiant.com/evener/agent/schema/schematest": 2.0,
   "primeradiant.com/evener/agent/searchresult": 2.0,
-  "primeradiant.com/evener/cmd/evener-dev": 110.0,
+  "primeradiant.com/evener/cmd/evener-dev": 80.56,
   "primeradiant.com/evener/cmd/evener-dev/bin": 2.0,
   "primeradiant.com/evener/cmd/evener-fuzzregistry": 2.0,
   "primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess": 2.0,
@@ -325,7 +325,7 @@
   "primeradiant.com/evener/cmd/evener-hub/internal/sshconn": 130.62,
   "primeradiant.com/evener/cmd/evener-migrate": 2.0,
   "primeradiant.com/evener/docs/examples/extensions": 2.0,
-  "primeradiant.com/evener/docs/examples/extensions/mcp-server": 2.7,
+  "primeradiant.com/evener/docs/examples/extensions/mcp-server": 2.0,
   "primeradiant.com/evener/docs/examples/integrations": 2.0,
   "primeradiant.com/evener/envvars/userdirs": 2.0,
   "primeradiant.com/evener/execsupport/componentlog": 2.0,
