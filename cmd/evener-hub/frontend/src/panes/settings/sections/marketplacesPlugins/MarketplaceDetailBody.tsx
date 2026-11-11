@@ -11,7 +11,7 @@ import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client
 import { errorText, marketplaceSourcePin } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import type { KeyboardEvent } from "react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { connectionStore } from "../../../../stores/connection";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
 import {
@@ -25,6 +25,7 @@ import {
   PathField,
   PropertyList,
   RadioGroup,
+  useFocusRehome,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -103,6 +104,11 @@ export function MarketplaceDetailBody({
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
   const ids = useId();
+  // Any commit that unmounts the body's focused control - Cancel closing the
+  // editor, an action a write disables - keeps the keyboard in the body
+  // instead of dropping it to <body>.
+  const bodyRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(bodyRoot);
 
   const sourcePin = marketplaceSourcePin(marketplace.source);
   const [draft, setDraft] = useState<MarketplaceDraft>(() => marketplaceDraftFor(marketplace));
@@ -259,7 +265,7 @@ export function MarketplaceDetailBody({
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: Escape is the keyboard dismissal path for the expanded marketplace, the same contract PluginDetail and OverlayPanel give their own surfaces
-    <div id={id} className={CLASS.body} data-kind="marketplace-detail" onKeyDown={handleKeyDown}>
+    <div ref={bodyRoot} id={id} className={CLASS.body} data-kind="marketplace-detail" onKeyDown={handleKeyDown}>
       <ul aria-label={`${marketplace.name} plugins`} className={CLASS.children}>
         {!catalog || catalog.status === "loading" ? (
           <li>

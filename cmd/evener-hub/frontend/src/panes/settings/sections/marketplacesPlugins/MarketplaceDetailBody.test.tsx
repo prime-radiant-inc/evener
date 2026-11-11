@@ -346,3 +346,20 @@ test("a plugin query filters the body's rows when the marketplace name does not 
   expect(screen.getByRole("button", { name: /linter/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /formatter/ })).toBeNull();
 });
+
+test("cancelling the editor keeps the keyboard inside the marketplace body", async () => {
+  const user = userEvent.setup();
+  const catalog = {
+    status: "loaded" as const,
+    plugins: [{ name: "linter", description: "Lints", category: undefined }],
+  } as unknown as MarketplaceDetailBodyProps["catalog"];
+  renderBody({ catalog });
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const cancel = screen.getByRole("button", { name: "Cancel" });
+  cancel.focus();
+  await user.click(cancel);
+
+  const body = document.querySelector('[data-kind="marketplace-detail"]');
+  expect(body).not.toBeNull();
+  expect(body?.contains(document.activeElement)).toBe(true);
+});
