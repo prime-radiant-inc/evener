@@ -27,6 +27,16 @@ export function pluginDetailBodyId(plugin: string, marketplace?: string, instanc
   return parts.join("-");
 }
 
+/** The id an expanded marketplace row's detail body carries (aria-controls
+ * on its opener). Keyed by name, with an optional instance segment for a
+ * surface mounted more than once. */
+export function marketplaceDetailBodyId(name: string, instance?: string): string {
+  const parts = ["marketplace-detail"];
+  if (instance !== undefined) parts.push(instance);
+  parts.push(encodeURIComponent(name));
+  return parts.join("-");
+}
+
 /** The expanded row owns Escape for the details it opened: opening leaves
  * focus on the row, so Escape from the row must dismiss the details rather
  * than bubble to an ancestor overlay or pane. preventDefault is OverlayPanel's

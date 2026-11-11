@@ -1,5 +1,7 @@
-// Host-scoped plugin workspace. Sources keeps launch directories available
-// independently of the plugin and marketplace inventory reads.
+// Host-scoped plugin workspace: Installed lists what this host has, and
+// Marketplaces is the one screen for both installing plugins and managing
+// marketplace sources (plugin directories stay available independently of
+// both reads).
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
@@ -9,21 +11,20 @@ import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../wi
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { HostScopedSurface } from "../hostScopedSurface";
+import { PluginsDirsSection } from "../pluginsDirs";
 import { useHostScopedLoad } from "../useConnectedEffect";
-import { BrowseSection } from "./BrowseSection";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
-import { MarketplaceSheet } from "./MarketplaceSheet";
+import { MarketplacesSection } from "./MarketplacesSection";
 import styles from "./marketplacesPlugins.module.css";
 import type { PluginDetailTarget } from "./PluginDetailBody";
-import { SourcesSection } from "./SourcesSection";
 
 const CLASS = {
   page: requireClass(styles.page, "marketplacesPlugins.module.css", "page"),
   help: requireClass(styles.help, "marketplacesPlugins.module.css", "help"),
 };
 
-type SegmentId = "installed" | "browse" | "sources";
+type SegmentId = "installed" | "marketplaces" | "directories";
 
 type AppliedRemovalGuard = {
   host: string;
@@ -57,7 +58,6 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   // expands its inline detail body, another row's tap swaps which one is
   // open, and the same row's tap again collapses it.
   const [expandedPair, setExpandedPair] = useState<PluginDetailTarget | null>(null);
-  const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
   // The registry removal can finish after its sheet closes. Keep its
   // no-repeat marker at the page lifecycle, and tie
@@ -127,10 +127,34 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
     // Each expansion belongs to the segment whose row opened it. Navigating
-    // away collapses it rather than leaving details floating over an
-    // unrelated list.
+    // away collapses the plugin details rather than leaving them floating
+    // over an unrelated list; marketplace expansions survive, keyed by name.
     setExpandedPair(null);
-    setSelectedMarketplace(null);
+  }
+
+  // Marketplace rows and the plugin rows inside them are keyed by name or
+  // pair. A marketplace that vanishes (its own remove, or another client's)
+  // takes its expansion - and any plugin details opened inside it - with it.
+  useEffect(() => {
+    if (marketplaces === null) return;
+    const marketplaceNames = new Set(marketplaces.map((m) => m.name));
+    setExpandedMarketplaces((current) => {
+      const next = new Set([...current].filter((name) => marketplaceNames.has(name)));
+      return next.size === current.size ? current : next;
+    });
+    setExpandedPair((current) => (current !== null && !marketplaceNames.has(current.marketplace) ? null : current));
+  }, [marketplaces]);
+
+  /** A marketplace row collapsing takes any plugin details open inside it. */
+  function collapseMarketplace(name: string): void {
+    setExpandedPair((current) => (current !== null && current.marketplace === name ? null : current));
+  }
+
+  /** A rename moves an open plugin detail's pair with its marketplace. */
+  function renameMarketplace(oldName: string, newName: string): void {
+    setExpandedPair((current) =>
+      current !== null && current.marketplace === oldName ? { plugin: current.plugin, marketplace: newName } : current,
+    );
   }
 
   // Both lists toggle the same accordion state: the tapped pair opens
@@ -155,8 +179,8 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         onChange={(value) => handleSegmentChange(value as SegmentId)}
         options={[
           { value: "installed", label: `Installed (${pluginCount})` },
-          { value: "browse", label: "Browse" },
-          { value: "sources", label: `Sources (${marketplaceCount})` },
+          { value: "marketplaces", label: `Marketplaces (${marketplaceCount})` },
+          { value: "directories", label: "Directories" },
         ]}
         fullWidth
       />
@@ -178,7 +202,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
           Failed to load plugins: {pluginsError}
         </InlineNotice>
       )}
-      {marketplacesError !== null && activeSegment !== "sources" && (
+      {marketplacesError !== null && (
         <InlineNotice
           tone="danger"
           live="status"
@@ -192,13 +216,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
           Failed to load marketplaces: {marketplacesError}
         </InlineNotice>
       )}
-      {activeSegment === "sources" && (
-        <SourcesSection
-          host={host}
-          onSelectMarketplace={setSelectedMarketplace}
-          onBrowse={() => handleSegmentChange("browse")}
-        />
-      )}
+      {activeSegment === "directories" && <PluginsDirsSection host={host} />}
       {activeSegment === "installed" &&
         (plugins === null ? (
           pluginsError === null && <Skeleton />
@@ -206,33 +224,25 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
           <InstalledSection
             expanded={expandedPair}
             onToggle={toggleDetail}
-            onBrowse={() => handleSegmentChange("browse")}
+            onBrowse={() => handleSegmentChange("marketplaces")}
           />
         ))}
-      {activeSegment === "browse" &&
+      {activeSegment === "marketplaces" &&
         (marketplaces === null ? (
           marketplacesError === null && <Skeleton />
         ) : (
-          <BrowseSection
+          <MarketplacesSection
             expandedMarketplaces={expandedMarketplaces}
             setExpandedMarketplaces={setExpandedMarketplaces}
             expanded={expandedPair}
-            onToggle={toggleDetail}
-            onSources={() => handleSegmentChange("sources")}
+            onToggleRow={toggleDetail}
+            onCollapseMarketplace={collapseMarketplace}
+            onRenamedMarketplace={renameMarketplace}
+            appliedRemovalNames={appliedRemovalNames}
+            connectionClient={connectionClient}
+            onAppliedRemoval={markAppliedRemoval}
           />
         ))}
-      {marketplaces !== null && (
-        <MarketplaceSheet
-          name={selectedMarketplace}
-          onClose={() => setSelectedMarketplace(null)}
-          onRenamed={setSelectedMarketplace}
-          expandedMarketplaces={expandedMarketplaces}
-          setExpandedMarketplaces={setExpandedMarketplaces}
-          appliedRemovalNames={appliedRemovalNames}
-          connectionClient={connectionClient}
-          onAppliedRemoval={markAppliedRemoval}
-        />
-      )}
     </section>
   );
 }
