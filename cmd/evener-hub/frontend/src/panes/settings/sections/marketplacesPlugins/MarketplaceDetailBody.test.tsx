@@ -363,3 +363,29 @@ test("cancelling the editor keeps the keyboard inside the marketplace body", asy
   expect(body).not.toBeNull();
   expect(body?.contains(document.activeElement)).toBe(true);
 });
+
+test("closing one plugin's details returns focus to that row, not the first row", async () => {
+  const catalog = {
+    status: "loaded" as const,
+    plugins: [
+      { name: "alpha", description: "A", category: undefined },
+      { name: "formatter", description: "F", category: undefined },
+    ],
+  } as unknown as MarketplaceDetailBodyProps["catalog"];
+  const pair = { plugin: "formatter", marketplace: "acme" };
+  const { view, props } = renderBody({ catalog, expandedRow: pair });
+  const details = document.querySelector('[data-kind="plugin-detail"]');
+  if (!(details instanceof HTMLElement)) throw new Error("no plugin details");
+  within(details).getByRole("button", { name: "Hide details" }).focus();
+
+  // The page collapses the row it was browsing.
+  view.rerender(
+    <>
+      <Toast />
+      <MarketplaceDetailBody {...props} catalog={catalog} expandedRow={null} />
+    </>,
+  );
+
+  const formatterRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(formatterRow);
+});

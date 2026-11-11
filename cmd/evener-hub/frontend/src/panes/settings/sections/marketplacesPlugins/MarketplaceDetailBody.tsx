@@ -30,7 +30,7 @@ import {
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
-import { pluginDetailBodyId, samePluginTarget } from "../../../plugins/pluginRowFocus";
+import { pluginDetailBodyId, samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
   MARKETPLACE_SOURCE_OPTIONS,
@@ -106,8 +106,11 @@ export function MarketplaceDetailBody({
   const ids = useId();
   // Any commit that unmounts the body's focused control - Cancel closing the
   // editor, an action a write disables - keeps the keyboard in the body
-  // instead of dropping it to <body>.
+  // instead of dropping it to <body>. A plugin row's own details closing is
+  // the row's to recover: that hook runs first (call order) and hands focus to
+  // the row being browsed, and the body hook then finds focus already placed.
   const bodyRoot = useRef<HTMLDivElement>(null);
+  usePluginRowFocusRehome(expandedRow, bodyRoot);
   useFocusRehome(bodyRoot);
 
   const sourcePin = marketplaceSourcePin(marketplace.source);
