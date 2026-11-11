@@ -216,6 +216,14 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		teardownChildSession(ctx, sub.sess)
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
 	}
+	// The child record is gone, so the controller pointer must go with it:
+	// cleanup that keeps the lane (late dirty residue, a failed git call) leaves
+	// a retry able to proceed instead of refusing it as an untracked runtime.
+	runtime := state.runtime
+	if runtime == nil && sub != nil {
+		runtime = sub.sess
+	}
+	s.delegateController.detachReleasedLaneRuntime(id, runtime)
 	lane := isolationLane{delegateID: id, path: lanePath, branch: branch}
 	if branch == "" {
 		// A lane record that reaches disposal without a resolved branch (a

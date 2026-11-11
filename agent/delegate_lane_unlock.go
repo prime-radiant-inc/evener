@@ -5,11 +5,10 @@ package agent
 // and detaching the exact runtime after its non-terminal release.
 
 // delegateHasResidentDescendants reports whether any strict descendant of
-// delegateID still has a resident runtime in that delegate's lane. Unlock
-// evicts only the delegate's own runtime; a descendant sharing the lane would
-// keep running in it after the lock is released, so the operation refuses until
-// the subtree is quiet. A nested isolated delegate has its own lane and does
-// not block this one.
+// delegateID still has a resident runtime. Unlock evicts only the delegate's
+// own runtime: a descendant would stay in the released runtime's registry and
+// an AttachRuntime for it would later be rejected, so the operation refuses
+// until the whole subtree is quiet.
 func (c *delegateTreeController) delegateHasResidentDescendants(delegateID string) bool {
 	if c == nil || delegateID == "" {
 		return false
@@ -20,20 +19,9 @@ func (c *delegateTreeController) delegateHasResidentDescendants(delegateID strin
 		if id == delegateID || c.residentDelegateRuntimeLocked(id) == nil {
 			continue
 		}
-		if c.descendantSharesLaneLocked(id, delegateID) {
-			return true
-		}
+		return true
 	}
 	return false
-}
-
-// descendantSharesLaneLocked reports whether descendantID runs in laneOwner's
-// isolation lane: walking up to its nearest worktree-isolated ancestor reaches
-// laneOwner. A nested isolated delegate returns false (it has its own lane).
-// Callers hold c.mu.
-func (c *delegateTreeController) descendantSharesLaneLocked(descendantID, laneOwner string) bool {
-	lane, ok := c.isolatedLaneForDelegateLocked(descendantID)
-	return ok && lane.delegateID == laneOwner
 }
 
 // detachReleasedLaneRuntime clears the controller's pointers to runtime after

@@ -367,8 +367,8 @@ func TestDelegateHasResidentDescendants(t *testing.T) {
 		t.Fatal("descendant runtime cleared but still reported resident")
 	}
 
-	// A nested isolated delegate has its own lane; its resident runtime does not
-	// occupy the parent's lane and must not block unlocking it.
+	// A nested isolated delegate's resident runtime also blocks unlock:
+	// releasing the parent would leave that runtime in the parent's registry.
 	nestedChild := newSession(t)
 	c.mu.Lock()
 	nested := c.durable[nestedID]
@@ -383,7 +383,7 @@ func TestDelegateHasResidentDescendants(t *testing.T) {
 		}
 		c.mu.Unlock()
 	})
-	if c.delegateHasResidentDescendants(parentID) {
-		t.Fatal("nested isolated delegate's own-lane runtime blocked the parent lane")
+	if !c.delegateHasResidentDescendants(parentID) {
+		t.Fatal("nested isolated delegate's resident runtime was not reported")
 	}
 }

@@ -123,10 +123,9 @@ func (s *Session) unlockDelegateLane(ctx context.Context, id string) (WorktreeUn
 	if liveErr != nil {
 		return WorktreeUnlockResult{}, liveErr
 	}
-	// Unlock releases only the direct runtime. A resident descendant sharing the
-	// lane would keep running there after the lock drops, so refuse until the
-	// subtree is quiet rather than evicting a subtree this operation does not
-	// own.
+	// Unlock releases only the direct runtime. A resident descendant would be
+	// left in the released runtime's registry, so refuse until the subtree is
+	// quiet rather than evicting a subtree this operation does not own.
 	if s.delegateController.delegateHasResidentDescendants(id) {
 		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: %s still has resident descendant delegates; close or dispose them before unlocking its lane", id)
 	}

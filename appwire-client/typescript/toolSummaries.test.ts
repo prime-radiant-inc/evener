@@ -228,7 +228,7 @@ test("reads a session search's count only from its footer", () => {
   );
 });
 
-test("says what a worktree adopt, unlock or dispose did, and an operation it doesn't know in words", () => {
+test("says what a worktree adopt or dispose did, and an operation it doesn't know in words", () => {
   const worktree = (args: Record<string, unknown>, result?: Record<string, unknown>) =>
     toolStepSummary({
       toolName: "manage_worktree",
@@ -245,8 +245,6 @@ test("says what a worktree adopt, unlock or dispose did, and an operation it doe
   expect(worktree({ operation: "dispose", id: "dlg_1", force_dirty: true }, { status: "already_disposed" })).toBe(
     "Already disposed dlg_1",
   );
-  expect(worktree({ operation: "unlock", id: "dlg_1" })).toBe("Released lane for dlg_1");
-  expect(worktree({ operation: "unlock" })).toBe("Released a delegate lane");
   expect(worktree({ operation: "reticulate" })).toBe("Used manage worktree: reticulate");
   // A call that names no worktree says so, with no dangling space.
   expect(worktree({ operation: "dispose" })).toBe("Disposed a worktree");
@@ -256,9 +254,6 @@ test("says what a worktree adopt, unlock or dispose did, and an operation it doe
   expect(worktree({ operation: "switch" }, { status: "unchanged" })).toBe("Already in a worktree");
   expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"dispose"}' })).toBe(
     "Disposing a worktree",
-  );
-  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"unlock","id":"dlg_1"}' })).toBe(
-    "Releasing lane for dlg_1",
   );
   expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"remove"}' })).toBe(
     "Removing a worktree",
@@ -435,7 +430,6 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["manage_worktree", { operation: "prune" }, "Pruning worktrees"],
   ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
   ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
-  ["manage_worktree", { operation: "unlock", id: "dlg_1" }, "Releasing lane for dlg_1"],
   ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
   [
     "ask_user",
