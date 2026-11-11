@@ -253,5 +253,4 @@
 .leading[data-compact="true"] {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
-  overflow: hidden;
 }
