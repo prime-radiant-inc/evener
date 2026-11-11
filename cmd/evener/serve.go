@@ -485,7 +485,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation)
+	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation, *lf.compactAtPercent)
 	if err != nil {
 		return err
 	}
@@ -696,6 +696,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		MCPInline:                   []string(lf.mcpServers),
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             *lf.contextStrategy,
+		CompactAtPercent:            *lf.compactAtPercent,
 		ExportATIFPath:              *lf.exportATIF,
 		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
@@ -758,6 +759,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
+			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.

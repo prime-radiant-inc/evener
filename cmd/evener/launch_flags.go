@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"strconv"
 
 	"primeradiant.com/evener/agent"
 )
@@ -29,6 +30,7 @@ type launchFlags struct {
 	exportATIF                  *string
 	exportATIFProviderHandles   *string
 	contextStrategy             *string
+	compactAtPercent            *int
 	outputSchema                *string
 	verbose                     *bool
 	agentName                   *string
@@ -71,6 +73,7 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.7 trajectory to this `path` on session close")
 	flags.exportATIFProviderHandles = fs.String("export-atif-provider-handles", "", "ATIF provider handle export `mode`: redacted|raw-local (default: redacted)")
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
+	flags.compactAtPercent = fs.Int("compact-at-percent", 0, "context-window percent at which automatic compaction triggers, "+strconv.Itoa(agent.MinCompactAtPercent)+"-"+strconv.Itoa(agent.MaxCompactAtPercent)+" (default: 90)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")

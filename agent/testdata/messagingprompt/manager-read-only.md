@@ -46,6 +46,8 @@ If a reviewer has sent the same work back twice and it is still not accepted, st
 
 Check finished work against the task's own requirements and inputs. A check that reuses the work's own logic confirms nothing.
 
+Don't stop or hand off work because of context length; automatic compaction will handle it.
+
 ## Background work
 
 Shell jobs keep running after your turn ends, and Evener tells you when one of yours finishes. Run long work as a background job, then do other work or end your turn.

@@ -1637,7 +1637,7 @@ func testManageContextShrinksBaselineOnFold(t *testing.T, withGoalSteering bool)
 	if withGoalSteering {
 		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
 	}
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90), < SummarizeThreshold(0.95): checkpoint layer only
 
 	preHistory := currentHistory(t, s)
 	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
@@ -1968,7 +1968,7 @@ func TestPrepareModelRequestWithError_DoesNotClobberConcurrentPublish(t *testing
 		return "", nil
 	}
 
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): maybeElicitNoteBeforeCompaction's pressure guard passes, so it reaches (and blocks in) the seam above
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): maybeElicitNoteBeforeCompaction's pressure guard passes, so it reaches (and blocks in) the seam above
 
 	var timings events.RoundTimings
 	prepErr := make(chan error, 1)

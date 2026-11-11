@@ -154,7 +154,7 @@ func effectiveWindowOf(prof *provider.Profile) (window int, assumed bool) {
 // AssumedContextWindow is the window the manager budgets against when the
 // model's real one is unknown — no user row declares it, the catalog has no
 // row, and no live listing supplied one (issue #4564). A zero window used to
-// mean "no limit": compaction and the usage warning went dead, and every
+// mean "no limit": compaction went dead, and every
 // round resent the full accumulated history. Unknown instead assumes a
 // window small enough that compaction errs toward folding too early. 128K is
 // the floor of current frontier text models' advertised windows, so the
@@ -271,8 +271,6 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 			}
 			return v
 		}
-		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
-		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
 		cm.WarnThreshold = clamp(cm.WarnThreshold * scale)
 		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)

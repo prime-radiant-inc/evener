@@ -121,7 +121,7 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 			history = append(history, schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\n"+r.str(200)+"\n[END SUMMARY]")))
 		case 9: // steering
 			history = append(history, schema.NewTurn(schema.TurnSteering, llm.User(r.str(120))))
-		case 10: // assistant thinking part (drives clearThinking)
+		case 10: // assistant thinking part
 			msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: r.str(80)},
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: r.str(200)}},
@@ -415,11 +415,9 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 }
 
 // ctxmgr_manageThresholds derives compaction thresholds and a preserve count
-// from fuzzer bytes. Layers 1-3 default low (fire readily); the summarize layer
+// from fuzzer bytes. The checkpoint layer defaults low (fires readily); the summarize layer
 // toggles between firing and skipping so the pipeline is explored both ways.
 func ctxmgr_manageThresholds(cm *Manager, sel uint8, preserveSel uint8) {
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = float64(sel%4) * 0.0001
 	if sel&0x80 != 0 {
 		cm.SummarizeThreshold = 0.0001
@@ -430,7 +428,7 @@ func ctxmgr_manageThresholds(cm *Manager, sel uint8, preserveSel uint8) {
 }
 
 // FuzzCtxmgrSessionLogManageContext drives SessionLogStrategy.ManageContext:
-// masking, thinking clearing, the session-log checkpoint (which replaces the old
+// the session-log checkpoint (which replaces the old
 // prefix with a checkpoint turn built from the session log + original prompt),
 // and LLM summarization on a fault-injected adapter. The session log lives under
 // a t.TempDir sandbox; no real network or process is touched.

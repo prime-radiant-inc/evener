@@ -29,7 +29,6 @@ Inside `contextmgr`, the `Manager` is split by concern. Only `manager.go`,
 | `fold_context.go` | the `With*` context keys and their readers |
 | `pressure.go` | profile swap, token measurement, window and pressure math, `ApplyThresholdScale` |
 | `compact.go` | `MaybeCompact`, `ForceCompact`, assumed-window disclosure |
-| `observation_mask.go` | observation masking, thinking clearing |
 | `checkpoint.go`, `checkpoint_format.go` | deterministic checkpoint: collect history data, render markdown |
 | `partner_carry.go` | partner-message fitting, condensing and carry |
 | `summarize_fold.go` | `summarizeFold`, `foldCutoff`, `safeCutoff` |
@@ -186,7 +185,7 @@ produced (false when there is no LLM client or the history is too short to summa
 
 ### Warn nudge
 
-When pressure crosses `WarnThreshold` (0.75), `maybeNudgeSelfCompact` injects a
+When pressure crosses `WarnThreshold` (0.75, or 0.05 below a lower trigger), `maybeNudgeSelfCompact` injects a
 one-shot steering nudge asking the agent to call `compact_context` at its next clean seam.
 The nudge is best-effort: a single large tool result can jump past `CheckpointThreshold`
 before the nudge fires. The automatic checkpoint and summary layers remain the
@@ -269,21 +268,22 @@ a note the compaction hands back carrying the folded id verbatim
 
 ## Compaction Layers
 
-Two layers, applied progressively as pressure rises:
+Two layers, applied progressively as pressure rises. The checkpoint trigger is the
+user setting `compact_at_percent` (CLI `--compact-at-percent`, launch.toml
+`compact_at_percent`; default 90, accepted range 20-100):
 
 | Layer | Threshold | Method | Destructiveness |
 |-------|-----------|--------|-----------------|
-| **Checkpoint** | >= 80% | Deterministic state snapshot | Replaces old history with structured summary |
-| **LLM Summarize** | >= 95% | LLM-generated narrative summary | Replaces old history with LLM prose |
+| **Checkpoint** | >= `compact_at_percent` (default 90%) | Deterministic state snapshot | Replaces old history with structured summary |
+| **LLM Summarize** | >= 95%, or the trigger when that is higher | LLM-generated narrative summary | Replaces old history with LLM prose |
 
 Both layers preserve the most recent `PreserveRecentTurns` turns (default 6) to
 maintain conversation coherence.
 
 ### Why only two layers
 
-Earlier versions had four layers with observation masking (>= 60%) and thinking
-clearing (>= 70%) as gentler precursors to checkpoint. These were removed because
-**they bust the prompt cache for all providers**.
+No strategy rewrites a turn before the fold point at any pressure below the trigger, because
+in-place rewrites **bust the prompt cache for all providers**.
 
 All major LLM providers use prefix-based prompt caching:
 
@@ -291,18 +291,12 @@ All major LLM providers use prefix-based prompt caching:
 - **OpenAI**: Automatic prefix caching on Responses API (50% discount)
 - **Gemini**: Context caching
 
-Observation masking and thinking clearing modify turns in the middle of the
-conversation history. This changes the content at that position, breaking the cache
-prefix match for everything after. The result:
+An in-place rewrite of an old turn (masking a tool result, clearing thinking) changes the
+content at that position and breaks the cache prefix match for everything after it, which
+costs more than the few hundred tokens it saves. Checkpoint already captures the tool names,
+file paths and exit codes, so nothing is lost by going straight to it.
 
-- **Tokens saved by masking**: ~200-500 per turn (one masked tool result)
-- **Tokens that lose cache benefit**: ~2-5K (all "recent" turns after the masked one)
-- **Net effect**: More expensive, not less
-
-The masked information (tool names, file paths, exit codes) is also captured by the
-checkpoint layer, so skipping straight to checkpoint doesn't lose meaningful context.
-
-The two remaining layers don't have this problem: checkpoint replaces the entire old
+Both layers avoid this problem: checkpoint replaces the entire old
 prefix, and summarize replaces the checkpoint. The old cached prefix is gone regardless.
 
 ### Checkpoint (Layer 1)
@@ -433,9 +427,9 @@ estimation uses the stale window size.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `WarnThreshold` | 0.75 | Pressure at which the agent is nudged to self-compact (best-effort, one-shot per compaction cycle) |
-| `CheckpointThreshold` | 0.80 | Pressure threshold for deterministic checkpoint |
-| `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization |
+| `WarnThreshold` | 0.75 | Pressure (0.05 below the trigger when the trigger is at or below 0.75) at which the agent is nudged to self-compact (best-effort, one-shot per compaction cycle) |
+| `CheckpointThreshold` | 0.90 | Pressure threshold for deterministic checkpoint; the `compact_at_percent` setting, applied with `Manager.SetCompactAt` |
+| `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization; raised to the trigger when the trigger is above 0.95 |
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
 | `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (test-only; clamped to a 0.20 floor) |
 

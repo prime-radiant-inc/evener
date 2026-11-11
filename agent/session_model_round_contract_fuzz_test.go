@@ -139,9 +139,6 @@ func FuzzModelRoundContracts(f *testing.F) {
 		if responseHasServerWebSearch([]llm.ContentPart{{Kind: llm.ContentText}}) || !responseHasServerWebSearch([]llm.ContentPart{{Kind: llm.ContentWebSearch}}) {
 			t.Fatal("web-search content detection mismatch")
 		}
-		for _, tc := range []struct{ window, tokens int }{{0, 100}, {100, 80}, {100, 81}} {
-			_, _, _ = contextUsageWarning(tc.window, tc.tokens)
-		}
 		zero := 0
 		one := 1
 		_, _ = effectiveRecordedInputTokens(llm.Usage{}, 0, false)

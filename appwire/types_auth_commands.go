@@ -460,6 +460,7 @@ type LaunchConfigLayer struct {
 	Agent                       string            `json:"agent,omitempty"`
 	ReasoningEffort             string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy             string            `json:"contextStrategy,omitempty"`
+	CompactAtPercent            *int              `json:"compactAtPercent,omitempty"`
 	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
 	ProviderIdleTimeout         string            `json:"providerIdleTimeout,omitempty"`
 	Sandbox                     string            `json:"sandbox,omitempty"`

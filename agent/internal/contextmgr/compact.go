@@ -152,7 +152,7 @@ func (cm *Manager) MaybeCompact(
 		cm.resetMeasurement()
 	}
 
-	// Layer 1: Deterministic checkpoint at ≥80%.
+	// Layer 1: Deterministic checkpoint at the configured trigger.
 	// checkpointed is what this pass's checkpoint folded, which a summary
 	// completing the same fold reads the partner's messages from.
 	var checkpointed []schema.Turn
@@ -167,7 +167,7 @@ func (cm *Manager) MaybeCompact(
 		p, prof = pressure()
 	}
 
-	// Layer 2: LLM summarization at ≥90%.
+	// Layer 2: LLM summarization at the backstop.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		if cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, "", checkpointed)

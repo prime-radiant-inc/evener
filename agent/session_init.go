@@ -380,6 +380,9 @@ func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*t
 // installContextStrategy selects the configured context strategy and registers
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
+	if percent := s.cfg.CompactAtPercent; percent > 0 {
+		s.contextMgr.SetCompactAt(float64(percent) / 100)
+	}
 	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 	strategy, err := selectStrategy(s.cfg, s.contextMgr, s)
@@ -408,6 +411,9 @@ func (s *Session) installContextStrategy() error {
 func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	idleTimeout, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout)
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateCompactAtPercent(cfg.CompactAtPercent); err != nil {
 		return nil, err
 	}
 	if err := requireSessionDeps(client, profile, env); err != nil {
@@ -817,6 +823,8 @@ type RestoreSessionConfig struct {
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	ProviderIdleTimeout         string
+	// CompactAtPercent replaces the persisted trigger when non-zero.
+	CompactAtPercent int
 	// CommitProvenance replaces the persisted mode when non-empty. Empty keeps
 	// the session's saved value, which may itself be empty (default on).
 	CommitProvenance        string
@@ -995,6 +1003,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ProviderIdleTimeout = restoreCfg.ProviderIdleTimeout
 	}
 	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+		return nil, err
+	}
+	if restoreCfg.CompactAtPercent != 0 {
+		cfg.CompactAtPercent = restoreCfg.CompactAtPercent
+	}
+	if err := ValidateCompactAtPercent(cfg.CompactAtPercent); err != nil {
 		return nil, err
 	}
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)

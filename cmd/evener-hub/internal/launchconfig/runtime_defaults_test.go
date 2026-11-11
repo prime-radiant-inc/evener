@@ -30,6 +30,9 @@ func TestApplyRuntimeDefaultsFillsBuiltinsFromSchema(t *testing.T) {
 	if got.Effective.OpenAIResponsesContinuation != "off" {
 		t.Errorf("OpenAIResponsesContinuation = %q, want builtin off", got.Effective.OpenAIResponsesContinuation)
 	}
+	if got.Effective.CompactAtPercent == nil || *got.Effective.CompactAtPercent != 90 {
+		t.Errorf("CompactAtPercent = %v, want builtin 90", got.Effective.CompactAtPercent)
+	}
 	if got.Effective.MaxRounds == nil || *got.Effective.MaxRounds != -1 {
 		t.Errorf("MaxRounds = %v, want builtin -1", got.Effective.MaxRounds)
 	}

@@ -771,55 +771,6 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 	t.Fatalf("second request missing encrypted reasoning in history: %#v", reqs[1].Messages)
 }
 
-func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "tiny",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
-	c.Register(f)
-
-	// Size the window from this test's own standing request instead of a
-	// hardcoded constant: a prompt rewrite changes the system prompt and tool
-	// schemas, and a fixed window silently lands on the wrong side of the 80%
-	// threshold. The window must stay above the standing request (or local
-	// admission blocks ProcessInput outright) yet below 1.25x it (or the request
-	// drops under the threshold); 1.1x sits inside that band with margin both
-	// ways.
-	profile := namedInstanceProfile("tiny", "openai", "m")
-	input := strings.Repeat("a", 40)
-	window := standingRequestTokens(t, dir, profile, SessionConfig{}, input) * 11 / 10
-
-	sess := newSession(t, withClient(c), withProfile(WithContextWindow(profile, window)), withDir(dir), withConfig(SessionConfig{}))
-	// This test scripts exactly one model step and crosses the compaction threshold;
-	// mute the default-on note elicitation so it doesn't steal that step.
-	muteNoteElicitation(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	_, err := sess.ProcessInput(ctx, input, nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	sess.Close()
-
-	warn := ""
-	for ev := range sess.Events() {
-		if d, ok := ev.Data.(events.WarningData); ok {
-			warn = d.Message
-		}
-	}
-	if warn == "" {
-		t.Fatalf("expected WARNING event")
-	}
-	if !strings.Contains(warn, "of context window") {
-		t.Fatalf("warning message: %q", warn)
-	}
-}
-
 func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

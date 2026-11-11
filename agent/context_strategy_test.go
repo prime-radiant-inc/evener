@@ -149,11 +149,9 @@ func TestCompactionThresholdScale(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	cm := sess.contextMgr
-	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.30) // 0.60 * 0.5
-	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.35)     // 0.70 * 0.5
-	check("CheckpointThreshold", cm.CheckpointThreshold, 0.40)           // 0.80 * 0.5
-	check("SummarizeThreshold", cm.SummarizeThreshold, 0.475)            // 0.95 * 0.5
-	check("WarnThreshold", cm.WarnThreshold, 0.375)                      // 0.75 * 0.5
+	check("CheckpointThreshold", cm.CheckpointThreshold, 0.45) // 0.90 * 0.5
+	check("SummarizeThreshold", cm.SummarizeThreshold, 0.475)  // 0.95 * 0.5
+	check("WarnThreshold", cm.WarnThreshold, 0.375)            // 0.75 * 0.5
 	sess.Close()
 
 	// Scale=0.1 clamps to 0.20 floor.
@@ -164,8 +162,6 @@ func TestCompactionThresholdScale(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	cm2 := sess2.contextMgr
-	check("ObservationMaskThreshold clamped", cm2.ObservationMaskThreshold, 0.20)
-	check("ThinkingClearThreshold clamped", cm2.ThinkingClearThreshold, 0.20)
 	check("CheckpointThreshold clamped", cm2.CheckpointThreshold, 0.20)
 	check("SummarizeThreshold clamped", cm2.SummarizeThreshold, 0.20)
 	check("WarnThreshold clamped", cm2.WarnThreshold, 0.20)

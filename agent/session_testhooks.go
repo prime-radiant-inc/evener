@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -342,9 +341,8 @@ type testConfig struct {
 	// deterministic in package-agent tests.
 	responsesContinuationShadowEstimateFunc func(llm.Request) (int, bool)
 
-	// modelCallContextWindowFunc and responsesContinuationHistoryCurrentFunc
-	// expose otherwise unreachable model-call decisions to deterministic tests.
-	modelCallContextWindowFunc              func(*provider.Profile) int
+	// responsesContinuationHistoryCurrentFunc exposes an otherwise unreachable
+	// model-call decision to deterministic tests.
 	responsesContinuationHistoryCurrentFunc func(responsesContinuationHistoryReservation, []schema.Turn) bool
 
 	// childClientFactory, when non-nil, supplies the llm.Client a spawned child

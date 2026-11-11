@@ -26,8 +26,6 @@ func canaryManager(t *testing.T) *Manager {
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest, "invalid messages[1].content: "+summarizerCanary, nil, nil)
 	}})
 	cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	cm.PreserveRecentTurns = 2

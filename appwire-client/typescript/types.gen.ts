@@ -2251,6 +2251,7 @@ export interface LaunchConfigLayer {
   agent?: string;
   reasoningEffort?: string;
   contextStrategy?: string;
+  compactAtPercent?: number;
   openAIResponsesContinuation?: string;
   providerIdleTimeout?: string;
   sandbox?: string;

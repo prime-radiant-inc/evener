@@ -551,3 +551,19 @@ func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testi
 	close(stop)
 	wg.Wait()
 }
+
+// thinkingHeavyHistory is the shared input for the profile-read concurrency
+// tests: a long history whose turns are replayable thinking text, so the two
+// profiles' accounting differs across any window between their reads.
+func thinkingHeavyHistory() []schema.Turn {
+	history := make([]schema.Turn, 0, 3000)
+	for range 3000 {
+		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
+			},
+		}})
+	}
+	return history
+}

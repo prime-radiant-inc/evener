@@ -26,8 +26,8 @@ func makeBigHistory(targetTokens int) []schema.Turn {
 	return turns
 }
 
-func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
-	// At 70% pressure, no compaction should fire. Compaction starts at 80% (checkpoint).
+func TestMaybeCompact_NoCompactionBelowTrigger(t *testing.T) {
+	// At 70% pressure, no compaction should fire. Compaction starts at 90% (checkpoint).
 	profile := testProfile("openai", "test", 1000)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 	cm.PreserveRecentTurns = 2
@@ -178,10 +178,10 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
-	// sys prompt is 2800 chars ≈ 700 tokens + history ~100 tokens = 800/1000 = 80%
-	cm.MaybeCompact(context.Background(), &history, 2800, emitFn)
+	// sys prompt is 3200 chars ≈ 800 tokens + history ~100 tokens = 900/1000 = 90%
+	cm.MaybeCompact(context.Background(), &history, 3200, emitFn)
 
-	// With sys prompt, we're at ~80%, should trigger checkpoint.
+	// With sys prompt, we are at ~90%, should trigger checkpoint.
 	foundCheckpoint := false
 	for _, e := range evs {
 		if d, ok := e.Data.(events.ContextCompactionData); ok && d.Layer == "checkpoint" {
@@ -202,7 +202,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	cm.RecordInputTokens(700, 5)
 
 	// After compaction modifies history, the measurement should reset.
-	// Build a history that's big enough to trigger observation masking.
+	// Build a history that's big enough to trigger compaction.
 	history := makeBigHistory(650)
 	history = append(history,
 		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},

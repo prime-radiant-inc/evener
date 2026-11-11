@@ -46,13 +46,11 @@ func testOpenAIProfileWithContextWindow(contextWindow int) *provider.Profile {
 }
 
 // newCompactionManager builds a Manager over an OpenAI test profile with the
-// given context window and the four compaction thresholds, named here in
-// call order: observation mask, thinking clear, checkpoint, summarize. A
-// test names exactly which layers can fire; PreserveRecentTurns is 2.
-func newCompactionManager(client *llm.Client, contextWindow int, observationMask, thinkingClear, checkpoint, summarize float64) *Manager {
+// given context window and the two fold thresholds, named here in call
+// order: checkpoint, summarize. A test names exactly which layers can fire;
+// PreserveRecentTurns is 2.
+func newCompactionManager(client *llm.Client, contextWindow int, checkpoint, summarize float64) *Manager {
 	cm := NewManager(testOpenAIProfileWithContextWindow(contextWindow), client, cheapmodel.New(client))
-	cm.ObservationMaskThreshold = observationMask
-	cm.ThinkingClearThreshold = thinkingClear
 	cm.CheckpointThreshold = checkpoint
 	cm.SummarizeThreshold = summarize
 	cm.PreserveRecentTurns = 2

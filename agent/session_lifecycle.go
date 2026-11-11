@@ -1511,8 +1511,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	var toolSigs []string
 	var toolSigFailed []bool
-	var lastText string // accumulated assistant text for round-limit return
-	ctxWarned := false
+	var lastText string            // accumulated assistant text for round-limit return
 	contentFilterRetried := false  // track whether we've already tried recovering from a content filter error
 	documentRejectRetried := false // track whether we've already retried without a provider-rejected tool-result document
 	localAdmissionCompacted := false
@@ -1732,16 +1731,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Accumulate usage and record exact input token count for pressure calculation.
 		s.recordResponseUsage(resp, req, usedProfile)
-
-		// Context window awareness: emit a warning when we exceed ~80% of the
-		// context window. A fallback that answered owns the round's window: the
-		// context accounting already switched to it, and the warning must not
-		// report the primary's window for a request the fallback served.
-		if !ctxWarned {
-			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(usedProfile, req) {
-				ctxWarned = true
-			}
-		}
 
 		// Best-effort nudge: when pressure crosses WarnThreshold, steer the agent to
 		// self-compact at its next clean seam. recordResponseUsage above just refreshed

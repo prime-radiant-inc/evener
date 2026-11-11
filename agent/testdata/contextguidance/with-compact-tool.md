@@ -1,0 +1,1 @@
+When the system has warned you that you're running out of context, call compact_context instead of stopping or handing off your work. Until then, you have room: don't stop or hand off work because of context length.

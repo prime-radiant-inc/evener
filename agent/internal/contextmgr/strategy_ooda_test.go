@@ -19,8 +19,8 @@ import (
 // OpenAI profile with the given window, the compaction thresholds the caller
 // names (in newCompactionManager's order), and the transcript tools the
 // orient text names.
-func newOODATestManager(client *llm.Client, contextWindow int, observationMask, thinkingClear, checkpoint, summarize float64) *Manager {
-	cm := newCompactionManager(client, contextWindow, observationMask, thinkingClear, checkpoint, summarize)
+func newOODATestManager(client *llm.Client, contextWindow int, checkpoint, summarize float64) *Manager {
+	cm := newCompactionManager(client, contextWindow, checkpoint, summarize)
 	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 	return cm
 }
@@ -54,7 +54,7 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	client := llm.NewClient()
 	// Thresholds high so no compaction occurs.
-	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99)
 	sls, _ := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -74,7 +74,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *testing.T) {
 	client := llm.NewClient()
 	// Thresholds high so no compaction occurs.
-	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99)
 	sls, sessionLog := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -136,7 +136,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 
 func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) {
 	client := llm.NewClient()
-	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99)
 	sls, sessionLog := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -169,7 +169,7 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
 	// Thresholds high so no compaction occurs.
-	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99)
 	sls, sessionLog := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -213,7 +213,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
 	client := llm.NewClient()
 	// Thresholds high so no compaction occurs.
-	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99)
 	sls, sessionLog := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -243,7 +243,7 @@ func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
 func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	client := llm.NewClient()
 	// Low thresholds to trigger compaction.
-	cm := newOODATestManager(client, 1000, 0.05, 0.95, 0.95, 0.99)
+	cm := newOODATestManager(client, 1000, 0.05, 0.99)
 	sls, sessionLog := newTestSessionLogStrategy(t, cm)
 	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
@@ -297,8 +297,8 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	if len(emittedLayers) == 0 {
 		t.Fatal("expected at least one compaction event")
 	}
-	if emittedLayers[0] != "observation_mask" {
-		t.Errorf("expected first layer to be observation_mask, got %q", emittedLayers[0])
+	if emittedLayers[0] != "session_log_checkpoint" {
+		t.Errorf("expected first layer to be session_log_checkpoint, got %q", emittedLayers[0])
 	}
 
 	// Should also have injected orient message at the end.

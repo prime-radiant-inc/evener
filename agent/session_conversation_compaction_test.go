@@ -79,7 +79,7 @@ func TestConversationProvenance_FoldThenRestorePreservesEligibility(t *testing.T
 	s.contextMgr.CheckpointThreshold = 2
 	s.contextMgr.SummarizeThreshold = 0.5
 	s.contextMgr.PreserveRecentTurns = 0
-	forcePressureAbove(t, s, 0.85)
+	forcePressureAbove(t, s, 0.92)
 	var timings events.RoundTimings
 	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 5, &timings); err != nil {
 		t.Fatal(err)
