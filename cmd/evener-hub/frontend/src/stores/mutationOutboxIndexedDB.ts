@@ -971,14 +971,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
 
   async settleApplied(
     clientMutationId: string,
-    options?: { retainDisplayCopy?: boolean },
+    options?: { retainDisplayCopy?: boolean; queueEntryIds?: readonly string[] },
   ): Promise<MutationRecord | undefined> {
     return (await this.settleAppliedResult(clientMutationId, options)).record;
   }
 
   async settleAppliedResult(
     clientMutationId: string,
-    options?: { retainDisplayCopy?: boolean },
+    options?: { retainDisplayCopy?: boolean; queueEntryIds?: readonly string[] },
   ): Promise<{ settled: boolean; retiredIds: string[]; record?: MutationRecord }> {
     let settledSource: MutationRecord | undefined;
     let settledWireId: string | undefined;
@@ -1035,7 +1035,15 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const retainedSource = displaySource && carriesOptimisticInput(displaySource) ? displaySource : undefined;
         const settleOptimisticCopy = async (key: string, deleteWhenMissing: boolean): Promise<void> => {
           if (retainedSource) {
-            await requestResult(optimistic.put(acceptedRecord(retainedSource)));
+            await requestResult(
+              optimistic.put(
+                acceptedRecord(
+                  options?.queueEntryIds && options.queueEntryIds.length > 0
+                    ? { ...retainedSource, queueEntryIds: options.queueEntryIds }
+                    : retainedSource,
+                ),
+              ),
+            );
           } else if (deleteWhenMissing) {
             await requestResult(optimistic.delete(key));
           }

@@ -6026,6 +6026,20 @@ async function publishAndReconcileThreadHydration(
           (hydration.response.thread.evener.pendingMutations ?? []).map((entry) => entry.clientMutationId),
         );
         const responseQueueIds = new Set(hydration.response.thread.evener.queue?.clientMutationIds ?? []);
+        const queueEntryIdsById = new Map<string, readonly string[]>();
+        for (const pendingMutation of hydration.response.thread.evener.pendingMutations ?? []) {
+          if (pendingMutation.queueEntryIds && pendingMutation.queueEntryIds.length > 0) {
+            queueEntryIdsById.set(pendingMutation.clientMutationId, pendingMutation.queueEntryIds);
+          }
+        }
+        const responseQueue = hydration.response.thread.evener.queue;
+        for (let index = 0; index < (responseQueue?.clientMutationIds?.length ?? 0); index += 1) {
+          const id = responseQueue?.clientMutationIds?.[index];
+          const entryId = responseQueue?.ids?.[index];
+          if (!id || !entryId) continue;
+          const known = queueEntryIdsById.get(id) ?? [];
+          if (!known.includes(entryId)) queueEntryIdsById.set(id, [...known, entryId]);
+        }
         await runtime.dispatcher.reconcileIdentities(
           [...authoritativeIds].filter((id) => responseTranscriptIds.has(id)),
         );
@@ -6033,7 +6047,7 @@ async function publishAndReconcileThreadHydration(
           [...authoritativeIds].filter(
             (id) => !responseTranscriptIds.has(id) && (responsePendingIds.has(id) || responseQueueIds.has(id)),
           ),
-          { retainDisplayCopy: true },
+          { retainDisplayCopy: true, queueEntryIdsById },
         );
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -6675,12 +6689,21 @@ function handleNotification(n: AnyNotification): void {
     const runtime = getMutationRuntime();
     if (n.method === "thread/queueChanged") {
       // A queue frame proves the transition, not that the replacement is
-      // visible. Keep the display copy until an authoritative snapshot names
-      // the message it became.
-      if (runtime && consumed.length > 0) {
-        const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
-        for (const id of consumed) pending.add(id);
-        pendingConsumedSettlements.set(settlementRef, pending);
+      // visible. Keep the display copy and ask its hydration owner for the
+      // authoritative snapshot that names the message it became.
+      if (consumed.length > 0) {
+        if (runtime) {
+          const pending = pendingConsumedSettlements.get(settlementRef) ?? new Set<string>();
+          for (const id of consumed) pending.add(id);
+          pendingConsumedSettlements.set(settlementRef, pending);
+        }
+        const client = getWiredClient();
+        if (client) {
+          void refreshTrackedThread(client, getReadyEpoch(), settlementRef, true, {
+            intent: hydrationIntentFor(settlementRef),
+          });
+          void refreshWatchedThread(client, getReadyEpoch(), settlementRef, true);
+        }
       }
     } else {
       let retireIds = mutationIdentities;
@@ -7169,6 +7192,10 @@ async function handleReady(
     suppressTargetDispatch?: () => boolean;
     reopenOnlyClientMutationId?: string;
     replayAcceptedCopies?: boolean;
+    /** Shared across a discovered-ref fan-out so the outer replay sees them. */
+    authoritativePublishedRefs?: Set<string>;
+    /** The caller's outer replay pass covers this ref. */
+    deferReplay?: boolean;
   },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -7189,7 +7216,7 @@ async function handleReady(
   const watchRefs = targetRef
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
-  const authoritativePublishedRefs = new Set<string>();
+  const authoritativePublishedRefs = options?.authoritativePublishedRefs ?? new Set<string>();
   await Promise.all([
     ...Array.from(refs, (ref) =>
       refreshTrackedThread(client, epoch, ref, targetedResync, {
@@ -7223,7 +7250,9 @@ async function handleReady(
     for (const ref of discovered) replayRefs.add(ref);
     if (getWiredClient() !== client || getReadyEpoch() !== epoch || client.state !== "ready") return;
     await Promise.all(
-      discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
+      discovered
+        .filter((ref) => !alreadyHydrated.has(ref))
+        .map((ref) => handleReady(client, epoch, ref, { authoritativePublishedRefs, deferReplay: true })),
     );
     if (
       !isCurrentMutationRuntime(runtime) ||
@@ -7250,6 +7279,7 @@ async function handleReady(
   if (
     targetedResync &&
     targetRef &&
+    options?.deferReplay !== true &&
     authoritativePublishedRefs.has(targetRef) &&
     acceptedCopyReplayRefs.has(targetRef)
   ) {

@@ -1566,6 +1566,45 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
   });
 
+  test("replays an accepted pinned copy discovered during reconnect", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: {
+        ref: "ref_a",
+        input: [{ type: "text", text: "queued" }],
+      },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    expect(await storage.settleReceipt(record.clientMutationId, "pending")).toBe(true);
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: true,
+          queue: { revision: 1 },
+          pendingMutations: [],
+        },
+      }),
+    );
+    fake.on("turn/queue", (params) => ({
+      receipt: { ...mutationReceipt(params.clientMutationId), projectionState: "removed" },
+    }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
+    inspector.close();
+  });
+
   test.each(["bounded transcript", "cleared instance"])(
     "retries an unresolved %s mutation with its original identity and payload",
     async (snapshot) => {

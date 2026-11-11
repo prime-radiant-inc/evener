@@ -162,7 +162,7 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // carrying the id, by key or by wire, settled.
   settleApplied(
     clientMutationId: string,
-    options?: { retainDisplayCopy?: boolean },
+    options?: { retainDisplayCopy?: boolean; queueEntryIds?: readonly string[] },
   ): Promise<MutationRecord<A> | undefined>;
   // Records the authoritative snapshot proves never landed, re-queued for
   // another dispatch attempt; returns the ROWS this pass re-queued (a host
