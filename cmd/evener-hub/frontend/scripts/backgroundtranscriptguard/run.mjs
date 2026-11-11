@@ -40,6 +40,7 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { isHistoryPageMethod, isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROFILE_PREFIX = "backgroundtranscriptguard-chrome-";
@@ -217,7 +218,7 @@ const EVIDENCE_EXPR = `(async () => {
 })()`;
 
 // countTargetRequestsInWindow decodes a raw trace byte window and counts the
-// TARGET session's request frames: thread/read and thread/turns/list. It is used
+// TARGET session's request frames: both history read and page aliases. It is used
 // to forbid fetches during a local-restoration interval.
 function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH) {
   // before/after are BYTE offsets (from statSync/traceBytes), so the window is
@@ -273,7 +274,7 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
     if (!frame.method) continue;
     const params = frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
-    if (frame.method === "thread/read") {
+    if (isHistoryReadMethod(frame.method)) {
       reads += 1;
       // A foreground subscription read is the load the zero-read promise
       // forbids; the entry route's honest recovery read is non-subscribing and
@@ -282,7 +283,7 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
       if (params.subscribe === true) subscribeReads += 1;
       else if (params.heldSnapshot !== undefined) recoveryReads += 1;
       else plainReads += 1;
-    } else if (frame.method === "thread/turns/list") pages += 1;
+    } else if (isHistoryPageMethod(frame.method)) pages += 1;
   }
   return { reads, pages, subscribeReads, recoveryReads, plainReads };
 }
@@ -328,7 +329,7 @@ function targetPageRequestCursorsInWindow(ref, before, after, tracePath = TRACE_
     } catch (error) {
       throw new Error(`trace ${tracePath} has a malformed frame in the window: ${error.message}`);
     }
-    if (frame.method !== "thread/turns/list") continue;
+    if (!isHistoryPageMethod(frame.method)) continue;
     const params = frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
     cursors.push(params.cursor ?? "");
@@ -1876,15 +1877,9 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   // ---- a real WebSocket gap, a turn completing during it, reconnect ----
   const reconnectTraceBefore = traceBytes();
-  await driver.send("Network.emulateNetworkConditions", {
-    offline: true,
-    latency: 0,
-    downloadThroughput: 0,
-    uploadThroughput: 0,
-  });
-  // CDP offline does not close the live socket, so close the app's real hub
-  // /rpc WebSocket(s) at the transport level; the offline emulation then keeps
-  // the app from reconnecting until the network is restored below.
+  // Let Chrome consume the peer's close frame before offline emulation blocks
+  // incoming traffic. Otherwise a native socket can stay CLOSING and the app
+  // never observes its loss. Offline then holds the gap until the turn completes.
   const closedSockets = await evaluate(
     driver.send,
     `(() => {
@@ -1896,6 +1891,12 @@ async function runEntryProductionJourney(driver, harnessUrl) {
      })()`,
   ).catch(() => -1);
   const disconnected = await waitForDisconnected(driver);
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: 0,
+    uploadThroughput: 0,
+  });
   const offlineSample = await observedConnection(driver);
   driver.milestone("ws-broken", {
     disconnected,
@@ -2749,7 +2750,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
     if (held.direction === direction) continue;
     const params = held.frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
-    if (held.frame.method === "thread/read") {
+    if (isHistoryReadMethod(held.frame.method)) {
       readResponses += 1;
       if (params.subscribe === true || params.replaceSubscription === true) subscribedRead = true;
       const cursor = frame.result.olderCursor ?? "";
@@ -2760,7 +2761,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
       readResponseWindows.push(normalizeWindowFromWire(frame.result.thread?.turns));
       readResponseSnapshotLengths.push(frame.result.snapshot?.length ?? null);
       readResponseGenerations.push(frame.result.requestGeneration ?? null);
-    } else if (held.frame.method === "thread/turns/list") {
+    } else if (isHistoryPageMethod(held.frame.method)) {
       pageCursors.push(frame.result.nextCursor ?? "");
     }
   }
@@ -2781,7 +2782,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
 }
 
 // scrollToTopAndWaitPage scrolls the real port to the top and waits until a NEW
-// target thread/turns/list page has been issued, returning updated evidence.
+// target history page has been issued, returning updated evidence.
 async function scrollToTopAndWaitPage(driver, ref, beforePages, timeoutMs = 60000) {
   await scrollTranscriptToTop(driver, ref);
   const deadline = Date.now() + timeoutMs;

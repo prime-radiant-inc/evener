@@ -11,6 +11,7 @@
 import { beforeEach, expect, test } from "vitest";
 import { REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 import { revealControl, revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
 const CONTAINER = '[data-testid="activity-sidebar"]';
 const MISSING_TARGET = `${CONTAINER} [data-activity-anchor="delegate:missing"]`;
@@ -154,4 +155,11 @@ test("the gate stays shut while the only page boundary is refused", () => {
 test("the gate stays shut for a collection with no usable control", () => {
   sidebar(current("a"));
   expect(gate(MISSING_TARGET)).toBe(false);
+});
+
+test("reconnect observer recognizes both history read aliases", () => {
+  for (const method of ["thread/read", "evener/thread/history/read"]) {
+    expect(isHistoryReadMethod(method)).toBe(true);
+  }
+  expect(isHistoryReadMethod("evener/thread/delegates/list")).toBe(false);
 });

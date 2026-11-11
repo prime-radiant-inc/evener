@@ -173,6 +173,7 @@ func (s *Session) endOwnedCurrentScratch() {
 // distinction close() makes before retaining a child's scratch, read here so an
 // aborted candidate never deletes a scratch dir out from under its parent.
 func (s *Session) discardRestoredCandidate() {
+	s.releaseTranscriptFrontier()
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -207,6 +208,7 @@ func (s *Session) discardRestoredCandidate() {
 			s.mcpMgr.Close()
 		}
 		_ = s.closeAttachedTranscript()
+		s.stopFrontierEmitter()
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
@@ -2406,11 +2408,11 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
 	s.recordTurn(turn, turn)
+	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 
 	// On resume the agent re-reads the current notes beside the continuation
 	// prompt, so a human edit that landed while the goal loop ran is visible.

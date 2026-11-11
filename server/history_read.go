@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -29,19 +30,31 @@ const (
 // disconnect the transport. Tests shrink it to exercise the page boundary.
 var historyWindowTransferPageBytes = 8 << 20
 
-func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.ThreadReadParams) (appwire.AnswerContinuationVerdict, appwire.SnapshotIdentity, error) {
+// A deterministic test barrier after a read is admitted, before disk work.
+var historyReadAfterBeginHook atomic.Pointer[func(*threadHistory)]
+
+// answerContinuation reports the verdict together with the execution frontier
+// of the snapshot it answered from: an execution recorded after the caller's
+// cut makes the captured row stale, and the response must advertise what its
+// own snapshot shows.
+func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.ThreadReadParams) (appwire.AnswerContinuationVerdict, appwire.SnapshotIdentity, string, error) {
 	query := params.AnswerContinuation
 	verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
 	var snapshot appwire.SnapshotIdentity
+	var frontier string
 	if err := ctx.Err(); err != nil {
-		return verdict, snapshot, err
+		return verdict, snapshot, frontier, err
 	}
 	err := h.read(func(idx *transcriptindex.Snapshot) error {
 		var err error
 		verdict.Matches, snapshot, err = idx.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+		if err != nil {
+			return err
+		}
+		frontier, err = idx.ExecutionFrontier()
 		return err
 	})
-	return verdict, snapshot, err
+	return verdict, snapshot, frontier, err
 }
 
 func (h *threadHistory) fetch(requestRef, encoded string) (appwire.SessionFetchResponse, error) {
@@ -455,6 +468,11 @@ func transferTrimmedEnd(keepNewest bool) string {
 // cursor naming another thread or an incarnation other than the current one is
 // appwire.TranscriptItemCursorStale(): the client re-reads the latest window.
 func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
+	turns, olderCursor, snapshot, _, err = h.beforeWithFrontier(threadRef, params)
+	return
+}
+
+func (h *threadHistory) beforeWithFrontier(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, frontier string, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Snapshot) error {
 		incarnation, err := idx.Incarnation()
@@ -476,9 +494,10 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 		return nil
 	})
 	if err != nil {
-		return nil, "", appwire.SnapshotIdentity{}, err
+		return nil, "", appwire.SnapshotIdentity{}, "", err
 	}
-	return h.page(window, threadRef)
+	turns, olderCursor, snapshot, err = h.page(window, threadRef)
+	return turns, olderCursor, snapshot, window.LatestExecutionTurnID, err
 }
 
 // read runs fn on the thread's index extended to the recorded length, after
@@ -493,6 +512,9 @@ func (h *threadHistory) read(fn func(*transcriptindex.Snapshot) error) error {
 		return err
 	}
 	defer h.reads.Done()
+	if hook := historyReadAfterBeginHook.Load(); hook != nil {
+		(*hook)(h)
+	}
 	if err := h.recoverForRead(); err != nil {
 		return err
 	}

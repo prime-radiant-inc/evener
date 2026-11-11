@@ -23,8 +23,8 @@ import (
 //
 // THE RULE, and it is a deadlock rule rather than a style one:
 //
-//	A method on this interface may take Session.mu. It may take no other lock
-//	that lives in package agent.
+//	A method on this interface may take Session.mu, then executionFrontierMu.
+//	It may take no other lock that lives in package agent.
 //
 // Since the feed became lossless, an emitter whose buffer is full WAITS
 // (session_events.go's sendEvent). Five locks are held across live emits today
@@ -37,12 +37,16 @@ import (
 // move, and because the blocked send holds eventsMu.RLock the session can no
 // longer even be CLOSED (Close needs eventsMu.Lock).
 //
-// Session.mu is the single exception, and it is safe by construction rather than
+// Session.mu is safe by construction rather than
 // by convention: the emit path re-acquires it (emit -> activeCausalProvenance),
 // so agent code cannot hold it across an emit without self-deadlocking on the
 // first execution. session_emit_lock_guard_test.go pins that. No other lock in
-// this package has anything equivalent, which is why the rule is "mu and
-// nothing else" rather than a list of the four.
+// this package has anything equivalent. The frontier leaf is the other allowed
+// lock: its recorded listener never takes Session.mu and releases the leaf
+// before emitting. A sampler taking mu then the leaf cannot cycle with it.
+// LatestExecutionTurnID projects the atomic pair read by LatestExecutionFrontier;
+// the descendant route uses that pair accessor outside all server/projection locks
+// and is covered by the same forbidden-lock proof without widening this interface.
 //
 // WHY THIS IS A NAMED INTERFACE and not just *Session. The rule constrains a
 // call graph inside agent, but the person who breaks it is adding an envelope
@@ -60,6 +64,7 @@ import (
 // invoke no caller-supplied callback under them. So constraining this surface
 // closes the direction that was left open.
 type EnvelopeSampling interface {
+	LatestExecutionTurnID() string
 	// ContextStatus returns the context pair from one shared history snapshot
 	// and one profile/measurement snapshot, not a globally atomic session
 	// instant.

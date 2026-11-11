@@ -14,6 +14,13 @@ import (
 
 // Typed event payload structs. JSON tags match the map keys used previously.
 
+// ExecutionFrontier is one atomic recorded-execution stamp. Sequence orders
+// installs within one runtime registration, never across runtimes or on wire.
+type ExecutionFrontier struct {
+	TurnID   string `json:"turn_id,omitempty"`
+	Sequence uint64 `json:"-"`
+}
+
 // SessionStartData is the payload for an EventSessionStart event.
 type SessionStartData struct {
 	WorkingDir        string `json:"working_dir,omitempty"`
@@ -40,6 +47,7 @@ type SessionStartData struct {
 	State                   string               `json:"state,omitempty"`
 	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
 	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+	LatestExecutionTurnID   string               `json:"latest_execution_turn_id,omitempty"`
 	// Sandbox and SandboxNet are the sandbox request the session started
 	// under, as its configuration persists it: the mode name (empty is off)
 	// and the network decision (nil is the default, on). A subagent's thread
@@ -51,6 +59,9 @@ type SessionStartData struct {
 	// metadata and never enter event JSON.
 	TaskPublicationEpoch    uint64 `json:"-"`
 	TaskPublicationRevision uint64 `json:"-"`
+	// LatestExecutionSequence is the internal half of LatestExecutionTurnID's
+	// atomic stamp, used only by the descendant install fence.
+	LatestExecutionSequence uint64 `json:"-"`
 }
 
 // CurrentWorkSeedData is the self-contained task and goal state carried at
@@ -974,6 +985,12 @@ type RoundEndedData struct {
 
 // ExecutionStartedData is the payload for an EventExecutionStarted event.
 type ExecutionStartedData struct {
+	TurnID string `json:"turn_id"`
+}
+
+// ExecutionFirstRecordedData identifies the first entry recorded for an
+// execution. It is provenance, not a promise that this remains the frontier.
+type ExecutionFirstRecordedData struct {
 	TurnID string `json:"turn_id"`
 }
 

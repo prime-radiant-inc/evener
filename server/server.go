@@ -241,6 +241,9 @@ type Server struct {
 	appRef         string
 	appProjector   *appprojector.AppEventProjector
 	appDescendants map[string]*appDescendantProjection
+	// Frontier entries belong to runtime registrations, not durable child IDs.
+	appDescendantFrontiers      map[string]*descendantFrontierEntry
+	appDescendantFrontierSerial uint64
 	// appTaskPublications is the active TaskStore incarnation and newest applied
 	// revision per owner for the current root identity. It is internal routing
 	// state and resets with that identity.
@@ -461,9 +464,9 @@ func NewServer(cfg ServerConfig) *Server {
 	return s
 }
 
-// resolveSubscriptionAdmission classifies a thread/read or thread/unsubscribe
-// request for ordered dispatch. Params that do not decode are Invalid, as on
-// the hub; a request that is not a subscribe at all is NotSubscribe.
+// resolveSubscriptionAdmission classifies a thread read or unsubscribe request
+// for ordered dispatch. Params that do not decode are Invalid, as on the hub;
+// a request that is not a subscribe at all is NotSubscribe.
 func (s *Server) resolveSubscriptionAdmission(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 	params, ok, malformed := decodeSubscriptionAdmissionParams(msg)
 	if malformed {
@@ -479,17 +482,17 @@ func (s *Server) resolveSubscriptionAdmission(msg appwire.Message) appserver.Sub
 	return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
 }
 
-// decodeSubscriptionAdmissionParams decodes msg's thread/read or
-// thread/unsubscribe request params into a ThreadReadParams, the wire decode
+// decodeSubscriptionAdmissionParams decodes msg's thread read or unsubscribe
+// request params into a ThreadReadParams, the wire decode
 // step of resolveSubscriptionAdmission: ok is false for a message the
-// resolver does not apply to (not a request, a method other than the two it
+// resolver does not apply to (not a request, a method other than those it
 // admits, or a read that does not subscribe), and malformed is true for
 // params it cannot decode. Pulled out as its own function so the decode of
 // client-supplied JSON, not the admission semantics that need a live Server
 // to resolve against, is what a fuzz target exercises
 // (FuzzDecodeSubscriptionAdmissionParams).
 func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok, malformed bool) {
-	if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+	if msg.Request == nil || (!appserver.IsThreadReadMethod(msg.Request.Method) && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
 		return appwire.ThreadReadParams{}, false, false
 	}
 	if msg.Request.Method == appwire.MethodThreadUnsubscribe {

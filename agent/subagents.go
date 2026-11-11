@@ -224,6 +224,7 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, policy r
 	if sess == nil {
 		return nil
 	}
+	sess.releaseTranscriptFrontier()
 	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
@@ -338,6 +339,7 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	// teardown below preserves. This runs before the teardown closes the event
 	// stream, so a cleanup failure can still be surfaced as a warning.
 	if sess != nil {
+		sess.releaseTranscriptFrontier()
 		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
 			sess.emit(events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
 		}

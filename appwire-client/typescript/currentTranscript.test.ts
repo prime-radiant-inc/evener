@@ -6,12 +6,19 @@ import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
-import { currentTranscriptState, decodeCurrentTranscriptState, threadModelFromCurrentState } from "./transcriptCache";
+import {
+  cachedSessionRecord,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
+  threadModelFromCache,
+  threadModelFromCurrentState,
+} from "./transcriptCache";
 import { applyReadModel, hydrateThread, mergeOlderItemPage } from "./transcriptHistory";
 import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,
   THREAD_ITEM_EVENT_KINDS,
+  type ThreadHistoryTurnsListResponse,
   type ThreadItem,
   type ThreadTurnsListResponse,
   type Turn,
@@ -74,6 +81,101 @@ function filteredReadPage(): ThreadTurnsListResponse {
 }
 
 describe("current transcript checkpoints", () => {
+  it.each(["checkpoint", "session-cache"] as const)(
+    "preserves normal-page omissions across %s restore without advancing completeness",
+    (format) => {
+      const ref = "local:page-ordering";
+      const page = (length: number, ids: string[]): ThreadHistoryTurnsListResponse => ({
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length },
+        servedFrom: "live-daemon",
+        instanceId: "daemon",
+        asOf: "2026-11-08T00:00:00Z",
+        nextCursor: "older-page",
+        data: [
+          {
+            id: "paged",
+            status: "completed",
+            version: length,
+            itemsView: "fragment",
+            items: ids.map((id) => ({
+              id,
+              turnId: "paged",
+              type: "agentMessage",
+              text: id,
+              version: length,
+              position: { entry: id === "left" ? 10 : id === "right" ? 20 : 15, item: 0 },
+            })),
+          },
+        ],
+      });
+      let model = hydrateThread(currentRead(ref), ref, 1);
+      const oldPage = page(110, ["left", "omitted", "right"]);
+      model = mergeOlderItemPage(model, oldPage);
+      expect(model.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("omitted");
+      model = mergeOlderItemPage(model, page(120, ["left", "right"]));
+      expect(model.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+      const restored = (() => {
+        if (format === "session-cache") {
+          return threadModelFromCache(JSON.parse(JSON.stringify(cachedSessionRecord(model, 2))), 3);
+        }
+        const encoded = currentTranscriptState(model);
+        const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+        if (!decoded) throw new Error("valid page checkpoint did not decode");
+        return threadModelFromCurrentState(decoded);
+      })();
+      expect(restored.history?.length).toBe(40);
+      const late = mergeOlderItemPage(restored, oldPage);
+      expect(late.history?.length).toBe(40);
+      expect(late.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+    },
+  );
+
+  it("round-trips explicit scoped replacement authority without treating absence as an observation", () => {
+    const encoded = currentTranscriptState(hydrateThread(currentRead("local:scopes"), "local:scopes", 1));
+    const value = JSON.parse(JSON.stringify(encoded));
+    expect(decodeCurrentTranscriptState(value)).toBeDefined();
+    expect(value.history).not.toHaveProperty("replacementScopes");
+    const replacementScopes = [
+      {
+        from: { entry: 10, item: 0 },
+        to: { entry: 20, item: 0 },
+        representedSnapshot: 120,
+      },
+    ];
+    value.history.replacementScopes = replacementScopes;
+    const decoded = decodeCurrentTranscriptState(value);
+    expect(decoded).toBeDefined();
+    expect(decoded?.history).toMatchObject({ replacementScopes, length: 40 });
+    if (!decoded) throw new Error("valid scoped authority did not decode");
+    expect(currentTranscriptState(threadModelFromCurrentState(decoded))?.history).toMatchObject({
+      replacementScopes,
+      length: 40,
+    });
+  });
+
+  it.each([
+    null,
+    {},
+    [{ from: { entry: 20, item: 0 }, to: { entry: 10, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: 10, item: 1 }, to: { entry: 10, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: 10, item: 0, sub: 1 }, to: { entry: 10, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: -1, item: 0 }, to: { entry: 20, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: 10.5, item: 0 }, to: { entry: 20, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: 10, item: 0, extra: true }, to: { entry: 20, item: 0 }, representedSnapshot: 120 }],
+    [{ from: { entry: 10, item: 0 }, to: { entry: 20, item: 0 }, representedSnapshot: -1 }],
+    [{ from: { entry: 10, item: 0 }, to: { entry: 20, item: 0 }, representedSnapshot: 1.5 }],
+    [{ from: { entry: 10, item: 0 }, to: { entry: 20, item: 0 }, representedSnapshot: 120, extra: true }],
+    [{ from: { entry: 10, item: 0 }, representedSnapshot: 120 }],
+  ])("rejects malformed scoped page authority %j", (replacementScopes) => {
+    const value = JSON.parse(
+      JSON.stringify(currentTranscriptState(hydrateThread(currentRead("local:scopes"), "local:scopes", 1))),
+    );
+    value.history.replacementScopes = replacementScopes;
+    expect(decodeCurrentTranscriptState(value)).toBeUndefined();
+  });
+
   it("preserves older-frontier provenance across a checkpoint restore", () => {
     const ref = "local:worker";
     const roundTrip = (read: ReturnType<typeof readWithItems>) => {

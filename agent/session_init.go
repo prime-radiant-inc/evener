@@ -525,6 +525,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		hubWatchSignal:                make(chan struct{}),
 		events:                        make(chan events.SessionEvent, 256),
 		history:                       []schema.Turn{},
+		frontierStartupPending:        true,
 		responsesContinuationDisabled: map[responsesContinuationDisabledKey]bool{},
 		readFiles:                     map[string]bool{},
 		sessionCtx:                    sessCtx,
@@ -535,6 +536,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
 	s.bindDescendantTranscriptPublication()
+	defer func() {
+		if !initComplete {
+			s.abortFrontierStartup()
+			s.releaseTranscriptFrontier()
+		}
+	}()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
@@ -700,7 +707,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			}
 		}
 	}
-	s.attachTranscript(tw)
+	s.attachTranscript(tw, nil)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
@@ -1197,6 +1204,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
+		frontierStartupPending:   true,
 		turns:                    meta.AcceptedInputTurns,
 		turnBudgetWarningEmitted: meta.TurnBudgetWarningEmitted || turnBudgetWarningInHistory(resumeHistory),
 		modelResponses:           meta.TurnCount,
@@ -1226,6 +1234,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.bindDescendantTranscriptPublication()
+	defer func() {
+		if !restoreComplete {
+			s.abortFrontierStartup()
+			s.releaseTranscriptFrontier()
+		}
+	}()
 	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
@@ -1463,7 +1477,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
 		}
 	}
-	s.attachTranscript(tw)
+	s.attachTranscript(tw, transcriptEntries)
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
 	// replay appended turns it did not decode: the retained entry list would
 	// otherwise end at the last pre-append entry, and serve (which projects

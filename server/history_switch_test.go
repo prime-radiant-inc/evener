@@ -438,11 +438,13 @@ func (st *servedTranscript) settle(t *testing.T) {
 	st.published.await(t, history, st.writer.RecordedLength())
 }
 
-// read is a thread/read of the latest window with turns.
+// read is a public thread/read of the latest window with turns.
 func (st *servedTranscript) read(t *testing.T) appwire.ThreadReadResponse {
 	t.Helper()
-	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: st.threadID, IncludeTurns: true})
-	if err != nil {
+	client := dialServerAppWire(t, st.srv)
+	defer func() { _ = client.Close() }()
+	var response appwire.ThreadReadResponse
+	if err := client.Request(t.Context(), appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: st.threadID, IncludeTurns: true}, &response); err != nil {
 		t.Fatal(err)
 	}
 	return response

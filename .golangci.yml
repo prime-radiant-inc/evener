@@ -209,6 +209,15 @@ linters:
         linters:
           - modernize
 
+      # The versioned history fixture constructs the embedded response and then
+      # assigns its promoted fields, the form this repository's review accepts.
+      # modernize wants either keyed promoted fields in the outer literal (which
+      # the review rejects) or a nested embedded literal; this form stays.
+      - path: appwire/client_history_test\.go
+        text: 'embedlit: embedded field assignment can be moved to struct literal'
+        linters:
+          - modernize
+
       # revive's exported rule gates only the published library packages
       # (the old cmd/evener-docscheck scope), including execsupport; everywhere else its findings
       # are excluded. The text pattern matches the message as golangci

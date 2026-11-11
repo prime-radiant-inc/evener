@@ -620,7 +620,7 @@ func attachDelegateSteerRuntime(t *testing.T, c *delegateTreeController, delegat
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	runtime := &Session{}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	c.mu.Lock()
 	live := c.live[delegateID]
 	live.runtime = runtime

@@ -672,6 +672,17 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
+	transcriptFrontier transcriptFrontierBinding
+	// executionFrontierMu is a leaf: the append hook never acquires Session.mu
+	// or emits while holding it. Sampling takes mu before this leaf.
+	executionFrontierMu sync.Mutex
+	executionFrontier   events.ExecutionFrontier
+	frontierWake        chan struct{}
+	frontierPending     []string
+	frontierStopped     bool
+	// Armed only by constructors, never by bare Sessions or runtime writes.
+	frontierStartupPending bool
+	frontierEmitterWG      sync.WaitGroup // lifetime worker, joined at the event-stream close boundary
 	// transcriptPublished runs after adoption, outside mu and the append lock,
 	// while attentionMu still excludes the next canonical mutation.
 	transcriptPublished func(int64, *appwire.ConversationProvenanceState)
@@ -3076,15 +3087,17 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // writer: w is nil for a session with no state directory and for one whose
 // writer could not be opened, and marking those ready is what stops their turns
 // accumulating for the session's lifetime.
-func (s *Session) attachTranscript(w *transcript.Writer) {
+func (s *Session) attachTranscript(w *transcript.Writer, existing []transcript.Entry) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	s.setTranscriptLocked(w)
+	s.seedExecutionFrontier(existing)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
+	s.registerTranscriptFrontier()
 	for _, t := range held {
 		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
 		s.mu.Lock()

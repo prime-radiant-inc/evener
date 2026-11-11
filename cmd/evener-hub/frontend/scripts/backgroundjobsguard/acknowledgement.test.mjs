@@ -16,6 +16,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Driver } from "../skillguard/run.mjs";
 import { ACK_FLOOR_MS, ACK_INGEST_BYTES_PER_MS, awaitProducerAcknowledgement } from "./acknowledgement.mjs";
+import { createBackgroundJobsObserver } from "../lib/backgroundJobsObserver.mjs";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -45,6 +46,25 @@ function lateAck() {
 }
 
 describe("the producer acknowledgement wait", () => {
+  test("frame observer acknowledges both history read aliases without dropping other methods", async () => {
+    const frames = [];
+    const { observe, requests } = createBackgroundJobsObserver(frames);
+    for (const method of ["thread/read", "evener/thread/history/read"]) {
+      await observe({ data: JSON.stringify({ method: "Network.webSocketFrameSent", params: { requestId: `request-${method}`, response: { payloadData: JSON.stringify({ id: 7, method, params: {} }) } } }) });
+      await observe({ data: JSON.stringify({ method: "Network.webSocketFrameReceived", params: { requestId: `request-${method}`, response: { payloadData: JSON.stringify({ id: 7, result: { subscribed: true } }) } } }) });
+    }
+    expect(frames).toHaveLength(4);
+    expect(frames.filter(frame => frame.direction === "Network.webSocketFrameSent").map(frame => frame.method)).toEqual(["thread/read", "evener/thread/history/read"]);
+    expect(frames.filter(frame => frame.direction === "Network.webSocketFrameReceived")).toHaveLength(2);
+    expect(requests.size).toBe(2);
+
+    await observe({ data: JSON.stringify({ method: "Network.webSocketFrameSent", params: { requestId: "jobs", response: { payloadData: JSON.stringify({ id: 8, method: "evener/thread/jobs/list", params: {} }) } } }) });
+    await observe({ data: JSON.stringify({ method: "Network.webSocketFrameSent", params: { requestId: "other", response: { payloadData: JSON.stringify({ id: 9, method: "ping", params: {} }) } } }) });
+    expect(frames).toHaveLength(5);
+    expect(frames.at(-1).method).toBe("evener/thread/jobs/list");
+    expect(requests.size).toBe(3);
+  });
+
   test("absorbs a correct-but-slow acknowledgement a slower step has already justified", async () => {
     vi.useFakeTimers();
     const driver = driverWithSlowest(9_000);

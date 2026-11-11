@@ -118,6 +118,147 @@ version. A remote or compatibility item outside the bounded recovery path report
 the named degradation instead of returning partial bytes. These recovery reads
 do not change the ordinary client subscription or its selected history view.
 
+## Serving facts and status comparison
+
+`evener/thread/history/read` and `evener/thread/history/turns/list` take the
+existing read and page parameters and add serving facts to their results.
+The shared browser/native client upgrades history requests to these methods.
+Manager history reads use them too. Content selection and subscription rules
+above are unchanged.
+
+```mermaid
+flowchart LR
+  Source[Serving daemon or saved index] --> Cut[View, frontier and serving facts]
+  Cut --> Wire[Versioned AppWire history response]
+  Wire --> Client[Shared client validation and cache]
+  Client --> Merge[Range replacement or fallback accumulation]
+  Merge --> Model[Owner-bound history and finite page observations]
+  Model --> Checkpoint[Validated checkpoint]
+  Model --> Cache[Atomic rows, omissions and coverage]
+  Cache --> Restore[Committed observations sampled before bodies]
+  Restore --> Model
+```
+
+The serving source captures the evidence with its view. Routing carries that
+evidence to the client, which selects a merge policy without declaring freshness.
+
+| Field | Meaning |
+| --- | --- |
+| `servedFrom` | The branch that supplied this view, `live-daemon` or `saved-index` |
+| `fallbackReason` | Saved history followed an attempted live read, `live-read-empty` or `live-read-failed` |
+| `asOf` | RFC3339 observation time, not a freshness verdict |
+| `latestExecutionTurnId` | Newest recorded execution in the serving view, even on an older page |
+| `instanceId` | Live session instance captured with the serving cut, absent on saved history |
+| `servingFactsUnavailableReason` | Why an older source could not supply serving facts |
+
+For saved history, `asOf` is the file-stat moment whose observed length bounds
+index catch-up. Later bytes need not appear in that view. The timestamp is not
+request completion time and does not prove the running session is caught up.
+Catch-up and projection share the sidecar lock, and the observed file identity
+must match the served view. A replaced-file cut uses the existing typed
+rebuild/refusal path rather than labelling replacement content with the old
+file's observation moment.
+For live history it is the live read's observation time. Remote hubs forward
+the source's facts; a local roster or clock cannot fill missing remote facts.
+An unreachable source remains an error, not a newly labelled saved response.
+`older-source` names a peer reached through method-not-found degradation;
+`source-unsupported` names a source that does not supply serving facts.
+
+The caller compares a status read's `instanceId` and `activeTurnId` with the
+history view's instance and `latestExecutionTurnId`. The history frontier is
+not the last visible item or the last execution on an older page. An execution
+can be recorded without visible items. Delivery-only and gap records do not
+advance it. Missing frontier evidence means unknown, not caught up or stale.
+These fields do not introduce a server-computed freshness verdict.
+
+The live frontier's source of truth is the Session's commit-time stamp:
+`Recorded && OriginalOrdinal == nil && TurnKind == Execution`. This includes
+recorded-but-unsynced retained entries. Completion does not clear the stamp;
+compaction replay copies, delivery records and gaps do not move it. Attach
+seeds only an empty frontier from the constructor's validated transcript view,
+and cannot overwrite a committed or pending stamp. Reopening a writer does not
+seed it again. The stamp is an atomic turn-ID/sequence pair under the frontier
+leaf: seeding stamps the pair, and each later first-record commit advances its
+sequence. Only descendant installation consumes that process-local sequence;
+event JSON and wire responses never carry it. The internal recorded hook is
+composed with the external hook; its owned emitter delivers the first-record
+refresh outside the append lock.
+Construction-time first-record events wait for SessionStart publication without delaying the commit-time stamp or later runtime signals, and constructor failure or pre-start close drops held events and stops the emitter.
+Close joins that emitter through the ordinary session lifecycle.
+
+Root envelope refreshes sample `Session.LatestExecutionTurnID()`. Descendants
+use a `Server.mu`-owned sampler registry bound to runtime incarnation, not just
+session ID. A retained runtime owns its binding until release, before idle
+reclaim or ordinary teardown; failed construction releases its binding too.
+Installing a child's durable boot generation publishes through that runtime's
+retained binding before input runs, outside `Session.mu`.
+The descendant first-record consumer samples outside the projection gate and
+`Server.mu`, then installs only if the carried registration and published
+generation still match. Each immutable registry entry records its last successful
+install pair, including the `SessionStart` bootstrap. An older sequence cannot
+displace a newer installed stamp within that registration; equal stamps write
+idempotently. A fresh registration's first install is independent of the row its
+predecessor left behind. An old callback cannot write its retired frontier into
+a replacement row; one beginning after replacement samples the replacement,
+subject to the same ordering guard.
+The cached-row install deliberately emits no notification: addressed metadata
+reads see the new frontier, while existing subscribers retain their last full
+row until a full read or a later `ThreadStarted` row. That subscriber lag is a
+known cost, not evidence that the execution was unrecorded.
+
+On the versioned methods, live windows and normal saved browsing replace the
+items in their returned range. Saved fallback windows accumulate without
+erasing held history, including failed-live fallback whose daemonless identity
+differs from a held live generation. Such a fallback retains the held live
+identity rather than treating its daemonless token as a replacement. The phone
+admits held history only for the same resolved thread and serving session,
+even when a changed owner retains the same daemon instance.
+
+The shared history reducer preserves higher item versions across overlapping
+pages. `HistoryState.replacementScopes` records closed page intervals and their
+observed snapshots under the containing history identity. Each scope also
+records the entry ordinal its range end reached, because item versions and
+range ends share that ordinal scale while an observed snapshot counts
+transcript bytes. An older overlapping
+page cannot revive an omitted key; disjoint older pages remain useful. These
+observations survive validated checkpoints and cached records without advancing
+`HistoryState.length`, the latest-window completeness watermark. An absent
+scope field means no recorded page authority.
+
+Every replacement bounds its own omissions by the highest entry ordinal the
+response reported: a held item recorded after that ordinal survives, while an
+item the response covered and did not return is omitted.
+
+The browser repository persists normal-page omissions only inside the original
+wire interval. The cache commits rows, omission fences, certificates and header
+observations together, preserving newer item versions and rows outside that
+interval. Returned identities retain their cached version and richer payload
+until the ordinary version merge applies. Accepted page writes retain their
+range authority across later disjoint reads. Their commits cannot clear an
+uncommitted latest-read suffix or
+repair a refused extent beyond the page's upper edge. Local openings
+and older-body continuations sample committed observations before reading
+bodies, so an accepted omission also holds while its write is queued or
+capacity-refused. Cached items newer than the observation remain readable.
+Known positive identities and valid committed cached bodies
+remain readable. A fenced old page cannot manufacture fresh coverage. A newer
+committed certificate covering its whole range on the current baseline keeps
+recovery settled. Otherwise the repository requests reconciliation, and a fresh
+covering page restores durable coverage. Other generation, cursor and recovery
+fences retain their existing behavior.
+
+The legacy `thread/read` and `thread/turns/list` methods keep their old wire
+shapes and stamps, including the misleading saved-window `authoritative: true`
+and the old failed-live replacement behavior. Their exact-key cache allowlists
+remain unchanged. New clients cache one legacy-mode transition per connection
+only after typed method-not-found. Initial reads remain concurrent; already
+in-flight probes fall back individually. Later calls use legacy methods directly
+without another probe, and reconnect resets that cache. Old-source degradation
+has no invented provenance or freshness.
+Keeping both paths carries two response contracts and two merge policies;
+remove that compatibility path only when legacy methods and their clients are
+retired together.
+
 ## Original transcript authors
 
 Optional `ThreadItem.authorship` records an original author and an `inherited`

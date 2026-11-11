@@ -445,6 +445,7 @@ func (c *delegateTreeController) ownerRuntimeLocked(aggregate *delegatestore.Agg
 // unhook identically; the ordering around the unhook differs and stays
 // per-caller.
 func unhookReclaimedRuntimeRecord(entry delegateRuntimeReclamationEntry) {
+	entry.runtime.releaseTranscriptFrontier()
 	if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
 		entry.ownerRuntime.subagents.removeSession(entry.childSessionID, entry.runtime)
 	}

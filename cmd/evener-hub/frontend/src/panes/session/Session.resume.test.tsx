@@ -2,6 +2,7 @@ import type { ThreadReadResponse } from "@evener/appwire-client";
 import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { replyLegacyHistoryProbe } from "@evener/appwire-client/testing/legacyHistorySocket";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -213,6 +214,7 @@ test("a fenced remote session's Send drives the resume and then dispatches", asy
       socket.send = (raw) => {
         send(raw);
         const request = JSON.parse(raw);
+        if (replyLegacyHistoryProbe(socket, request)) return;
         if (!request.id || request.method === "initialize" || request.method === "ping") return;
         requests.push(request);
         let result: unknown = {};
@@ -313,6 +315,7 @@ test("a resume carries the authoring pane's seat to the resumed conversation", a
       socket.send = (raw) => {
         send(raw);
         const request = JSON.parse(raw);
+        if (replyLegacyHistoryProbe(socket, request)) return;
         let result: unknown = {};
         if (request.id) {
           switch (request.method) {
@@ -432,6 +435,7 @@ test("a nested resume carries the authoring seat and closes the superseded pane"
       socket.send = (raw) => {
         send(raw);
         const request = JSON.parse(raw);
+        if (replyLegacyHistoryProbe(socket, request)) return;
         if (!request.id) return;
         let result: unknown = {};
         switch (request.method) {
@@ -691,6 +695,7 @@ test("Send follows the returned identity through transcript and new sends", asyn
       socket.send = (raw) => {
         send(raw);
         const request = JSON.parse(raw);
+        if (replyLegacyHistoryProbe(socket, request)) return;
         if (!request.id || request.method === "initialize" || request.method === "ping") return;
         requests.push(request);
         let result: unknown = {};

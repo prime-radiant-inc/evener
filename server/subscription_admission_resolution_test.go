@@ -22,10 +22,9 @@ func requestOutcome(err error) int {
 	return -1
 }
 
-// The local subscription-admission resolver decides, per thread/read and
-// thread/unsubscribe, whether the request is a subscribe against a thread this
-// daemon serves. These cases pin what each input does to the request and to the
-// subscription it may install.
+// The local subscription-admission resolver decides, per thread read and
+// unsubscribe, whether the request is a subscribe against a thread this daemon
+// serves. These cases pin what each input does to the request and subscription.
 func TestLocalSubscriptionAdmissionDispositions(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -40,8 +39,14 @@ func TestLocalSubscriptionAdmissionDispositions(t *testing.T) {
 		{"undecodable read params are an invalid request", appwire.MethodThreadRead, json.RawMessage(`"not an object"`), appwire.CodeInvalidParams, 0},
 	}
 	for _, tc := range cases {
+		tc.name = appwire.MethodThreadHistoryRead + "/" + tc.name
+		tc.method = appwire.MethodThreadHistoryRead
+		cases = append(cases, tc)
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
+			t.Cleanup(srv.Close)
 			srv.SetAppIdentity("local", "th_1")
 			installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 			client := dialServerAppWire(t, srv)
@@ -104,10 +109,20 @@ func TestLocalSubscriptionAdmissionIntent(t *testing.T) {
 		{"other method", appwire.MethodPing, `"not an object"`, appserver.SubscriptionAdmissionNotSubscribe},
 		{"subscribing read of the served thread", appwire.MethodThreadRead, `{"ref":"local:th_1","subscribe":true}`, appserver.SubscriptionAdmissionResolved},
 		{"subscribing read of an unknown thread", appwire.MethodThreadRead, `{"ref":"local:other","subscribe":true}`, appserver.SubscriptionAdmissionUnresolved},
+		{"legacy page cannot subscribe", appwire.MethodThreadTurnsList, `{"ref":"local:th_1","subscribe":true}`, appserver.SubscriptionAdmissionNotSubscribe},
+		{"versioned page cannot subscribe", appwire.MethodThreadHistoryTurnsList, `{"ref":"local:th_1","subscribe":true}`, appserver.SubscriptionAdmissionNotSubscribe},
+	}
+	for _, tc := range cases {
+		if tc.method == appwire.MethodThreadRead {
+			tc.name = appwire.MethodThreadHistoryRead + "/" + tc.name
+			tc.method = appwire.MethodThreadHistoryRead
+			cases = append(cases, tc)
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
+			t.Cleanup(srv.Close)
 			srv.SetAppIdentity("local", "th_1")
 			msg := appwire.Message{Request: &appwire.Request{Method: tc.method, Params: json.RawMessage(tc.params)}}
 			if got := srv.resolveSubscriptionAdmission(msg).Intent; got != tc.want {

@@ -53,6 +53,7 @@ export type CurrentTranscriptAdmission = Pick<
 
 const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "ref",
+  "servingFacts",
   "parentRef",
   "kind",
   "threadId",
@@ -182,6 +183,7 @@ export function decodeCurrentTranscriptState(value: unknown): CurrentTranscriptS
     "awaited",
     "pendingIncarnation",
     "deferredPages",
+    "replacementScopes",
     "failed",
   ]) {
     if (key in history) historyFields[key] = (history as unknown as Record<string, unknown>)[key];
@@ -245,6 +247,7 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     appliedGeneration: record.history.appliedGeneration,
     issuedGeneration: record.history.issuedGeneration,
     deferredPages: [],
+    ...(record.history.replacementScopes ? { replacementScopes: record.history.replacementScopes } : {}),
     turns: record.history.turns.map((turn) => ({
       ...turn,
       items: turn.items.map(decodeCachedItem),
@@ -306,6 +309,7 @@ export function cachedSessionRecord(model: ThreadModel, now: number): CachedSess
       length: history.length,
       appliedGeneration: history.appliedGeneration,
       issuedGeneration: history.issuedGeneration,
+      ...(history.replacementScopes ? { replacementScopes: history.replacementScopes } : {}),
       turns: history.turns.map((turn) => ({
         ...turn,
         items: turn.items.map((item) => encodeCachedItem(item)),

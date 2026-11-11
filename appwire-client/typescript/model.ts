@@ -3,6 +3,7 @@
 // shape; components should only ever read this model, never the wire types
 // directly.
 
+import type { HistoryServingFacts } from "./historyServing";
 import type {
   CommandDescriptor,
   EvenerDelegateInfo,
@@ -279,6 +280,19 @@ export interface HistoryState {
   pendingIncarnation?: string;
   /** Pages of `pendingIncarnation`, merged after its latest window replaces. */
   deferredPages: ThreadTurnsListResponse[];
+  /** Closed ranges observed by normal serving-fact pages under this history
+   * identity. Their snapshot lengths fence older omissions and additions,
+   * independently of the latest-window completeness in `length`. Absence
+   * records no page authority. */
+  replacementScopes?: {
+    from: ThreadItemPosition;
+    to: ThreadItemPosition;
+    representedSnapshot: number;
+    /** The highest entry ordinal the observation returned: the boundary of
+     * what it can have omitted. Row versions use this same ordinal scale;
+     * `representedSnapshot` counts transcript bytes and never bounds them. */
+    representedOrdinal?: number;
+  }[];
   /** The one diagnostic to show while the thread's history failed
    * (ErrorTranscriptHistoryFailed). History is held unchanged and nothing
    * merges until a latest-window read succeeds; the overlay keeps updating. */
@@ -288,12 +302,20 @@ export interface HistoryState {
   turns: TurnModel[];
 }
 
+// Orders by (entry, item, sub). An item with no position sorts after every
+// positioned one. History merges and persisted range validation share it.
+export function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
+  if (!left || !right) return left ? -1 : right ? 1 : 0;
+  return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+}
+
 /** Older-history frontier provenance (#5585). A cursor is opaque, so
  * `"unknown"` and `"none"` are sentinels the source never returns. */
 export type OlderFrontier = "unknown" | "none" | (string & {});
 
 export interface ThreadModel {
   ref: string;
+  servingFacts?: HistoryServingFacts;
   parentRef?: string;
   // The wire's EvenerThread.kind. Fork children must not charge their
   // inherited prefix to their own token total (threadUsage.ts's sessionTokens).

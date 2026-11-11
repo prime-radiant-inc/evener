@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -371,6 +372,28 @@ func (x *Index) CatchUp() error {
 		return fmt.Errorf("stat transcript: %w", err)
 	}
 	return x.CatchUpTo(info.Size())
+}
+
+// ReadObserved captures file-stat coverage, catches up and serves its immutable
+// view under the same sidecar lock. A replacement cannot inherit the old file's
+// observation moment, including when another handle already repaired it.
+func (x *Index) ReadObserved(now func() time.Time, fn func(*Snapshot, time.Time) error) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	info, err := os.Stat(x.path)
+	if err != nil {
+		return fmt.Errorf("stat transcript: %w", err)
+	}
+	asOf := now()
+	return x.locked(true, func() error {
+		if err := x.extend(info.Size()); err != nil {
+			return err
+		}
+		if x.meta.FileIdentity != apptranscript.FileIdentity(info) {
+			return x.refuseRebuild()
+		}
+		return x.readAtLocked(info.Size(), func(snapshot *Snapshot) error { return fn(snapshot, asOf) })
+	})
 }
 
 // CatchUpTo indexes the complete lines that end at or before length: the

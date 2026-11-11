@@ -7,6 +7,8 @@ import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 import { awaitProducerAcknowledgement } from "./acknowledgement.mjs";
+import { createBackgroundJobsObserver } from "../lib/backgroundJobsObserver.mjs";
+import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("Usage: go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundJobsBrowser$' -count=1 -v\nRun from the repository root after make build-web. The Go fixture supplies JSON stdin and retains browser evidence.");
@@ -20,8 +22,6 @@ const viewport = `${sidebar} [class*="_body_"]`;
 const anchor = (jobId) => `job:${q([fixture.rootRef, jobId])}`;
 const row = (jobId) => `${sidebar} [data-activity-anchor=${q(anchor(jobId))}]`;
 const frames = [], sockets = [], errors = [], consoleEvents = [], wheelEvents = [];
-const requests = new Map();
-const methods = new Set(["evener/thread/jobs/list", "evener/thread/activity/read", "evener/jobs/output", "evener/jobs/get", "thread/read"]);
 const read = (source) => evaluate(driver.send, source);
 const wait = (source, label) => {
   new Function(`return (${source})`);
@@ -35,7 +35,8 @@ const redact = (value) => {
 };
 const save = (name, value) => writeFileSync(path.join(fixture.artifactDir, name), redact(value));
 
-function observe(event) {
+const frameObserver = createBackgroundJobsObserver(frames);
+async function observe(event) {
   const value = JSON.parse(event.data);
   if (value.method === "Runtime.exceptionThrown") errors.push(value.params);
   if (value.method === "Runtime.consoleAPICalled") {
@@ -45,17 +46,7 @@ function observe(event) {
   if (["Network.webSocketCreated", "Network.webSocketClosed"].includes(value.method)) {
     sockets.push({ method: value.method, requestId: value.params.requestId });
   }
-  if (!["Network.webSocketFrameSent", "Network.webSocketFrameReceived"].includes(value.method)) return;
-  let message;
-  try { message = JSON.parse(value.params.response.payloadData); } catch { return; }
-  const key = q([value.params.requestId, message.id]);
-  if (value.method === "Network.webSocketFrameSent") {
-    if (!methods.has(message.method)) return;
-    requests.set(key, message.method);
-  } else if (!requests.has(key)) return;
-  // Subscription acknowledgements can include unrelated session configuration.
-  if (requests.get(key) === "thread/read" && Object.hasOwn(message, "result")) message.result = { subscribed: true };
-  frames.push({ direction: value.method, socketId: value.params.requestId, ...message });
+  await frameObserver.observe(event);
 }
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const response = (request) => frames.find(f => f.direction === "Network.webSocketFrameReceived" && f.socketId === request.socketId && f.id === request.id);
@@ -272,7 +263,7 @@ try {
   driver.control("reconnect");
   await driver.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await waitForSocketClosed(socketAfter, "actual hub socket closes");
-  await waitFrames(() => sent(after).some(f => f.method === "thread/read" && f.params.ref === fixture.rootRef && f.params.subscribe && response(f)?.result), "real session subscription recovers on a new socket");
+  await waitFrames(() => sent(after).some(f => isHistoryReadMethod(f.method) && f.params.ref === fixture.rootRef && f.params.subscribe && response(f)?.result), "real session subscription recovers on a new socket");
   await retained(visibleId, baseline, after, "reconnect-extent", Buffer.byteLength("BACKGROUND_LATE_INITIAL\nBACKGROUND_LATE_REFRESH\nBACKGROUND_LATE_RECONNECT\n"));
   const previousSocket = initial.pages[0].request.socketId;
   assert.ok(walk(after).every(page => page.request.socketId !== previousSocket), "recovery RPCs use a genuinely new connection");

@@ -268,6 +268,7 @@ describe("protocol package root public exports", () => {
       "decodeTranscriptItem",
       "encodeTranscriptItem",
       "foldWarningParams",
+      "historyServingFacts",
       "hydrateThread",
       "imageSessionRouteForSession",
       "invalidateHistory",

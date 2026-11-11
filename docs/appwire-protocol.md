@@ -208,8 +208,10 @@ no router (reserved).
 | `evener/hub/session-tools/input` | hub | [SessionToolsInput](#sessiontoolsinput) | [Value](#value) | Private identified bridge input for a bound Manager; its fixed method and target are admitted by the hosting hub, not arbitrary remote RPC. |
 | `thread/list` | both | [ThreadListParams](#threadlistparams) | [ThreadListResponse](#threadlistresponse) | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadReadResponse](#threadreadresponse) | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
+| `evener/thread/history/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadHistoryReadResponse](#threadhistoryreadresponse) | Reads history with branch-derived serving facts, the served view's execution frontier and serving instance identity. Older sources omit unavailable facts rather than guessing. |
 | `thread/unsubscribe` | both | [ThreadUnsubscribeParams](#threadunsubscribeparams) | [EmptyResponse](#emptyresponse) | Drops this connection's live-update subscription to a thread without reading it. |
 | `thread/turns/list` | both | [ThreadTurnsListParams](#threadturnslistparams) | [ThreadTurnsListResponse](#threadturnslistresponse) | Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both. |
+| `evener/thread/history/turns/list` | both | [ThreadTurnsListParams](#threadturnslistparams) | [ThreadHistoryTurnsListResponse](#threadhistoryturnslistresponse) | Pages history with serving facts and the whole served view's execution frontier, not the page's newest item. |
 | `thread/turns/items/list` | unimplemented | [ThreadTurnItemsListParams](#threadturnitemslistparams) | [ThreadTurnItemsListResponse](#threadturnitemslistresponse) | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | [ThreadStartParams](#threadstartparams) | [ThreadStartResponse](#threadstartresponse) | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. |
@@ -1283,6 +1285,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `conversationProvenance` | \*[appwire.ConversationProvenanceState](#conversationprovenancestate) | yes |  |
 | `pendingAsk` | \*[appwire.PendingAskState](#pendingaskstate) | yes |  |
+| `latestExecutionTurnId` | string | yes |  |
 | `manager` | bool | yes |  |
 | `resumeRequired` | bool | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
@@ -1534,6 +1537,17 @@ Underlying Go kind: `struct` (no struct fields).
 |-------|---------|-----------|----------|
 | `turns` | [][appwire.Turn](#turn) | yes |  |
 | `items` | [][appwire.ThreadItem](#threaditem) | yes |  |
+
+
+### `HistoryServingFacts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `servedFrom` | string | yes |  |
+| `fallbackReason` | string | yes |  |
+| `asOf` | string | yes |  |
+| `instanceId` | string | yes |  |
+| `servingFactsUnavailableReason` | string | yes |  |
 
 
 ### `HistoryUpdatedParams`
@@ -3974,8 +3988,8 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
-| `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
-| `turns` | \*[appwire.ThreadTurnsListResponse](#threadturnslistresponse) | yes |  |
+| `read` | \*[appwire.ThreadHistoryReadResponse](#threadhistoryreadresponse) | yes |  |
+| `turns` | \*[appwire.ThreadHistoryTurnsListResponse](#threadhistoryturnslistresponse) | yes |  |
 | `fetch` | \*[appwire.SessionFetchResponse](#sessionfetchresponse) | yes |  |
 | `activity` | \*[appwire.SessionActivityResponse](#sessionactivityresponse) | yes |  |
 | `tasks` | \*[appwire.SessionTasksResponse](#sessiontasksresponse) | yes |  |
@@ -4618,6 +4632,23 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
 | `originalInput` | string | yes |  |
+
+
+### `ThreadHistoryReadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ThreadReadResponse` | [appwire.ThreadReadResponse](#threadreadresponse) |  | yes |
+| `HistoryServingFacts` | [appwire.HistoryServingFacts](#historyservingfacts) |  | yes |
+
+
+### `ThreadHistoryTurnsListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ThreadTurnsListResponse` | [appwire.ThreadTurnsListResponse](#threadturnslistresponse) |  | yes |
+| `HistoryServingFacts` | [appwire.HistoryServingFacts](#historyservingfacts) |  | yes |
+| `latestExecutionTurnId` | string | yes |  |
 
 
 ### `ThreadItem`
