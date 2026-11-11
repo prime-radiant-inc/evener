@@ -305,6 +305,7 @@ func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error
 		return nil, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, errors.New("is not valid JSON")
