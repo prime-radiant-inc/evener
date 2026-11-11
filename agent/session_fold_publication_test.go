@@ -236,7 +236,7 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 	client.Register(&fakeAdapter{name: "openai"})
 	client.Register(&agenttest.ScriptedAdapter{Provider: provider, Responder: responder})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), provider+"/model")
-	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile), withoutGitSnapshot()}, opts...)...)
+	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile)}, opts...)...)
 }
 
 // TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold pins the
@@ -1670,7 +1670,7 @@ func TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads(t *testing.T)
 		// default compact strategy does not.
 		ContextStrategy:  "session-log",
 		MaxSubagentDepth: 1,
-	}), withoutGitSnapshot())
+	}))
 
 	observationSecret := strings.Repeat("SECRET-OBSERVATION ", 40)
 	const thinkingSecret = "THINKING-SECRET: the private chain of reasoning that clearing replaces with a stub"

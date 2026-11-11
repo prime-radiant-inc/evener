@@ -1134,7 +1134,6 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir}),
-		withoutGitSnapshot(),
 	)
 	if s.jobActivityClock == nil {
 		t.Fatal("expected a top-level live session to have a jobActivityClock")
@@ -1213,7 +1212,6 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	const delegateID = "dlg_live_epoch"
 	const childID = "childliveepoch"
@@ -1289,7 +1287,6 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	const delegateID = "dlg_rewritten_child"
 	const childID = "childrewritten"
@@ -1383,7 +1380,6 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	seedRetainedActivityDelegate(t, s, "dlg_b")
 	page, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
@@ -1431,7 +1427,6 @@ func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir}),
-		withoutGitSnapshot(),
 	)
 	s.maybeAutoSave()
 	before := activityCurrentRootRevision(s.jobActivityClock)

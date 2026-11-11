@@ -25,7 +25,7 @@ import (
 // fix the model would believe it's still in the old directory).
 func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t)
+	sess := newSession(t, withEnvironmentSnapshot())
 
 	oldWD := sess.currentEnv().WorkingDirectory()
 
@@ -84,7 +84,6 @@ printf '%s\n' "$*" >> "$SWAP_TEST_LOG"
 func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	sess := newSession(t,
 		withConfig(SessionConfig{MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 
 	realGit, err := exec.LookPath("git")
@@ -183,7 +182,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 	t.Cleanup(func() { gitExecTimeout = origAgentTimeout })
 	t.Cleanup(execenv.SetGitExecTimeoutForTesting(30 * time.Second))
 
-	sess := newSession(t)
+	sess := newSession(t, withEnvironmentSnapshot())
 
 	realGit, err := exec.LookPath("git")
 	if err != nil {

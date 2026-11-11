@@ -19,7 +19,7 @@ import (
 // because a caller asks for the path.
 func allocatedSessionScratch(t *testing.T, dir string) (*Session, *execenv.LocalExecutionEnvironment, string) {
 	t.Helper()
-	s := newSession(t, withDir(dir), withoutGitSnapshot())
+	s := newSession(t, withDir(dir))
 	env, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("session env type %T, want *LocalExecutionEnvironment", s.env)

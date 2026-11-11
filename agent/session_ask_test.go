@@ -3288,7 +3288,7 @@ func TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning(t *te
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_order_pin")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	eventsDone := captureSessionEvents(s)
 
 	repair := breakSessionMetaPath(t, s)

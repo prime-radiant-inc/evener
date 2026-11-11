@@ -47,7 +47,7 @@ func TestSkillDelivery_CompleteBody(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestSkillDelivery_ConfiguredOutputLimit(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+		withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			ToolOutputLimits: map[string]schema.ToolOutputLimit{
@@ -147,7 +147,7 @@ func TestSkillDelivery_MandatoryBudgetFailure(t *testing.T) {
 	}}
 	// The window admits the first request but not the complete activation.
 	profile := provider.WithContextWindow(newAnthropicProfile("claude-test"), 2000)
-	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(profile))
 	evs, stop := captureEvents(s)
 	_, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil)
 	stop()
@@ -189,7 +189,7 @@ func TestSkillDelivery_FailedReinvocationPreservesInventory(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	evs, stop := captureEvents(s)
 	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	evs, stop := captureEvents(s)
 	// The model route activates without any user authorization.
 	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
@@ -304,7 +304,7 @@ func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	seedNumberedSessionHistory(t, s, 12)
 	// Fold after the activation's tool call executed, before the next dispatch.
 	var folded atomic.Bool
@@ -358,7 +358,7 @@ func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 		}
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
 	evs, stop := captureEvents(s)
@@ -456,7 +456,7 @@ func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
 	evs, stop := captureEvents(s)
@@ -534,7 +534,7 @@ func TestSkillDelivery_ChangedSourceRecordsPreviousProvenance(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
 	evs, stop := captureEvents(s)
@@ -615,7 +615,7 @@ func TestSkillDelivery_DeletedSourceBeforeDispatch(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
 	evs, stop := captureEvents(s)
@@ -692,7 +692,7 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	// The restored-window state: an obligation whose carrier never joined the
 	// retained history and whose source is gone. persistSkillToolObligations
 	// is the same seam the tool route records obligations through.
@@ -784,7 +784,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 				MemoryStateRoot:       memoryRoot,
 				MemoryProjectID:       "fixture-project",
 				MaxToolRoundsPerInput: 1,
-			}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			}), withProfile(newAnthropicProfile("claude-test")))
 			_, err := s.ProcessInput(context.Background(), "stage gardening activation", nil)
 			requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
 			obligations := lifecycleObligations(s)
@@ -877,7 +877,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			StateDir:         history,
 			MemoryStateRoot:  memoryRoot,
 			MemoryProjectID:  "fixture-project",
-		}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		}), withProfile(newAnthropicProfile("claude-test")))
 		if _, err := s.ProcessInput(context.Background(), "first activation", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -988,7 +988,7 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 		StateDir:        t.TempDir(),
 		MemoryStateRoot: t.TempDir(),
 		MemoryProjectID: "fixture-project",
-	}), withoutGitSnapshot())
+	}))
 	s.reg.Remove("memory_write")
 	refreshModelFacingCaches(s)
 	denied := schema.SkillDeliveryObligation{
@@ -1123,7 +1123,7 @@ func TestSkillDelivery_TransportRetry(t *testing.T) {
 	}
 	policy := llm.RetryPolicy{MaxRetries: 3, BaseDelay: time.Millisecond}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+		withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			LLMRetryPolicy:   &policy,
@@ -1172,7 +1172,7 @@ func TestSkillDelivery_SaveRestore(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+		withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
 		t.Fatal(err)
@@ -1229,7 +1229,7 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root), withStateDir(t.TempDir()),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	s.pluginAgents["preload-role"] = plugin.Agent{
 		Name: "preload-role", PluginName: "test", AllTools: true,
 		SystemPrompt: "preload role", Skills: []string{"opaque"},
@@ -1288,7 +1288,7 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	// it the switch silently degrades to a same-instance WithModel and the
 	// committing dispatch never leaves the primary adapter.
 	s := newSession(t, withAdapter(primary), withAdapter(switched), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+		withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
 				if prefix, model, ok := strings.Cut(ref, "/"); ok && prefix == "openai" {
@@ -1665,7 +1665,7 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 	}
 	policy := llm.RetryPolicy{MaxRetries: 2, BaseDelay: time.Millisecond}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(primaryProfile), withoutGitSnapshot(),
+		withProfile(primaryProfile),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			LLMRetryPolicy:   &policy,
@@ -1722,7 +1722,7 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 // instructions for the rest of the session.
 func TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation(t *testing.T) {
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	repair := breakSessionMetaPath(t, s)
 	defer repair()
 
@@ -1781,7 +1781,7 @@ func TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation(t *testing.T) {
 // revalidation the obligation exists to force.
 func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	identity := schema.SkillContentIdentity{
 		Name:         "opaque",
 		DeclaredName: "opaque",
@@ -1851,7 +1851,7 @@ func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
 // reporting success.
 func TestSkillToolRound_CarrierWriteFailureIsVisible(t *testing.T) {
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 
 	const callID = "call-tool-round-write-fail"
 	obligation := schema.SkillDeliveryObligation{

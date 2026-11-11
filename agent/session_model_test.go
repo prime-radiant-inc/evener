@@ -1570,7 +1570,7 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold, and ForceCompact always attempts Layer 2 given a real client
 
 	contentFilterErr := llm.ErrorFromHTTPStatus(

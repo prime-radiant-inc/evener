@@ -80,7 +80,7 @@ func TestJobStatusAfterNotificationIsAllowed(t *testing.T) {
 
 func TestFirstJobStatusOnQuietDelegateIsAllowed(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	id := "dlg_quiet_wait"
 	seedStableToolRunningDelegate(t, s, id, "", time.Unix(10, 0).UTC())
 
@@ -147,7 +147,7 @@ func TestSleepOnlyShellCommandIsRefused(t *testing.T) {
 
 func TestRepeatedJobStatusOnUnchangedRunningDelegateIsRefused(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	id := "dlg_repeat_wait"
 	seedStableToolRunningDelegate(t, s, id, "", time.Unix(10, 0).UTC())
 
@@ -237,7 +237,7 @@ func TestJobStatusAfterSelfTimerWakeIsAllowed(t *testing.T) {
 
 func TestJobStatusOnDelegateFollowsNewActivityReportOnly(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	id := "dlg_activity_reports"
 	start := time.Unix(10, 0).UTC()
 	seedStableToolRunningDelegate(t, s, id, "", start)

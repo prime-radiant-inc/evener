@@ -1331,7 +1331,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\nmore\n"), 0o644) // modified tracked file
 	_ = os.WriteFile(filepath.Join(dir, "UNTRACKED.txt"), []byte("u\n"), 0o644)    // untracked file
 
-	sess := newSession(t, withDir(dir))
+	sess := newSession(t, withDir(dir), withEnvironmentSnapshot())
 
 	data, _ := sess.buildPromptData(sess.env)
 	if !data.IsGitRepo || data.GitBranch == "" {
