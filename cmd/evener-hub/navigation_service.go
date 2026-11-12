@@ -949,6 +949,17 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			continue
 		}
+		// A non-forced recovery capture can be the first successful build
+		// after a forced receipt refresh timed out. Adopt the armed
+		// invalidation for this capture; otherwise the change advances
+		// without a publication and the later forced refresh finds no
+		// changes and clears the invalidation silently. Mark the flight
+		// mutating only when the capture observed a change, so a no-op
+		// recovery does not wake the scheduler for nothing.
+		adoptPending := !flight.mutated && s.pendingInvalidation
+		if adoptPending {
+			flight.hint = mergeNavigationChangeHints(flight.hint, s.pendingHint)
+		}
 		stats.phase = "next_states"
 		phaseStart = time.Now()
 		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations, s.aliasServed, s.aliasServedFloor)
@@ -961,6 +972,9 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				flight.err = err
 			}
 			return
+		}
+		if adoptPending && len(changes) != 0 {
+			flight.mutated = true
 		}
 		navigationBeforeSnapshotCommit(ctx)
 		// This is the publication linearization point. State transition work

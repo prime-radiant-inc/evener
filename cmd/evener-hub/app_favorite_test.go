@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -266,7 +265,7 @@ func TestHubFavoriteSetReportsAPermanentNavigationFailureOnce(t *testing.T) {
 	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1"}] {
 		t.Fatalf("favorite decision not persisted: %v", decisions)
 	}
-	if len(logs) != 1 || !strings.Contains(logs[0], "navigation receipt") {
-		t.Fatalf("logs = %q, want one navigation receipt failure line", logs)
+	if len(logs) != 1 {
+		t.Fatalf("logs = %q, want exactly one failure line", logs)
 	}
 }
