@@ -3,7 +3,14 @@ import { CONNECTION_REPLACED_ERROR } from "../../credentialLabels";
 import { errorText, friendlyErrorMessage, sessionActionError, WireError } from "../../errors";
 import { deferred } from "../../testing/deferred";
 import { FakeClient } from "../../testing/fakeClient";
-import type { AuthStatusResponse, InstanceEntry, InstanceListResponse, MethodName } from "../../types.gen";
+import type {
+  AuthStatusResponse,
+  InstanceEntry,
+  InstanceListResponse,
+  InstanceModelDetailResponse,
+  InstanceModelEditResponse,
+  MethodName,
+} from "../../types.gen";
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
@@ -1294,5 +1301,190 @@ describe("instance mutations and their own echo", () => {
       const call = fake.calls.filter((candidate) => candidate.method === method).at(-1);
       expect((call?.params as { originClientId?: string } | undefined)?.originClientId, method).toBe("tab-1");
     }
+  });
+});
+
+const MODEL_DETAIL: InstanceModelDetailResponse = {
+  name: "work",
+  model: "deepseek-4.1-flash",
+  disabled: false,
+  authoredOnly: false,
+  effective: {
+    contextWindow: 1_000_000,
+    compactionThreshold: 250_000,
+    reasoning: true,
+    defaultEffort: "medium",
+    effortValues: ["low", "medium", "high"],
+    inputModalities: ["text"],
+    tools: true,
+    protocol: "openai-chat",
+    surface: "openai",
+  },
+  provenance: {
+    ContextWindow: "catalog",
+    CompactionThreshold: "config",
+  },
+  authored: {
+    compactionThreshold: 250_000,
+  },
+  thinkingFormats: ["openai", "qwen"],
+  thinkingShapes: ["reasoning_content", "thinking"],
+};
+
+describe("getModel and editModel", () => {
+  test("getModel reads model details and rejects replies from a replaced connection", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    const pending = deferred<InstanceModelDetailResponse>();
+    let calls = 0;
+    fake.on("evener/instance/modelGet", () => (++calls === 1 ? MODEL_DETAIL : pending.promise));
+    store.connectionChanged(fake, "ready");
+
+    const detail = await store.getState().getModel({ name: "work", model: "deepseek-4.1-flash" });
+    expect(detail).toEqual(MODEL_DETAIL);
+
+    const stale = store.getState().getModel({ name: "work", model: "deepseek-4.1-flash" });
+    store.connectionChanged(readyClient(), "ready");
+    pending.resolve(MODEL_DETAIL);
+    await expect(stale).rejects.toThrow(CONNECTION_REPLACED_ERROR);
+  });
+
+  test("editModel stamps originClientId, consumes own evener/auth/updated echo without foreign refetch, and returns detail", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    const editedEntry: InstanceEntry = {
+      ...WORK,
+      models: [
+        {
+          id: "deepseek-4.1-flash",
+          customized: true,
+          contextWindow: 1_000_000,
+          compactionThreshold: 250_000,
+        },
+      ],
+    };
+    fake.on("evener/instance/modelEdit", () => ({
+      list: { ...LISTING, instances: [editedEntry] },
+      detail: MODEL_DETAIL,
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const foreign: boolean[] = [];
+    store.subscribe((state, previous) => foreign.push(foreignListingChange(state, previous)));
+
+    const result = await store.getState().editModel({
+      name: "work",
+      model: "deepseek-4.1-flash",
+      compactionThreshold: 250_000,
+    });
+    expect(result).toEqual({ applied: true, detail: MODEL_DETAIL });
+    expect(store.getState().instances[0]?.models).toEqual(editedEntry.models);
+    expect(fake.calls.find((call) => call.method === "evener/instance/modelEdit")?.params).toEqual({
+      name: "work",
+      model: "deepseek-4.1-flash",
+      compactionThreshold: 250_000,
+      originClientId: "tab-1",
+    });
+
+    foreign.length = 0;
+    const marked = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+    expect(foreign.some(Boolean)).toBe(false);
+  });
+
+  test("keepRefreshedModels preserves customized, contextWindow, compactionThreshold, newly added custom models, and removeCustom deletions when refreshModels lands in flight", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...WORK, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1", contextWindow: 1_000_000 }]));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // 1. Edit existing model while refreshModels lands in flight: preserves customized, contextWindow, compactionThreshold AND refreshed live model.
+    const editGate = deferred<InstanceModelEditResponse>();
+    fake.on("evener/instance/modelEdit", () => editGate.promise);
+    const editPromise = store.getState().editModel({
+      name: "work",
+      model: "m1",
+      compactionThreshold: 250_000,
+    });
+    fake.on("evener/instance/refreshModels", () =>
+      withModels([
+        { id: "m1", contextWindow: 1_000_000 },
+        { id: "live-new", contextWindow: 128_000 },
+      ]),
+    );
+    await store.getState().refreshModels("work");
+    editGate.resolve({
+      list: withModels([
+        {
+          id: "m1",
+          customized: true,
+          contextWindow: 1_000_000,
+          compactionThreshold: 250_000,
+        },
+      ]),
+      detail: { ...MODEL_DETAIL, model: "m1" },
+    });
+    await editPromise;
+    expect(store.getState().instances[0]?.models).toEqual([
+      {
+        id: "m1",
+        customized: true,
+        contextWindow: 1_000_000,
+        compactionThreshold: 250_000,
+      },
+      { id: "live-new", contextWindow: 128_000 },
+    ]);
+
+    // 2. Create custom model while refreshModels lands in flight: appends the new custom model to the refreshed list.
+    const createGate = deferred<InstanceModelEditResponse>();
+    fake.on("evener/instance/modelEdit", () => createGate.promise);
+    const createPromise = store.getState().editModel({
+      name: "work",
+      model: "custom-1",
+      create: true,
+      compactionThreshold: 100_000,
+    });
+    await store.getState().refreshModels("work");
+    createGate.resolve({
+      list: withModels([
+        { id: "m1", customized: true, contextWindow: 1_000_000, compactionThreshold: 250_000 },
+        { id: "custom-1", customized: true, compactionThreshold: 100_000 },
+      ]),
+      detail: { ...MODEL_DETAIL, model: "custom-1", authoredOnly: true },
+    });
+    await createPromise;
+    expect(store.getState().instances[0]?.models?.map((m) => m.id)).toEqual(["m1", "live-new", "custom-1"]);
+
+    // 3. Remove custom model while refreshModels lands in flight: filters out the removed custom model.
+    const removeGate = deferred<InstanceModelEditResponse>();
+    fake.on("evener/instance/modelEdit", () => removeGate.promise);
+    const removePromise = store.getState().editModel({
+      name: "work",
+      model: "custom-1",
+      removeCustom: true,
+    });
+    fake.on("evener/instance/refreshModels", () =>
+      withModels([
+        { id: "m1", customized: true, contextWindow: 1_000_000, compactionThreshold: 250_000 },
+        { id: "live-new", contextWindow: 128_000 },
+        { id: "custom-1", customized: true, compactionThreshold: 100_000 },
+      ]),
+    );
+    await store.getState().refreshModels("work");
+    removeGate.resolve({
+      list: withModels([{ id: "m1", customized: true, contextWindow: 1_000_000, compactionThreshold: 250_000 }]),
+    });
+    const removeResult = await removePromise;
+    expect(removeResult).toEqual({ applied: true, detail: null });
+    expect(store.getState().instances[0]?.models?.map((m) => m.id)).toEqual(["m1", "live-new"]);
   });
 });

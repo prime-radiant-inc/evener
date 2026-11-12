@@ -20,7 +20,13 @@ import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
-import { assumedWindowMark, contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import {
+  assumedWindowMark,
+  contextTone,
+  effectiveContextStatus,
+  formatWorkDuration,
+  totalWorkMillis,
+} from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -133,15 +139,20 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
 
 export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRowProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
-  const hasContext = model.contextWindow > 0;
+  const status = effectiveContextStatus(model);
+  const hasContext = status.ceiling > 0;
   // The clock reports an in-flight turn's elapsed time, so it has nothing to
   // say when no turn is running - and a strip that keeps showing a frozen
   // number implies otherwise. The banked total is still one click away in
   // Session details.
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
-  const contextPercent = Math.round(model.contextPressure * 100);
-  const contextLabel = `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${model.contextWindow} tokens used, ${contextPercent} percent`;
+  const contextPercent = Math.round(status.pressure * 100);
+  const contextLabel = status.hasCustomThreshold
+    ? model.contextAssumed
+      ? `Context: ${model.contextUsed} of ${status.ceiling} tokens used, ${contextPercent} percent`
+      : `Context: ${model.contextUsed} of ${status.ceiling} tokens used (${model.contextWindow} window), ${contextPercent} percent`
+    : `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${status.ceiling} tokens used, ${contextPercent} percent`;
 
   return (
     <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
@@ -155,8 +166,8 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
             <meter
               aria-label={contextLabel}
               min={0}
-              value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
-              max={model.contextWindow}
+              value={Math.min(status.ceiling, Math.max(0, model.contextUsed))}
+              max={status.ceiling}
             />
           </VisuallyHidden>
           <span className={CLASS.context} data-testid="status-row-context" aria-hidden="true" title={contextLabel}>
@@ -164,8 +175,8 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
               <Meter
                 label={contextLabel}
                 value={model.contextUsed}
-                max={model.contextWindow}
-                tone={contextTone(model.contextPressure)}
+                max={status.ceiling}
+                tone={contextTone(status.pressure)}
               />
             </span>
             <span className={`${CLASS.contextPercent} ${CLASS.figure}`} data-testid="status-row-context-percent">

@@ -41,7 +41,14 @@ import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from 
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
-import { assumedWindowMark, contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import {
+  assumedWindowMark,
+  contextTone,
+  effectiveContextStatus,
+  formatWorkDuration,
+  modelLabel,
+  totalWorkMillis,
+} from "./statusFormat";
 
 export interface DetailsPanelProps {
   model: ThreadModel;
@@ -126,13 +133,16 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
 
 /** Shared details body used by the mobile Sheet and desktop pane. */
 export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPanelBodyProps) {
-  const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
-  // Remaining is the context window minus what is used, floored at zero - the
-  // daemon's own definition of the figure (agent/schema/context_metrics.go's
-  // ContextMetrics.Remaining), so deriving it here matches the number the
-  // daemon would have sent rather than inventing a second meaning.
-  const remaining = Math.max(0, model.contextWindow - model.contextUsed);
-  const percent = Math.round(model.contextPressure * 100);
+  const status = effectiveContextStatus(model);
+  const showContext = status.ceiling > 0 && !isEndedStatus(model.status.type);
+  const remaining = status.remaining;
+  const percent = Math.round(status.pressure * 100);
+  const capacityMark = status.hasCustomThreshold ? "" : assumedWindowMark(model.contextAssumed);
+  const windowSuffix = status.hasCustomThreshold
+    ? model.contextAssumed
+      ? " (window unknown)"
+      : ` (${formatTokenCount(model.contextWindow)} window)`
+    : "";
 
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const tokens = sessionTokens(model);
@@ -172,19 +182,20 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
               <>
                 <span className={CLASS.meter}>
                   <Meter
-                    label={`Context: ${formatTokenCount(model.contextUsed)} of ${assumedWindowMark(model.contextAssumed)}${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
+                    label={`Context: ${formatTokenCount(model.contextUsed)} of ${capacityMark}${formatTokenCount(status.ceiling)} tokens used, ${percent} percent`}
                     value={model.contextUsed}
-                    max={model.contextWindow}
-                    tone={contextTone(model.contextPressure)}
+                    max={status.ceiling}
+                    tone={contextTone(status.pressure)}
                   />
                 </span>
                 <span>{percent}% used</span>
                 <span className={CLASS.dim}>
-                  {formatTokenCount(model.contextUsed)} / {assumedWindowMark(model.contextAssumed)}
-                  {formatTokenCount(model.contextWindow)}
+                  {formatTokenCount(model.contextUsed)} / {capacityMark}
+                  {formatTokenCount(status.ceiling)}
+                  {windowSuffix}
                 </span>
                 <span className={CLASS.dim}>
-                  {assumedWindowMark(model.contextAssumed)}
+                  {capacityMark}
                   {formatTokenCount(remaining)} left
                 </span>
               </>,

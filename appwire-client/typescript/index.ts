@@ -232,6 +232,7 @@ export {
   formatSpan,
   formatTokenCount,
   parseTimestampMs,
+  parseTokenCount,
   plainQuoteLine,
   splitMandate,
   spokenDuration,
@@ -530,7 +531,13 @@ export { RUNNING_QUIET_AFTER_MS } from "./quiet";
 export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
-export { effortLabel, effortOptionLevels, FALLBACK_EFFORT_LEVELS, sessionEffortLevels } from "./reasoningEffort";
+export {
+  EFFORT_TIERS,
+  effortLabel,
+  effortOptionLevels,
+  FALLBACK_EFFORT_LEVELS,
+  sessionEffortLevels,
+} from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";

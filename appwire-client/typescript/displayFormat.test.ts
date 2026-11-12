@@ -10,6 +10,7 @@ import {
   formatSpan,
   formatTokenCount,
   parseTimestampMs,
+  parseTokenCount,
   spokenDuration,
 } from "./displayFormat";
 
@@ -46,6 +47,26 @@ test.each([
 ])("formatTokenCount(%d) reads %s", (n, text) => {
   expect(formatTokenCount(n)).toBe(text);
 });
+
+test.each([
+  ["250000", 250_000],
+  [" 250,000 ", 250_000],
+  ["250k", 250_000],
+  ["250K", 250_000],
+  ["1.13k", 1_130],
+  ["0.29M", 290_000],
+  ["1.5m", 1_500_000],
+  ["2147483647", 2_147_483_647],
+])("parseTokenCount(%j) parses exact integer %d", (raw, expected) => {
+  expect(parseTokenCount(raw)).toBe(expected);
+});
+
+test.each(["", "   ", "0", "0k", "-5k", "1.5", "1.2345k", "1.1234567m", "2147483648", "3000m", "abc"])(
+  "parseTokenCount(%j) rejects invalid or out-of-range input with null",
+  (raw) => {
+    expect(parseTokenCount(raw)).toBeNull();
+  },
+);
 
 // --- formatDurationMs -------------------------------------------------------
 // Same tier
