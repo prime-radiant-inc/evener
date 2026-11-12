@@ -282,7 +282,11 @@ final class EvenerQualificationUITests: XCTestCase {
 			while Date() < shown && !board.waitForExistence(timeout: 4) {
 				answerSavePasswordSheet(app)
 				let connect = app.buttons["Connect"]
-				guard connect.exists else { break }
+				// The sheet is a separate process, so answering it does not
+				// guarantee the review is visible in the same instant. Wait
+				// for Connect inside the iteration; the outer deadline still
+				// bounds the loop when the review genuinely never appears.
+				guard connect.waitForExistence(timeout: 4) else { break }
 				tap(connect, "the review step never appeared")
 			}
 		}
@@ -334,23 +338,32 @@ final class EvenerQualificationUITests: XCTestCase {
 		// where its row is titled by the model's display name ("Fake Test
 		// Model"), not its id. The form row's press can land in the push's
 		// settling window, so it is re-pressed only while the form still
-			// shows it; the model screen's own row is then waited for with the
-			// full bound, because the hub's model list arrives asynchronously.
-			// A slow press can also land on a different row, pushing another
-			// screen: with neither the form's Model row nor the Model screen's
-			// own "Hub default" header in front, the loop goes back and presses
-			// Model again instead of waiting for a list that screen cannot show.
+		// shows it; the model screen's own row is then waited for with the
+		// full bound, because the hub's model list arrives asynchronously.
+		// A slow press can also land on a different row, pushing another
+		// screen: with neither the form's Model row nor the Model screen's
+		// own "Hub default" header in front, the loop goes back and presses
+		// Model again instead of waiting for a list that screen cannot show.
 		let modelRow = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch
 		let fakeModel = app.buttons["Fake Test Model"]
-			let modelScreen = app.buttons["Hub default"]
+		let modelScreen = app.buttons["Hub default"]
+		// The New session sheet is a modal over the Board, whose own
+		// navigation bar stays in the tree. Scope the way back to the
+		// sheet's pushed-screen bars so a mis-press cannot tap the Board's
+		// bar through the modal.
+		let sheetBar = app.navigationBars
+			.matching(NSPredicate(format: "identifier IN %@", [
+				"Host", "Project", "Browse folders", "Plugins", "Access", "More options",
+			]))
+			.firstMatch
 		let modeled = Date().addingTimeInterval(tripwire)
-			while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
-				if modelRow.exists {
-					tap(modelRow, "the form never offered choosing a model")
-				} else if !modelScreen.exists {
-					tap(app.navigationBars.buttons.firstMatch, "the wrong screen never offered a way back")
-				}
+		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
+			if modelRow.exists {
+				tap(modelRow, "the form never offered choosing a model")
+			} else if !modelScreen.exists {
+				tap(sheetBar.buttons.firstMatch, "the wrong screen never offered a way back")
+			}
 		}
 		tap(fakeModel, "the model screen never offered the fixture's model")
 
