@@ -347,14 +347,14 @@ func (s *sandboxFS) grantFdRecheckRefuses(target string, write bool) bool {
 		if err != nil {
 			return true
 		}
-		defer unix.Close(parentFd)
+		defer func() { _ = unix.Close(parentFd) }()
 		return s.recheckWriteTargetFd("write_file", target, parentFd, filepath.Base(target)) != nil
 	}
 	fd, err := openAbsNoSymlinks(target, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return true
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	return s.recheckMaskedFd("read_file", target, fd) != nil
 }
 

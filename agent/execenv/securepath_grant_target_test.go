@@ -351,7 +351,7 @@ func blockOnFIFOOpen(fifo string, done chan<- struct{}) {
 	if err != nil {
 		return
 	}
-	_, _ = f.Write([]byte("one line\n"))
+	_, _ = f.WriteString("one line\n")
 	_ = f.Close()
 }
 
