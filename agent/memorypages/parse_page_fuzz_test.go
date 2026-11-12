@@ -43,6 +43,11 @@ func FuzzParsePage(f *testing.F) {
 		if line := IndexLine(p); strings.ContainsAny(line, "\r\n") {
 			t.Fatalf("multi-line index line %q for %q", line, raw)
 		}
+		for _, tag := range p.Tags {
+			if tag == "" || strings.ContainsAny(tag, " \t\r\n,") || strings.HasPrefix(tag, "-") || strings.HasSuffix(tag, "-") || strings.Contains(tag, "--") {
+				t.Fatalf("malformed normalized tag %q in %v for %q", tag, p.Tags, raw)
+			}
+		}
 		if again := ParsePage("a.md", []byte(raw), time.Time{}); !reflect.DeepEqual(p, again) {
 			t.Fatalf("ParsePage not deterministic for %q: %+v vs %+v", raw, p, again)
 		}

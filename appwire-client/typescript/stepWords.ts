@@ -43,11 +43,15 @@ export function withDetail(words: StepWords, detail: string | undefined): StepWo
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
 /** A read's line range from its requested bounds or the output it returned. */
+const NUMBERED_LINE = /^\s*\d+\t/;
+
 export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
   const limitArg = args.limit;
-  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(output);
+  const blank = NUMBERED_LINE.test(output) ? output.indexOf("\n\n") : -1;
+  const body = blank < 0 ? output : output.slice(0, blank);
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(body);
   if (count > 0) return `lines ${offset}-${offset + count - 1}`;
   return output === "" ? undefined : `lines ${offset}`;
 }

@@ -197,9 +197,10 @@ func collapseWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// normalizeMemoryTags reads a tags value: a list, or a single string as one
-// tag. Each tag is trimmed and lowercased, runs of whitespace become "-",
-// and empty tags and duplicates are dropped.
+// normalizeMemoryTags reads a tags value: a YAML list or comma-separated
+// string. Each tag is trimmed of outer punctuation/hyphens and lowercased,
+// internal whitespace and hyphen runs collapse to a single "-", and empty tags
+// and duplicates are dropped.
 func normalizeMemoryTags(v any) []string {
 	var items []any
 	switch value := v.(type) {
@@ -221,12 +222,34 @@ func normalizeMemoryTags(v any) []string {
 		default:
 			continue
 		}
-		tag := strings.Join(strings.Fields(strings.ToLower(text)), "-")
-		if tag != "" && !slices.Contains(tags, tag) {
-			tags = append(tags, tag)
+		for rawPart := range strings.SplitSeq(text, ",") {
+			tag := cleanMemoryTag(rawPart)
+			if tag != "" && !slices.Contains(tags, tag) {
+				tags = append(tags, tag)
+			}
 		}
 	}
 	return tags
+}
+
+func cleanMemoryTag(raw string) string {
+	const trimSet = "- \t\r\n\v\f,;\"'[]{}"
+	s := strings.Trim(strings.ToLower(raw), trimSet)
+	if s == "" {
+		return ""
+	}
+	var parts []string
+	for field := range strings.FieldsSeq(s) {
+		field = strings.Trim(field, trimSet)
+		if field != "" {
+			parts = append(parts, field)
+		}
+	}
+	joined := strings.Join(parts, "-")
+	for strings.Contains(joined, "--") {
+		joined = strings.ReplaceAll(joined, "--", "-")
+	}
+	return strings.Trim(joined, "-")
 }
 
 // memoryStampDate reads an updated value: a YAML date or a YYYY-MM-DD string.

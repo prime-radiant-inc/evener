@@ -283,6 +283,31 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
 }
 
+func memoryIndexSliceFooter(body, scope, toolName string, offset, limit *int) string {
+	start := 1
+	if offset != nil && *offset > 0 {
+		start = *offset
+	}
+	winLimit := execenv.DefaultReadLines
+	if limit != nil && *limit > 0 {
+		winLimit = *limit
+	}
+	norm := strings.ReplaceAll(body, "\r\n", "\n")
+	totalLines := strings.Count(norm, "\n") + 1
+	if start > totalLines {
+		return ""
+	}
+	end := start + winLimit - 1
+	if end >= totalLines {
+		return ""
+	}
+	if toolName == "" {
+		toolName = "memory_read"
+	}
+	return fmt.Sprintf("\n[Showing lines %d-%d of %d; read more with %s(scope=%q, file_path=\"MEMORY.md\", offset=%d)]",
+		start, end, totalLines, toolName, scope, end+1)
+}
+
 // memoryGardeningSkillAvailable reports whether the session can load and
 // follow the gardening-memory skill: it can save memory (the skill fixes pages
 // with the save tools, which no delegate has), use_skill is callable and the
@@ -314,7 +339,14 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		if rendered.Status == "missing" {
 			return "This scope has no pages yet.", nil
 		}
-		return execenv.NumberLines(strings.TrimSuffix(rendered.Index, "\n"), optionalIntArg(args, "offset"), optionalIntArg(args, "limit")), nil
+		body := strings.TrimSuffix(rendered.Index, "\n")
+		offset, limit := optionalIntArg(args, "offset"), optionalIntArg(args, "limit")
+		out := execenv.NumberLines(body, offset, limit)
+		toolName := "memory_read"
+		if s != nil {
+			toolName = s.providerVisibleToolName("memory_read")
+		}
+		return out + memoryIndexSliceFooter(body, scope, toolName, offset, limit), nil
 	}
 	// Capture the bytes this read loaded, so the page's record is exactly what
 	// the session saw. They are the whole page even for an offset or limit
