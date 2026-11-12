@@ -505,13 +505,6 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
-	if reg == nil {
-		return nil
-	}
-	return delegateToolNameCeilingFromRegistered(reg.RegisteredNames(), reg, resultToolName, allTools, allowed, denied, canDelegate, isolation)
-}
-
 func (s *Session) subagentToolNameCeiling(agent *plugin.Agent, canDelegate bool, isolationName string) []string {
 	var registered map[string]bool
 	if s.reg != nil {

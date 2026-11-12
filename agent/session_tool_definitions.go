@@ -26,14 +26,6 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 }
 
-func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
-	var registered map[string]bool
-	if s.reg != nil {
-		registered = s.reg.RegisteredNames()
-	}
-	return s.defaultToolSummaryForAgentFromRegistered(registered, agent)
-}
-
 func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
 	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))

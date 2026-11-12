@@ -496,7 +496,7 @@ func TestPluginAgentSummaryMatchesEffectiveToolCeiling(t *testing.T) {
 	const connectedMCP = "plugin_superpowers_chrome_chrome__use_browser"
 	const disconnectedMCP = "plugin_offline_svc__missing"
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: connectedMCP, Description: "browser", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
+		Definition: llm.ToolDefinition{Name: connectedMCP, Description: "browser", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return "ok", nil
 		},
