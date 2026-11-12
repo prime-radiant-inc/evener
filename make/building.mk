@@ -174,4 +174,4 @@ install-system: install
 ## fails-when: Any module or package compilation failure is nonzero; the loop
 ##   stops at the first failing module.
 build-go:
-	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
+	@go build $(WORKSPACE_TEST_PATTERNS)

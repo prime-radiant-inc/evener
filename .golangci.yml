@@ -5,8 +5,9 @@ version: "2"
 # the CI job's timeout-minutes bounds a run that hangs.
 run:
   # One process per build regime now (host, GOOS=darwin, each build tag), so
-  # this knob is the lane's whole CPU footprint. 4 matches the old two-module-
-  # at-a-time x two-worker CI total while halving the peak.
+  # this knob is the lane's whole CPU footprint. 4 matches the old CI total
+  # (LINT_PARALLEL=2 modules x 2 workers) and halves the old local default
+  # (4 modules x 2 workers).
   concurrency: 4
   tests: true
 

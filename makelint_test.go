@@ -68,11 +68,11 @@ var lintGateCommands = map[string]string{
 	"secret-scan":             "scripts/ops/gitleaks-scan.sh repo",
 }
 
-// makeLintDryRun runs `make -n -k lint` from the repository root and returns
-// what it printed. It is the one audit input in this file that comes from make
-// itself rather than from Makefile text: every other assertion here is a
-// textual proxy, and a proxy cannot tell whether `lint` still depends on the
-// list it reads.
+// makeTargetsDryRun runs `make -n -k <targets...>` from the repository root
+// and returns what it printed. It is the one audit input in this file that
+// comes from make itself rather than from Makefile text: every other
+// assertion here is a textual proxy, and a proxy cannot tell whether `lint`
+// still depends on the list it reads.
 //
 // -n prints recipe lines instead of running them, with one GNU make exception
 // this audit has to account for: a line referencing $(MAKE) counts as
@@ -83,14 +83,15 @@ var lintGateCommands = map[string]string{
 // whether `make lint` is wired up. Hence two deliberate choices: the callers
 // assert on the printed recipes and never on the exit status, and -k keeps
 // make going past that failure, because without it a stale doc truncates the
-// output at lint-generated and every gate after it reads as missing.
+// output at lint-generated and every gate after it reads as missing. For a
+// single .PHONY lane target, -k is inert.
 //
 // Empty output is the vacuity failure. It means make never reached the point
 // of printing a recipe, so every assertion built on the output would hold
 // against nothing; it fails loudly here instead.
-func makeLintDryRun(t *testing.T, makePath string) string {
+func makeTargetsDryRun(t *testing.T, makePath string, targets ...string) string {
 	t.Helper()
-	cmd := exec.Command(makePath, "-n", "-k", "lint")
+	cmd := exec.Command(makePath, append([]string{"-n", "-k"}, targets...)...)
 	// A parent make (this suite runs under `make test`) exports its own flags,
 	// job-server file descriptors and recursion depth. Inheriting them makes
 	// the child warn about an unavailable job server and can change what it
@@ -107,9 +108,9 @@ func makeLintDryRun(t *testing.T, makePath string) string {
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if strings.TrimSpace(stdout.String()) == "" {
-		t.Fatalf("`%s -n -k lint` printed no recipe lines (%v), so this audit has no subject and "+
+		t.Fatalf("`%s -n -k %s` printed no recipe lines (%v), so this audit has no subject and "+
 			"would hold against nothing. That is a broken Makefile, not a clean one.\nstderr:\n%s",
-			makePath, runErr, stderr.String())
+			makePath, strings.Join(targets, " "), runErr, stderr.String())
 	}
 	return stdout.String()
 }
@@ -192,7 +193,7 @@ func TestMakeLintRunsEveryGateInLintTargets(t *testing.T) {
 		}
 	}
 
-	dryRun := makeLintDryRun(t, makePath)
+	dryRun := makeTargetsDryRun(t, makePath, "lint")
 	var missing []string
 	for name, fragment := range lintGateCommands {
 		if !strings.Contains(dryRun, fragment) {
@@ -247,7 +248,7 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 	if err != nil {
 		t.Skipf("make is not on PATH (%v), so nothing can ask it what `make lint` expands to", err)
 	}
-	dryRun := makeLintDryRun(t, makePath)
+	dryRun := makeTargetsDryRun(t, makePath, "lint")
 
 	var line string
 	for candidate := range strings.Lines(dryRun) {
@@ -286,10 +287,6 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 	}
 }
 
-// TestLintGeneratedRejectsOutputDeletedFromHEAD exercises the real Make recipe
-// with real git. A generated path deleted in HEAD is recreated as untracked;
-// `git diff HEAD -- <path>` alone does not report that file, so the gate must
-// also require every expected output to remain tracked.
 // mergedSweepModules is every go.work module as a package pattern from the
 // repository root: the root module as ./... and each sibling module directory
 // as ./<dir>/... . A sweep that names all of them in ONE invocation covers
@@ -314,7 +311,7 @@ var mergedSweepModules = []string{
 // shadowing golangci's own concurrency.
 //
 // The assertions run against `make -n` output rather than recipe text for the
-// reason makeLintDryRun gives: run_quiet_lint wraps recipes in `if ( … )`, so
+// reason makeTargetsDryRun gives: run_quiet_lint wraps recipes in `if ( … )`, so
 // a textual read of make/linting.mk sees the loop bodies, not what runs. Each
 // gate is dry-run alone (-k not needed: the wrapper prints its recipe even
 // when an earlier prerequisite would fail), and the dry run prints the recipe
@@ -329,29 +326,13 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 	// lint-evenerfuzz and lint-eval are .PHONY with no prerequisites, and
 	// lint-golangci's build-dev prerequisite is also .PHONY, so -n prints
 	// every recipe line without executing anything.
-	laneDryRun := func(target string) string {
+	dryRunOf := func(target string) string {
 		t.Helper()
-		cmd := exec.Command(makePath, "-n", target)
-		for _, env := range os.Environ() {
-			name, _, _ := strings.Cut(env, "=")
-			if name == "MAKEFLAGS" || name == "MFLAGS" || name == "MAKELEVEL" {
-				continue
-			}
-			cmd.Env = append(cmd.Env, env)
-		}
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		runErr := cmd.Run()
-		if strings.TrimSpace(stdout.String()) == "" {
-			t.Fatalf("`%s -n %s` printed no recipe lines (%v), so this audit has no subject:\n%s",
-				makePath, target, runErr, stderr.String())
-		}
-		return stdout.String()
+		return makeTargetsDryRun(t, makePath, target)
 	}
 
 	for _, lane := range []string{"lint-evenerfuzz", "lint-eval", "lint-golangci"} {
-		dryRun := laneDryRun(lane)
+		dryRun := dryRunOf(lane)
 
 		// (a) every workspace module appears in the lane's sweep patterns.
 		for _, pattern := range mergedSweepModules {
@@ -362,9 +343,10 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 
 		// (b) every golangci-lint invocation in the lane runs under the
 		// per-worktree cache (the #290 cross-checkout poisoning guard). The
-		// recipe exports GOLANGCI_LINT_CACHE once up front, so counting
-		// occurrences proves every run inherits it: one export plus one
-		// occurrence per invocation means no golangci call bypasses it.
+		// recipe exports GOLANGCI_LINT_CACHE once, shell-wide, before the
+		// first invocation, so every later invocation in the same recipe
+		// inherits it; asserting the export exists whenever any invocation
+		// does is the check that can fail.
 		exports := strings.Count(dryRun, "GOLANGCI_LINT_CACHE=")
 		invocations := strings.Count(dryRun, "golangci-lint run")
 		if exports == 0 && invocations > 0 {
@@ -378,6 +360,10 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 	}
 }
 
+// TestLintGeneratedRejectsOutputDeletedFromHEAD exercises the real Make recipe
+// with real git. A generated path deleted in HEAD is recreated as untracked;
+// `git diff HEAD -- <path>` alone does not report that file, so the gate must
+// also require every expected output to remain tracked.
 func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
 	makePath, err := exec.LookPath("make")
 	if err != nil {

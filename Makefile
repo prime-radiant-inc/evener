@@ -5,12 +5,13 @@
 GO_MODULES := . agent llm auth envvars invariant identifier execsupport
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 
-# Every workspace module as a package pattern from the repo root: the root
-# module as ./... and each sibling module directory as ./<dir>/... . go.work
-# resolves cross-module patterns in one invocation, so each lint regime below
-# sweeps the whole workspace once instead of once per module.
-WORKSPACE_LINT_PATTERNS := $(foreach m,$(filter-out .,$(FUZZ_GO_MODULES)),./$(m)/...)
-WORKSPACE_LINT_PATTERNS += ./...
+# ws-patterns maps a workspace module list to package patterns from the repo
+# root: the root module as ./... and each sibling module directory as
+# ./<dir>/... . go.work resolves cross-module patterns in one invocation, so
+# every gate that sweeps the workspace uses this instead of a per-module loop.
+ws-patterns = ./... $(foreach m,$(filter-out .,$(1)),./$(m)/...)
+WORKSPACE_LINT_PATTERNS := $(call ws-patterns,$(FUZZ_GO_MODULES))
+WORKSPACE_TEST_PATTERNS := $(call ws-patterns,$(GO_MODULES))
 
 # golangci-lint caches raw findings before path-based suppressions and
 # exclusions run. Keep that cache durable within this worktree, but never let
