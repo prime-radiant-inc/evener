@@ -1677,8 +1677,9 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 }
 
 type foldedCoveredAttentionTurn struct {
-	turn  schema.Turn
-	later []schema.Turn
+	turn    schema.Turn
+	earlier []string
+	later   []schema.Turn
 }
 
 func (s *Session) beginAttentionCoverageRounds() {
@@ -1722,9 +1723,14 @@ func (s *Session) restoreUncoveredAttentionLocked(published, attention []schema.
 				if !alreadyHeld && !slices.ContainsFunc(s.attentionFoldedCovered, func(existing foldedCoveredAttentionTurn) bool {
 					return existing.turn.AttentionID == turn.AttentionID
 				}) {
+					earlier := make([]string, 0, i)
+					for _, prev := range attention[:i] {
+						earlier = append(earlier, prev.AttentionID)
+					}
 					s.attentionFoldedCovered = append(s.attentionFoldedCovered, foldedCoveredAttentionTurn{
-						turn:  turn,
-						later: slices.Clone(attention[i+1:]),
+						turn:    turn,
+						earlier: earlier,
+						later:   slices.Clone(attention[i+1:]),
 					})
 				}
 				continue
@@ -1772,12 +1778,12 @@ func (s *Session) settleFoldedCoveredAttention(resolvedIDs *[]string) {
 		s.mu.Lock()
 		resident := attentionTurns(s.history)
 		s.mu.Unlock()
-		var earlierIDs map[string]struct{}
+		earlierIDs := make(map[string]struct{})
 		for i, item := range folded {
+			for _, id := range item.earlier {
+				earlierIDs[id] = struct{}{}
+			}
 			if _, ok := unresolved[item.turn.AttentionID]; !ok {
-				if earlierIDs == nil {
-					earlierIDs = make(map[string]struct{})
-				}
 				earlierIDs[item.turn.AttentionID] = struct{}{}
 				continue
 			}
@@ -1794,9 +1800,6 @@ func (s *Session) settleFoldedCoveredAttention(resolvedIDs *[]string) {
 				}
 			}
 			_ = s.retainDelegateAttentionTurn(item.turn, later...)
-			if earlierIDs == nil {
-				earlierIDs = make(map[string]struct{})
-			}
 			earlierIDs[item.turn.AttentionID] = struct{}{}
 		}
 		return

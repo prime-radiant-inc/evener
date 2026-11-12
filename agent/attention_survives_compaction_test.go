@@ -1022,4 +1022,41 @@ func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *t
 	if firstIdx2 < 0 || secondIdx2 < 0 || firstIdx2 > secondIdx2 {
 		t.Fatalf("Path B fallback history indices = (first=%d, second=%d), want both present with first < second", firstIdx2, secondIdx2)
 	}
+
+	// Path C: firstID is uncovered (kept in history) while secondID is covered
+	// and folded away, and pendingAttentionTurnsLocked fails during unwind.
+	sess3, _ := newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failRestoreRead.Load() {
+				return delegateAttentionFold{}, errors.New("transient restore fold read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	muteNoteElicitation(sess3)
+	if _, err := sess3.appendDelegateNotificationDurably(firstID, firstText); err != nil {
+		t.Fatalf("append first on sess3: %v", err)
+	}
+	if _, err := sess3.appendDelegateNotificationDurably(secondID, secondText); err != nil {
+		t.Fatalf("append second on sess3: %v", err)
+	}
+	seedNumberedSessionHistory(t, sess3, 12)
+	sess3.beginAttentionCoverageRounds()
+	sess3.attentionMu.Lock()
+	sess3.attentionCoveredIDs = map[string]struct{}{secondID: {}}
+	sess3.attentionMu.Unlock()
+	if err := sess3.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess3.applyPendingForceCompact(context.Background())
+	failRestoreRead.Store(true)
+	_ = sess3.finishRootDelegateAttentionTurn([]string{secondID}, errors.New("turn failed"))
+	sess3.endAttentionCoverageRounds()
+	failRestoreRead.Store(false)
+
+	post3 := currentHistory(t, sess3)
+	firstIdx3, secondIdx3 := indexOfTurnText(post3, firstText), indexOfTurnText(post3, secondText)
+	if firstIdx3 < 0 || secondIdx3 < 0 || firstIdx3 > secondIdx3 {
+		t.Fatalf("Path C fallback history indices = (first=%d, second=%d), want both present with first < second", firstIdx3, secondIdx3)
+	}
 }
