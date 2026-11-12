@@ -758,11 +758,13 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			healthToolCall("c1", "exec_command", `{"command":"pwd"}`),
 			healthToolCall("c2", "grep_search", `{"query":"custom"}`),
+			healthToolCall("c2b", "grep_search", `{"query":"custom"}`),
 			healthToolCall("c3", "run_shell_command", `{"message":"done","end_turn":true}`),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 			healthToolResult("c1", "shell", "/tmp", false),
 			healthToolResult("c2", "grep_search", "bad query", true),
+			healthToolResult("c2b", "grep_search", "bad query", true),
 			healthToolResult("c3", "run_shell_command", `{"accepted":true}`, false),
 		}}),
 	}
@@ -780,10 +782,15 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 	if err != nil {
 		t.Fatalf("TranscriptHealth(custom): %v", err)
 	}
-	if hc.ToolCalls["shell"] != 1 || hc.ToolCalls["run_shell_command"] != 1 || hc.ToolCalls["grep_search"] != 1 || hc.ToolCalls["grep"] != 0 {
-		t.Errorf("custom session ToolCalls = %+v, want shell=1 run_shell_command=1 grep_search=1 grep=0", hc.ToolCalls)
+	if hc.ToolCalls["shell"] != 1 || hc.ToolCalls["run_shell_command"] != 1 || hc.ToolCalls["grep_search"] != 2 || hc.ToolCalls["grep"] != 0 {
+		t.Errorf("custom session ToolCalls = %+v, want shell=1 run_shell_command=1 grep_search=2 grep=0", hc.ToolCalls)
 	}
-	if hc.ToolErrors["grep_search"]["other"] != 1 || len(hc.ToolErrors["grep"]) != 0 {
-		t.Errorf("custom session ToolErrors = %+v, want grep_search[other]=1 and grep empty", hc.ToolErrors)
+	if hc.ToolErrors["grep_search"]["other"] != 2 || len(hc.ToolErrors["grep"]) != 0 {
+		t.Errorf("custom session ToolErrors = %+v, want grep_search[other]=2 and grep empty", hc.ToolErrors)
+	}
+	mc := metricSource{health: hc}
+	grepRunChk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "grep"}}}
+	if matched, err := grepRunChk.evaluate(mc); err != nil || matched {
+		t.Errorf("custom grep_search run matched canonical grep = (%t, %v), want (false, nil)", matched, err)
 	}
 }

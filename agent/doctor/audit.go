@@ -367,11 +367,12 @@ func (c AuditCheck) evaluate(source metricSource) (bool, error) {
 		}
 		want := cond.Value
 		if cond.Metric == "longest_identical_run.tool" {
-			if s, ok := actual.(string); ok {
-				actual = wirenames.Canonical(s)
-			}
 			if s, ok := want.(string); ok {
-				want = wirenames.Canonical(s)
+				_, exactCall := source.health.ToolCalls[s]
+				_, exactErr := source.health.ToolErrors[s]
+				if !exactCall && !exactErr {
+					want = wirenames.Canonical(s)
+				}
 			}
 		}
 		ok, err := compareMetric(actual, cond.Op, want)
