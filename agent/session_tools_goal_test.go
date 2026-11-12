@@ -254,3 +254,15 @@ func TestHasGoalConfigured_RaceWithGoalStoreInit(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func TestBareSession_SetGoalClearGoalDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	_, err := s.SetGoal(context.Background(), "bare session goal")
+	if err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if err := s.ClearGoal(); err != nil {
+		t.Fatalf("ClearGoal: %v", err)
+	}
+}

@@ -170,17 +170,28 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
+	if s == nil || s.reg == nil {
+		if s != nil {
+			s.cachedToolDefs = nil
+		}
+		return
+	}
 	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
 	// keyed by canonical names. Each registered profile tool is advertised in its
 	// provider-visible wire form (provider-specific rename + intent param).
-	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
+	var nameMap map[string]string // canonical → provider, may be nil
+	var profileDefs []llm.ToolDefinition
+	if s.profile != nil {
+		nameMap = s.profile.ToolNameMap()
+		profileDefs = s.profile.ToolDefinitions()
+	}
 
 	var defs []llm.ToolDefinition
 	included := make(map[string]bool)
-	for _, td := range s.profile.ToolDefinitions() {
+	for _, td := range profileDefs {
 		if registered[td.Name] {
 			// Manager composition already owns both the ordinary and hub branches.
 			// Keep its parameters as well as its description on provider requests.
