@@ -42,7 +42,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.PinSectionRenameResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed, navigationChangeHint{})
 		if err != nil {
 			return appwire.PinSectionRenameResponse{}, err
 		}
@@ -57,7 +57,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.PinSectionDeleteResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed, navigationChangeHint{})
 		if err != nil {
 			return appwire.PinSectionDeleteResponse{}, err
 		}
@@ -101,20 +101,31 @@ func resolveUnpinSession(ctx context.Context, pins *hubcore.PinSectionStore, res
 }
 
 // commitNavigationChange returns the navigation receipt for a hub-owned
-// mutation: the committed targets when the mutation changed anything, and an
-// empty mutation when it did not.
-func commitNavigationChange(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, changed bool) (appwire.NavigationMutation, error) {
+// mutation that has already persisted its decision: the committed targets when
+// the mutation changed anything, and an empty mutation when it did not. A
+// changed mutation with no navigation service still succeeds; the decision is
+// durable and there is no navigation surface whose receipt could lag it. A
+// refresh deadline with an armed rebuild returns the live generation and marks
+// the receipt deferred instead of failing a completed mutation. A permanent
+// navigation failure can never publish a later receipt, so it is logged once
+// and returned.
+func commitNavigationChange(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, changed bool, hint navigationChangeHint) (appwire.NavigationMutation, error) {
+	if changed {
+		// The decision is durable from here on, even when its receipt cannot
+		// be built, so the attention poke does not depend on the refresh.
+		pokeMutationAttention(cfg)
+	}
 	if navigation == nil {
-		return appwire.NavigationMutation{}, appwire.Unavailable("navigation service not configured")
+		return appwire.NavigationMutation{Targets: []appwire.NavigationInvalidationTarget{}}, nil
 	}
 	if !changed {
 		return navigation.EmptyMutation(), nil
 	}
-	mutation, err := navigation.Refresh(ctx, navigationChangeHint{})
+	mutation, err := navigation.Refresh(ctx, hint)
 	if err != nil {
+		hubLogfFor(cfg)("navigation receipt for a committed mutation failed: %v", err)
 		return appwire.NavigationMutation{}, appwire.Unavailable(err.Error())
 	}
-	pokeMutationAttention(cfg)
 	return mutation, nil
 }
 
@@ -237,7 +248,7 @@ func pinAssign(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigatio
 	if err != nil {
 		return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
 	}
-	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed, navigationChangeHint{})
 	if err != nil {
 		return appwire.SessionPinAssignResponse{}, err
 	}
@@ -259,7 +270,7 @@ func pinUnpin(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigation
 	if err != nil {
 		return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
 	}
-	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed, navigationChangeHint{})
 	if err != nil {
 		return appwire.SessionPinUnpinResponse{}, err
 	}

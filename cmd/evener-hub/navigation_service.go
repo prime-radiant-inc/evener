@@ -681,21 +681,38 @@ func navigationDeltaResponse(
 
 // Refresh always requests a new source capture, but all concurrent callers join
 // its service-owned flight. Caller cancellation stops only that caller's wait.
+//
+// A deadline is deferrable only when an invalidation is still armed: the
+// durable decision that caused it is followed by a rebuild, so Refresh returns
+// the live generation with Deferred set and no error rather than failing the
+// mutation. The claim is that a rebuild is armed, not that it will succeed:
+// the scheduler retries a persistently failing build. Every other failure
+// (sequence exhaustion, invalid generation, missing source, cancellation) can
+// never publish a later receipt and stays an error.
 func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
 	ticket := &navigationRefreshTicket{done: make(chan struct{})}
 	_, err := s.ensureSnapshot(ctx, true, []navigationChangeHint{hint}, ticket)
+	var mutation hubapi.NavigationMutation
+	if err == nil {
+		select {
+		case <-ctx.Done():
+			err = navigationUnavailable(ctx.Err())
+		case <-ticket.done:
+			mutation, err = ticket.outcome, ticket.err
+		}
+	}
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && s.invalidationPending() {
+			mutation = s.EmptyMutation()
+			mutation.Deferred = true
+			return mutation, nil
+		}
 		return hubapi.NavigationMutation{}, err
 	}
-	select {
-	case <-ctx.Done():
-		return hubapi.NavigationMutation{}, navigationUnavailable(ctx.Err())
-	case <-ticket.done:
-		return ticket.outcome, ticket.err
-	}
+	return mutation, nil
 }
 
 // PublicationReady is the sole notification that committed invalidations are
@@ -1534,7 +1551,8 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	if at, pending := s.pendingAttemptAt(); pending && s.now().Before(at) {
 		return
 	}
-	if _, err := s.Refresh(ctx, hint); err != nil {
+	mutation, err := s.Refresh(ctx, hint)
+	if err != nil || mutation.Deferred {
 		s.mu.Lock()
 		if s.pendingEpoch == epoch {
 			// The pending hint was NOT consumed by a successful build, so it
@@ -1574,6 +1592,11 @@ func (s *NavigationService) pendingAttemptAt() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextAttemptAt, s.pendingInvalidation
+}
+
+func (s *NavigationService) invalidationPending() bool {
+	_, pending := s.pendingAttemptAt()
+	return pending
 }
 
 // waitUntil parks until deadline, an invalidation wake, or cancellation.

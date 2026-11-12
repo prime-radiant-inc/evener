@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,5 +202,71 @@ func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
 	}
 	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p2"}] {
 		t.Fatalf(`favorite with source "local" did not normalize to the controller key: %v`, decisions)
+	}
+}
+
+// A favorite is durable before its receipt is built. When the forced refresh
+// exhausts its deadline with the store's rebuild still armed, the handler must
+// report the committed favorite and defer the receipt instead of failing a
+// completed mutation.
+func TestHubFavoriteSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
+	navigation := newChurningNavigationService(t)
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	attentionPokes := 0
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite:      favorites,
+		PokeAttention: func() { attentionPokes++ },
+	}, nil, navigation, nil)
+
+	response, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
+	if err != nil {
+		t.Fatalf("favorite of a persisted decision failed: %v", err)
+	}
+	if !response.OK || !response.Navigation.Deferred {
+		t.Fatalf("response = %+v, want OK with a deferred navigation receipt", response)
+	}
+	assertDeferredNavigationReceipt(t, navigation, response.Navigation)
+	decisions, err := favorites.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1"}] {
+		t.Fatalf("favorite decision not persisted: %v", decisions)
+	}
+	if attentionPokes != 1 {
+		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)
+	}
+}
+
+// A permanent navigation failure can never publish a later receipt, so it is
+// not a deferral: the handler logs it once and reports it, while leaving the
+// favorite decision durable.
+func TestHubFavoriteSetReportsAPermanentNavigationFailureOnce(t *testing.T) {
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	navigation := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Generation = func() (string, error) { return "", errors.New("entropy unavailable") }
+	})
+	favorites.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	var logs []string
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite: favorites,
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}, nil, navigation, nil)
+
+	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
+	requireWireError(t, err, appwire.CodeUnavailable)
+	decisions, readErr := favorites.Favorites()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1"}] {
+		t.Fatalf("favorite decision not persisted: %v", decisions)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "navigation receipt") {
+		t.Fatalf("logs = %q, want one navigation receipt failure line", logs)
 	}
 }
