@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"golang.org/x/net/html"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/runetrim"
@@ -35,9 +37,112 @@ func webFetchCacheKey(rawURL string) string {
 	return nonProjectHash(rawURL)
 }
 
-// htmlToMarkdown converts an HTML string to markdown.
-func htmlToMarkdown(html string) (string, error) {
-	return htmltomarkdown.ConvertString(html)
+// htmlToMarkdown converts an HTML string to markdown, prepending a non-empty
+// HTML document <title> as a top-level heading when no rendered body heading
+// already carries it.
+func htmlToMarkdown(rawHTML string) (string, error) {
+	doc, err := html.Parse(strings.NewReader(rawHTML))
+	if err != nil {
+		return "", err
+	}
+	title, headingHasTitle := inspectHTMLTitle(doc)
+	mdBytes, err := htmltomarkdown.ConvertNode(doc)
+	if err != nil {
+		return "", err
+	}
+	md := string(mdBytes)
+	if title == "" || headingHasTitle || strings.EqualFold(strings.TrimSpace(md), title) {
+		return md, nil
+	}
+	if strings.TrimSpace(md) == "" {
+		return "# " + title, nil
+	}
+	return "# " + title + "\n\n" + md, nil
+}
+
+// inspectHTMLTitle walks doc iteratively before ConvertNode mutates it,
+// returning the first non-empty HTML <title> (ignoring foreign namespaces such
+// as <svg>/<math> and inert containers such as <template>) and whether any body
+// heading already matches that title case-insensitively.
+func inspectHTMLTitle(doc *html.Node) (title string, headingHasTitle bool) {
+	type frame struct {
+		node   *html.Node
+		inHead bool
+	}
+	var headings []string
+	stack := []frame{{node: doc}}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		n := cur.node
+		if n.Type == html.ElementNode {
+			if n.Namespace != "" {
+				continue
+			}
+			switch n.Data {
+			case "script", "style", "noscript", "iframe", "template":
+				continue
+			case "head":
+				cur.inHead = true
+			case "title":
+				if title == "" {
+					title = collapseHTMLWhitespace(htmlNodeText(n))
+				}
+				continue
+			case "h1", "h2", "h3", "h4", "h5", "h6":
+				if !cur.inHead {
+					if h := collapseHTMLWhitespace(htmlNodeText(n)); h != "" {
+						headings = append(headings, h)
+					}
+				}
+			}
+		}
+		for child := n.LastChild; child != nil; child = child.PrevSibling {
+			stack = append(stack, frame{node: child, inHead: cur.inHead})
+		}
+	}
+	if title == "" {
+		return "", false
+	}
+	return title, slices.ContainsFunc(headings, func(h string) bool {
+		return strings.EqualFold(h, title)
+	})
+}
+
+func htmlNodeText(root *html.Node) string {
+	var b strings.Builder
+	stack := []*html.Node{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == root {
+			for child := n.LastChild; child != nil; child = child.PrevSibling {
+				stack = append(stack, child)
+			}
+			continue
+		}
+		if n.Type == html.TextNode {
+			b.WriteString(n.Data)
+			continue
+		}
+		if n.Type == html.ElementNode {
+			if n.Namespace != "" {
+				continue
+			}
+			switch n.Data {
+			case "script", "style", "noscript", "iframe", "template":
+				continue
+			}
+		}
+		for child := n.LastChild; child != nil; child = child.PrevSibling {
+			stack = append(stack, child)
+		}
+	}
+	return b.String()
+}
+
+func collapseHTMLWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // webFetchCachePath returns the absolute per-fetch directory path under the XDG cache dir.
@@ -142,7 +247,7 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	isHTML := strings.Contains(contentType, "text/html")
+	isHTML := strings.Contains(strings.ToLower(contentType), "text/html")
 	sizeBytes := len(body)
 
 	// Per-fetch cache directory (absolute XDG path).

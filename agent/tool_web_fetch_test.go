@@ -762,3 +762,138 @@ func TestWebFetch_ModelContentTruncationNeverSplitsRune(t *testing.T) {
 		}
 	}
 }
+
+func TestWebFetchHTMLToMarkdown_PreservesTitleWhenAbsentFromBody(t *testing.T) {
+	t.Parallel()
+	const (
+		jsTitleSentinel     = "WFJSTITLE8C14A2"
+		entityTitlePartA    = "WFENTITYA21F"
+		entityTitlePartB    = "WFENTITYB32E"
+		svgTitleSentinel    = "WFSVGTITLE77D1"
+		scriptTitleSentinel = "WFSCRIPTTITLE55B9"
+		matchedHeading      = "WFMATCHHEAD44C8"
+	)
+
+	t.Run("empty_or_js_body_keeps_title", func(t *testing.T) {
+		t.Parallel()
+		raw := fmt.Sprintf(`<!doctype html><html><head><title>%s</title></head><body><div><script src="/s.js"></script></div></body></html>`, jsTitleSentinel)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if md != "# "+jsTitleSentinel {
+			t.Fatalf("htmlToMarkdown(js shell) = %q, want %q", md, "# "+jsTitleSentinel)
+		}
+	})
+
+	t.Run("short_title_not_suppressed_by_body_substring", func(t *testing.T) {
+		t.Parallel()
+		raw := `<html><head><title>Go</title></head><body><p>Supported by Google.</p></body></html>`
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if md != "# Go\n\nSupported by Google." {
+			t.Fatalf("htmlToMarkdown(short title) = %q, want title heading plus body", md)
+		}
+	})
+
+	t.Run("collapses_whitespace_and_unescapes_entities", func(t *testing.T) {
+		t.Parallel()
+		raw := fmt.Sprintf("<html><head><title>\n  %s &amp;\t%s  </title></head><body><p>Body42.</p></body></html>", entityTitlePartA, entityTitlePartB)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		wantPrefix := fmt.Sprintf("# %s & %s\n\n", entityTitlePartA, entityTitlePartB)
+		if !strings.HasPrefix(md, wantPrefix) {
+			t.Fatalf("htmlToMarkdown = %q, want prefix %q", md, wantPrefix)
+		}
+	})
+
+	t.Run("ignores_svg_template_comment_and_script_titles", func(t *testing.T) {
+		t.Parallel()
+		const templateTitleSentinel = "WFTEMPLATETITLE66E2"
+		raw := fmt.Sprintf(`<html><head><!-- <title>%s</title> --><script>var x = "<title>%s</title>";</script><template><title>%s</title></template></head><body><svg><title>%s</title></svg><p>Body99.</p></body></html>`,
+			scriptTitleSentinel, scriptTitleSentinel, templateTitleSentinel, svgTitleSentinel)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if strings.Contains(md, scriptTitleSentinel) || strings.Contains(md, templateTitleSentinel) {
+			t.Fatalf("comment/script/template title leaked into markdown: %q", md)
+		}
+		if strings.HasPrefix(md, "# "+svgTitleSentinel) {
+			t.Fatalf("SVG <title> was promoted to document heading: %q", md)
+		}
+	})
+
+	t.Run("does_not_duplicate_matching_heading", func(t *testing.T) {
+		t.Parallel()
+		raw := fmt.Sprintf(`<html><head><title>%s</title></head><body><h1>%s</h1><p>Body88.</p></body></html>`,
+			matchedHeading, strings.ToLower(matchedHeading))
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if got := strings.Count(strings.ToUpper(md), matchedHeading); got != 1 {
+			t.Fatalf("matching <title> and <h1> emitted %d occurrences of %s, want 1:\n%s", got, matchedHeading, md)
+		}
+	})
+}
+
+func TestWebFetchTool_TitleOnlyHTMLReachesModelAndRenderedCache(t *testing.T) {
+	const (
+		titleSentinel    = "WFTITLEONLY9B4E21"
+		questionSentinel = "WFTITLEQUESTION3A11C7"
+		answerSentinel   = "WFTITLEANSWER6D90F4"
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, `<!doctype html><html><head><title>%s</title></head><body><div id="app"></div><script src="/s.js"></script></body></html>`, titleSentinel)
+	}))
+	t.Cleanup(srv.Close)
+
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	var captured []llm.Request
+	adapter := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			captured = append(captured, req)
+			return agenttest.FinalResponse(answerSentinel), nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	got, err := sess.webFetch(context.Background(), srv.URL, questionSentinel)
+	if err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	resMap, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("webFetch result = %T, want map[string]any", got)
+	}
+	mdPath, _ := resMap["markdown_file"].(string)
+	if mdPath == "" {
+		t.Fatalf("webFetch result missing markdown_file: %#v", resMap)
+	}
+	rendered, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("read rendered.md: %v", err)
+	}
+	if !strings.Contains(string(rendered), titleSentinel) {
+		t.Fatalf("rendered.md missing <title> %s: %q", titleSentinel, string(rendered))
+	}
+	if len(captured) != 1 || !requestMessagesContainText(captured[0].Messages, titleSentinel) {
+		t.Fatalf("cheap model request missing <title> %s: %+v", titleSentinel, captured)
+	}
+}
