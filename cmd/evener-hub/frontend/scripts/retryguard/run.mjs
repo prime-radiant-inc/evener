@@ -63,7 +63,7 @@ function installDurableReadHold() {
 function installRetryEnabledWatch() {
   const state = { sawEnabled: false, samples: 0 };
   globalThis.__retryWatch = state;
-  const label = (b) => ((b.textContent ?? "").trim()) || ((b.getAttribute("aria-label") ?? "").trim());
+  const label = (b) => (b.textContent ?? "").trim() || (b.getAttribute("aria-label") ?? "").trim();
   const scan = () => {
     state.samples++;
     for (const b of document.querySelectorAll("[data-testid='turn-failure'] button")) {
@@ -264,9 +264,12 @@ async function runLegacy(driver, scenario) {
     console.log("retryguard: continued output observed before durable settlement check", { clientMutationId });
     await navigateTo(driver.page, await evaluate(driver.send, "location.href"));
     await driver.openSession(scenario.ref);
-    await driver.waitPage(`window.__retryWire.reads.some((read) => read.ref === ${q(scenario.ref)} && read.subscribed)`, {
-      label: "reopened client read the session",
-    });
+    await driver.waitPage(
+      `window.__retryWire.reads.some((read) => read.ref === ${q(scenario.ref)} && read.subscribed)`,
+      {
+        label: "reopened client read the session",
+      },
+    );
     await waitBodyIncludes(driver, `RETRY_DONE_${scenario.mode}`, { label: "continued output after reopen" });
     await driver.waitPage(`${editor}.textContent === "RETRY_UNSENT_DRAFT"`, { label: "draft restored after reopen" });
     const durableRead = `(${readDurableRetry.toString()})(${q(clientMutationId)})`;
@@ -403,8 +406,10 @@ async function runLatestOnly(driver, scenario) {
       const buttons = ${retryButtonsExpr()};
       const rows = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-testid='transcript-row']")]
         .filter((row) => row.dataset.rowId !== "live-edge");
+      const liveEdge = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-row-id='live-edge']")];
       return composer && composer.steerVisible && buttons.length === 0 &&
-        rows.every((row) => !row.textContent.includes("RETRY_RUNNING_NEW")) ? true : null; })()`,
+        rows.every((row) => !row.textContent.includes("RETRY_RUNNING_NEW")) &&
+        liveEdge.length === 1 && liveEdge[0].textContent.includes("RETRY_RUNNING_NEW") ? true : null; })()`,
     { label: "newer running turn hides the older Retry before its items" },
   );
   driver.milestone("running-empty", {});
@@ -425,10 +430,9 @@ async function runLatestOnly(driver, scenario) {
   await driver.typeText(ref, "RETRY_NEWER_FAIL");
   const failingDraft = await driver.composerState(ref);
   await driver.clickSubmit(ref, { text: failingDraft.text, chips: [], tiles: 0 });
-  await driver.waitPage(
-    `(() => ${failureCapsExpr()}.length >= 2 ? true : null)()`,
-    { label: "newer failed turn rendered" },
-  );
+  await driver.waitPage(`(() => ${failureCapsExpr()}.length >= 2 ? true : null)()`, {
+    label: "newer failed turn rendered",
+  });
   await waitRetry(driver, 1, { enabled: true, label: "newer failure offers its own Retry" });
   const caps = await evaluate(driver.send, failureCapsExpr());
   const newestCap = caps.find((cap) => cap.text.includes("retry_fixture_newer"));
@@ -499,11 +503,7 @@ async function runReloadUnresolved(driver, scenario) {
     label: "failed turn readable after reload",
     timeoutMs: 30000,
   });
-  assert.equal(
-    await evaluate(driver.send, `${editor}.textContent`),
-    "RETRY_UNSENT_DRAFT",
-    "draft survived the reload",
-  );
+  assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT", "draft survived the reload");
   const attemptsBefore = (await wireRequests(driver)).length;
   const attempted = await evaluate(driver.send, retryClickExpr(1));
   assert.ok(attempted === "missing" || attempted === "disabled", `Retry was actionable after reload: ${attempted}`);

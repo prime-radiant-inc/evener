@@ -920,14 +920,23 @@ test("retarget moves recovery routing identity and preserves composition and own
 
 // --- Read path --------------------------------------------------------------
 
-test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
+test("listTargetRefs reports every ref with a waiting outbox record", async () => {
 	await storage.enqueueIntent(intent("a", "local:a"));
 	const b = await storage.enqueueIntent({
 		...intent("b", "local:b"),
 		optimisticDisplay: { input: [{ type: "text", text: "b" }] },
 	});
 	await storage.settleReceipt(b.clientMutationId, "pending");
-	await expect(storage.listTargetRefs()).resolves.toEqual(["local:a", "local:b"]);
+	await expect(storage.listTargetRefs()).resolves.toEqual(["local:a"]);
+});
+
+test("listTargetRefs omits a ref whose only durable record is an accepted optimistic copy", async () => {
+	const b = await storage.enqueueIntent({
+		...intent("b", "local:b"),
+		optimisticDisplay: { input: [{ type: "text", text: "b" }] },
+	});
+	await storage.settleReceipt(b.clientMutationId, "pending");
+	await expect(storage.listTargetRefs()).resolves.toEqual([]);
 });
 
 test("getOptimistic and getRecovery read back what settleReceipt and transferToRecovery wrote", async () => {

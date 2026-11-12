@@ -744,14 +744,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	}
 
 	async listTargetRefs(): Promise<string[]> {
-		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
-		// each arm would only repeat what the merge already guarantees. The
-		// ordering stays in JS: the web adapter sorts by the default UTF-16
-		// comparison, which a SQL ORDER BY's BINARY collation does not always
-		// match for non-ASCII refs, and the two hosts must agree exactly.
-		const rows = this.db.getAllSync<{ target_ref: string }>(
-			`SELECT target_ref FROM ${TABLES.outbox} UNION SELECT target_ref FROM ${TABLES.optimistic}`,
-		);
+		// Discovery targets are refs the outbox can still dispatch for; the
+		// web adapter enumerates the same set from IndexedDB, and the two hosts
+		// must agree exactly. An accepted optimistic copy is display-only, so a
+		// ref whose durable rows are all optimistic leaves the enumeration, and
+		// any outbox row in any state keeps the ref listed.
+		const rows = this.db.getAllSync<{ target_ref: string }>(`SELECT DISTINCT target_ref FROM ${TABLES.outbox}`);
 		return rows.map((row) => row.target_ref).sort();
 	}
 

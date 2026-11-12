@@ -690,8 +690,15 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   }
 
   async listTargetRefs(): Promise<string[]> {
-    const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
-    return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
+    // Discovery targets are refs the outbox can still dispatch for. An
+    // accepted optimistic copy is display-only — no dispatch, and the read it
+    // would drive is redundant while the ref stays pinned — so a ref whose
+    // durable rows are all optimistic leaves the enumeration. Any outbox row
+    // in any state (submitting, blocked, canceled, superseded) keeps the ref
+    // listed; refs named by reconciliation-failure sets and lifecycle paths
+    // never consult this list.
+    const outbox = await this.listOutbox();
+    return [...new Set(outbox.map((record) => record.targetRef))].sort();
   }
 
   // R09: a store-driven resume can return a different identity, and the rows

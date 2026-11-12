@@ -458,7 +458,9 @@ describe("MutationOutboxIndexedDB", () => {
 
     store.close();
     const reloaded = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    expect(await reloaded.listTargetRefs()).toEqual([TARGET]);
+    // The ref's only durable row is now the accepted optimistic copy, so a
+    // reload finds no discovery target.
+    expect(await reloaded.listTargetRefs()).toEqual([]);
     expect(await reloaded.settleApplied(persisted.clientMutationId)).toMatchObject({
       clientMutationId: persisted.clientMutationId,
     });
@@ -497,6 +499,18 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
     expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
     expect(await store.getOptimistic(persisted.clientMutationId)).toBeUndefined();
+  });
+
+  test("listTargetRefs omits a ref whose only durable record is an accepted optimistic copy", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const accepted = await store.enqueueIntent({
+      ...intent("accepted copy only"),
+      optimisticDisplay: { input: [{ type: "text", text: "accepted copy only" }] },
+    });
+    expect(await store.settleReceipt(accepted.clientMutationId, "pending")).toBe(true);
+    expect(await store.getOptimistic(accepted.clientMutationId)).toMatchObject({ state: "accepted" });
+
+    expect(await store.listTargetRefs()).toEqual([]);
   });
 
   test("a pending receipt keeps an accepted note's copy without an optimistic display", async () => {
