@@ -1549,6 +1549,36 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_ExecuteCall_AskUserShorthandPreservesIntent(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	var capturedIntent string
+	mustRegister(t, r, RegisteredTool{
+		Definition: DefAskUser(),
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			capturedIntent = IntentFromContext(ctx)
+			return "ok", nil
+		},
+	})
+	args := json.RawMessage(`{
+		"question": "Which option?",
+		"options": [
+			{"label": "A", "detail": "first"},
+			{"label": "B", "detail": "second"}
+		],
+		"intent": "clarify user choice"
+	}`)
+	res := r.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "c1", Name: "ask_user", Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("ExecuteCall failed: %s", res.Output)
+	}
+	if capturedIntent != "clarify user choice" {
+		t.Fatalf("captured intent = %q, want %q", capturedIntent, "clarify user choice")
+	}
+}
+
 // TestRegistry_MarksPreExecutionRejections proves Rejected names exactly the
 // calls a pre-execution gate refused: the breaker park, unknown tool,
 // ValidateRawArguments, invalid arguments JSON, the ask_user shorthand
