@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -81,6 +82,12 @@ type historicalJobFold struct {
 	// in seq order, so a delta extends the fold only when none of its events
 	// is older than lastSeq.
 	lastSeq int64
+	// orderCount and orderHash fingerprint the ordered job IDs this fold
+	// carries. They let a zero-offset refold compare its order with the last
+	// fold for the same path, which the value alone cannot do when foldcache
+	// hands the refold a zero prior.
+	orderCount int
+	orderHash  uint64
 }
 
 // activityJobPositions maps each job ID in list to its index. Extending a
@@ -96,27 +103,107 @@ type activityJobPositions struct {
 
 var historicalJobFoldCache = foldcache.New[historicalJobFold](historicalJobFoldCacheEntries)
 
+// jobFoldOrderState fingerprints the ordered job IDs of the last fold for one
+// journal path. It lives outside the fold value because foldcache may rebuild
+// a path from zero with a zero prior — after eviction, or on a growth whose
+// mtime cannot resolve an append — and the fold then has no previous order to
+// compare against. It is O(1) per path and, like foldcache's epochState,
+// survives eviction.
+type jobFoldOrderState struct {
+	count int
+	hash  uint64
+}
+
+// Unbounded in count, like foldcache's epochState: one small entry per journal
+// path this process has folded, retained so an eviction cannot hide a reorder.
+var jobFoldOrderStates sync.Map // journal path -> jobFoldOrderState
+
+const foldJobOrderFNVPrime = 1099511628211
+
+// foldJobOrderHash folds one ordered job ID into an FNV-1a fingerprint. The
+// separator keeps ["ab","c"] distinct from ["a","bc"]. The fingerprint is a
+// change detector, not an identity: a 64-bit collision could miss a reorder,
+// the same order of residual the cache's own tail probe accepts.
+func foldJobOrderHash(h uint64, jobID string) uint64 {
+	for i := 0; i < len(jobID); i++ {
+		h ^= uint64(jobID[i])
+		h *= foldJobOrderFNVPrime
+	}
+	h ^= 0xff
+	h *= foldJobOrderFNVPrime
+	return h
+}
+
+func storeJobFoldOrder(path string, fold historicalJobFold) {
+	jobFoldOrderStates.Store(path, jobFoldOrderState{count: fold.orderCount, hash: fold.orderHash})
+}
+
+// zeroOffsetJobFoldReordered records next's order and reports whether a
+// zero-offset refold moved job IDs the previous fold carried. A new fold whose
+// first prev.count IDs hash to prev.hash is a pure append (or an in-place
+// update), so an outstanding continuation is still valid; anything else moved
+// existing positions and must advance the generation.
+func zeroOffsetJobFoldReordered(path string, next historicalJobFold) (restarted bool) {
+	previous, ok := jobFoldOrderStates.Load(path)
+	storeJobFoldOrder(path, next)
+	if !ok {
+		return false
+	}
+	prev := previous.(jobFoldOrderState)
+	if prev.count == 0 {
+		return false
+	}
+	if next.orderCount < prev.count {
+		return true
+	}
+	hash := uint64(0)
+	seen := 0
+	for rec := range next.jobs.all() {
+		if seen == prev.count {
+			break
+		}
+		hash = foldJobOrderHash(hash, rec.JobID)
+		seen++
+	}
+	return seen != prev.count || hash != prev.hash
+}
+
 // extendHistoricalJobFold is historicalJobFoldCache's foldcache.Extend: it
 // reads only the events appended since fromOffset and folds them onto prior
 // without changing anything a reader of prior can see, since
 // foldcache.Cache may still be handing prior to other callers. A delta holding an event older than one already folded
 // belongs earlier in a full fold, so that delta refolds the journal from
 // byte zero instead.
-func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, error) {
+func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, bool, error) {
 	delta, toOffset, err := scanJobJournal(ctx, path, fromOffset, jobstore.ScanLimits{})
 	if err != nil {
-		return historicalJobFold{}, 0, err
+		return historicalJobFold{}, 0, false, err
 	}
 	sortJobEventsBySeq(delta)
 	if len(delta) > 0 && delta[0].Seq < prior.lastSeq {
 		all, toOffset, err := scanJobJournal(ctx, path, 0, jobstore.ScanLimits{})
 		if err != nil {
-			return historicalJobFold{}, 0, err
+			return historicalJobFold{}, 0, false, err
 		}
 		sortJobEventsBySeq(all)
-		return historicalJobFold{}.extend(all), toOffset, nil
+		// The older event belongs ahead of records already folded, so the
+		// rebuilt list reorders what an earlier page rendered. Report the
+		// restart so foldcache advances the generation and refuses a
+		// continuation whose ResumeIndex was counted over the old order.
+		next := historicalJobFold{}.extend(all)
+		storeJobFoldOrder(path, next)
+		return next, toOffset, true, nil
 	}
-	return prior.extend(delta), toOffset, nil
+	next := prior.extend(delta)
+	if fromOffset == 0 {
+		// foldcache rebuilt this path from zero (first touch, eviction, or an
+		// mtime-unresolvable growth). Compare the rebuilt order with the last
+		// fold for the path rather than assuming the zero prior means no
+		// reorder.
+		return next, toOffset, zeroOffsetJobFoldReordered(path, next), nil
+	}
+	storeJobFoldOrder(path, next)
+	return next, toOffset, false, nil
 }
 
 func sortJobEventsBySeq(events []jobstore.Event) {
@@ -130,10 +217,14 @@ func sortJobEventsBySeq(events []jobstore.Event) {
 // history, less records without a job ID, which no page shows.
 func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
 	positions := f.positions
+	orderCount, orderHash := f.orderCount, f.orderHash
 	if positions == nil || positions.list != f.jobs {
 		positions = &activityJobPositions{of: make(map[string]int, f.jobs.len())}
+		orderCount, orderHash = 0, 0
 		for rec := range f.jobs.all() {
 			positions.of[rec.JobID] = len(positions.of)
+			orderCount++
+			orderHash = foldJobOrderHash(orderHash, rec.JobID)
 		}
 	}
 	b := newActivityJobListBuilder(f.jobs, positions.of)
@@ -148,6 +239,8 @@ func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
 		if !known {
 			b.push(jobstore.ApplyJob(nil, event))
 			created[event.JobID] = true
+			orderCount++
+			orderHash = foldJobOrderHash(orderHash, event.JobID)
 			continue
 		}
 		b.replace(at, func(rec *jobstore.JobRecord) *jobstore.JobRecord {
@@ -159,7 +252,7 @@ func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
 		})
 	}
 	positions.list = b.list()
-	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq}
+	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq, orderCount: orderCount, orderHash: orderHash}
 }
 
 // loadCachedJobRecords returns jobsPath's complete, folded history via
@@ -204,10 +297,10 @@ var historicalDelegateFoldCache = foldcache.New[historicalDelegateFold](historic
 // SHALLOW maps.Clone here (copying the map's pointers, not each Aggregate)
 // is sufficient: the clone becomes Apply's write target, the original
 // prior.state and its aggregates are never touched.
-func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, error) {
+func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, bool, error) {
 	delta, toOffset, readDiagnostics, err := scanDelegateJournal(ctx, path, fromOffset, delegatestore.ScanLimits{})
 	if err != nil {
-		return historicalDelegateFold{}, 0, err
+		return historicalDelegateFold{}, 0, false, err
 	}
 	state := maps.Clone(prior.state)
 	if state == nil {
@@ -217,13 +310,13 @@ func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset i
 	for _, event := range delta {
 		count++
 		if event.Seq != uint64(count) {
-			return historicalDelegateFold{}, 0, fmt.Errorf("delegatestore: delegate event sequence %d, want %d", event.Seq, count)
+			return historicalDelegateFold{}, 0, false, fmt.Errorf("delegatestore: delegate event sequence %d, want %d", event.Seq, count)
 		}
 		if err := delegatestore.Apply(state, event); err != nil {
-			return historicalDelegateFold{}, 0, fmt.Errorf("delegate event %d: %w", event.Seq, err)
+			return historicalDelegateFold{}, 0, false, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
-	return historicalDelegateFold{state: state, eventCount: count, tornTail: readDiagnostics.TornTail}, toOffset, nil
+	return historicalDelegateFold{state: state, eventCount: count, tornTail: readDiagnostics.TornTail}, toOffset, false, nil
 }
 
 // rootDelegateIndex is one root's delegates.jsonl folded via the shared

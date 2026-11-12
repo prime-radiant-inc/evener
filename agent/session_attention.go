@@ -170,7 +170,7 @@ var delegateAttentionFoldCache = foldcache.New[delegateAttentionFoldMemo](delega
 // ctx an Extend call runs with is detached from every caller by
 // foldcache.Get, so there is no cancellation to check mid-read.
 func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[delegateAttentionFoldMemo] {
-	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, error) {
+	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, bool, error) {
 		// toOffset is the byte count the reader itself consumed, through the
 		// last complete line — never a size stat'd against the file from the
 		// outside. A stat can only bound the fold from beyond the reader: an
@@ -188,7 +188,7 @@ func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[dele
 		// (TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds).
 		fold, consumed, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
 		if err != nil {
-			return delegateAttentionFoldMemo{}, 0, err
+			return delegateAttentionFoldMemo{}, 0, false, err
 		}
 		// readDelegateAttentionFold is missing-as-empty for historical
 		// callers; this boundary is strict, including a removal racing the
@@ -197,9 +197,9 @@ func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[dele
 		// empty fold. The bypass in delegate_tree_attention.go carries the
 		// same check for the sessions it serves directly.
 		if _, err := os.Stat(path); err != nil {
-			return delegateAttentionFoldMemo{}, 0, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+			return delegateAttentionFoldMemo{}, 0, false, fmt.Errorf("stat delegate attention transcript after read: %w", err)
 		}
-		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, consumed, nil
+		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, consumed, false, nil
 	}
 }
 
