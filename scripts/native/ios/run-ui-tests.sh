@@ -39,6 +39,102 @@ source "$repo_root/scripts/lib/scratch-lib.sh"
 source "$repo_root/scripts/lib/e2e-lib.sh"
 usage() { sed -n '2,/^# END-USAGE$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
+# cleanup runs from the EXIT trap, including after INT or TERM. It TERMs every
+# child this run still owns at once, waits one shared three seconds, then KILLs
+# the survivors: the parent's procgroup.Stop grace for this child is five
+# seconds, so waiting five seconds per process could be SIGKILLed midway. The
+# shorter shared wait leaves room for the log copy and scratch removal.
+#
+# The hub deliberately outlives the daemons it spawns, and it announces each
+# one's pid in its log; stop this run's daemons before its state goes. The
+# shared helper proves ownership by the run directory's basename, the tag every
+# process this script starts carries in argv (the daemons are exec'd from
+# "$run_dir/evener"), so a recycled pid is left alone instead of signalled.
+cleanup() {
+	status=$?
+	if [ -L "$workspace_link" ]; then
+		rm -f "$workspace_link"
+	fi
+	if [ -f "$output/hub.log" ] && [ "$daemons_stopped" -eq 0 ]; then
+		while read -r daemon_pid; do
+			[ -n "$daemon_pid" ] || continue
+			e2e_stop_owned_pid "$daemon_pid" daemon "$(basename "$run_dir")"
+		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$output/hub.log" | grep -oE '[0-9]+$')
+		daemons_stopped=1
+	fi
+	if [ -n "$xcode_pid" ]; then
+		kill -TERM "$xcode_pid" 2>/dev/null || true
+	fi
+	if [ -n "$hub_pid" ]; then
+		kill -TERM "$hub_pid" 2>/dev/null || true
+	fi
+	if [ -n "$provider_pid" ]; then
+		kill -TERM "$provider_pid" 2>/dev/null || true
+	fi
+	local alive
+	for _ in $(seq 1 30); do
+		alive=0
+		if [ -n "$xcode_pid" ] && kill -0 "$xcode_pid" 2>/dev/null; then alive=1; fi
+		if [ -n "$hub_pid" ] && kill -0 "$hub_pid" 2>/dev/null; then alive=1; fi
+		if [ -n "$provider_pid" ] && kill -0 "$provider_pid" 2>/dev/null; then alive=1; fi
+		if [ "$alive" -eq 0 ]; then break; fi
+		sleep 0.1
+	done
+	if [ -n "$xcode_pid" ]; then
+		kill -KILL "$xcode_pid" 2>/dev/null || true
+		wait "$xcode_pid" 2>/dev/null || true
+	fi
+	if [ -n "$hub_pid" ]; then
+		kill -KILL "$hub_pid" 2>/dev/null || true
+	fi
+	if [ -n "$provider_pid" ]; then
+		kill -KILL "$provider_pid" 2>/dev/null || true
+	fi
+	# The daemon's log is the decisive failure artifact — steers, turn
+	# completions, the reason a round stopped — and it lives in the private
+	# state scratch_rm is about to reclaim. Copy this run's daemon logs out
+	# before they go; they carry round diagnostics for the fixture-only
+	# session, never credentials. This script's own --output is the parent's
+	# ui directory, so the logs land directly in the uploaded set. The path
+	# mirrors the hub's state layout (XDG_STATE_HOME/evener/run/logs, whose
+	# shape the Go hub owns): if the hub ever moves it, this copy finds
+	# nothing and the warning names it instead of failing silent.
+	daemon_logs_copied=0
+	for daemon_log in "$state_home"/evener/run/logs/daemon-*.log; do
+		[ -f "$daemon_log" ] || continue
+		if cp "$daemon_log" "$output/" 2>/dev/null; then
+			daemon_logs_copied=$((daemon_logs_copied + 1))
+		fi
+	done
+	if [ -f "$output/hub.log" ] && [ "$daemon_logs_copied" -eq 0 ]; then
+		echo "$SCRIPT_NAME: the hub ran but no daemon log was found to copy" >&2
+	fi
+	scratch_rm
+	exit "$status"
+}
+
+# run_xcodebuild LOGFILE ARGS... runs one xcodebuild invocation in the
+# background and waits for it, so INT or TERM runs the trap while the child is
+# still shutting down instead of after the shell's foreground wait, which can
+# outlast the parent's five-second stop grace. The parent process group sends
+# the same signal to the child; cleanup TERMs and KILLs whatever survives.
+run_xcodebuild() {
+	local log="$1"
+	shift
+	"$@" >"$log" 2>&1 &
+	xcode_pid=$!
+	local status=0
+	wait "$xcode_pid" || status=$?
+	xcode_pid=""
+	return "$status"
+}
+
+# The runner's fixture test sources this file to drive the real cleanup and
+# cancellable xcodebuild wait; stop before argument parsing or state is minted.
+if [ "${RUN_UI_TESTS_LIB_ONLY:-0}" = "1" ]; then
+	return 0
+fi
+
 identity=""
 output=""
 while [ $# -gt 0 ]; do
@@ -101,66 +197,13 @@ derived_data="$(cd "$(dirname "$app_path")/../../.." && pwd -P)"
 # foreign entry at that path survives a crashed run untouched.
 provider_pid=""
 hub_pid=""
+xcode_pid=""
 daemons_stopped=0
 run_dir=""
 workspace=""
 state_home=""
 workspace_link="$HOME/evener-qualification-workspace"
 
-cleanup() {
-	status=$?
-	if [ -L "$workspace_link" ]; then
-		rm -f "$workspace_link"
-	fi
-	# The hub deliberately outlives the daemons it spawns, and it announces
-	# each one's pid in its log; stop this run's daemons before its state goes.
-	if [ -f "$output/hub.log" ] && [ "$daemons_stopped" -eq 0 ]; then
-		while read -r daemon_pid; do
-			[ -n "$daemon_pid" ] || continue
-			kill -0 "$daemon_pid" 2>/dev/null || continue
-			ps -o args= -p "$daemon_pid" 2>/dev/null | grep -qF -- "$run_dir" || continue
-			kill -TERM "$daemon_pid" 2>/dev/null || true
-		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$output/hub.log" | grep -oE '[0-9]+$')
-		daemons_stopped=1
-	fi
-	if [ -n "$hub_pid" ]; then
-		kill -TERM "$hub_pid" 2>/dev/null || true
-		for _ in $(seq 1 50); do
-			kill -0 "$hub_pid" 2>/dev/null || break
-			sleep 0.1
-		done
-		kill -KILL "$hub_pid" 2>/dev/null || true
-	fi
-	if [ -n "$provider_pid" ]; then
-		kill -TERM "$provider_pid" 2>/dev/null || true
-		for _ in $(seq 1 50); do
-			kill -0 "$provider_pid" 2>/dev/null || break
-			sleep 0.1
-		done
-		kill -KILL "$provider_pid" 2>/dev/null || true
-	fi
-	# The daemon's log is the decisive failure artifact — steers, turn
-	# completions, the reason a round stopped — and it lives in the private
-	# state scratch_rm is about to reclaim. Copy this run's daemon logs out
-	# before they go; they carry round diagnostics for the fixture-only
-	# session, never credentials. This script's own --output is the parent's
-	# ui directory, so the logs land directly in the uploaded set. The path
-	# mirrors the hub's state layout (XDG_STATE_HOME/evener/run/logs, whose
-	# shape the Go hub owns): if the hub ever moves it, this copy finds
-	# nothing and the warning names it instead of failing silent.
-	daemon_logs_copied=0
-	for daemon_log in "$state_home"/evener/run/logs/daemon-*.log; do
-		[ -f "$daemon_log" ] || continue
-		if cp "$daemon_log" "$output/" 2>/dev/null; then
-			daemon_logs_copied=$((daemon_logs_copied + 1))
-		fi
-	done
-	if [ -f "$output/hub.log" ] && [ "$daemon_logs_copied" -eq 0 ]; then
-		echo "$SCRIPT_NAME: the hub ran but no daemon log was found to copy" >&2
-	fi
-	scratch_rm
-	exit "$status"
-}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -285,15 +328,15 @@ hub_token="$(jq -r .token "$connection")"
 # is lying about what it runs, and the run must not continue.
 log "confirming the intended journeys fail without the qualification target"
 set +e
-xcodebuild test \
+run_xcodebuild "$output/absent-target-red.log" \
+	xcodebuild test \
 	-workspace mobile-native/ios/Evener.xcworkspace \
 	-scheme Evener \
 	-configuration Release \
 	-only-testing:EvenerQualificationUITests/testSavedHubMarkdownAndDraftRecovery \
 	-destination "id=$sim_udid" \
 	-derivedDataPath "$derived_data" \
-	ONLY_ACTIVE_ARCH=YES \
-	>"$output/absent-target-red.log" 2>&1
+	ONLY_ACTIVE_ARCH=YES
 red_exit=$?
 set -e
 echo "$red_exit" >"$output/absent-target-red.exit"
@@ -309,14 +352,15 @@ log "registering the generated UI test target"
 ) >"$output/add-ui-target.log" 2>&1
 
 log "building the test bundles against the parent's products"
-xcodebuild build-for-testing \
+run_xcodebuild "$output/build-for-testing.log" \
+	xcodebuild build-for-testing \
 	-workspace mobile-native/ios/Evener.xcworkspace \
 	-scheme Evener \
 	-configuration Release \
 	-destination "id=$sim_udid" \
 	-derivedDataPath "$derived_data" \
 	ONLY_ACTIVE_ARCH=YES \
-	-quiet >"$output/build-for-testing.log" 2>&1
+	-quiet
 
 generated_run="$(find "$derived_data/Build/Products" -name '*.xctestrun' -print -quit)"
 if [ -z "$generated_run" ]; then
@@ -365,13 +409,13 @@ chmod 600 "$private_run"
 xcresult="$output/ui.xcresult"
 log "running the qualification journeys"
 set +e
-xcodebuild test-without-building \
+run_xcodebuild "$output/xcodebuild-test.log" \
+	xcodebuild test-without-building \
 	-xctestrun "$private_run" \
 	-configuration Release \
 	-derivedDataPath "$derived_data" \
 	-destination "id=$sim_udid" \
-	-resultBundlePath "$xcresult" \
-	>"$output/xcodebuild-test.log" 2>&1
+	-resultBundlePath "$xcresult"
 test_exit=$?
 set -e
 echo "$test_exit" >"$output/xcodebuild-test.exit"
