@@ -97,7 +97,10 @@ final class EvenerQualificationUITests: XCTestCase {
 		// turn through the real hub, and its response renders. The baseline
 		// is sampled only after the restored first response is on screen:
 		// a still-loading transcript would otherwise raise the count by
-		// itself and pass a follow-up that never completed.
+		// itself and pass a follow-up that never completed. The verdict is
+		// the loop's own observation: the transcript scrolls older matches
+		// out, so the count can fall again after the rise, and a second query
+		// can report the old count and fail a follow-up that did complete.
 		tap(recovered, "the composer never appeared")
 		typeWholeText(app, recovered, "qualify the readback", "the follow-up never landed whole") {
 			$0 == "qualify the readback"
@@ -111,12 +114,16 @@ final class EvenerQualificationUITests: XCTestCase {
 		let baseline = followUp.count
 		tap(app.buttons["Send"], "Send never became available")
 		let deadline = Date().addingTimeInterval(tripwire)
-		while Date() < deadline && followUp.count <= baseline {
+		var followedUp = false
+		while Date() < deadline {
+			if followUp.count > baseline {
+				followedUp = true
+				break
+			}
 			Thread.sleep(forTimeInterval: 0.25)
 		}
-		XCTAssertGreaterThan(
-			followUp.count,
-			baseline,
+		XCTAssertTrue(
+			followedUp,
 			"the follow-up turn never completed through the recovered credentials"
 		)
 		attach(app, "follow-up-response")
@@ -267,12 +274,16 @@ final class EvenerQualificationUITests: XCTestCase {
 			// screen has, and the app's own guard makes a repeat press safe.
 			// iOS's save-password sheet can lie over the review and swallow
 			// the press until it is answered, so each iteration answers it
-			// first.
+			// before judging whether Connect is on screen: the sheet hides
+			// the covered review from the query, so a check that reads
+			// Connect.exists first exits while the review is still there.
 			let board = app.buttons["new-session"]
 			let shown = Date().addingTimeInterval(tripwire)
-			while !board.waitForExistence(timeout: 4) && Date() < shown && app.buttons["Connect"].exists {
+			while Date() < shown && !board.waitForExistence(timeout: 4) {
 				answerSavePasswordSheet(app)
-				tap(app.buttons["Connect"], "the review step never appeared")
+				let connect = app.buttons["Connect"]
+				guard connect.exists else { break }
+				tap(connect, "the review step never appeared")
 			}
 		}
 		XCTAssertTrue(
@@ -323,14 +334,23 @@ final class EvenerQualificationUITests: XCTestCase {
 		// where its row is titled by the model's display name ("Fake Test
 		// Model"), not its id. The form row's press can land in the push's
 		// settling window, so it is re-pressed only while the form still
-		// shows it; the model screen's own row is then waited for with the
-		// full bound, because the hub's model list arrives asynchronously.
+			// shows it; the model screen's own row is then waited for with the
+			// full bound, because the hub's model list arrives asynchronously.
+			// A slow press can also land on a different row, pushing another
+			// screen: with neither the form's Model row nor the Model screen's
+			// own "Hub default" header in front, the loop goes back and presses
+			// Model again instead of waiting for a list that screen cannot show.
 		let modelRow = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch
 		let fakeModel = app.buttons["Fake Test Model"]
+			let modelScreen = app.buttons["Hub default"]
 		let modeled = Date().addingTimeInterval(tripwire)
-		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled && modelRow.exists {
-			tap(modelRow, "the form never offered choosing a model")
+			while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
+				if modelRow.exists {
+					tap(modelRow, "the form never offered choosing a model")
+				} else if !modelScreen.exists {
+					tap(app.navigationBars.buttons.firstMatch, "the wrong screen never offered a way back")
+				}
 		}
 		tap(fakeModel, "the model screen never offered the fixture's model")
 

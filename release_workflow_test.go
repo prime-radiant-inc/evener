@@ -141,6 +141,7 @@ type githubActionStep struct {
 	Uses string            `yaml:"uses"`
 	Env  map[string]string `yaml:"env"`
 	Run  string            `yaml:"run"`
+	With map[string]any    `yaml:"with"`
 }
 
 func readWorkflow(t *testing.T, path string) githubActionsWorkflow {

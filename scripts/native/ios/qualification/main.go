@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -333,38 +334,68 @@ func (r *runner) projectIdentity(ctx context.Context, phase, script, base string
 }
 
 // resolvePods installs against the copied committed lock. When CocoaPods
-// refuses because a local podspec version changed, the lock's local
-// development pods are unlocked with one `pod update --no-repo-update`; a
-// second install completes the candidate lock for review. The unlock is
-// deliberately broad, every local pod rather than only the one the refusal
-// names, because the closure the named pod needs is not derivable from the
-// refusal text. Registry pods reachable only through those local pods may
-// move with their parents (the voice-pod candidate moved onnxruntime
-// alongside the new EvenerVoice pod), so the committed-lock comparison plus
-// review is what keeps unrelated movement out of the branch, not this
-// unlock's breadth.
+// refuses because a local podspec version changed, only the pod the refusal
+// names is unlocked with `pod update --no-repo-update`; the install repeats
+// while CocoaPods names another changed pod, so unrelated local parents stay
+// locked. A name the committed lock does not declare as local, or a refusal
+// that names nothing new, is surfaced instead of widening the update. Registry
+// pods reachable only through a named local pod may still move with their
+// parent (the voice-pod candidate moved onnxruntime alongside the new
+// EvenerVoice pod), so the committed-lock comparison plus review remains the
+// guard on what reaches the branch.
 func (r *runner) resolvePods(ctx context.Context, committedLock []byte) error {
-	if _, err := r.commandOutput(ctx, "pod-resolve", false, "bundle", "exec", "pod", "install", "--project-directory=ios"); err == nil {
-		return nil
-	} else if ctx.Err() != nil {
-		return err
+	var local []string
+	unlocked := make(map[string]bool)
+	for attempt := 1; ; attempt++ {
+		logName := "pod-resolve"
+		if attempt > 1 {
+			logName = "pod-resolve-" + strconv.Itoa(attempt)
+		}
+		if _, err := r.commandOutput(ctx, logName, false, "bundle", "exec", "pod", "install", "--project-directory=ios"); err == nil {
+			return nil
+		} else if ctx.Err() != nil {
+			return err
+		}
+		installLog, readErr := os.ReadFile(filepath.Join(r.output, logName+".log"))
+		if readErr != nil {
+			return readErr
+		}
+		if !podUnlockNeeded(installLog) {
+			return fmt.Errorf("pod install failed without the changed-local-podspec refusal; inspect %s.log", logName)
+		}
+		if local == nil {
+			local = localPodNames(committedLock)
+			if len(local) == 0 {
+				return fmt.Errorf("the committed lock declares no local pods to unlock; inspect %s.log", logName)
+			}
+		}
+		named := podRefusalNames(installLog)
+		if len(named) == 0 {
+			return fmt.Errorf("the changed-local-podspec refusal named no pod; inspect %s.log", logName)
+		}
+		var unlock []string
+		for _, name := range named {
+			if !slices.Contains(local, name) {
+				return fmt.Errorf("%w: %s; inspect %s.log", errPodRefusalName, name, logName)
+			}
+			if !unlocked[name] {
+				unlock = append(unlock, name)
+			}
+		}
+		if len(unlock) == 0 {
+			return fmt.Errorf("%w; inspect %s.log", errPodRefusalStuck, logName)
+		}
+		unlockName := "pod-unlock"
+		if attempt > 1 {
+			unlockName = "pod-unlock-" + strconv.Itoa(attempt)
+		}
+		if _, err := r.commandOutput(ctx, unlockName, false, podUnlockCommand(unlock)...); err != nil {
+			return err
+		}
+		for _, name := range unlock {
+			unlocked[name] = true
+		}
 	}
-	installLog, readErr := os.ReadFile(filepath.Join(r.output, "pod-resolve.log"))
-	if readErr != nil {
-		return readErr
-	}
-	if !podUnlockNeeded(installLog) {
-		return errors.New("pod install failed without the changed-local-podspec refusal; inspect pod-resolve.log")
-	}
-	names := localPodNames(committedLock)
-	if len(names) == 0 {
-		return errors.New("the committed lock declares no local pods to unlock; inspect pod-resolve.log")
-	}
-	if _, err := r.commandOutput(ctx, "pod-unlock", false, podUnlockCommand(names)...); err != nil {
-		return err
-	}
-	_, err := r.commandOutput(ctx, "pod-resolve-2", false, "bundle", "exec", "pod", "install", "--project-directory=ios")
-	return err
 }
 
 func (r *runner) generatedMetadata(ctx context.Context) error {

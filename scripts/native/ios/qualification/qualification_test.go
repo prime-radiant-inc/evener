@@ -548,6 +548,176 @@ func TestPodUnlockKeepsRepoFlagOrder(t *testing.T) {
 	}
 }
 
+func TestPodRefusalNamesExtractsEveryChangedPod(t *testing.T) {
+	t.Parallel()
+	refusal := "It seems like you've changed the version of the dependency `EXApplication` and it differs from the version stored in `Pods/Local Podspecs`.\n" +
+		"You should run `pod update EXApplication --no-repo-update` to apply changes made locally.\n" +
+		"It seems like you've changed the version of the dependency `hermes-engine` and it differs from the version stored in `Pods/Local Podspecs`.\n" +
+		"It seems like you've changed the version of the dependency `EXApplication` and it differs from the version stored in `Pods/Local Podspecs`.\n"
+	want := []string{"EXApplication", "hermes-engine"}
+	if got := podRefusalNames([]byte(refusal)); !slices.Equal(got, want) {
+		t.Fatalf("refusal names = %v, want %v", got, want)
+	}
+	for name, log := range map[string]string{
+		"no sentence":   "You should run `pod update Expo --no-repo-update` to apply changes made locally.\n",
+		"empty":         "",
+		"unterminated":  "changed the version of the dependency `Expo\n",
+		"other refusal": "[!] CocoaPods could not find compatible versions for pod \"Expo\":\n",
+	} {
+		if got := podRefusalNames([]byte(log)); len(got) != 0 {
+			t.Fatalf("%s: refusal names = %v, want none", name, got)
+		}
+	}
+}
+
+// resolvePods' loop is driven through a stub bundle on PATH so this checks the
+// real control flow: each refusal unlocks only the pod it names, the install
+// repeats, and an unrelated local parent stays locked.
+func TestResolvePodsUnlocksOnlyRefusalNamedPods(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "argv")
+	installs := filepath.Join(dir, "installs")
+	const bundle = `#!/bin/sh
+TICK=$(printf '\140')
+printf '%s\n' "$*" >> "$POD_ARGV_RECORD"
+case "$*" in
+"exec pod install --project-directory=ios")
+	n=0
+	[ -f "$POD_INSTALL_COUNT" ] && n=$(cat "$POD_INSTALL_COUNT")
+	n=$((n + 1))
+	printf '%s' "$n" > "$POD_INSTALL_COUNT"
+	case "$n" in
+	1) printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}EXApplication${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2; exit 1 ;;
+	2) printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}hermes-engine${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2; exit 1 ;;
+	esac
+	exit 0
+	;;
+"exec pod update "*) exit 0 ;;
+*) exit 7 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "bundle"), []byte(bundle), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("POD_ARGV_RECORD", record)
+	t.Setenv("POD_INSTALL_COUNT", installs)
+	lock := []byte(`PODS:
+  - EXApplication (58.1.2)
+
+EXTERNAL SOURCES:
+  EXApplication:
+    :path: "../node_modules/expo-application/ios"
+  hermes-engine:
+    :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
+  ReactNativeDependencies:
+    :podspec: "../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec"
+`)
+	r := &runner{native: dir, output: dir}
+	if err := r.resolvePods(context.Background(), lock); err != nil {
+		t.Fatalf("resolvePods: %v", err)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"exec pod install --project-directory=ios",
+		"exec pod update EXApplication --no-repo-update --project-directory=ios",
+		"exec pod install --project-directory=ios",
+		"exec pod update hermes-engine --no-repo-update --project-directory=ios",
+		"exec pod install --project-directory=ios",
+	}
+	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if !slices.Equal(got, want) {
+		t.Fatalf("pod argv sequence = %v, want %v", got, want)
+	}
+	if strings.Contains(string(data), "ReactNativeDependencies") {
+		t.Fatalf("an unrelated local parent was unlocked: %s", data)
+	}
+}
+
+func TestResolvePodsRejectsRefusalNamingANonLocalPod(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "argv")
+	const bundle = `#!/bin/sh
+TICK=$(printf '\140')
+printf '%s\n' "$*" >> "$POD_ARGV_RECORD"
+printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}onnxruntime-c${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(bin, "bundle"), []byte(bundle), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("POD_ARGV_RECORD", record)
+	lock := []byte("EXTERNAL SOURCES:\n  EXApplication:\n    :path: \"../node_modules/expo-application/ios\"\n")
+	r := &runner{native: dir, output: dir}
+	err := r.resolvePods(context.Background(), lock)
+	if !errors.Is(err, errPodRefusalName) {
+		t.Fatalf("accepted a non-local refusal name: %v", err)
+	}
+	data, readErr := os.ReadFile(record)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got, want := strings.TrimSpace(string(data)), "exec pod install --project-directory=ios"; got != want {
+		t.Fatalf("pod argv = %q, want only the first install %q", got, want)
+	}
+}
+
+func TestResolvePodsStopsWhenRefusalNamesNoNewPod(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "argv")
+	const bundle = `#!/bin/sh
+TICK=$(printf '\140')
+printf '%s\n' "$*" >> "$POD_ARGV_RECORD"
+case "$*" in
+"exec pod install --project-directory=ios")
+	printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}EXApplication${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2
+	exit 1
+	;;
+*) exit 0 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "bundle"), []byte(bundle), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("POD_ARGV_RECORD", record)
+	lock := []byte("EXTERNAL SOURCES:\n  EXApplication:\n    :path: \"../node_modules/expo-application/ios\"\n")
+	r := &runner{native: dir, output: dir}
+	err := r.resolvePods(context.Background(), lock)
+	if !errors.Is(err, errPodRefusalStuck) {
+		t.Fatalf("repeated refusal without a new name: %v", err)
+	}
+	data, readErr := os.ReadFile(record)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	want := []string{
+		"exec pod install --project-directory=ios",
+		"exec pod update EXApplication --no-repo-update --project-directory=ios",
+		"exec pod install --project-directory=ios",
+	}
+	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if !slices.Equal(got, want) {
+		t.Fatalf("pod argv sequence = %v, want %v", got, want)
+	}
+}
+
 // The invocation is captured through a stub xcodebuild on PATH so this checks
 // what the runner executes, not what a constant says.
 func TestReleaseBuildUsesOnlyActiveArchitecture(t *testing.T) {

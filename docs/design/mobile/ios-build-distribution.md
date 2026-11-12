@@ -81,10 +81,13 @@ a successful `simctl launch` request alone does not prove the process stayed ali
 
 ### Non-publishing pull-request build
 
-`.github/workflows/ios-qualification.yml` checks out the explicit pull-request
-head with read-only repository permissions and no persisted checkout credential.
-It uses macOS 26, Xcode 26.6, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the
-locked CocoaPods 1.16.2. It is separate from TestFlight and has no release secrets
+`.github/workflows/ios-qualification.yml` checks out the pull-request head when
+it carries the qualification scripts the workflow calls, and otherwise checks
+out the merge ref — the tree the workflow file itself comes from — so a head
+that predates those scripts is not run against a tree that lacks them. The
+checkout is read-only and persists no credential. It uses macOS 26, Xcode 26.6,
+Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the locked CocoaPods 1.16.2. It is
+separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
@@ -99,7 +102,10 @@ registered it first proves the red side: naming the intended tests against the
 as-generated project must fail. The result bundle must show all three intended
 journeys executed with zero failures and none skipped; a partial, unreadable or
 absent result fails, and the child's exit is the run's own result. The parent
-remains the sole simulator cleanup owner.
+remains the sole simulator cleanup owner. The runner answers INT and TERM while
+a long `xcodebuild` invocation is still running, and its cleanup TERMs the hub,
+the provider and that invocation together, then KILLs survivors inside the
+parent's five-second stop grace.
 
 After installing the npm trees and locked gems in a fresh Mac checkout, run:
 
@@ -113,13 +119,15 @@ the committed pod lock. A changed or missing lock, failed resolver, deployment
 install or build, missing extension, or invalid identity/entitlement fails the
 run. A resolver error requires diagnosis against the lock's own local
 development pods. Never delete the input lock.
-When CocoaPods refuses the committed lock because its own local development
-pods changed version references, the runner re-resolves every local development
-pod the lock declares in a single `pod update --no-repo-update`; registry pods
-reachable only through those local pods may move with their parents, so the
-candidate diff against the committed lock is the guard. The result is still
-compared against the committed lock, and the candidate and its diff remain
-reviewable failure evidence.
+When CocoaPods refuses the committed lock because a local development pod's
+version changed, the runner unlocks only the pod that refusal names with
+`pod update --no-repo-update` and repeats the install while CocoaPods names
+another changed pod; unrelated local parents stay locked. A name the committed
+lock does not declare as local, or a refusal that names nothing new, fails
+instead of widening the update. Registry pods reachable only through a named
+local pod may move with their parent, so the candidate diff against the
+committed lock is the guard. The result is still compared against the committed
+lock, and the candidate and its diff remain reviewable failure evidence.
 
 Review `Podfile.lock.candidate` and `Podfile.lock.diff` with `build-identity.json`.
 Match its `sourceRevision` and `npmLockSha256` to the tested branch before applying
