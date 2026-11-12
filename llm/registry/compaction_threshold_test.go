@@ -248,6 +248,9 @@ compaction_threshold = 250000
 		if res.Provenance["CompactionThreshold"] != "derived" {
 			t.Fatalf("%s provenance = %q, want derived", modelID, res.Provenance["CompactionThreshold"])
 		}
+			if len(res.Warnings) == 0 {
+				t.Fatalf("%s Warnings = empty, want clamping warning", modelID)
+			}
 	}
 
 	// Direct unit check on derive returning a non-empty warning slice when clamping fires.

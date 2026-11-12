@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>instance-model-editor-layout harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .sheetBody { box-sizing: border-box; width: 480px; padding: var(--space-4); background: var(--surface-1); }
+  /* formrow.module.css and switch.module.css both define a local .control class
+     that CSS Modules hashes separately in production. Keep FormRow's div.control
+     as its column flex box while button.control keeps Switch's track dimensions. */
+  .root > div.control {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+  }
+</style>
+</head>
+<body>
+<main class="sheetBody" data-sheet>
+  <div class="actionRows">
+    <div class="modelRow" data-model-row>
+      <div class="modelNameSlot" data-model-name-slot>
+        <span class="wrapper">
+          <button type="button" role="switch" aria-checked="true" class="control">
+            <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+          </button>
+          <span class="label" data-model-label>deepseek/deepseek-r1-distill-qwen-32b-abliterated</span>
+        </span>
+      </div>
+      <div class="modelMeta" data-model-meta>
+        <span class="chip neutral">customized</span>
+        <span class="modelSummary">1M ctx · compact 250K</span>
+        <button type="button" class="button quiet sm">Configure ›</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subviewRoot">
+    <form class="form">
+      <div class="root">
+        <label class="label" for="ct-input">Auto-compact threshold</label>
+        <div class="control">
+          <div class="fieldInline" data-field-inline>
+            <div class="fieldGrow" data-field-grow>
+              <input id="ct-input" class="input" data-field-input value="250000" />
+            </div>
+            <button type="button" class="button link" data-reset-button>Reset</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</main>
+
+<script>
+window.measure = () => {
+  const fieldInlineEl = document.querySelector("[data-field-inline]");
+  const inputEl = document.querySelector("[data-field-input]");
+  const resetEl = document.querySelector("[data-reset-button]");
+  const modelRowEl = document.querySelector("[data-model-row]");
+  const modelNameSlotEl = document.querySelector("[data-model-name-slot]");
+  const modelMetaEl = document.querySelector("[data-model-meta]");
+
+  const fieldInline = fieldInlineEl.getBoundingClientRect();
+  const input = inputEl.getBoundingClientRect();
+  const reset = resetEl.getBoundingClientRect();
+  const modelRow = modelRowEl.getBoundingClientRect();
+  const modelNameSlot = modelNameSlotEl.getBoundingClientRect();
+  const modelMeta = modelMetaEl.getBoundingClientRect();
+
+  const inlineStyle = getComputedStyle(fieldInlineEl);
+  const gap = Number.parseFloat(inlineStyle.columnGap || inlineStyle.gap);
+  const slack = fieldInline.right - reset.right;
+  const overflow = modelMeta.right - modelRow.right;
+  const slotToMetaGap = modelMeta.left - modelNameSlot.right;
+
+  return {
+    viewport: window.innerWidth,
+    minInputWidth: 260,
+    fieldInlineWidth: fieldInline.width,
+    inputWidth: input.width,
+    gap,
+    slack,
+    modelRowWidth: modelRow.width,
+    overflow,
+    slotToMetaGap,
+  };
+};
+</script>
+</body>
+</html>

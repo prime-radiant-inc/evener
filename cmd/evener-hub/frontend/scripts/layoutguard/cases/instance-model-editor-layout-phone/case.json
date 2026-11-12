@@ -1,0 +1,27 @@
+{
+  "name": "instance-model-editor-layout-phone",
+  "description": "InstanceSheet per-model settings 360px phone geometry: inside .fieldInline, .fieldGrow stretches the Input up to the Reset link button; inside .modelRow, .modelNameSlot wraps a long unbroken model ID without pushing .modelMeta past the 360px sheet row.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/switch/switch.module.css",
+    "widgets/formrow/formrow.module.css",
+    "widgets/input/input.module.css",
+    "widgets/button/button.module.css",
+    "widgets/chip/chip.module.css",
+    "panes/settings/sections/credentials/InstanceSheet.module.css"
+  ],
+  "viewport": {
+    "width": 360,
+    "height": 800,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "panes/settings/sections/credentials/InstanceSheet.module.css: .fieldGrow { flex: 1 1 0 } removed",
+    "verified": "2026-11-12",
+    "expect": "fail",
+    "note": "Measured 2026-11-12: without flex: 1 1 0 on .fieldGrow, inputWidth shrinks to 256px inside the 314px .fieldInline row (slack=8.22px), failing the [-1, 2] slack bound."
+  }
+}

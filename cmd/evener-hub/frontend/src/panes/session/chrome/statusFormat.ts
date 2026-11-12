@@ -3,38 +3,10 @@
 // convention as protocol/displayFormat.ts,
 // deliberately not shared with it (see formatWorkDuration's own comment for
 // why).
-import type { ThreadModel } from "@evener/appwire-client";
+import { type EffectiveContextStatus, effectiveContextStatus } from "@evener/appwire-client";
 import type { MeterTone } from "../../../widgets";
 
-export interface EffectiveContextStatus {
-  ceiling: number;
-  pressure: number;
-  remaining: number;
-  hasCustomThreshold: boolean;
-}
-
-// effectiveContextStatus computes the active context ceiling, pressure, and
-// remaining headroom for StatusRow and DetailsPanel. When compactionThreshold
-// is positive, the gauge measures against that threshold instead of the
-// physical contextWindow.
-export function effectiveContextStatus(
-  model: Pick<ThreadModel, "contextUsed" | "contextWindow" | "contextPressure" | "compactionThreshold">,
-): EffectiveContextStatus {
-  if (model.compactionThreshold > 0) {
-    return {
-      ceiling: model.compactionThreshold,
-      pressure: model.contextUsed / model.compactionThreshold,
-      remaining: Math.max(0, model.compactionThreshold - model.contextUsed),
-      hasCustomThreshold: true,
-    };
-  }
-  return {
-    ceiling: model.contextWindow,
-    pressure: model.contextPressure,
-    remaining: Math.max(0, model.contextWindow - model.contextUsed),
-    hasCustomThreshold: false,
-  };
-}
+export { type EffectiveContextStatus, effectiveContextStatus };
 
 // contextTone escalates the context gauge's tone as pressure climbs,
 // mirroring the legacy compact strip's own single warn threshold

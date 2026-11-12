@@ -59,6 +59,7 @@ const CLASS = {
   subviewNav: requireClass(styles.subviewNav, "InstanceSheet.module.css", "subviewNav"),
   form: requireClass(styles.form, "InstanceSheet.module.css", "form"),
   fieldInline: requireClass(styles.fieldInline, "InstanceSheet.module.css", "fieldInline"),
+  fieldGrow: requireClass(styles.fieldGrow, "InstanceSheet.module.css", "fieldGrow"),
   effortGroup: requireClass(styles.effortGroup, "InstanceSheet.module.css", "effortGroup"),
   modalityGroup: requireClass(styles.modalityGroup, "InstanceSheet.module.css", "modalityGroup"),
   routingFields: requireClass(styles.routingFields, "InstanceSheet.module.css", "routingFields"),
@@ -123,6 +124,7 @@ export function InstanceModelEditor({
   const subviewRootRef = useRef<HTMLDivElement>(null);
   const backButtonRef = useRef<HTMLButtonElement>(null);
   const mountedMode = useRef(mode);
+  const viewTokenRef = useRef(0);
   const shownInstanceName = useRef(instance.name);
   const seededIdentity = useRef<string | null>(draftIdentity(instance));
   const seededFingerprint = useRef<string | undefined>(instance.endpointFingerprint);
@@ -143,10 +145,19 @@ export function InstanceModelEditor({
     shownInstanceName.current = instance.name;
   }, [instance.name]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: viewTokenRef advances on every target view transition and on unmount
+  useLayoutEffect(() => {
+    viewTokenRef.current += 1;
+    mountedMode.current = mode;
+    return () => {
+      viewTokenRef.current += 1;
+    };
+  }, [instance.name, mode, model]);
+
   useLayoutEffect(() => {
     if (mountedMode.current === "create") {
-      const modelInput = document.getElementById(modelIdFieldId);
-      if (modelInput instanceof HTMLElement) {
+      const modelInput = subviewRootRef.current?.ownerDocument.getElementById(modelIdFieldId);
+      if (modelInput && "focus" in modelInput && typeof modelInput.focus === "function") {
         modelInput.focus();
         return;
       }
@@ -164,9 +175,12 @@ export function InstanceModelEditor({
       setDraft(blank);
       setRoutingOpen(true);
       setFormError(null);
+      seededIdentity.current = draftIdentity(instance);
+      seededFingerprint.current = instance.endpointFingerprint;
       return;
     }
     if (detail !== null && detail.name === instance.name && detail.model === model) {
+      setRoutingOpen(hasRoutingOverrides(detail.authored));
       setLoading(false);
       return;
     }
@@ -178,11 +192,14 @@ export function InstanceModelEditor({
       .getModel({ name: instance.name, model })
       .then((loaded) => {
         if (cancelled) return;
+        const latest = credentialsStore.getState().instances.find((i) => i.name === instance.name) ?? instance;
         setDetail(loaded);
         const seeded = seedModelDraft(loaded);
         setInitial(seeded);
         setDraft(seeded);
         setRoutingOpen(hasRoutingOverrides(loaded.authored));
+        seededIdentity.current = draftIdentity(latest);
+        seededFingerprint.current = latest.endpointFingerprint;
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -195,7 +212,7 @@ export function InstanceModelEditor({
     };
   }, [instance.name, mode, model]);
 
-  const errors = validateModelDraft(draft, detail, instance.models ?? [], mode);
+  const errors = validateModelDraft(draft, detail, instance.models ?? [], mode, initial);
   const dirty = isModelDraftDirty(initial, draft, mode);
   const canSave = !loading && (mode === "create" || detail !== null) && dirty && !hasModelValidationErrors(errors);
 
@@ -213,9 +230,64 @@ export function InstanceModelEditor({
     setInitial(seeded);
     setDraft(seeded);
     setSubmitAttempted(false);
-    if (hasRoutingOverrides(nextDetail.authored)) {
+    if (mode === "create") {
+      setRoutingOpen(hasRoutingOverrides(nextDetail.authored));
+    } else if (hasRoutingOverrides(nextDetail.authored)) {
       setRoutingOpen(true);
     }
+  }
+
+  function reseedForReplacement(targetInstance: InstanceEntry): void {
+    setFormError({ reason: "instance-replaced", message: CHANGED_INSTANCE_MODEL_ERROR });
+    setSubmitAttempted(false);
+    if (mode === "create") {
+      const blank = seedModelDraft(null);
+      setInitial(blank);
+      setDraft(blank);
+      setRoutingOpen(true);
+      seededIdentity.current = draftIdentity(targetInstance);
+      seededFingerprint.current = targetInstance.endpointFingerprint;
+      return;
+    }
+    seededIdentity.current = null;
+    seededFingerprint.current = undefined;
+    const tokenAtReload = viewTokenRef.current;
+    setLoading(true);
+    void credentialsStore
+      .getState()
+      .getModel({ name: targetInstance.name, model })
+      .then((loaded) => {
+        if (viewTokenRef.current !== tokenAtReload) return;
+        const latest =
+          credentialsStore.getState().instances.find((i) => i.name === targetInstance.name) ?? targetInstance;
+        setDetail(loaded);
+        const seeded = seedModelDraft(loaded);
+        setInitial(seeded);
+        setDraft(seeded);
+        setRoutingOpen(hasRoutingOverrides(loaded.authored));
+        seededIdentity.current = draftIdentity(latest);
+        seededFingerprint.current = latest.endpointFingerprint;
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (viewTokenRef.current !== tokenAtReload) return;
+        setLoading(false);
+        setFormError({ reason: "load-failed", message: friendlyErrorMessage(err) });
+      });
+  }
+
+  async function handleEndpointConflict(tokenAtStart: number): Promise<void> {
+    if (viewTokenRef.current === tokenAtStart) {
+      setFormError({ reason: "endpoint-changed", message: ENDPOINT_CHANGED_MODEL_ERROR });
+    }
+    toast.push("error", ENDPOINT_CHANGED_MODEL_ERROR);
+    const listed = await confirmListingState(() => true);
+    if (!listed || viewTokenRef.current !== tokenAtStart) return;
+    const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+    if (refreshed === undefined) return;
+    if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
+    seededIdentity.current = draftIdentity(refreshed);
+    seededFingerprint.current = refreshed.endpointFingerprint;
   }
 
   async function handleSave(): Promise<void> {
@@ -226,22 +298,24 @@ export function InstanceModelEditor({
       return;
     }
     if (draftIdentity(instance) !== seededIdentity.current) {
-      seededIdentity.current = draftIdentity(instance);
-      seededFingerprint.current = instance.endpointFingerprint;
-      setFormError({ reason: "instance-replaced", message: CHANGED_INSTANCE_MODEL_ERROR });
+      reseedForReplacement(instance);
       return;
     }
     if (hasModelValidationErrors(errors)) return;
     const params = modelEditParams(instance.name, initial, draft, mode, seededFingerprint.current);
     if (params === null) return;
 
+    const tokenAtStart = viewTokenRef.current;
     setFormError(null);
     setBusy(true);
     try {
       const result = await credentialsStore.getState().editModel(params);
       if (!result.applied) {
-        if (shownInstanceName.current === instance.name) {
-          seededIdentity.current = null;
+        if (viewTokenRef.current === tokenAtStart) {
+          const current = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+          if (current === undefined || draftIdentity(current) !== seededIdentity.current) {
+            seededIdentity.current = null;
+          }
         }
         toast.push("warning", STALE_MODEL_SAVE_WARNING);
         return;
@@ -249,6 +323,10 @@ export function InstanceModelEditor({
       toast.push("success", `Saved ${params.model}`);
       if (shownInstanceName.current !== instance.name) return;
       const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+      if (viewTokenRef.current !== tokenAtStart) {
+        onModelSaved(refreshed, undefined);
+        return;
+      }
       if (refreshed !== undefined) {
         seededIdentity.current = draftIdentity(refreshed);
         seededFingerprint.current = refreshed.endpointFingerprint;
@@ -263,48 +341,39 @@ export function InstanceModelEditor({
           .getState()
           .fetch()
           .catch(() => {});
-        if (shownInstanceName.current === instance.name) {
+        if (viewTokenRef.current === tokenAtStart) {
           setFormError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         return;
       }
       if (isEndpointConflict(err)) {
-        if (shownInstanceName.current === instance.name) {
-          setFormError({ reason: "endpoint-changed", message: ENDPOINT_CHANGED_MODEL_ERROR });
-        }
-        toast.push("error", ENDPOINT_CHANGED_MODEL_ERROR);
-        const listed = await confirmListingState(() => true);
-        if (!listed || shownInstanceName.current !== instance.name) return;
-        const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
-        if (refreshed === undefined) return;
-        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
-        seededIdentity.current = draftIdentity(refreshed);
-        seededFingerprint.current = refreshed.endpointFingerprint;
+        await handleEndpointConflict(tokenAtStart);
         return;
       }
       const message = errorText(err);
-      if (shownInstanceName.current === instance.name) {
+      if (viewTokenRef.current === tokenAtStart) {
         setFormError({ reason: "save-failed", message });
       }
       toast.push("error", `Save failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (viewTokenRef.current === tokenAtStart) {
+        setBusy(false);
+      }
     }
   }
 
   async function handleResetAll(): Promise<void> {
-    if (busy || writesRefused || detail === null) return;
+    if (busy || writesRefused || loading || detail === null) return;
     if (renameGap) {
       onRefuseDuringRename();
       return;
     }
     if (draftIdentity(instance) !== seededIdentity.current) {
-      seededIdentity.current = draftIdentity(instance);
-      seededFingerprint.current = instance.endpointFingerprint;
-      setFormError({ reason: "instance-replaced", message: CHANGED_INSTANCE_MODEL_ERROR });
+      reseedForReplacement(instance);
       return;
     }
+    const tokenAtStart = viewTokenRef.current;
     setFormError(null);
     setBusy(true);
     try {
@@ -315,8 +384,11 @@ export function InstanceModelEditor({
         ...(seededFingerprint.current ? { expectedEndpointFingerprint: seededFingerprint.current } : {}),
       });
       if (!result.applied) {
-        if (shownInstanceName.current === instance.name) {
-          seededIdentity.current = null;
+        if (viewTokenRef.current === tokenAtStart) {
+          const current = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+          if (current === undefined || draftIdentity(current) !== seededIdentity.current) {
+            seededIdentity.current = null;
+          }
         }
         toast.push("warning", STALE_MODEL_SAVE_WARNING);
         return;
@@ -324,6 +396,10 @@ export function InstanceModelEditor({
       toast.push("success", `Reset overrides for ${detail.model}`);
       if (shownInstanceName.current !== instance.name) return;
       const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+      if (viewTokenRef.current !== tokenAtStart) {
+        onModelSaved(refreshed, undefined);
+        return;
+      }
       if (refreshed !== undefined) {
         seededIdentity.current = draftIdentity(refreshed);
         seededFingerprint.current = refreshed.endpointFingerprint;
@@ -338,19 +414,25 @@ export function InstanceModelEditor({
           .getState()
           .fetch()
           .catch(() => {});
-        if (shownInstanceName.current === instance.name) {
+        if (viewTokenRef.current === tokenAtStart) {
           setFormError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         return;
       }
+      if (isEndpointConflict(err)) {
+        await handleEndpointConflict(tokenAtStart);
+        return;
+      }
       const message = errorText(err);
-      if (shownInstanceName.current === instance.name) {
+      if (viewTokenRef.current === tokenAtStart) {
         setFormError({ reason: "save-failed", message });
       }
       toast.push("error", `Reset failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (viewTokenRef.current === tokenAtStart) {
+        setBusy(false);
+      }
     }
   }
 
@@ -444,14 +526,16 @@ export function InstanceModelEditor({
 
           <FormRow label="Auto-compact threshold" htmlFor={compactionThresholdId} error={errors.compactionThreshold}>
             <div className={CLASS.fieldInline}>
-              <Input
-                id={compactionThresholdId}
-                value={draft.compactionThreshold}
-                placeholder={compactionThresholdPlaceholder(detail)}
-                disabled={busy}
-                aria-describedby={errors.compactionThreshold ? `${compactionThresholdId}-error` : undefined}
-                onChange={(event) => update({ compactionThreshold: event.target.value })}
-              />
+              <div className={CLASS.fieldGrow}>
+                <Input
+                  id={compactionThresholdId}
+                  value={draft.compactionThreshold}
+                  placeholder={compactionThresholdPlaceholder(detail, draft.contextWindow)}
+                  disabled={busy}
+                  aria-describedby={errors.compactionThreshold ? `${compactionThresholdId}-error` : undefined}
+                  onChange={(event) => update({ compactionThreshold: event.target.value })}
+                />
+              </div>
               {initial.compactionThreshold !== "" && draft.compactionThreshold !== "" && (
                 <Button variant="link" disabled={busy} onClick={() => update({ compactionThreshold: "" })}>
                   Reset
@@ -462,14 +546,16 @@ export function InstanceModelEditor({
 
           <FormRow label="Context window" htmlFor={contextWindowId} error={errors.contextWindow}>
             <div className={CLASS.fieldInline}>
-              <Input
-                id={contextWindowId}
-                value={draft.contextWindow}
-                placeholder={tokenLimitPlaceholder(detail?.effective.contextWindow, detail?.provenance.ContextWindow)}
-                disabled={busy}
-                aria-describedby={errors.contextWindow ? `${contextWindowId}-error` : undefined}
-                onChange={(event) => update({ contextWindow: event.target.value })}
-              />
+              <div className={CLASS.fieldGrow}>
+                <Input
+                  id={contextWindowId}
+                  value={draft.contextWindow}
+                  placeholder={tokenLimitPlaceholder(detail?.effective.contextWindow, detail?.provenance.ContextWindow)}
+                  disabled={busy}
+                  aria-describedby={errors.contextWindow ? `${contextWindowId}-error` : undefined}
+                  onChange={(event) => update({ contextWindow: event.target.value })}
+                />
+              </div>
               {initial.contextWindow !== "" && draft.contextWindow !== "" && (
                 <Button variant="link" disabled={busy} onClick={() => update({ contextWindow: "" })}>
                   Reset
@@ -480,17 +566,19 @@ export function InstanceModelEditor({
 
           <FormRow label="Max output tokens" htmlFor={maxOutputTokensId} error={errors.maxOutputTokens}>
             <div className={CLASS.fieldInline}>
-              <Input
-                id={maxOutputTokensId}
-                value={draft.maxOutputTokens}
-                placeholder={tokenLimitPlaceholder(
-                  detail?.effective.maxOutputTokens,
-                  detail?.provenance.MaxOutputTokens,
-                )}
-                disabled={busy}
-                aria-describedby={errors.maxOutputTokens ? `${maxOutputTokensId}-error` : undefined}
-                onChange={(event) => update({ maxOutputTokens: event.target.value })}
-              />
+              <div className={CLASS.fieldGrow}>
+                <Input
+                  id={maxOutputTokensId}
+                  value={draft.maxOutputTokens}
+                  placeholder={tokenLimitPlaceholder(
+                    detail?.effective.maxOutputTokens,
+                    detail?.provenance.MaxOutputTokens,
+                  )}
+                  disabled={busy}
+                  aria-describedby={errors.maxOutputTokens ? `${maxOutputTokensId}-error` : undefined}
+                  onChange={(event) => update({ maxOutputTokens: event.target.value })}
+                />
+              </div>
               {initial.maxOutputTokens !== "" && draft.maxOutputTokens !== "" && (
                 <Button variant="link" disabled={busy} onClick={() => update({ maxOutputTokens: "" })}>
                   Reset
@@ -643,13 +731,15 @@ export function InstanceModelEditor({
 
               <FormRow label="Wire model ID" htmlFor={wireIdFieldId}>
                 <div className={CLASS.fieldInline}>
-                  <Input
-                    id={wireIdFieldId}
-                    value={draft.wireId}
-                    placeholder={wireIdPlaceholder(detail)}
-                    disabled={busy}
-                    onChange={(event) => update({ wireId: event.target.value })}
-                  />
+                  <div className={CLASS.fieldGrow}>
+                    <Input
+                      id={wireIdFieldId}
+                      value={draft.wireId}
+                      placeholder={wireIdPlaceholder(detail)}
+                      disabled={busy}
+                      onChange={(event) => update({ wireId: event.target.value })}
+                    />
+                  </div>
                   {initial.wireId !== "" && draft.wireId !== "" && (
                     <Button variant="link" disabled={busy} onClick={() => update({ wireId: "" })}>
                       Reset
@@ -660,13 +750,15 @@ export function InstanceModelEditor({
 
               <FormRow label="Alias of" htmlFor={aliasOfFieldId}>
                 <div className={CLASS.fieldInline}>
-                  <Input
-                    id={aliasOfFieldId}
-                    value={draft.aliasOf}
-                    placeholder={aliasOfPlaceholder(detail)}
-                    disabled={busy}
-                    onChange={(event) => update({ aliasOf: event.target.value })}
-                  />
+                  <div className={CLASS.fieldGrow}>
+                    <Input
+                      id={aliasOfFieldId}
+                      value={draft.aliasOf}
+                      placeholder={aliasOfPlaceholder(detail)}
+                      disabled={busy}
+                      onChange={(event) => update({ aliasOf: event.target.value })}
+                    />
+                  </div>
                   {initial.aliasOf !== "" && draft.aliasOf !== "" && (
                     <Button variant="link" disabled={busy} onClick={() => update({ aliasOf: "" })}>
                       Reset

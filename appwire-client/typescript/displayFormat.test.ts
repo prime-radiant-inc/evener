@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import {
   compactDuration,
   durationParts,
+  effectiveContextStatus,
   firstLine,
   formatCharCount,
   formatClockTime,
@@ -52,6 +53,7 @@ test.each([
   ["250000", 250_000],
   [" 250,000 ", 250_000],
   ["250k", 250_000],
+  [" 250k ", 250_000],
   ["250K", 250_000],
   ["1.13k", 1_130],
   ["0.29M", 290_000],
@@ -67,6 +69,34 @@ test.each(["", "   ", "0", "0k", "-5k", "1.5", "1.2345k", "1.1234567m", "2147483
     expect(parseTokenCount(raw)).toBeNull();
   },
 );
+
+test("effectiveContextStatus uses compactionThreshold when positive and falls back to contextWindow otherwise", () => {
+  expect(
+    effectiveContextStatus({
+      contextUsed: 200_000,
+      contextWindow: 1_000_000,
+      contextPressure: 0.2,
+      compactionThreshold: 250_000,
+    }),
+  ).toEqual({
+    ceiling: 250_000,
+    pressure: 0.8,
+    remaining: 50_000,
+    hasCustomThreshold: true,
+  });
+
+  expect(
+    effectiveContextStatus({
+      contextUsed: 50_000,
+      contextWindow: 200_000,
+    }),
+  ).toEqual({
+    ceiling: 200_000,
+    pressure: 0.25,
+    remaining: 150_000,
+    hasCustomThreshold: false,
+  });
+});
 
 // --- formatDurationMs -------------------------------------------------------
 // Same tier

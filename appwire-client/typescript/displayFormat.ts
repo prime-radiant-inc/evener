@@ -44,6 +44,39 @@ export function formatTokenCount(n: number): string {
   return text;
 }
 
+export interface EffectiveContextStatus {
+  ceiling: number;
+  pressure: number;
+  remaining: number;
+  hasCustomThreshold: boolean;
+}
+
+// effectiveContextStatus computes the active context ceiling, pressure, and
+// remaining headroom for session status surfaces. When compactionThreshold is
+// positive, the gauge measures against that threshold instead of the physical
+// contextWindow.
+export function effectiveContextStatus(model: {
+  contextUsed: number;
+  contextWindow: number;
+  contextPressure?: number;
+  compactionThreshold?: number;
+}): EffectiveContextStatus {
+  if (model.compactionThreshold !== undefined && model.compactionThreshold > 0) {
+    return {
+      ceiling: model.compactionThreshold,
+      pressure: model.contextUsed / model.compactionThreshold,
+      remaining: Math.max(0, model.compactionThreshold - model.contextUsed),
+      hasCustomThreshold: true,
+    };
+  }
+  return {
+    ceiling: model.contextWindow,
+    pressure: model.contextPressure ?? (model.contextWindow > 0 ? model.contextUsed / model.contextWindow : 0),
+    remaining: Math.max(0, model.contextWindow - model.contextUsed),
+    hasCustomThreshold: false,
+  };
+}
+
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.
 // Non-finite input renders "" (no duration to show): unlike a token count,
 // a duration has no honest zero to clamp to.

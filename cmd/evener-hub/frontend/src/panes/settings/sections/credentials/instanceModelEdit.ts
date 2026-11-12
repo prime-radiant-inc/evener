@@ -158,11 +158,25 @@ export function toggleInputModality(
   return next;
 }
 
-function effectiveHardCeiling(draft: ModelDraft, detail?: InstanceModelDetailResponse | null): number {
+function effectiveHardCeiling(
+  draft: ModelDraft,
+  detail: InstanceModelDetailResponse | null | undefined,
+  mode: "edit" | "create",
+  initial?: ModelDraft,
+): number {
   const limits: number[] = [];
   const rawCw = draft.contextWindow.trim();
   const draftedCw = rawCw === "" ? null : parseTokenCount(rawCw);
-  const effectiveCw = rawCw !== "" ? draftedCw : (detail?.effective.contextWindow ?? null);
+  const initialAliasOf = (initial?.aliasOf ?? detail?.authored?.aliasOf ?? "").trim();
+  const aliasChanging = mode === "edit" && draft.aliasOf.trim() !== initialAliasOf;
+  if (aliasChanging) {
+    if (draftedCw !== null && draftedCw > 0) {
+      limits.push(draftedCw);
+    }
+    return limits.length > 0 ? Math.min(...limits) : 0;
+  }
+  const inheritedCw = detail?.provenance.ContextWindow === "config" ? null : (detail?.effective.contextWindow ?? null);
+  const effectiveCw = rawCw !== "" ? draftedCw : inheritedCw;
   if (effectiveCw !== null && effectiveCw > 0) {
     limits.push(effectiveCw);
   }
@@ -178,6 +192,7 @@ export function validateModelDraft(
   detail: InstanceModelDetailResponse | null | undefined,
   existingModels: readonly InstanceModelEntry[],
   mode: "edit" | "create",
+  initial?: ModelDraft,
 ): ModelValidationErrors {
   const errors: ModelValidationErrors = {};
 
@@ -208,7 +223,7 @@ export function validateModelDraft(
     if (parsedCt === null || parsedCt < MIN_COMPACTION_THRESHOLD) {
       errors.compactionThreshold = `Enter a token count of at least ${MIN_COMPACTION_THRESHOLD} (for example, 250K).`;
     } else {
-      const ceiling = effectiveHardCeiling(draft, detail);
+      const ceiling = effectiveHardCeiling(draft, detail, mode, initial);
       if (ceiling > 0 && parsedCt >= ceiling) {
         errors.compactionThreshold = `Auto-compact threshold must be below the ${formatTokenCount(ceiling)} input limit.`;
       }
@@ -503,13 +518,23 @@ function provenanceSuffix(prov: string | undefined): string {
   return prov && prov !== "config" ? ` (${prov})` : "";
 }
 
-export function compactionThresholdPlaceholder(detail?: InstanceModelDetailResponse | null): string {
+export function compactionThresholdPlaceholder(
+  detail?: InstanceModelDetailResponse | null,
+  draftContextWindow = "",
+): string {
   const inheritedThreshold = detail?.effective.compactionThreshold;
   const thresholdProv = detail?.provenance.CompactionThreshold;
   if (inheritedThreshold !== undefined && inheritedThreshold > 0 && thresholdProv !== "config") {
     return `Inherited: ${formatTokenCount(inheritedThreshold)}${provenanceSuffix(thresholdProv)}`;
   }
-  const cw = detail?.effective.contextWindow;
+  const rawDraftCw = draftContextWindow.trim();
+  const draftedCw = rawDraftCw === "" ? null : parseTokenCount(rawDraftCw);
+  const cw =
+    draftedCw !== null
+      ? draftedCw
+      : detail?.provenance.ContextWindow === "config"
+        ? undefined
+        : detail?.effective.contextWindow;
   if (cw !== undefined && cw > 0) {
     const defaultTokens = Math.round(cw * DEFAULT_COMPACT_AT);
     return `Default: ${formatTokenCount(defaultTokens)} (90% of ${formatTokenCount(cw)} window)`;
@@ -518,7 +543,7 @@ export function compactionThresholdPlaceholder(detail?: InstanceModelDetailRespo
 }
 
 export function tokenLimitPlaceholder(value: number | undefined, prov: string | undefined): string {
-  if (value !== undefined && value > 0) {
+  if (value !== undefined && value > 0 && prov !== "config") {
     return `Inherited: ${formatTokenCount(value)}${provenanceSuffix(prov)}`;
   }
   return "Inherited";
@@ -526,8 +551,9 @@ export function tokenLimitPlaceholder(value: number | undefined, prov: string | 
 
 export function wireIdPlaceholder(detail?: InstanceModelDetailResponse | null): string {
   const wireId = detail?.effective.wireId;
-  if (wireId) {
-    return `Inherited: ${wireId}${provenanceSuffix(detail?.provenance.WireID)}`;
+  const prov = detail?.provenance.WireID;
+  if (wireId && prov !== "config") {
+    return `Inherited: ${wireId}${provenanceSuffix(prov)}`;
   }
   return "Inherited";
 }
@@ -542,9 +568,11 @@ export function aliasOfPlaceholder(detail?: InstanceModelDetailResponse | null):
 }
 
 export function reasoningOptions(detail?: InstanceModelDetailResponse | null): SegmentedControlOption[] {
+  const prov = detail?.provenance.Reasoning;
   const inheritedOn = detail?.effective.reasoning !== false;
+  const leadingLabel = prov === "config" ? "Inherited" : inheritedOn ? "Inherited (On)" : "Inherited (Off)";
   return [
-    { value: "", label: inheritedOn ? "Inherited (On)" : "Inherited (Off)" },
+    { value: "", label: leadingLabel },
     { value: "true", label: "On" },
     { value: "false", label: "Off" },
   ];
@@ -552,8 +580,9 @@ export function reasoningOptions(detail?: InstanceModelDetailResponse | null): S
 
 export function defaultEffortOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
   const eff = detail?.effective.defaultEffort;
+  const prov = detail?.provenance.DefaultEffort;
   const ladder = detail?.effective.effortValues ?? [...ALL_EFFORT_LEVELS];
-  const leadingLabel = eff ? `Inherited (${effortLabel(eff, ladder)})` : "Inherited";
+  const leadingLabel = eff && prov !== "config" ? `Inherited (${effortLabel(eff, ladder)})` : "Inherited";
   return [
     { value: "", label: leadingLabel },
     ...ALL_EFFORT_LEVELS.map((level) => ({ value: level, label: effortLabel(level, ladder) })),
@@ -561,9 +590,12 @@ export function defaultEffortOptions(detail?: InstanceModelDetailResponse | null
 }
 
 export function toolCallingOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
+  const prov = detail?.provenance.Tools;
   const inheritedSupported = detail?.effective.tools !== false;
+  const leadingLabel =
+    prov === "config" ? "Inherited" : inheritedSupported ? "Inherited (Supported)" : "Inherited (Unsupported)";
   return [
-    { value: "", label: inheritedSupported ? "Inherited (Supported)" : "Inherited (Unsupported)" },
+    { value: "", label: leadingLabel },
     { value: "true", label: "Supported" },
     { value: "false", label: "Unsupported" },
   ];
@@ -571,26 +603,30 @@ export function toolCallingOptions(detail?: InstanceModelDetailResponse | null):
 
 export function modelProtocolOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
   const eff = detail?.effective.protocol;
-  const leadingLabel = eff ? `Inherited (${eff})` : "Inherited";
+  const prov = detail?.provenance.Protocol;
+  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
   return [{ value: "", label: leadingLabel }, ...PROTOCOL_OPTIONS.slice(1)];
 }
 
 export function modelSurfaceOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
   const eff = detail?.effective.surface;
-  const leadingLabel = eff ? `Inherited (${eff})` : "Inherited";
+  const prov = detail?.provenance.Surface;
+  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
   return [{ value: "", label: leadingLabel }, ...SURFACE_OPTIONS.slice(1)];
 }
 
 export function thinkingFormatOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
   const eff = detail?.effective.thinkingFormat;
-  const leadingLabel = eff ? `Inherited (${eff})` : "Inherited";
+  const prov = detail?.provenance.ThinkingFormat;
+  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
   const formats = detail?.thinkingFormats ?? DEFAULT_THINKING_FORMATS;
   return [{ value: "", label: leadingLabel }, ...formats.map((f) => ({ value: f, label: f }))];
 }
 
 export function thinkingShapeOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
   const eff = detail?.effective.thinkingShape;
-  const leadingLabel = eff ? `Inherited (${eff})` : "Inherited";
+  const prov = detail?.provenance.ThinkingShape;
+  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
   const shapes = detail?.thinkingShapes ?? DEFAULT_THINKING_SHAPES;
   return [{ value: "", label: leadingLabel }, ...shapes.map((s) => ({ value: s, label: s }))];
 }

@@ -3,7 +3,6 @@ package hub
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -205,11 +204,14 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		}
 	}
 
+		before, _, err := c.read()
+		if err != nil {
+			return err
+		}
 	l, _, err := c.read()
 	if err != nil {
 		return err
 	}
-	before := cloneLayer(l)
 	beforeProvider, beforeAuthored := before.Providers[name]
 	beforeAccess := effectiveAccessIdentity(key, r, name, beforeProvider, beforeAuthored)
 
@@ -268,7 +270,6 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	resBefore, resBeforeErr := r.ResolveInstanceModelFacts(name, model)
-	hadThresholdBefore := resBeforeErr == nil && resBefore.Caps.CompactionThreshold != nil
 	wasAuthoredOnly := params.Create || r.IsAuthoredOnlyModel(name, model)
 
 	row := p.Models[model]
@@ -292,11 +293,11 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	if !wasAuthoredProvider && providerIsBare(p) {
-		if out != nil {
 			detail, err := c.modelDetailLocked(r, name, model)
 			if err != nil {
 				return err
 			}
+		if out != nil {
 			*out = appwire.InstanceModelEditResponse{
 				List:   c.listLocked(key, keyErr),
 				Detail: &detail,
@@ -311,15 +312,20 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		l.Providers[name] = p
 	}
 
+		var committedDetail appwire.InstanceModelDetailResponse
 	validate := func(reloaded *registry.Registry) error {
 		resAfter, err := reloaded.ResolveInstanceModelFacts(name, model)
 		if err != nil {
 			return err
 		}
-		if resAfter.Provenance["CompactionThreshold"] == "derived" &&
-			(row.Caps.CompactionThreshold != nil || hadThresholdBefore || params.ContextWindow != nil || params.ClearContextWindow) {
+			if resAfter.Provenance["CompactionThreshold"] == "derived" && row.Caps.CompactionThreshold != nil {
 			return fmt.Errorf("compaction_threshold exceeds model input ceiling (%d)", resAfter.Caps.InputCeiling())
 		}
+			detail, err := c.modelDetailLocked(reloaded, name, model)
+			if err != nil {
+				return err
+			}
+			committedDetail = detail
 		return nil
 	}
 
@@ -328,13 +334,9 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	if out != nil {
-		detail, err := c.modelDetailLocked(c.reg.Get(), name, model)
-		if err != nil {
-			return err
-		}
 		*out = appwire.InstanceModelEditResponse{
 			List:   c.listLocked(key, keyErr),
-			Detail: &detail,
+				Detail: &committedDetail,
 		}
 	}
 	return nil
@@ -525,6 +527,9 @@ func applyModelEditFields(row *registry.Model, params appwire.InstanceModelEditP
 }
 
 func checkModelCeilingPreWrite(row registry.Model, params appwire.InstanceModelEditParams, resBefore registry.Resolved, resBeforeOK bool) error {
+	if row.Caps.CompactionThreshold == nil {
+		return nil
+	}
 	var cw, maxIn *int
 	sameTarget := resBeforeOK && !params.Create && !params.ClearAliasOf && strings.TrimSpace(params.AliasOf) == ""
 	if sameTarget {
@@ -537,138 +542,14 @@ func checkModelCeilingPreWrite(row registry.Model, params appwire.InstanceModelE
 		cw = row.Caps.ContextWindow
 	}
 	ceiling := (registry.Caps{ContextWindow: cw, MaxInputTokens: maxIn}).InputCeiling()
-	ct := row.Caps.CompactionThreshold
-	if ct == nil && sameTarget && !params.ResetAll && !params.ClearCompactionThreshold {
-		ct = resBefore.Caps.CompactionThreshold
-	}
-	if ct != nil && ceiling > 0 && *ct >= ceiling &&
-		(params.CompactionThreshold != nil || params.ContextWindow != nil || row.Caps.CompactionThreshold != nil) {
-		return appwire.InvalidParams(fmt.Sprintf("compaction_threshold (%d) must be less than input ceiling (%d)", *ct, ceiling))
+	if ceiling > 0 && *row.Caps.CompactionThreshold >= ceiling {
+		return appwire.InvalidParams(fmt.Sprintf("compaction_threshold (%d) must be less than input ceiling (%d)", *row.Caps.CompactionThreshold, ceiling))
 	}
 	return nil
 }
 
 func modelRowIsBare(row registry.Model) bool {
 	return reflect.DeepEqual(row, registry.Model{ID: row.ID})
-}
-
-func cloneLayer(l *registry.Layer) *registry.Layer {
-	if l == nil {
-		return nil
-	}
-	out := &registry.Layer{
-		Tag:          l.Tag,
-		Default:      l.Default,
-		DefaultOrder: slices.Clone(l.DefaultOrder),
-	}
-	if l.Transports != nil {
-		out.Transports = make(map[string]registry.Transport, len(l.Transports))
-		for k, t := range l.Transports {
-			out.Transports[k] = cloneRegistryTransport(t)
-		}
-	}
-	if l.TopGlobs != nil {
-		out.TopGlobs = make(map[string]registry.Model, len(l.TopGlobs))
-		for k, m := range l.TopGlobs {
-			out.TopGlobs[k] = cloneRegistryModel(m)
-		}
-	}
-	if l.Providers != nil {
-		out.Providers = make(map[string]registry.Provider, len(l.Providers))
-		for k, p := range l.Providers {
-			out.Providers[k] = cloneRegistryProvider(p)
-		}
-	}
-	return out
-}
-
-func cloneRegistryProvider(p registry.Provider) registry.Provider {
-	out := p
-	out.InheritModels = cloneBoolPtr(p.InheritModels)
-	out.InheritModelsMatching = slices.Clone(p.InheritModelsMatching)
-	out.Implicit = cloneBoolPtr(p.Implicit)
-	out.Transport = cloneRegistryTransport(p.Transport)
-	out.APIKeyEnv = slices.Clone(p.APIKeyEnv)
-	out.Headers = maps.Clone(p.Headers)
-	out.CredentialHeaders = maps.Clone(p.CredentialHeaders)
-	out.Caps = cloneRegistryCaps(p.Caps)
-	if p.Models != nil {
-		out.Models = make(map[string]registry.Model, len(p.Models))
-		for k, m := range p.Models {
-			out.Models[k] = cloneRegistryModel(m)
-		}
-	}
-	return out
-}
-
-func cloneRegistryModel(m registry.Model) registry.Model {
-	out := m
-	out.Headers = maps.Clone(m.Headers)
-	out.Caps = cloneRegistryCaps(m.Caps)
-	out.Disabled = cloneBoolPtr(m.Disabled)
-	if m.Transport != nil {
-		tr := cloneRegistryTransport(*m.Transport)
-		out.Transport = &tr
-	}
-	return out
-}
-
-func cloneRegistryTransport(t registry.Transport) registry.Transport {
-	out := t
-	out.Vars = maps.Clone(t.Vars)
-	out.VarsEnv = maps.Clone(t.VarsEnv)
-	out.Body = maps.Clone(t.Body)
-	return out
-}
-
-func cloneRegistryCaps(c registry.Caps) registry.Caps {
-	out := c
-	out.ContextWindow = cloneIntPtr(c.ContextWindow)
-	out.MaxInputTokens = cloneIntPtr(c.MaxInputTokens)
-	out.CompactionThreshold = cloneIntPtr(c.CompactionThreshold)
-	out.MaxOutputTokens = cloneIntPtr(c.MaxOutputTokens)
-	out.Tools = cloneBoolPtr(c.Tools)
-	out.StructuredOutput = cloneBoolPtr(c.StructuredOutput)
-	out.Sampling = cloneBoolPtr(c.Sampling)
-	out.Reasoning = cloneBoolPtr(c.Reasoning)
-	out.ReasoningControls = slices.Clone(c.ReasoningControls)
-	out.EffortValues = slices.Clone(c.EffortValues)
-	out.EffortParameterUnsupported = cloneBoolPtr(c.EffortParameterUnsupported)
-	out.DefaultEffort = cloneStringPtr(c.DefaultEffort)
-	out.InputModalities = slices.Clone(c.InputModalities)
-	out.KnowledgeCutoff = cloneStringPtr(c.KnowledgeCutoff)
-	if c.Cost != nil {
-		cost := *c.Cost
-		cost.Tiers = slices.Clone(c.Cost.Tiers)
-		out.Cost = &cost
-	}
-	out.Fields = maps.Clone(c.Fields)
-	out.MaxTokensField = cloneStringPtr(c.MaxTokensField)
-	out.ThinkingFormat = cloneStringPtr(c.ThinkingFormat)
-	out.ThinkingShape = cloneStringPtr(c.ThinkingShape)
-	out.ThinkingDisplay = cloneStringPtr(c.ThinkingDisplay)
-	out.ThinkingAlwaysOn = cloneBoolPtr(c.ThinkingAlwaysOn)
-	out.ReasoningField = cloneStringPtr(c.ReasoningField)
-	out.ReasoningSummary = cloneStringPtr(c.ReasoningSummary)
-	out.ChatTemplateKwargs = maps.Clone(c.ChatTemplateKwargs)
-	out.FinishReasonMap = maps.Clone(c.FinishReasonMap)
-	out.CacheControl = cloneStringPtr(c.CacheControl)
-	out.CacheTTL = cloneStringPtr(c.CacheTTL)
-	out.StrictTools = cloneBoolPtr(c.StrictTools)
-	out.ToolChoiceForcing = cloneBoolPtr(c.ToolChoiceForcing)
-	out.MaxStopSequences = cloneIntPtr(c.MaxStopSequences)
-	out.ImageDetail = cloneStringPtr(c.ImageDetail)
-	out.ResponsesLite = cloneBoolPtr(c.ResponsesLite)
-	out.AssistantAfterToolResult = cloneBoolPtr(c.AssistantAfterToolResult)
-	out.ThinkingAsText = cloneBoolPtr(c.ThinkingAsText)
-	out.EmptyReasoningContent = cloneBoolPtr(c.EmptyReasoningContent)
-	out.StripEmptyContent = cloneBoolPtr(c.StripEmptyContent)
-	out.ToolResultName = cloneBoolPtr(c.ToolResultName)
-	out.ToolStream = cloneBoolPtr(c.ToolStream)
-	out.SessionAffinityHeaders = cloneBoolPtr(c.SessionAffinityHeaders)
-	out.MultimodalToolResults = cloneBoolPtr(c.MultimodalToolResults)
-	out.WebSearch = cloneBoolPtr(c.WebSearch)
-	return out
 }
 
 func cloneIntPtr(p *int) *int {
@@ -679,13 +560,6 @@ func cloneIntPtr(p *int) *int {
 }
 
 func cloneBoolPtr(p *bool) *bool {
-	if p == nil {
-		return nil
-	}
-	return new(*p)
-}
-
-func cloneStringPtr(p *string) *string {
 	if p == nil {
 		return nil
 	}

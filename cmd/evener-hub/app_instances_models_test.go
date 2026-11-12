@@ -316,7 +316,7 @@ endpoint = "/custom-messages"
 headers = { "X-Custom" = "keep-me" }
 compaction_threshold = 200000
 fields = { "temperature" = true }
-chat_template_kwargs = { "enable_thinking" = true }
+	chat_template_kwargs = { "enable_thinking" = true, options = { mode = "fast" } }
 
 [providers.work.models."claude-opus-4-6".cost]
 input = 1.5
@@ -353,9 +353,39 @@ output = 7.5
 		row.Caps.Cost == nil || row.Caps.Cost.Input != 1.5 || row.Caps.Cost.Output != 7.5 ||
 		!row.Caps.Fields["temperature"] ||
 		row.Caps.ChatTemplateKwargs["enable_thinking"] != true ||
+			!reflect.DeepEqual(row.Caps.ChatTemplateKwargs["options"], map[string]any{"mode": "fast"}) ||
 		row.Transport == nil || row.Transport.BaseURL != "https://custom-model.example.test/v1" || row.Transport.Endpoint != "/custom-messages" {
 		t.Fatalf("hand-authored fields or transport lost on targeted EditModel: %+v (transport=%+v)", row, row.Transport)
 	}
+
+		// Trigger a rolled-back EditModel on claude-haiku-4-5 and verify nested chat_template_kwargs on claude-opus-4-6 survives rollback intact.
+		cw1M := 1_000_000
+		ct250k := 250_000
+		if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+			Name:                "work",
+			Model:               "claude-haiku-4-5",
+			ContextWindow:       &cw1M,
+			CompactionThreshold: &ct250k,
+		}, &resp); err != nil {
+			t.Fatalf("EditModel(seed haiku for rollback): %v", err)
+		}
+		requireWireError(t, f.ctl.EditModel(appwire.InstanceModelEditParams{
+			Name:               "work",
+			Model:              "claude-haiku-4-5",
+			ClearContextWindow: true,
+		}, &resp), appwire.CodeInvalidParams)
+		pAfterRollback := authoredEntry(t, f.tomlPath, "work")
+		rowAfterRollback := pAfterRollback.Models["claude-opus-4-6"]
+		if !reflect.DeepEqual(rowAfterRollback.Caps.ChatTemplateKwargs["options"], map[string]any{"mode": "fast"}) {
+			t.Fatalf("nested chat_template_kwargs lost after rollback: %+v", rowAfterRollback.Caps.ChatTemplateKwargs)
+		}
+		if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+			Name:     "work",
+			Model:    "claude-haiku-4-5",
+			ResetAll: true,
+		}, &resp); err != nil {
+			t.Fatalf("EditModel(cleanup haiku): %v", err)
+		}
 
 	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
 		Name:     "work",
@@ -376,6 +406,7 @@ output = 7.5
 		row.Caps.Cost == nil || row.Caps.Cost.Input != 1.5 || row.Caps.Cost.Output != 7.5 ||
 		!row.Caps.Fields["temperature"] ||
 		row.Caps.ChatTemplateKwargs["enable_thinking"] != true ||
+			!reflect.DeepEqual(row.Caps.ChatTemplateKwargs["options"], map[string]any{"mode": "fast"}) ||
 		row.Transport == nil || row.Transport.BaseURL != "https://custom-model.example.test/v1" || row.Transport.Endpoint != "/custom-messages" {
 		t.Fatalf("hand-authored fields or transport lost on ResetAll: %+v (transport=%+v)", row, row.Transport)
 	}
@@ -727,6 +758,78 @@ alias_of = "claude-opus-4-6"
 	if !bytes.Equal(afterBareDisabledAliasRejectBytes, bareDisabledAliasBytes) {
 		t.Fatalf("providers.toml changed after pre-write rejection on disabled-haiku-alias:\ngot:\n%s\nwant:\n%s", afterBareDisabledAliasRejectBytes, bareDisabledAliasBytes)
 	}
+
+		// 5. Editing a hand-authored row with a dangling alias_of without fixing/clearing alias_of must fail with InvalidParams and leave providers.toml byte-for-byte unchanged.
+		danglingCfg := `[providers.work]
+base = "anthropic"
+api_key = "sk-work"
+compaction_threshold = 250000
+inherit_models_matching = ["claude-opus-4-6", "claude-haiku-4-5", "claude-opus-4-5[1m]"]
+
+[providers.work.models."claude-opus-4-5[1m]"]
+max_output_tokens = 4096
+
+[providers.work.models."repointable-alias"]
+alias_of = "claude-opus-4-6"
+`
+		if err := os.WriteFile(f.tomlPath, []byte(danglingCfg), 0o600); err != nil {
+			t.Fatalf("WriteFile(danglingCfg): %v", err)
+		}
+		danglingLayer, _, err := registry.ReadConfigFile(f.tomlPath)
+		if err != nil {
+			t.Fatalf("ReadConfigFile(danglingCfg): %v", err)
+		}
+		if err := registry.WriteConfigFile(f.tomlPath, danglingLayer); err != nil {
+			t.Fatalf("WriteConfigFile(danglingCfg): %v", err)
+		}
+		if err := f.ctl.reg.Reload(); err != nil {
+			t.Fatalf("Reload(danglingCfg): %v", err)
+		}
+		beforeDanglingEditBytes, err := os.ReadFile(f.tomlPath)
+		if err != nil {
+			t.Fatalf("ReadFile(beforeDanglingEditBytes): %v", err)
+		}
+		maxOut8k := 8192
+		for _, outPtr := range []*appwire.InstanceModelEditResponse{new(appwire.InstanceModelEditResponse), nil} {
+			err = f.ctl.EditModel(appwire.InstanceModelEditParams{
+				Name:            "work",
+				Model:           "claude-opus-4-5[1m]",
+				MaxOutputTokens: &maxOut8k,
+			}, outPtr)
+			requireWireError(t, err, appwire.CodeInvalidParams)
+			afterUneditableEditBytes, readErr := os.ReadFile(f.tomlPath)
+			if readErr != nil {
+				t.Fatalf("ReadFile(after dangling alias edit): %v", readErr)
+			}
+			if !bytes.Equal(afterUneditableEditBytes, beforeDanglingEditBytes) {
+				t.Fatalf("providers.toml mutated when editing dangling alias:\ngot:\n%s\nwant:\n%s", afterUneditableEditBytes, beforeDanglingEditBytes)
+			}
+		}
+
+		// 6. Provider-level (or glob) compaction_threshold = 250000 must not lock out lowering ContextWindow to 200000 or repointing AliasOf to a 200000-window model when row.Caps.CompactionThreshold == nil.
+		var lowerCwResp appwire.InstanceModelEditResponse
+		if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+			Name:          "work",
+			Model:         "claude-opus-4-6",
+			ContextWindow: &cw200k,
+		}, &lowerCwResp); err != nil {
+			t.Fatalf("EditModel(lower ContextWindow under provider compaction_threshold): %v", err)
+		}
+		if lowerCwResp.Detail == nil || lowerCwResp.Detail.Effective.CompactionThreshold != nil || lowerCwResp.Detail.Provenance["CompactionThreshold"] != "derived" || len(lowerCwResp.Detail.Warnings) == 0 {
+			t.Fatalf("lowerCwResp.Detail = %+v, want Effective.CompactionThreshold=nil Provenance=derived and non-empty Warnings", lowerCwResp.Detail)
+		}
+
+		var repointAliasResp appwire.InstanceModelEditResponse
+		if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+			Name:    "work",
+			Model:   "repointable-alias",
+			AliasOf: "claude-haiku-4-5",
+		}, &repointAliasResp); err != nil {
+			t.Fatalf("EditModel(repoint AliasOf to 200k model under provider compaction_threshold): %v", err)
+		}
+		if repointAliasResp.Detail == nil || repointAliasResp.Detail.Effective.CompactionThreshold != nil || repointAliasResp.Detail.Provenance["CompactionThreshold"] != "derived" || len(repointAliasResp.Detail.Warnings) == 0 {
+			t.Fatalf("repointAliasResp.Detail = %+v, want Effective.CompactionThreshold=nil Provenance=derived and non-empty Warnings", repointAliasResp.Detail)
+		}
 }
 
 func TestInstances_ModelEditEndpointFingerprintAndEffectiveAccess(t *testing.T) {

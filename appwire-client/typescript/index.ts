@@ -224,6 +224,8 @@ export {
   DURATION_UNIT_MS,
   type DurationUnit,
   durationParts,
+  type EffectiveContextStatus,
+  effectiveContextStatus,
   firstLine,
   formatCharCount,
   formatClockTime,

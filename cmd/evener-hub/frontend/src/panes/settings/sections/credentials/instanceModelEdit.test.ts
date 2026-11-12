@@ -4,15 +4,23 @@ import type { InstanceModelDetailResponse, InstanceModelEntry } from "@evener/ap
 import { describe, expect, test } from "vitest";
 import {
   compactionThresholdPlaceholder,
+  defaultEffortOptions,
   formatModelRowSummary,
   hasAuthoredOverrides,
   hasRoutingOverrides,
   modelEditParams,
+  modelProtocolOptions,
+  modelSurfaceOptions,
+  reasoningOptions,
   seedModelDraft,
+  thinkingFormatOptions,
+  thinkingShapeOptions,
   toggleEffortValue,
   toggleInputModality,
   tokenLimitPlaceholder,
+  toolCallingOptions,
   validateModelDraft,
+  wireIdPlaceholder,
 } from "./instanceModelEdit";
 
 function baseDetail(overrides: Partial<InstanceModelDetailResponse> = {}): InstanceModelDetailResponse {
@@ -222,6 +230,64 @@ describe("validateModelDraft", () => {
     expect(validateModelDraft({ ...blank, model: "gpt-5.5" }, null, existing, "create").model).toBeDefined();
     expect(validateModelDraft({ ...blank, model: "custom-model-1" }, null, existing, "create")).toEqual({});
   });
+
+  test("does not block compactionThreshold against an authored contextWindow that is being reset or when aliasOf changes", () => {
+    const detailWithAuthored128k = baseDetail({
+      effective: {
+        ...baseDetail().effective,
+        contextWindow: 128_000,
+      },
+      provenance: {
+        ...baseDetail().provenance,
+        ContextWindow: "config",
+      },
+      authored: {
+        contextWindow: 128_000,
+      },
+    });
+    const initial = seedModelDraft(detailWithAuthored128k);
+    const clearedWindowDraft = {
+      ...initial,
+      contextWindow: "",
+      compactionThreshold: "250k",
+    };
+    const errors = validateModelDraft(clearedWindowDraft, detailWithAuthored128k, existing, "edit", initial);
+    expect(errors.compactionThreshold).toBeUndefined();
+    expect(modelEditParams("work", initial, clearedWindowDraft, "edit", "fp-1")).toEqual({
+      name: "work",
+      model: "deepseek/deepseek-4.1-flash",
+      compactionThreshold: 250_000,
+      clearContextWindow: true,
+      expectedEndpointFingerprint: "fp-1",
+    });
+
+    // Repointing aliasOf ignores previous target's 128K catalog ceiling unless a new contextWindow is drafted
+    const smallCatalogDetail = baseDetail({
+      effective: {
+        ...baseDetail().effective,
+        contextWindow: 128_000,
+        maxInputTokens: 128_000,
+      },
+    });
+    const smallInitial = seedModelDraft(smallCatalogDetail);
+    const repointedDraft = {
+      ...smallInitial,
+      aliasOf: "gpt-5.5",
+      compactionThreshold: "250k",
+    };
+    expect(
+      validateModelDraft(repointedDraft, smallCatalogDetail, existing, "edit", smallInitial).compactionThreshold,
+    ).toBeUndefined();
+    expect(
+      validateModelDraft(
+        { ...repointedDraft, contextWindow: "200k" },
+        smallCatalogDetail,
+        existing,
+        "edit",
+        smallInitial,
+      ).compactionThreshold,
+    ).toBeDefined();
+  });
 });
 
 describe("modelEditParams", () => {
@@ -321,5 +387,51 @@ describe("summary and placeholder helpers", () => {
     const limitPlaceholder = tokenLimitPlaceholder(1_000_000, "catalog");
     expect(limitPlaceholder).toContain("1M");
     expect(limitPlaceholder).toContain("catalog");
+  });
+
+  test("omits authored values from Inherited placeholders and options when provenance is config", () => {
+    const configDetail = baseDetail({
+      effective: {
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+        reasoning: true,
+        defaultEffort: "high",
+        effortValues: ["low", "high"],
+        inputModalities: ["text"],
+        tools: true,
+        protocol: "openai-chat",
+        surface: "generic",
+        thinkingFormat: "deepseek",
+        thinkingShape: "budget",
+        wireId: "custom-wire-v1",
+      },
+      provenance: {
+        ContextWindow: "config",
+        MaxOutputTokens: "config",
+        Reasoning: "config",
+        DefaultEffort: "config",
+        EffortValues: "config",
+        InputModalities: "config",
+        Tools: "config",
+        Protocol: "config",
+        Surface: "config",
+        ThinkingFormat: "config",
+        ThinkingShape: "config",
+        WireID: "config",
+      },
+    });
+
+    expect(tokenLimitPlaceholder(128_000, "config")).not.toContain("128K");
+    expect(wireIdPlaceholder(configDetail)).not.toContain("custom-wire-v1");
+    expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("128K");
+    expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("115K");
+    expect(reasoningOptions(configDetail)[0]?.label).not.toContain("On");
+    expect(reasoningOptions(configDetail)[0]?.label).not.toContain("Off");
+    expect(defaultEffortOptions(configDetail)[0]?.label).not.toContain("High");
+    expect(toolCallingOptions(configDetail)[0]?.label).not.toContain("Supported");
+    expect(modelProtocolOptions(configDetail)[0]?.label).not.toContain("openai-chat");
+    expect(modelSurfaceOptions(configDetail)[0]?.label).not.toContain("generic");
+    expect(thinkingFormatOptions(configDetail)[0]?.label).not.toContain("deepseek");
+    expect(thinkingShapeOptions(configDetail)[0]?.label).not.toContain("budget");
   });
 });

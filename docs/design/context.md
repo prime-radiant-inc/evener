@@ -277,12 +277,12 @@ model's input ceiling):
 | Layer | Threshold | Method | Destructiveness |
 |-------|-----------|--------|-----------------|
 | **Checkpoint** | >= `compact_at_percent` (default 90%) or `compaction_threshold / window` | Deterministic state snapshot | Replaces old history with structured summary |
-| **LLM Summarize** | >= 95%, or the trigger when that is higher | LLM-generated narrative summary | Replaces old history with LLM prose |
+| **LLM Summarize** | >= 95% by default, or scaled proportionally above a custom `compaction_threshold` | LLM-generated narrative summary | Replaces old history with LLM prose |
 
 When a model sets `compaction_threshold` in `providers.toml`, `Manager.thresholdsFor`
 derives the per-profile `checkpoint` fraction as `compaction_threshold / EffectiveWindow(prof)`
 (unless an explicit session `compact_at_percent` sets a tighter fraction), scales `warn`
-below `checkpoint` (`lead = min(0.15, fraction * 0.20)`), and scales `summarize`
+below `checkpoint` (`lead = min(0.05, fraction * 0.20)`), and scales `summarize`
 proportionally (`fraction * 0.95 / 0.90`, capped at `max(fraction, 0.95)`). Meanwhile,
 wire token admission in `llm.ApplyTokenBudget` continues reading the physical
 `context_window`, `max_input_tokens`, and `max_output_tokens`. When `context_window` is

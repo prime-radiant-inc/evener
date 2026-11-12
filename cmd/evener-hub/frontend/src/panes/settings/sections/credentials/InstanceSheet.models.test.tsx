@@ -6,6 +6,7 @@ import type {
   InstanceModelEditParams,
   InstanceModelEditResponse,
 } from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -268,12 +269,12 @@ describe("per-model summary rows and drill-in editor", () => {
     render(<InstanceSheet name="work" {...handlers()} />);
 
     const flashSwitch = screen.getByRole("switch", { name: "deepseek/deepseek-4.1-flash" });
-    const flashRow = flashSwitch.closest("div");
+    const flashRow = flashSwitch.closest("div")?.parentElement;
     expect(flashRow?.querySelector('[data-kind="customized"]')).not.toBeNull();
     expect(flashRow?.textContent).toContain("1M");
     expect(flashRow?.textContent).toContain("250K");
 
-    const gpt4oRow = screen.getByRole("switch", { name: "gpt-4o" }).closest("div");
+    const gpt4oRow = screen.getByRole("switch", { name: "gpt-4o" }).closest("div")?.parentElement;
     expect(gpt4oRow?.querySelector('[data-kind="customized"]')).toBeNull();
     expect(gpt4oRow?.textContent).toContain("128K");
     expect(screen.getByRole("button", { name: "Configure deepseek/deepseek-4.1-flash" })).toBeTruthy();
@@ -596,6 +597,8 @@ describe("per-model summary rows and drill-in editor", () => {
 
     // Now in edit mode for the authoredOnly model, Remove custom model is available
     const removeCustomBtn = await screen.findByRole("button", { name: "Remove custom model" });
+    // Routing & wire overrides closes on create -> edit transition when no routing overrides were authored
+    expect(screen.getByText("Routing & wire overrides").closest("details")?.hasAttribute("open")).toBe(false);
     await user.click(removeCustomBtn);
 
     // ConfirmDialog is rendered as a sibling dialog outside the Sheet dialog
@@ -839,5 +842,185 @@ describe("per-model summary rows and drill-in editor", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(document.querySelector('[role="alert"][data-reason="instance-replaced"]')).not.toBeNull();
     expect(fake.calls.some((c) => c.method === "evener/instance/edit")).toBe(false);
+  });
+
+  test("never sends a stale draft onto a replacement instance when Save is clicked a second time after instance-replaced", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const initialInst: InstanceEntry = {
+      ...entry(),
+      protocol: "openai-chat",
+      endpointFingerprint: "fp-initial",
+      models: [{ id: "gpt-5.5" }],
+    };
+    const foreignReplacement: InstanceEntry = {
+      ...initialInst,
+      providerId: "anthropic",
+      protocol: "anthropic",
+      endpointFingerprint: "fp-replacement",
+      models: [{ id: "gpt-5.5" }],
+    };
+    let modelGetCount = 0;
+    let resolveReplacementGet: ((detail: InstanceModelDetailResponse) => void) | undefined;
+    fake.on("evener/instance/modelGet", () => {
+      modelGetCount += 1;
+      if (modelGetCount === 1) {
+        return modelDetailFixture();
+      }
+      return new Promise<InstanceModelDetailResponse>((resolve) => {
+        resolveReplacementGet = resolve;
+      });
+    });
+    fake.on(
+      "evener/instance/modelEdit",
+      (): InstanceModelEditResponse => ({
+        list: { instances: [foreignReplacement], availableProviders: [] },
+        detail: modelDetailFixture(),
+      }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({
+      instances: [initialInst],
+      availableProviders: [],
+      listingFromPreviousConnection: false,
+    });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    await user.type(thresholdInput, "250k");
+
+    // Replace the instance in store under the same name before saving
+    act(() => {
+      credentialsStore.setState({
+        instances: [foreignReplacement],
+        availableProviders: [],
+        listingFromPreviousConnection: false,
+      });
+    });
+
+    // First Save click refuses with instance-replaced and starts re-seeding from replacement
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(document.querySelector('[role="alert"][data-reason="instance-replaced"]')).not.toBeNull();
+    expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
+
+    // Second Save click while reload is in flight is still refused
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
+
+    // Resolve replacement getModel; draft resets to replacement's clean state
+    await act(async () => {
+      resolveReplacementGet?.(modelDetailFixture());
+    });
+    expect((screen.getByLabelText("Auto-compact threshold") as HTMLInputElement).value).toBe("");
+
+    // Clicking Save again still does not send the old 250k edit
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
+  });
+
+  test("late custom-model creation completion does not hijack a newer model editor view", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const inst: InstanceEntry = {
+      ...entry(),
+      endpointFingerprint: "fp-1",
+      models: [{ id: "gpt-5.5" }],
+    };
+    fake.on("evener/instance/modelGet", () => modelDetailFixture({ model: "gpt-5.5" }));
+    let resolveCreate: ((resp: InstanceModelEditResponse) => void) | undefined;
+    fake.on(
+      "evener/instance/modelEdit",
+      () =>
+        new Promise<InstanceModelEditResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [inst], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    // 1. Start creating custom model with delayed response
+    await user.click(screen.getByRole("button", { name: "+ Add custom model" }));
+    await user.type(await screen.findByLabelText("Model ID"), "custom-delayed");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(resolveCreate).toBeDefined());
+
+    // 2. Navigate back to overview and open Configure gpt-5.5, then type an unsaved threshold edit
+    await user.click(screen.getByRole("button", { name: "← work" }));
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    await user.type(thresholdInput, "300k");
+
+    // 3. Resolve the delayed custom-model creation
+    await act(async () => {
+      resolveCreate?.({
+        list: {
+          instances: [{ ...inst, models: [{ id: "gpt-5.5" }, { id: "custom-delayed", customized: true }] }],
+          availableProviders: [],
+        },
+        detail: modelDetailFixture({ model: "custom-delayed", authoredOnly: true }),
+      });
+    });
+
+    // Editor remains on gpt-5.5 with the unsaved "300k" draft intact
+    expect(screen.getByRole("heading", { name: "gpt-5.5" })).toBeTruthy();
+    expect((screen.getByLabelText("Auto-compact threshold") as HTMLInputElement).value).toBe("300k");
+  });
+
+  test("closes ConfirmDialog and refreshes listing when custom-model removal hits an endpoint conflict", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const inst: InstanceEntry = {
+      ...entry(),
+      endpointFingerprint: "fp-1",
+      models: [{ id: "custom-r1", customized: true }],
+    };
+    fake.on("evener/instance/modelGet", () =>
+      modelDetailFixture({
+        model: "custom-r1",
+        authoredOnly: true,
+      }),
+    );
+    fake.on("evener/instance/modelEdit", () => {
+      throw new WireError("endpoint conflict", -32013, { evenerErrorInfo: ErrorEndpointConflict });
+    });
+    fake.on(
+      "evener/instance/list",
+      (): InstanceListResponse => ({
+        instances: [{ ...inst, endpointFingerprint: "fp-2" }],
+        availableProviders: [],
+      }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [inst], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Configure custom-r1" }));
+    await user.click(await screen.findByRole("button", { name: "Remove custom model" }));
+    const confirmDialog = screen.getByRole("dialog", { name: "Remove custom model" });
+    await user.click(within(confirmDialog).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Remove custom model" })).toBeNull());
+    expect(toastKinds()).toContain("error");
+    expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
   });
 });

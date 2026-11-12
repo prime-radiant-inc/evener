@@ -89,6 +89,7 @@ const CLASS = {
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
   modelHeaderActions: requireClass(styles.modelHeaderActions, "InstanceSheet.module.css", "modelHeaderActions"),
   modelRow: requireClass(styles.modelRow, "InstanceSheet.module.css", "modelRow"),
+  modelNameSlot: requireClass(styles.modelNameSlot, "InstanceSheet.module.css", "modelNameSlot"),
   modelMeta: requireClass(styles.modelMeta, "InstanceSheet.module.css", "modelMeta"),
   modelSummary: requireClass(styles.modelSummary, "InstanceSheet.module.css", "modelSummary"),
 };
@@ -449,6 +450,19 @@ export function InstanceSheet({
           .getState()
           .fetch()
           .catch(() => {});
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        const targetName = pendingRemoveModel.name;
+        setPendingRemoveModel(null);
+        toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
+        const listed = await confirmListingState(() => true);
+        if (!listed || shownName.current !== targetName || instance === undefined) return;
+        const refreshed = credentialsStore.getState().instances.find((i) => i.name === targetName);
+        if (refreshed === undefined) return;
+        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
+        seededIdentity.current = draftIdentity(refreshed);
+        seededFingerprint.current = refreshed.endpointFingerprint;
         return;
       }
       toast.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
@@ -1094,13 +1108,17 @@ export function InstanceSheet({
                       const summaryText = formatModelRowSummary(row);
                       return (
                         <div key={row.id} className={CLASS.modelRow}>
-                          <Switch
-                            label={row.id}
-                            checked={!row.disabled}
-                            pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
-                            disabled={busy || writesRefused}
-                            onChange={(checked) => (renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked))}
-                          />
+                          <div className={CLASS.modelNameSlot}>
+                            <Switch
+                              label={row.id}
+                              checked={!row.disabled}
+                              pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
+                              disabled={busy || writesRefused}
+                              onChange={(checked) =>
+                                renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked)
+                              }
+                            />
+                          </div>
                           <div className={CLASS.modelMeta}>
                             {row.customized && <Chip kind="customized">customized</Chip>}
                             {summaryText !== "" && <span className={CLASS.modelSummary}>{summaryText}</span>}
