@@ -533,10 +533,12 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
-    // Absent means the daemon does not report provenance, so an absent field
-    // clears rather than keeps: a stale retired-input list must never outlive
-    // the snapshot that carried it.
-    conversationProvenance: thread.evener.conversationProvenance,
+    // Set only when the snapshot carried one, like the per-item fields below:
+    // a daemon that does not report provenance must not add an empty key, and
+    // the notification path keeps the last value it was told.
+    ...(thread.evener.conversationProvenance === undefined
+      ? {}
+      : { conversationProvenance: thread.evener.conversationProvenance }),
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,
