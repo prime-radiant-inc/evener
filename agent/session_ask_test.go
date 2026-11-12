@@ -4259,15 +4259,12 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
 	t.Parallel()
 	dir := t.TempDir()
 	ask := askUserCall("ask1", askUserArgsValid())
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
-			},
+	adapter := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
 		},
-	}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))

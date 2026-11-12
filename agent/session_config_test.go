@@ -831,11 +831,11 @@ func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *tes
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	c.Register(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "summary rejected", nil, nil)
 		},
-	}})
+	}))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

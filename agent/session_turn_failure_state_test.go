@@ -54,12 +54,12 @@ func TestHistoryEndsInTurnFailure(t *testing.T) {
 func failingThenRecoveringSession(t *testing.T, dir string) *Session {
 	t.Helper()
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+	c.Register(newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "sign-in rejected", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("recovered"), nil },
-	}})
+	}))
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
 	if err != nil {
@@ -75,12 +75,12 @@ func failedCarrierWithPendingQuestion(t *testing.T, dir string, cfg SessionConfi
 	t.Helper()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+	c.Register(newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
 		},
-	}})
+	}))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -225,14 +225,14 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 	t.Parallel()
 	var sess *Session
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+	c.Register(newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			if err := sess.Enqueue(context.Background(), "queued during the failing turn"); err != nil {
 				t.Errorf("Enqueue: %v", err)
 			}
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "sign-in rejected", nil, nil)
 		},
-	}})
+	}))
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	var err error
 	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{LLMRetryPolicy: &policy})

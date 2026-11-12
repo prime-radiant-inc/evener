@@ -1136,7 +1136,7 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 	limit := usageLimitError(t, "anthropic", quotaResetAt)
 	progress := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
 	done := communicateCall("finished", "back at work")
-	adapter := &fakeErrAdapter{name: "anthropic", steps: []func(llm.Request) (llm.Response, error){
+	steps := []func(llm.Request) (llm.Response, error){
 		// The old model's first round thinks (signed) and makes progress.
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -1146,16 +1146,17 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 		},
 		// Its next round meets the usage limit.
 		func(llm.Request) (llm.Response, error) { return llm.Response{}, limit },
-	}}
+	}
 	// The new model answers this and every later request (the goal's
 	// continuations included).
 	for range 20 {
-		adapter.steps = append(adapter.steps, func(req llm.Request) (llm.Response, error) {
+		steps = append(steps, func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &done},
 			}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
 		})
 	}
+	adapter := newFakeErrAdapter("anthropic", steps)
 	dir := t.TempDir()
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	clk := agenttest.NewFakeClock()
