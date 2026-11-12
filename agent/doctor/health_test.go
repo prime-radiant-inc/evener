@@ -676,3 +676,75 @@ func TestTranscriptHealth_JobsTerminalReasons(t *testing.T) {
 		t.Errorf("ZeroOutputTerminal = %d, want 1 (the running job is not terminal)", r.Jobs.ZeroOutputTerminal)
 	}
 }
+
+func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("check")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "g1", Name: "grep_search", Arguments: []byte(`{"pattern":"x"}`)}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s1", Name: "run_shell_command", Arguments: []byte(`{"command":"rm /etc/hosts"}`)}},
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "g1", Name: "grep", Content: "no matches", IsError: false}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "s1", Name: "shell", Content: "permission denied", IsError: true}},
+		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s2", Name: "run_shell_command", Arguments: []byte(`{"command":"rm /etc/hosts"}`)}},
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "s2", Name: "shell", Content: "permission denied", IsError: true}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "l1", Name: "list_dir", Content: "permission denied", IsError: true}},
+		}}),
+	}
+	writeSessionsFixtureSession(t, bucket, sidA,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		turns,
+		schema.SessionMeta{TurnCount: len(turns)},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+
+	h, err := TranscriptHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if h.ToolCalls["grep"] != 1 {
+		t.Errorf("ToolCalls[grep] = %d, want 1 (all: %+v)", h.ToolCalls["grep"], h.ToolCalls)
+	}
+	if _, split := h.ToolCalls["grep_search"]; split {
+		t.Errorf("ToolCalls retained wire alias grep_search separately: %+v", h.ToolCalls)
+	}
+	if h.ToolCalls["shell"] != 2 || h.ToolErrors["shell"]["denied"] != 2 {
+		t.Errorf("shell calls=%d denied=%d, want 2 and 2 (calls=%+v errors=%+v)",
+			h.ToolCalls["shell"], h.ToolErrors["shell"]["denied"], h.ToolCalls, h.ToolErrors)
+	}
+	if h.LongestIdenticalRun.Tool != "shell" || h.LongestIdenticalRun.Length != 2 {
+		t.Errorf("LongestIdenticalRun = %+v, want {Tool:shell Length:2}", h.LongestIdenticalRun)
+	}
+	rendered := RenderHealth(h)
+	if !strings.Contains(rendered, "denied=2") || !strings.Contains(rendered, "list_dir") {
+		t.Errorf("RenderHealth omitted unified shell error counts or orphaned list_dir error:\n%s", rendered)
+	}
+
+	m := metricSource{health: h}
+	for _, metric := range []struct {
+		path string
+		want int
+	}{
+		{"tool_calls.shell", 2},
+		{"tool_calls.run_shell_command", 2},
+		{"tool_errors.shell.denied", 2},
+		{"tool_errors.run_shell_command.denied", 2},
+	} {
+		val, err := m.resolve(metric.path)
+		if err != nil {
+			t.Fatalf("resolve(%q): %v", metric.path, err)
+		}
+		if val != metric.want {
+			t.Errorf("resolve(%q) = %v, want %d", metric.path, val, metric.want)
+		}
+	}
+}

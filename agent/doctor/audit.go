@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 )
 
 // Finding is the atomic output of a doctor audit, per
@@ -447,13 +449,13 @@ func (m metricSource) resolve(path string) (any, error) {
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_calls.<tool>", path)
 		}
-		return m.health.ToolCalls[rest], nil
+		return m.health.ToolCalls[wirenames.Canonical(rest)], nil
 	case "tool_errors":
 		tool, class, _ := strings.Cut(rest, ".")
 		if tool == "" || class == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_errors.<tool>.<class>", path)
 		}
-		return m.health.ToolErrors[tool][class], nil
+		return m.health.ToolErrors[wirenames.Canonical(tool)][class], nil
 	case "apilog":
 		if apiHealthMetricNames[path] || strings.HasPrefix(rest, "errors_by_class.") {
 			if !m.haveAPIHealth {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -92,10 +93,11 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 	if err != nil {
 		return CountResult{}, err
 	}
+	target := wirenames.Canonical(tool)
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == tool {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && wirenames.Canonical(part.ToolCall.Name) == target {
 				res.Calls++
 			}
 			if e.Turn.Kind == schema.TurnAssistant && part.Kind == llm.ContentText {

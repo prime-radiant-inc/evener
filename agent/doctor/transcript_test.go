@@ -172,6 +172,48 @@ func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
 	}
 }
 
+func TestCount_MatchesProviderWireAndCanonicalToolNames(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("search")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("grep_search", `{"pattern":"foo"}`),
+			toolCall("run_shell_command", `{"command":"pwd"}`),
+			toolCall("exec_command", `{"command":"ls"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("grep", "a.go:1:foo", false),
+			toolResult("shell", "/tmp", false),
+			toolResult("shell", "a.go", false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{query: "grep", want: 1},
+		{query: "grep_search", want: 1},
+		{query: "grep_files", want: 1},
+		{query: "shell", want: 2},
+		{query: "run_shell_command", want: 2},
+		{query: "exec_command", want: 2},
+	} {
+		got, err := Count(base, sid, tc.query)
+		if err != nil {
+			t.Fatalf("Count(%q): %v", tc.query, err)
+		}
+		if got.Calls != tc.want {
+			t.Errorf("Count(%q).Calls = %d, want %d", tc.query, got.Calls, tc.want)
+		}
+	}
+}
+
 func TestCount_RenderDisambiguates(t *testing.T) {
 	base, sid := countFixture(t)
 	ds, _ := Count(base, sid, "delegate_send")

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -39,6 +40,7 @@ type renderOpts struct {
 	// expand_turn pagination.
 	headTailEvidenceFor *int
 	evidence            *transcriptEvidence
+	callNames           map[string]string
 }
 
 // effectiveResultToolName returns the result tool name to use.
@@ -64,8 +66,28 @@ type pairedResult struct {
 // byCallID maps a call ID to the result that answers it; consumed records which
 // result IDs were claimed by a rendered call so the rest can render as orphaned.
 type resultIndex struct {
-	byCallID map[string]pairedResult
-	consumed map[string]bool
+	byCallID  map[string]pairedResult
+	consumed  map[string]bool
+	callNames map[string]string
+}
+
+func collectToolCallNames(entries []transcript.Entry) map[string]string {
+	var names map[string]string
+	for _, e := range entries {
+		for j := range e.Turn.Message.Content {
+			p := &e.Turn.Message.Content[j]
+			if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.ID == "" || p.ToolCall.Name == "" {
+				continue
+			}
+			if names == nil {
+				names = make(map[string]string)
+			}
+			if _, exists := names[p.ToolCall.ID]; !exists {
+				names[p.ToolCall.ID] = p.ToolCall.Name
+			}
+		}
+	}
+	return names
 }
 
 // buildResultIndex scans every entry and collects tool results keyed by the call
@@ -81,7 +103,11 @@ type resultIndex struct {
 // we deliberately do not route them anywhere (YAGNI for unreachable input); this
 // comment just states the dropping honestly.
 func buildResultIndex(entries []transcript.Entry, startSeq int) resultIndex {
-	idx := resultIndex{byCallID: map[string]pairedResult{}, consumed: map[string]bool{}}
+	idx := resultIndex{
+		byCallID:  map[string]pairedResult{},
+		consumed:  map[string]bool{},
+		callNames: collectToolCallNames(entries),
+	}
 	for i, e := range entries {
 		seq := startSeq + i
 		for j := range e.Turn.Message.Content {
@@ -517,6 +543,9 @@ func rawLinesForRange(ctx context.Context, path, root string, startSeq, endSeq i
 // As a final safety net, the combined content over hardCapChars is truncated
 // rune-safe with an honest note.
 func renderTranscript(header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) (string, readMeta) {
+	if opt.callNames == nil {
+		opt.callNames = collectToolCallNames(entries)
+	}
 	total := len(entries)
 	start, end := parseRange(rangeSpec, total)
 	opt.evidence = nil // Budget probes do not contribute retained evidence.
@@ -592,6 +621,9 @@ const userRangeTooLarge = "requested range could not be delivered with complete 
 // non-user entries. Unlike anchor-only trimming, an oversized candidate does not
 // stop selection of smaller turns farther into the requested range.
 func renderUserPrioritizedRange(header transcript.Header, entries []transcript.Entry, start, end int, rangeSpec string, opt renderOpts) (string, readMeta) {
+	if opt.callNames == nil {
+		opt.callNames = collectToolCallNames(entries)
+	}
 	selected := make([]bool, len(entries))
 	content, evidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 	priority := rangePriority(start, end, rangeSpec)
@@ -1201,7 +1233,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 
 	if hasResult {
 		full := wantFullResult(opt, callOwnerSeq, paired.ownerSeq)
-		writeToolResultBody(b, tc.Name, paired.result, full)
+		writeToolResultBody(b, wirenames.Canonical(tc.Name), paired.result, full)
 	}
 }
 
@@ -1267,10 +1299,16 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 	b.WriteString("_The originating tool call is outside the rendered range, or not present in the transcript (e.g. after a repair) — not an error._\n")
 	for _, id := range ids {
 		pr := idx.byCallID[id]
+		displayName := pr.result.Name
+		if callName := opt.callNames[id]; callName != "" {
+			displayName = callName
+		} else if callName := idx.callNames[id]; callName != "" {
+			displayName = callName
+		}
 		var result strings.Builder
-		fmt.Fprintf(&result, "- [call not shown] `%s`\n", pr.result.Name)
+		fmt.Fprintf(&result, "- [call not shown] `%s`\n", displayName)
 		full := wantFullTurn(opt, pr.ownerSeq)
-		writeToolResultBody(&result, pr.result.Name, pr.result, full)
+		writeToolResultBody(&result, wirenames.Canonical(displayName), pr.result, full)
 		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == pr.ownerSeq {
 			b.WriteString(boundOversizedTurnEvidence(result.String()))
 		} else {
@@ -1800,7 +1838,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return ""
 	}
 
-	switch name {
+	switch wirenames.Canonical(name) {
 	case "shell":
 		return truncRunes(get("command"), 120)
 

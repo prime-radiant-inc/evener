@@ -857,6 +857,21 @@ func TestRenderMarkdown_OrphanedToolResult(t *testing.T) {
 	}
 }
 
+func TestRenderTranscript_UnpairedResultUsesOriginatingWireToolName(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		toolCallEntry(call("g1", "grep_search", `{"pattern":"needle","path":"agent"}`)),
+		toolResultEntry(result("g1", "grep", "a.go:1:needle", false)),
+	}
+	out, _ := renderTranscript(transcript.Header{}, entries, "1-1", renderOpts{})
+	if !strings.Contains(out, "[call not shown] `grep_search`") {
+		t.Fatalf("expected unpaired result to display originating wire name grep_search, got:\n%s", out)
+	}
+	if strings.Contains(out, "[call not shown] `grep`") {
+		t.Fatalf("unpaired result fell back to canonical grep despite originating grep_search call:\n%s", out)
+	}
+}
+
 // TestRenderMarkdown_ErrorToolResult verifies an error result is [error].
 func TestRenderMarkdown_ErrorToolResult(t *testing.T) {
 	t.Parallel()
@@ -1068,12 +1083,17 @@ func TestToolInputSummary(t *testing.T) {
 		notWant string
 	}{
 		{"shell shows command", "shell", `{"command":"go test ./..."}`, "go test ./...", ""},
+		{"exec_command shows command", "exec_command", `{"command":"go test ./..."}`, "go test ./...", "command="},
+		{"run_shell_command shows command", "run_shell_command", `{"command":"go test ./..."}`, "go test ./...", "command="},
 		{"read_file shows path", "read_file", `{"file_path":"agent/transcript_read.go"}`, "agent/transcript_read.go", ""},
 		{"read_file shows offset/limit", "read_file", `{"file_path":"a.go","offset":10,"limit":20}`, "offset 10", ""},
 		{"write_file shows bytes not content", "write_file", `{"file_path":"out.txt","content":"hello world"}`, "11 bytes", "hello world"},
 		{"edit_file summary not strings", "edit_file", `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`, "a.go", "aaaa"},
 		{"grep shows pattern and path", "grep", `{"pattern":"needle","path":"./agent"}`, "needle", ""},
+		{"grep_search shows pattern and path", "grep_search", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
+		{"grep_files shows pattern and path", "grep_files", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
+		{"find_files shows pattern", "find_files", `{"pattern":"**/*.go"}`, "`**/*.go`", "pattern="},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
 		{"delegate shows task/type/max_wait_ms", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
