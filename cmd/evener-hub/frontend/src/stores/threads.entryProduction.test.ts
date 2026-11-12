@@ -3854,10 +3854,12 @@ it("a close and reopen around the committed windowed hydration still restores th
   let foregroundReads = 0;
   let heldGeneration: number | undefined;
   const heldRead = deferred<ThreadReadResponse>();
+  const secondReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     foregroundReads += 1;
     if (foregroundReads === 1) return read;
     if (foregroundReads === 2) {
+      secondReadEntered.resolve();
       heldGeneration = params.requestGeneration;
       return heldRead.promise;
     }
@@ -3933,8 +3935,9 @@ it("a close and reopen around the committed windowed hydration still restores th
     // withheld and the backstop pinned — arming the owed recorded range, and
     // the claim's windowed hydration (the held read) is now in flight.
     await act(async () => {
-      await vi.waitFor(() => expect(foregroundReads).toBe(2));
+      await secondReadEntered.promise;
     });
+    expect(foregroundReads).toBe(2);
     expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
     // The pane closes — its background lease ends with it — WHILE the windowed
     // hydration is still finishing its mutation reconciliation, then reopens
@@ -4096,6 +4099,13 @@ it("a foreground opening whose cache reads answer slowly but successfully still 
 // no held read can advance — an observation that costs no wall-clock time.
 async function drainSettleSteps(): Promise<void> {
   for (let step = 0; step < 30; step += 1) await Promise.resolve();
+}
+
+// The open records its verdict in the microtasks that the settle event wakes:
+// await the event, then drain those continuations before reading the verdict.
+async function settleEntryVerdict(ref: string): Promise<void> {
+  await settleEntryTranscriptForTests(ref);
+  await drainSettleSteps();
 }
 
 it("a foreground opening whose storage read fails transiently still converges the recorded display", async () => {
@@ -5075,9 +5085,10 @@ it("a failed foreign settlement during a body-suppressed post-claim opening repo
     // The miss verdict armed the cache recovery chain: with the wedge
     // released, the recorded window promotes and the display converges.
     localReadReleased.resolve();
-    await vi.waitFor(() => {
-      expect(bodies()).toContain("row-26");
-    });
+    // Await the chain's registered span instead of polling the display
+    // against a wall-clock ceiling (#5630).
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toContain("row-26");
     expect(bodies()).toContain("row-225");
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
@@ -5198,8 +5209,12 @@ it("an open superseded by a replacement hydration settles without the displaced 
   // are still pending, so the opening settles long before the backstop.
   const wireReleased = deferred<void>();
   let wireReads = 0;
+  const firstWireReadEntered = deferred<void>();
+  const secondWireReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     wireReads += 1;
+    if (wireReads === 1) firstWireReadEntered.resolve();
+    if (wireReads === 2) secondWireReadEntered.resolve();
     const echoed = { ...read, requestGeneration: params.requestGeneration };
     return wireReads === 1 ? wireReleased.promise.then(() => echoed) : echoed;
   });
@@ -5207,9 +5222,8 @@ it("an open superseded by a replacement hydration settles without the displaced 
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(1);
-  });
+  await firstWireReadEntered.promise;
+  expect(wireReads).toBe(1);
   let holding = false;
   const localReadEntered = deferred<void>();
   const localReadReleased = deferred<void>();
@@ -5232,10 +5246,12 @@ it("an open superseded by a replacement hydration settles without the displaced 
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(2);
-  });
-  await drainSettleSteps();
+  await secondWireReadEntered.promise;
+  expect(wireReads).toBe(2);
+  // The replacement hydration's own settlement is the event the open's
+  // superseded verdict follows; drain what it wakes before reading the
+  // route's recorded verdict (#5630).
+  await settleEntryVerdict(ref);
   expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
   expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
   expect(bodies()).toContain("row-26");
@@ -5311,9 +5327,10 @@ it("a pane whose settlement recovered nothing converges from storage after two f
   });
   try {
     await opened;
-    await vi.waitFor(() => {
-      expect(bodies()).toContain("row-26");
-    });
+    // Await the chain's registered span instead of polling the display
+    // against a wall-clock ceiling (#5630).
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toContain("row-26");
     // The chain converged from storage: no further wire read was needed.
     expect(wireReads).toBe(2);
   } finally {
@@ -5361,8 +5378,12 @@ it("a replacement incarnation settling over the open's captured repository certi
 
   const wireReleased = deferred<void>();
   let wireReads = 0;
+  const firstWireReadEntered = deferred<void>();
+  const secondWireReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     wireReads += 1;
+    if (wireReads === 1) firstWireReadEntered.resolve();
+    if (wireReads === 2) secondWireReadEntered.resolve();
     if (wireReads === 1) {
       return wireReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
     }
@@ -5372,9 +5393,8 @@ it("a replacement incarnation settling over the open's captured repository certi
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(1);
-  });
+  await firstWireReadEntered.promise;
+  expect(wireReads).toBe(1);
   let holding = false;
   const localReadEntered = deferred<void>();
   const localReadReleased = deferred<void>();
@@ -5397,10 +5417,12 @@ it("a replacement incarnation settling over the open's captured repository certi
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(2);
-  });
-  await drainSettleSteps();
+  await secondWireReadEntered.promise;
+  expect(wireReads).toBe(2);
+  // The replacement hydration's own settlement is the event the open's
+  // superseded verdict follows; drain what it wakes before reading the
+  // route's recorded verdict (#5630).
+  await settleEntryVerdict(ref);
   // The replacement owns the display: the superseded open certifies it
   // instead of judging the disposed repository it captured.
   expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
