@@ -114,6 +114,92 @@ func TestTranscriptDisplayStorePostRenameFailurePublishesNewState(t *testing.T) 
 	}
 }
 
+func TestTranscriptDisplayStoreOnCommittedFiresOnlyForAnAppliedPatch(t *testing.T) {
+	store, err := NewTranscriptDisplayStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed []appwire.TranscriptDisplayChangedParams
+	store.OnCommitted(func(changed appwire.TranscriptDisplayChangedParams) {
+		committed = append(committed, changed)
+	})
+	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
+	config.Content.Level = appwire.TranscriptLevelActivity
+	if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 0,
+		Config:           config,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 1 || committed[0].Layout != appwire.TranscriptViewportDesktop || committed[0].Revision != 1 || !reflect.DeepEqual(committed[0].Config, config) {
+		t.Fatalf("committed = %#v, want one desktop revision-1 value", committed)
+	}
+	// A no-op patch and a stale patch publish nothing, so they must not notify.
+	if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 1,
+		Config:           config,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 0,
+		Config:           config,
+	}); err == nil {
+		t.Fatal("stale patch succeeded")
+	}
+	if len(committed) != 1 {
+		t.Fatalf("committed = %#v, want no notification for a no-op or rejected patch", committed)
+	}
+}
+
+// A pre-rename failure leaves the old state published, so the sink must not
+// fire; a post-rename failure publishes the new state, so it must fire even
+// though Patch returns an error.
+func TestTranscriptDisplayStoreOnCommittedFollowsThePublishedState(t *testing.T) {
+	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
+	config.Content.Level = appwire.TranscriptLevelActivity
+	beforeRename, err := newTranscriptDisplayStoreFS(afero.NewOsFs(), t.TempDir(), transcriptDisplayStoreFaults{
+		BeforeRename: func() error { return errors.New("before rename failed") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	beforeRename.OnCommitted(func(appwire.TranscriptDisplayChangedParams) { before++ })
+	if _, err := beforeRename.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 0,
+		Config:           config,
+	}); err == nil {
+		t.Fatal("pre-rename failure returned no error")
+	}
+	if before != 0 {
+		t.Fatalf("commit sink fired %d times for an unapplied patch", before)
+	}
+
+	afterRename, err := NewTranscriptDisplayStoreForTest(t.TempDir(), func() error { return errors.New("after rename failed") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after []appwire.TranscriptDisplayChangedParams
+	afterRename.OnCommitted(func(changed appwire.TranscriptDisplayChangedParams) {
+		after = append(after, changed)
+	})
+	if _, err := afterRename.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 0,
+		Config:           config,
+	}); err == nil {
+		t.Fatal("post-rename failure returned no error")
+	}
+	if len(after) != 1 || after[0].Revision != 1 || !reflect.DeepEqual(after[0].Config, config) {
+		t.Fatalf("committed = %#v, want the applied revision-1 value", after)
+	}
+}
+
 func TestTranscriptDisplayStoreWriteValidatesBeforeCreatingState(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	root := "/hub-state"
