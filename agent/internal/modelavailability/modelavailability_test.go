@@ -431,6 +431,94 @@ func TestPageEnvelopeBudgetTooSmallIncludesByteFloor(t *testing.T) {
 	}
 }
 
+func TestPageBudgetErrorFixedPointRetrySucceedsOnFirstAttempt(t *testing.T) {
+	choices := make([]string, 0, 16)
+	status := make(map[string]ProviderStatus, 8)
+	for i := 0; i < 8; i++ {
+		p := fmt.Sprintf("provider-%02d", i)
+		status[p] = ProviderStatus{Kind: StatusSuccess, Detail: "enumeration succeeded"}
+		choices = append(choices, p+"/model-a", p+"/model-b")
+	}
+	s := testSnapshot("v1", true, choices...)
+	s.Status = status
+
+	_, err := s.Page("", 128, 512)
+	if err == nil {
+		t.Fatal("s.Page('', 128, 512) should fail with budget error on 8-provider snapshot")
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err = %v, want *PageEnvelopeBudgetError", err)
+	}
+
+	retryPage, err := s.Page("", 128, budgetErr.RequiredBytes)
+	if err != nil {
+		t.Fatalf("retry with RequiredBytes=%d failed: %v", budgetErr.RequiredBytes, err)
+	}
+	if len(retryPage.Choices) < 1 {
+		t.Fatalf("retryPage.Choices = %v, want at least 1 choice", retryPage.Choices)
+	}
+	if len(retryPage.Oversized) != 0 {
+		t.Fatalf("retryPage.Oversized = %v, want 0 oversized", retryPage.Oversized)
+	}
+}
+
+func TestPageBudgetErrorReturnsChoicesFloorNotOversized(t *testing.T) {
+	choices := []string{"provider-00/gpt-5.4-mini", "provider-00/gpt-5.5", "provider-01/gpt-5.4-mini"}
+	status := map[string]ProviderStatus{
+		"provider-00": {Kind: StatusSuccess, Detail: strings.Repeat("x", 120)},
+		"provider-01": {Kind: StatusSuccess, Detail: strings.Repeat("x", 120)},
+	}
+	s := testSnapshot("v1", true, choices...)
+	s.Status = status
+
+	_, err := s.Page("", 128, 512)
+	if err == nil {
+		t.Fatal("s.Page('', 128, 512) should fail with budget error")
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err = %v, want *PageEnvelopeBudgetError", err)
+	}
+
+	retryPage, err := s.Page("", 128, budgetErr.RequiredBytes)
+	if err != nil {
+		t.Fatalf("retry with RequiredBytes=%d failed: %v", budgetErr.RequiredBytes, err)
+	}
+	if len(retryPage.Choices) == 0 || retryPage.Choices[0] != "provider-00/gpt-5.4-mini" {
+		t.Fatalf("retryPage.Choices = %v, want provider-00/gpt-5.4-mini", retryPage.Choices)
+	}
+	if len(retryPage.Oversized) != 0 {
+		t.Fatalf("retryPage.Oversized = %v, want 0 oversized", retryPage.Oversized)
+	}
+}
+
+func TestPageEmptyStatusPreservesStatusKeyOnFirstPage(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1", "p1/m2")
+	p0, err := s.Page("", 1, 1024)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	b0, err := json.MarshalIndent(p0, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b0), `"status": {}`) {
+		t.Fatalf("page 0 with empty status must serialize '\"status\": {}', got:\n%s", string(b0))
+	}
+	p1, err := s.Page(p0.Next, 1, 1024)
+	if err != nil {
+		t.Fatalf("continuation page: %v", err)
+	}
+	b1, err := json.MarshalIndent(p1, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b1), `"status"`) {
+		t.Fatalf("continuation page must omit status, got:\n%s", string(b1))
+	}
+}
+
 func testSnapshot(version string, complete bool, choices ...string) Snapshot {
 	return Snapshot{Version: version, Complete: complete, Choices: choices, key: []byte("test-key")}
 }

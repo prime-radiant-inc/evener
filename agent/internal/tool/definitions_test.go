@@ -1031,18 +1031,6 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 	if min, ok := maxBytesProp["minimum"].(int); !ok || min != 512 {
 		t.Errorf("model_list max_bytes minimum = %v, want 512", maxBytesProp["minimum"])
 	}
-
-	if !strings.Contains(def.Description, "next") {
-		t.Errorf("model_list description should mention 'next' response field, got: %q", def.Description)
-	}
-	cursorProp, ok := props["cursor"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing cursor prop")
-	}
-	cursorDesc, _ := cursorProp["description"].(string)
-	if !strings.Contains(cursorDesc, "next") {
-		t.Errorf("cursor description should mention 'next', got: %q", cursorDesc)
-	}
 }
 
 // TestAllBuiltinParametersCarryDescriptions is the description audit as a

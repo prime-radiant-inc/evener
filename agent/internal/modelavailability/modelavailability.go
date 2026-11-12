@@ -20,6 +20,49 @@ import (
 
 type StatusKind string
 
+func (p Page) MarshalJSON() ([]byte, error) {
+	if p.Status != nil {
+		type withStatus struct {
+			Choices    []string                  `json:"choices,omitempty"`
+			Oversized  []int                     `json:"oversized,omitempty"`
+			Next       string                    `json:"next,omitempty"`
+			Version    string                    `json:"version"`
+			Complete   bool                      `json:"complete"`
+			Terminal   bool                      `json:"terminal"`
+			Status     map[string]ProviderStatus `json:"status"`
+			Provenance string                    `json:"provenance"`
+		}
+		return json.Marshal(withStatus{
+			Choices:    p.Choices,
+			Oversized:  p.Oversized,
+			Next:       p.Next,
+			Version:    p.Version,
+			Complete:   p.Complete,
+			Terminal:   p.Terminal,
+			Status:     p.Status,
+			Provenance: p.Provenance,
+		})
+	}
+	type withoutStatus struct {
+		Choices    []string `json:"choices,omitempty"`
+		Oversized  []int    `json:"oversized,omitempty"`
+		Next       string   `json:"next,omitempty"`
+		Version    string   `json:"version"`
+		Complete   bool     `json:"complete"`
+		Terminal   bool     `json:"terminal"`
+		Provenance string   `json:"provenance"`
+	}
+	return json.Marshal(withoutStatus{
+		Choices:    p.Choices,
+		Oversized:  p.Oversized,
+		Next:       p.Next,
+		Version:    p.Version,
+		Complete:   p.Complete,
+		Terminal:   p.Terminal,
+		Provenance: p.Provenance,
+	})
+}
+
 const (
 	StatusSuccess StatusKind = "success"
 	StatusEmpty   StatusKind = "empty-success"
@@ -344,6 +387,18 @@ func (s *Snapshot) decode(token string) (cursor, error) {
 	return c, nil
 }
 
+func (s *Snapshot) fixedPointPageBytes(trial Page, nextOff, maxCount, initialBytes int) int {
+	req := s.pageAtOffset(trial, nextOff, maxCount, initialBytes).SerializedBytes()
+	for range 5 {
+		cand := s.pageAtOffset(trial, nextOff, maxCount, req).SerializedBytes()
+		if cand <= req {
+			break
+		}
+		req = cand
+	}
+	return req
+}
+
 // Page returns the page of choices token continues (the first page when token
 // is empty). A zero maxCount or maxBytes is unspecified: a continuation reuses
 // the bound its cursor was issued for, and a first page uses the default.
@@ -404,27 +459,20 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		if len(p.Choices)+len(p.Oversized) > 0 {
 			break
 		}
-		trial = p
-		trial.Oversized = append(append([]int(nil), p.Oversized...), off)
-		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
-		if trial.SerializedBytes() > maxBytes {
-			return Page{}, envelopeBudgetError(trial.SerializedBytes())
-		}
-		p = trial
-		off++
-	}
-	if len(p.Choices) == 0 && len(p.Oversized) == 0 {
-		trial := p
-		trial.Choices = append(append([]string(nil), p.Choices...), s.Choices[off])
-		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
-		minBytes := trial.SerializedBytes()
 		trialOversized := p
 		trialOversized.Oversized = append(append([]int(nil), p.Oversized...), off)
 		trialOversized = s.pageAtOffset(trialOversized, off+1, maxCount, maxBytes)
-		if trialOversized.SerializedBytes() < minBytes {
-			minBytes = trialOversized.SerializedBytes()
+		if trialOversized.SerializedBytes() <= maxBytes {
+			p = trialOversized
+			off++
+			continue
 		}
-		return Page{}, envelopeBudgetError(minBytes)
+		choiceFloor := s.fixedPointPageBytes(trial, off+1, maxCount, maxBytes)
+		if choiceFloor <= DefaultPageMaxBytes {
+			return Page{}, envelopeBudgetError(choiceFloor)
+		}
+		oversizedFloor := s.fixedPointPageBytes(trialOversized, off+1, maxCount, maxBytes)
+		return Page{}, envelopeBudgetError(oversizedFloor)
 	}
 	if p.SerializedBytes() > maxBytes {
 		return Page{}, envelopeBudgetError(p.SerializedBytes())
