@@ -541,3 +541,85 @@ func TestUnknownWindowCompactsUnderAssumedDefault(t *testing.T) {
 		t.Fatalf("second pass disclosed the assumption %d times, want 0", n)
 	}
 }
+
+func TestForceCompact_InstructionsSeeToolOutputs(t *testing.T) {
+	t.Parallel()
+	var promptSeen string
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			promptSeen = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] preserved details")}
+		},
+	})
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testProfile("openai", "test", 100_000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	const toolOutputSentinel = "SENTINEL_OUTPUT_TEST_FAIL_OR_DIFF_9871"
+	var longOutput strings.Builder
+	for i := range 25 {
+		fmt.Fprintf(&longOutput, "=== RUN   TestSubsystem_ComponentStep%d\n    logger.go:42: verbose diagnostic output line %d with details\n", i, i)
+	}
+	fmt.Fprintf(&longOutput, "--- FAIL: TestSubsystem_ComponentStep24 (0.12s)\n    panic: %s\nFAIL\n", toolOutputSentinel)
+	toolOutputText := longOutput.String()
+	if len(toolOutputText) < 1000 {
+		t.Fatalf("test output length %d < 1000 bytes", len(toolOutputText))
+	}
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("run the tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "c1",
+						Name:      "shell",
+						Arguments: []byte(`{"command":"go test ./..."}`),
+						Type:      "function",
+					},
+				},
+			},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("c1", "shell", toolOutputText, true)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+
+	cm.ForceCompact(context.Background(), &history, "preserve the test error output", func(events.EventKind, events.EventData) {})
+
+	if !strings.Contains(promptSeen, toolOutputSentinel) {
+		t.Fatalf("summarizer prompt did not receive tool output sentinel; prompt:\n%s", promptSeen)
+	}
+}
+
+func TestForceCompact_InstructionsSummaryFailureKeepsCheckpoint(t *testing.T) {
+	t.Parallel()
+	failStep := func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("")} // empty reply fails checkSummaryReply
+	}
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{failStep, failStep, failStep, failStep})
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testProfile("openai", "test", 100_000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("do work")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("done")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+
+	summarized := cm.ForceCompact(context.Background(), &history, "preserve plan", func(events.EventKind, events.EventData) {})
+	if summarized {
+		t.Fatal("ForceCompact reported summarized when summarizer failed")
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("expected fallback to TurnCheckpoint, got: %v", history[0].Kind)
+	}
+}

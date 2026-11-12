@@ -102,6 +102,22 @@ func (s *Session) pinnedNote() string {
 	return s.pinnedNoteText
 }
 
+// hasFoldableHistory reports whether s.history holds turns older than
+// PreserveRecentTurns that a compaction would fold. It simulates the
+// in-flight TurnToolResults turn that persistToolResults is guaranteed to
+// append before applyPendingForceCompact runs at the round seam.
+func (s *Session) hasFoldableHistory() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	preserve := 6
+	if s.contextMgr != nil {
+		preserve = s.contextMgr.PreserveRecentTurns
+	}
+	simulated := append(slices.Clip(s.history), schema.Turn{Kind: schema.TurnToolResults})
+	_, foldable := attentionTransparentRecentCutoff(simulated, preserve)
+	return foldable
+}
+
 // pinnedNoteSnapshot returns the current note together with its generation,
 // so a fold capturing the note for handoff can later claim exactly what it
 // captured (claimPinnedNoteLocked) instead of blindly clearing whatever is

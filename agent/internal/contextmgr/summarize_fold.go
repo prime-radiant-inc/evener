@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -122,8 +123,11 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		b.WriteString(condensed)
 		b.WriteString("\nThe conversation:\n")
 	}
-	for i := range cutoff {
-		t := history[i]
+	sourceTurns := history[:cutoff]
+	if instructions != "" && checkpointed != nil {
+		sourceTurns = append(slices.Clip(checkpointed), history[1:cutoff]...)
+	}
+	for _, t := range sourceTurns {
 		switch t.Kind {
 		case schema.TurnUserInput:
 			// Preserve user messages verbatim. Cap at 5k to protect the cheap
@@ -157,23 +161,27 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 				b.WriteString("\n")
 			}
 			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
-					endTurn, msg := parseCommunicateArgs(p.ToolCall.Arguments)
-					if msg == "" {
-						continue
-					}
-					switch {
-					case endTurn:
-						fmt.Fprintf(&b, "Agent Message: %s\n", msg)
-					default:
-						fmt.Fprintf(&b, "Agent Status: %s\n", msg)
+				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
+					if p.ToolCall.Name == cm.resultToolName() {
+						endTurn, msg := parseCommunicateArgs(p.ToolCall.Arguments)
+						if msg == "" {
+							continue
+						}
+						switch {
+						case endTurn:
+							fmt.Fprintf(&b, "Agent Message: %s\n", msg)
+						default:
+							fmt.Fprintf(&b, "Agent Status: %s\n", msg)
+						}
+					} else if instructions != "" {
+						fmt.Fprintf(&b, "Tool Call: %s(%s)\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 500))
 					}
 				}
 			}
 		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(fmt.Sprint(p.ToolResult.Content), 200))
+					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, formatToolResult(fmt.Sprint(p.ToolResult.Content), instructions))
 				}
 			}
 		case schema.TurnSteering:
@@ -261,4 +269,23 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 		return -1
 	}
 	return cutoff
+}
+
+// formatToolResult formats a tool result content string for summarization.
+// When instructions are empty, it uses the conservative 200-char truncation.
+// When instructions are non-empty, it preserves up to 4,000 chars using a
+// UTF-8-safe head+tail excerpt so errors and discrepancies near the end of
+// multi-line tool outputs survive into the prompt.
+func formatToolResult(content string, instructions string) string {
+	if instructions == "" {
+		return truncate(content, 200)
+	}
+	const maxChars = 4_000
+	const edge = 2_000
+	if len(content) <= maxChars {
+		return content
+	}
+	head := runetrim.Cut(content, edge)
+	tail := string(runetrim.TrimLeadingPartial([]byte(content[len(content)-edge:])))
+	return head + "\n...[truncated]...\n" + tail
 }
