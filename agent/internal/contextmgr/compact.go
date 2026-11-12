@@ -121,6 +121,19 @@ func (cm *Manager) MaybeCompact(
 	sysPromptChars int,
 	emitFn func(events.EventKind, events.EventData),
 ) {
+	cm.compactWithCheckpoint(ctx, history, sysPromptChars, emitFn, "checkpoint", func(h []schema.Turn, preserve int, meta *CompactionMeta) ([]schema.Turn, []schema.Turn) {
+		return checkpointFold(h, preserve, meta, cm.resultToolName())
+	})
+}
+
+func (cm *Manager) compactWithCheckpoint(
+	ctx context.Context,
+	history *[]schema.Turn,
+	sysPromptChars int,
+	emitFn func(events.EventKind, events.EventData),
+	checkpointLayer string,
+	fold func([]schema.Turn, int, *CompactionMeta) ([]schema.Turn, []schema.Turn),
+) {
 	// One profile snapshot covers the window check and every diagnostic below:
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
@@ -153,14 +166,14 @@ func (cm *Manager) MaybeCompact(
 		cm.resetMeasurement()
 	}
 
-	// Layer 1: Deterministic checkpoint at the configured trigger.
+	// Layer 1: Checkpoint at the configured trigger.
 	// checkpointed is what this pass's checkpoint folded, which a summary
 	// completing the same fold reads the partner's messages from.
 	var checkpointed []schema.Turn
 	if p >= th.checkpoint {
-		cm.applyLayer(ctx, emitFn, history, prof, "checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
+		cm.applyLayer(ctx, emitFn, history, prof, checkpointLayer, schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
 			var folded []schema.Turn
-			h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+			h, folded = fold(h, cm.PreserveRecentTurns, cm.metaFor(ctx))
 			checkpointed = folded
 			return h, nil
 		}, true)

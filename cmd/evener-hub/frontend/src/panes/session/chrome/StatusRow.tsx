@@ -148,11 +148,9 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
   const contextPercent = Math.round(status.pressure * 100);
-  const contextLabel = status.hasCustomThreshold
-    ? model.contextAssumed
-      ? `Context: ${model.contextUsed} of ${status.ceiling} tokens used, ${contextPercent} percent`
-      : `Context: ${model.contextUsed} of ${status.ceiling} tokens used (${model.contextWindow} window), ${contextPercent} percent`
-    : `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${status.ceiling} tokens used, ${contextPercent} percent`;
+  const capacityMark = status.hasCustomThreshold ? "" : assumedWindowMark(model.contextAssumed);
+  const windowSuffix = status.hasCustomThreshold && !model.contextAssumed ? ` (${model.contextWindow} window)` : "";
+  const contextLabel = `Context: ${model.contextUsed} of ${capacityMark}${status.ceiling} tokens used${windowSuffix}, ${contextPercent} percent`;
 
   return (
     <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">

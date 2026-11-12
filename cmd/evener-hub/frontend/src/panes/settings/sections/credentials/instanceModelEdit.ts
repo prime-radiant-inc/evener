@@ -7,7 +7,7 @@ import type {
   InstanceModelEditParams,
   InstanceModelEntry,
 } from "@evener/appwire-client";
-import { EFFORT_TIERS, effortLabel, formatTokenCount, parseTokenCount } from "@evener/appwire-client";
+import { EFFORT_TIERS, effortLabel, formatTokenCount, parseTokenCount, sameJsonValue } from "@evener/appwire-client";
 import type { SegmentedControlOption, SelectOption } from "../../../../widgets";
 import { PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 
@@ -164,18 +164,15 @@ function effectiveHardCeiling(
   mode: "edit" | "create",
   initial?: ModelDraft,
 ): number {
-  const limits: number[] = [];
   const rawCw = draft.contextWindow.trim();
   const draftedCw = rawCw === "" ? null : parseTokenCount(rawCw);
   const initialAliasOf = (initial?.aliasOf ?? detail?.authored?.aliasOf ?? "").trim();
   const aliasChanging = mode === "edit" && draft.aliasOf.trim() !== initialAliasOf;
   if (aliasChanging) {
-    if (draftedCw !== null && draftedCw > 0) {
-      limits.push(draftedCw);
-    }
-    return limits.length > 0 ? Math.min(...limits) : 0;
+    return draftedCw !== null && draftedCw > 0 ? draftedCw : 0;
   }
-  const inheritedCw = detail?.provenance.ContextWindow === "config" ? null : (detail?.effective.contextWindow ?? null);
+  const limits: number[] = [];
+  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow) ?? null;
   const effectiveCw = rawCw !== "" ? draftedCw : inheritedCw;
   if (effectiveCw !== null && effectiveCw > 0) {
     limits.push(effectiveCw);
@@ -249,13 +246,7 @@ export function hasModelValidationErrors(errors: ModelValidationErrors): boolean
 }
 
 function sameStringArrayOrNull(a: readonly string[] | null, b: readonly string[] | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+  return sameJsonValue(a, b);
 }
 
 function sameTokenField(aRaw: string, bRaw: string): boolean {
@@ -309,192 +300,213 @@ export function modelEditParams(
     changed = true;
   }
 
-  if (!sameTokenField(initial.compactionThreshold, draft.compactionThreshold)) {
-    const raw = draft.compactionThreshold.trim();
+  function diffToken(initialRaw: string, draftRaw: string, set: (val: number) => void, clear: () => void): void {
+    if (sameTokenField(initialRaw, draftRaw)) return;
+    const raw = draftRaw.trim();
     if (raw === "") {
       if (mode === "edit") {
-        params.clearCompactionThreshold = true;
+        clear();
         changed = true;
       }
-    } else {
-      const parsed = parseTokenCount(raw);
-      if (parsed !== null) {
-        params.compactionThreshold = parsed;
-        changed = true;
-      }
+      return;
     }
-  }
-
-  if (!sameTokenField(initial.contextWindow, draft.contextWindow)) {
-    const raw = draft.contextWindow.trim();
-    if (raw === "") {
-      if (mode === "edit") {
-        params.clearContextWindow = true;
-        changed = true;
-      }
-    } else {
-      const parsed = parseTokenCount(raw);
-      if (parsed !== null) {
-        params.contextWindow = parsed;
-        changed = true;
-      }
-    }
-  }
-
-  if (!sameTokenField(initial.maxOutputTokens, draft.maxOutputTokens)) {
-    const raw = draft.maxOutputTokens.trim();
-    if (raw === "") {
-      if (mode === "edit") {
-        params.clearMaxOutputTokens = true;
-        changed = true;
-      }
-    } else {
-      const parsed = parseTokenCount(raw);
-      if (parsed !== null) {
-        params.maxOutputTokens = parsed;
-        changed = true;
-      }
-    }
-  }
-
-  if (draft.reasoning !== initial.reasoning) {
-    if (draft.reasoning === null) {
-      if (mode === "edit") {
-        params.clearReasoning = true;
-        changed = true;
-      }
-    } else {
-      params.reasoning = draft.reasoning;
+    const parsed = parseTokenCount(raw);
+    if (parsed !== null) {
+      set(parsed);
       changed = true;
     }
   }
 
-  const draftDefaultEffort = draft.defaultEffort.trim();
-  if (draftDefaultEffort !== initial.defaultEffort.trim()) {
-    if (draftDefaultEffort === "") {
+  function diffBool(
+    initialVal: boolean | null,
+    draftVal: boolean | null,
+    set: (val: boolean) => void,
+    clear: () => void,
+  ): void {
+    if (draftVal === initialVal) return;
+    if (draftVal === null) {
       if (mode === "edit") {
-        params.clearDefaultEffort = true;
+        clear();
         changed = true;
       }
-    } else {
-      params.defaultEffort = draftDefaultEffort;
+      return;
+    }
+    set(draftVal);
+    changed = true;
+  }
+
+  function diffArray(
+    initialVal: readonly string[] | null,
+    draftVal: readonly string[] | null,
+    set: (val: string[]) => void,
+    clear: () => void,
+  ): void {
+    if (sameStringArrayOrNull(initialVal, draftVal)) return;
+    if (draftVal === null) {
+      if (mode === "edit") {
+        clear();
+        changed = true;
+      }
+    } else if (draftVal.length > 0) {
+      set([...draftVal]);
       changed = true;
     }
   }
 
-  if (!sameStringArrayOrNull(initial.effortValues, draft.effortValues)) {
-    if (draft.effortValues === null) {
+  function diffString(initialRaw: string, draftRaw: string, set: (val: string) => void, clear: () => void): void {
+    const trimmed = draftRaw.trim();
+    if (trimmed === initialRaw.trim()) return;
+    if (trimmed === "") {
       if (mode === "edit") {
-        params.clearEffortValues = true;
+        clear();
         changed = true;
       }
-    } else if (draft.effortValues.length > 0) {
-      params.effortValues = [...draft.effortValues];
-      changed = true;
+      return;
     }
+    set(trimmed);
+    changed = true;
   }
 
-  if (!sameStringArrayOrNull(initial.inputModalities, draft.inputModalities)) {
-    if (draft.inputModalities === null) {
-      if (mode === "edit") {
-        params.clearInputModalities = true;
-        changed = true;
-      }
-    } else if (draft.inputModalities.length > 0) {
-      params.inputModalities = [...draft.inputModalities];
-      changed = true;
-    }
-  }
-
-  if (draft.tools !== initial.tools) {
-    if (draft.tools === null) {
-      if (mode === "edit") {
-        params.clearTools = true;
-        changed = true;
-      }
-    } else {
-      params.tools = draft.tools;
-      changed = true;
-    }
-  }
-
-  const draftProtocol = draft.protocol.trim();
-  if (draftProtocol !== initial.protocol.trim()) {
-    if (draftProtocol === "") {
-      if (mode === "edit") {
-        params.clearProtocol = true;
-        changed = true;
-      }
-    } else {
-      params.protocol = draftProtocol;
-      changed = true;
-    }
-  }
-
-  const draftSurface = draft.surface.trim();
-  if (draftSurface !== initial.surface.trim()) {
-    if (draftSurface === "") {
-      if (mode === "edit") {
-        params.clearSurface = true;
-        changed = true;
-      }
-    } else {
-      params.surface = draftSurface;
-      changed = true;
-    }
-  }
-
-  const draftThinkingFormat = draft.thinkingFormat.trim();
-  if (draftThinkingFormat !== initial.thinkingFormat.trim()) {
-    if (draftThinkingFormat === "") {
-      if (mode === "edit") {
-        params.clearThinkingFormat = true;
-        changed = true;
-      }
-    } else {
-      params.thinkingFormat = draftThinkingFormat;
-      changed = true;
-    }
-  }
-
-  const draftThinkingShape = draft.thinkingShape.trim();
-  if (draftThinkingShape !== initial.thinkingShape.trim()) {
-    if (draftThinkingShape === "") {
-      if (mode === "edit") {
-        params.clearThinkingShape = true;
-        changed = true;
-      }
-    } else {
-      params.thinkingShape = draftThinkingShape;
-      changed = true;
-    }
-  }
-
-  const draftWireId = draft.wireId.trim();
-  if (draftWireId !== initial.wireId.trim()) {
-    if (draftWireId === "") {
-      if (mode === "edit") {
-        params.clearWireId = true;
-        changed = true;
-      }
-    } else {
-      params.wireId = draftWireId;
-      changed = true;
-    }
-  }
-
-  const draftAliasOf = draft.aliasOf.trim();
-  if (draftAliasOf !== initial.aliasOf.trim()) {
-    if (draftAliasOf === "") {
-      if (mode === "edit") {
-        params.clearAliasOf = true;
-        changed = true;
-      }
-    } else {
-      params.aliasOf = draftAliasOf;
-      changed = true;
-    }
-  }
+  diffToken(
+    initial.compactionThreshold,
+    draft.compactionThreshold,
+    (v) => {
+      params.compactionThreshold = v;
+    },
+    () => {
+      params.clearCompactionThreshold = true;
+    },
+  );
+  diffToken(
+    initial.contextWindow,
+    draft.contextWindow,
+    (v) => {
+      params.contextWindow = v;
+    },
+    () => {
+      params.clearContextWindow = true;
+    },
+  );
+  diffToken(
+    initial.maxOutputTokens,
+    draft.maxOutputTokens,
+    (v) => {
+      params.maxOutputTokens = v;
+    },
+    () => {
+      params.clearMaxOutputTokens = true;
+    },
+  );
+  diffBool(
+    initial.reasoning,
+    draft.reasoning,
+    (v) => {
+      params.reasoning = v;
+    },
+    () => {
+      params.clearReasoning = true;
+    },
+  );
+  diffString(
+    initial.defaultEffort,
+    draft.defaultEffort,
+    (v) => {
+      params.defaultEffort = v;
+    },
+    () => {
+      params.clearDefaultEffort = true;
+    },
+  );
+  diffArray(
+    initial.effortValues,
+    draft.effortValues,
+    (v) => {
+      params.effortValues = v;
+    },
+    () => {
+      params.clearEffortValues = true;
+    },
+  );
+  diffArray(
+    initial.inputModalities,
+    draft.inputModalities,
+    (v) => {
+      params.inputModalities = v;
+    },
+    () => {
+      params.clearInputModalities = true;
+    },
+  );
+  diffBool(
+    initial.tools,
+    draft.tools,
+    (v) => {
+      params.tools = v;
+    },
+    () => {
+      params.clearTools = true;
+    },
+  );
+  diffString(
+    initial.protocol,
+    draft.protocol,
+    (v) => {
+      params.protocol = v;
+    },
+    () => {
+      params.clearProtocol = true;
+    },
+  );
+  diffString(
+    initial.surface,
+    draft.surface,
+    (v) => {
+      params.surface = v;
+    },
+    () => {
+      params.clearSurface = true;
+    },
+  );
+  diffString(
+    initial.thinkingFormat,
+    draft.thinkingFormat,
+    (v) => {
+      params.thinkingFormat = v;
+    },
+    () => {
+      params.clearThinkingFormat = true;
+    },
+  );
+  diffString(
+    initial.thinkingShape,
+    draft.thinkingShape,
+    (v) => {
+      params.thinkingShape = v;
+    },
+    () => {
+      params.clearThinkingShape = true;
+    },
+  );
+  diffString(
+    initial.wireId,
+    draft.wireId,
+    (v) => {
+      params.wireId = v;
+    },
+    () => {
+      params.clearWireId = true;
+    },
+  );
+  diffString(
+    initial.aliasOf,
+    draft.aliasOf,
+    (v) => {
+      params.aliasOf = v;
+    },
+    () => {
+      params.clearAliasOf = true;
+    },
+  );
 
   if (!changed) return null;
   if (expectedEndpointFingerprint) {
@@ -514,27 +526,36 @@ export function formatModelRowSummary(row: Pick<InstanceModelEntry, "contextWind
   return parts.join(" · ");
 }
 
+function inheritedField<T>(value: T | undefined, prov: string | undefined): T | undefined {
+  return prov === "config" ? undefined : value;
+}
+
 function provenanceSuffix(prov: string | undefined): string {
   return prov && prov !== "config" ? ` (${prov})` : "";
+}
+
+function inheritedOptionLabel(value: string | undefined, prov: string | undefined): string {
+  const inherited = inheritedField(value, prov);
+  return inherited ? `Inherited (${inherited})` : "Inherited";
+}
+
+function vocabOptions(eff: string | undefined, prov: string | undefined, values: readonly string[]): SelectOption[] {
+  return [{ value: "", label: inheritedOptionLabel(eff, prov) }, ...values.map((v) => ({ value: v, label: v }))];
 }
 
 export function compactionThresholdPlaceholder(
   detail?: InstanceModelDetailResponse | null,
   draftContextWindow = "",
 ): string {
-  const inheritedThreshold = detail?.effective.compactionThreshold;
   const thresholdProv = detail?.provenance.CompactionThreshold;
-  if (inheritedThreshold !== undefined && inheritedThreshold > 0 && thresholdProv !== "config") {
+  const inheritedThreshold = inheritedField(detail?.effective.compactionThreshold, thresholdProv);
+  if (inheritedThreshold !== undefined && inheritedThreshold > 0) {
     return `Inherited: ${formatTokenCount(inheritedThreshold)}${provenanceSuffix(thresholdProv)}`;
   }
   const rawDraftCw = draftContextWindow.trim();
   const draftedCw = rawDraftCw === "" ? null : parseTokenCount(rawDraftCw);
-  const cw =
-    draftedCw !== null
-      ? draftedCw
-      : detail?.provenance.ContextWindow === "config"
-        ? undefined
-        : detail?.effective.contextWindow;
+  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow);
+  const cw = draftedCw ?? inheritedCw;
   if (cw !== undefined && cw > 0) {
     const defaultTokens = Math.round(cw * DEFAULT_COMPACT_AT);
     return `Default: ${formatTokenCount(defaultTokens)} (90% of ${formatTokenCount(cw)} window)`;
@@ -543,34 +564,34 @@ export function compactionThresholdPlaceholder(
 }
 
 export function tokenLimitPlaceholder(value: number | undefined, prov: string | undefined): string {
-  if (value !== undefined && value > 0 && prov !== "config") {
-    return `Inherited: ${formatTokenCount(value)}${provenanceSuffix(prov)}`;
+  const inherited = inheritedField(value, prov);
+  if (inherited !== undefined && inherited > 0) {
+    return `Inherited: ${formatTokenCount(inherited)}${provenanceSuffix(prov)}`;
   }
   return "Inherited";
 }
 
 export function wireIdPlaceholder(detail?: InstanceModelDetailResponse | null): string {
-  const wireId = detail?.effective.wireId;
   const prov = detail?.provenance.WireID;
-  if (wireId && prov !== "config") {
+  const wireId = inheritedField(detail?.effective.wireId, prov);
+  if (wireId) {
     return `Inherited: ${wireId}${provenanceSuffix(prov)}`;
   }
   return "Inherited";
 }
 
 export function aliasOfPlaceholder(detail?: InstanceModelDetailResponse | null): string {
-  const alias = detail?.effective.aliasOf;
   const prov = detail?.provenance.AliasOf;
-  if (alias && prov !== "config") {
+  const alias = inheritedField(detail?.effective.aliasOf, prov);
+  if (alias) {
     return `Inherited: ${alias}${provenanceSuffix(prov)}`;
   }
   return "None";
 }
 
 export function reasoningOptions(detail?: InstanceModelDetailResponse | null): SegmentedControlOption[] {
-  const prov = detail?.provenance.Reasoning;
-  const inheritedOn = detail?.effective.reasoning !== false;
-  const leadingLabel = prov === "config" ? "Inherited" : inheritedOn ? "Inherited (On)" : "Inherited (Off)";
+  const stateLabel = detail?.effective.reasoning !== false ? "On" : "Off";
+  const leadingLabel = inheritedOptionLabel(stateLabel, detail?.provenance.Reasoning);
   return [
     { value: "", label: leadingLabel },
     { value: "true", label: "On" },
@@ -579,10 +600,9 @@ export function reasoningOptions(detail?: InstanceModelDetailResponse | null): S
 }
 
 export function defaultEffortOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const eff = detail?.effective.defaultEffort;
-  const prov = detail?.provenance.DefaultEffort;
+  const eff = inheritedField(detail?.effective.defaultEffort, detail?.provenance.DefaultEffort);
   const ladder = detail?.effective.effortValues ?? [...ALL_EFFORT_LEVELS];
-  const leadingLabel = eff && prov !== "config" ? `Inherited (${effortLabel(eff, ladder)})` : "Inherited";
+  const leadingLabel = eff ? `Inherited (${effortLabel(eff, ladder)})` : "Inherited";
   return [
     { value: "", label: leadingLabel },
     ...ALL_EFFORT_LEVELS.map((level) => ({ value: level, label: effortLabel(level, ladder) })),
@@ -590,10 +610,8 @@ export function defaultEffortOptions(detail?: InstanceModelDetailResponse | null
 }
 
 export function toolCallingOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const prov = detail?.provenance.Tools;
-  const inheritedSupported = detail?.effective.tools !== false;
-  const leadingLabel =
-    prov === "config" ? "Inherited" : inheritedSupported ? "Inherited (Supported)" : "Inherited (Unsupported)";
+  const stateLabel = detail?.effective.tools !== false ? "Supported" : "Unsupported";
+  const leadingLabel = inheritedOptionLabel(stateLabel, detail?.provenance.Tools);
   return [
     { value: "", label: leadingLabel },
     { value: "true", label: "Supported" },
@@ -602,31 +620,27 @@ export function toolCallingOptions(detail?: InstanceModelDetailResponse | null):
 }
 
 export function modelProtocolOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const eff = detail?.effective.protocol;
-  const prov = detail?.provenance.Protocol;
-  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
+  const leadingLabel = inheritedOptionLabel(detail?.effective.protocol, detail?.provenance.Protocol);
   return [{ value: "", label: leadingLabel }, ...PROTOCOL_OPTIONS.slice(1)];
 }
 
 export function modelSurfaceOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const eff = detail?.effective.surface;
-  const prov = detail?.provenance.Surface;
-  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
+  const leadingLabel = inheritedOptionLabel(detail?.effective.surface, detail?.provenance.Surface);
   return [{ value: "", label: leadingLabel }, ...SURFACE_OPTIONS.slice(1)];
 }
 
 export function thinkingFormatOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const eff = detail?.effective.thinkingFormat;
-  const prov = detail?.provenance.ThinkingFormat;
-  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
-  const formats = detail?.thinkingFormats ?? DEFAULT_THINKING_FORMATS;
-  return [{ value: "", label: leadingLabel }, ...formats.map((f) => ({ value: f, label: f }))];
+  return vocabOptions(
+    detail?.effective.thinkingFormat,
+    detail?.provenance.ThinkingFormat,
+    detail?.thinkingFormats ?? DEFAULT_THINKING_FORMATS,
+  );
 }
 
 export function thinkingShapeOptions(detail?: InstanceModelDetailResponse | null): SelectOption[] {
-  const eff = detail?.effective.thinkingShape;
-  const prov = detail?.provenance.ThinkingShape;
-  const leadingLabel = eff && prov !== "config" ? `Inherited (${eff})` : "Inherited";
-  const shapes = detail?.thinkingShapes ?? DEFAULT_THINKING_SHAPES;
-  return [{ value: "", label: leadingLabel }, ...shapes.map((s) => ({ value: s, label: s }))];
+  return vocabOptions(
+    detail?.effective.thinkingShape,
+    detail?.provenance.ThinkingShape,
+    detail?.thinkingShapes ?? DEFAULT_THINKING_SHAPES,
+  );
 }

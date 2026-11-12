@@ -138,11 +138,10 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
   const remaining = status.remaining;
   const percent = Math.round(status.pressure * 100);
   const capacityMark = status.hasCustomThreshold ? "" : assumedWindowMark(model.contextAssumed);
-  const windowSuffix = status.hasCustomThreshold
-    ? model.contextAssumed
-      ? " (window unknown)"
-      : ` (${formatTokenCount(model.contextWindow)} window)`
-    : "";
+  const customThresholdWindowNote = model.contextAssumed
+    ? " (window unknown)"
+    : ` (${formatTokenCount(model.contextWindow)} window)`;
+  const windowSuffix = status.hasCustomThreshold ? customThresholdWindowNote : "";
 
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const tokens = sessionTokens(model);

@@ -46,6 +46,40 @@ func ContextWindowSource(provenance string) string {
 	return ""
 }
 
+// ProvenanceSource maps a Resolved.Provenance value ("<layer>", "<layer>/<scope>",
+// "alias", or "derived") to the normalized per-model provenance source set:
+// "catalog", "overlay", "live", "provider", "glob", "config", "alias", or
+// "derived". Both the embedded snapshot and refreshed models.dev cache map to
+// "catalog". Within the config layer, provider-level caps map to "provider",
+// glob rows map to "glob", and exact model rows map to "config". Any other
+// non-empty tag comes back verbatim.
+func ProvenanceSource(provenance string) string {
+	if provenance == "" {
+		return ""
+	}
+	layer, scope, hasScope := strings.Cut(provenance, "/")
+	switch layer {
+	case LayerSnapshot, LayerCache:
+		return "catalog"
+	case LayerOverlay:
+		return LayerOverlay
+	case LayerLive:
+		return LayerLive
+	case LayerConfig:
+		switch {
+		case !hasScope || scope == "row":
+			return LayerConfig
+		case scope == "provider":
+			return "provider"
+		case scope == "glob" || strings.HasPrefix(scope, "glob:"):
+			return "glob"
+		}
+	case provAlias, provDerived:
+		return layer
+	}
+	return provenance
+}
+
 // Host rules (spec §9.1): the only host-aware code in the system.
 const (
 	HostRuleVertexLocation = "vertex-location"
@@ -542,12 +576,7 @@ func ThinkingFormats() []string {
 // ThinkingShapes returns every reasoning shape in the load-time vocabulary,
 // sorted.
 func ThinkingShapes() []string {
-	out := make([]string, 0, len(thinkingShapes))
-	for shape := range thinkingShapes {
-		out = append(out, shape)
-	}
-	sort.Strings(out)
-	return out
+	return sortedKeys(thinkingShapes)
 }
 
 // ValidMaxTokensField reports whether field is an output-limit spelling a

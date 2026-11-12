@@ -1799,31 +1799,18 @@ func (r *Registry) IsAuthoredOnlyModel(instance, model string) bool {
 
 func nonConfigVisibleIDs(rec *record, live map[string]Model) map[string]bool {
 	seen := map[string]bool{}
-	if len(live) == 0 {
-		for _, layer := range rec.layers {
-			if layer.tag == LayerConfig {
-				continue
-			}
-			for id := range layer.rows {
-				if !isGlob(id) {
-					seen[id] = true
-				}
+	for _, layer := range rec.layers {
+		if layer.tag == LayerConfig || (len(live) > 0 && layer.tag != LayerOverlay) {
+			continue
+		}
+		for id := range layer.rows {
+			if !isGlob(id) {
+				seen[id] = true
 			}
 		}
-	} else {
-		for _, layer := range rec.layers {
-			if layer.tag != LayerOverlay {
-				continue
-			}
-			for id := range layer.rows {
-				if !isGlob(id) {
-					seen[id] = true
-				}
-			}
-		}
-		for id := range live {
-			seen[id] = true
-		}
+	}
+	for id := range live {
+		seen[id] = true
 	}
 	return seen
 }

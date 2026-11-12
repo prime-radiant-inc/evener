@@ -8,7 +8,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -51,66 +50,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if s.cm == nil {
 		return nil
 	}
-	// One profile snapshot covers the window check and every diagnostic below:
-	// a model switch landing mid-compaction would otherwise bill one layer's
-	// numbers by another model's thinking rule and image family.
-	prof, _, _ := s.cm.profileSnapshot()
-	cw, _ := effectiveWindowOf(prof)
-	if cw <= 0 {
-		return nil
-	}
-	discloseAssumedWindow(s.cm, prof, emitFn)
-
-	// Each phase reads pressure and its before/after diagnostics from ONE
-	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
-	// decide a layer by one model and describe it by another.
-	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
-
-	p, prof := estimatePressure()
-	th := s.cm.thresholdsFor(prof)
-	// Window-independent tripwire (issue #4564): force at least checkpoint
-	// pressure when it fires; see unknownWindowTripwireFires.
-	if s.cm.unknownWindowTripwireFires(prof) && p < th.checkpoint {
-		p = th.checkpoint
-	}
-	compacted := false
-
-	// Invalidate API token measurement before running any layer so that
-	// between-layer pressure() calls use char/4 (reflects in-place mutations).
-	if p >= th.checkpoint {
-		s.cm.resetMeasurement()
-	}
-
-	// Layer 1: Session-log checkpoint. checkpointed is what this
-	// pass's checkpoint folded, which a summary completing the same fold reads
-	// the partner's messages from.
-	var checkpointed []schema.Turn
-	if p >= th.checkpoint {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
-			var folded []schema.Turn
-			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-			checkpointed = folded
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-		th = s.cm.thresholdsFor(prof)
-	}
-
-	// Layer 2: LLM summarization fallback.
-	if p >= th.summarize && s.cm.client != nil {
-		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
-			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
-		}, true) {
-			compacted = true
-		}
-	}
-
-	// Reset token measurement after compaction since history content changed.
-	if compacted {
-		s.cm.resetMeasurement()
-	}
-
+	s.cm.compactWithCheckpoint(ctx, history, sysPromptChars, emitFn, "session_log_checkpoint", s.sessionLogCheckpointWithMeta)
 	return nil
 }
 

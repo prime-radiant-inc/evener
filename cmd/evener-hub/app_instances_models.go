@@ -84,7 +84,7 @@ func (c *hubInstancesController) modelDetailLocked(r *registry.Registry, name, m
 		Model:                  model,
 		Disabled:               summary.Disabled,
 		DisabledLockstepTarget: disabledLockstepTarget,
-		AuthoredOnly:           r.IsAuthoredOnlyModel(name, model),
+		AuthoredOnly:           summary.AuthoredOnly,
 		Effective:              instanceModelEffectiveFrom(res),
 		Provenance:             normalizeModelProvenance(res.Provenance),
 		Authored:               authored,
@@ -96,15 +96,15 @@ func (c *hubInstancesController) modelDetailLocked(r *registry.Registry, name, m
 
 func instanceModelEffectiveFrom(res registry.Resolved) appwire.InstanceModelEffective {
 	return appwire.InstanceModelEffective{
-		ContextWindow:       cloneIntPtr(res.Caps.ContextWindow),
-		MaxInputTokens:      cloneIntPtr(res.Caps.MaxInputTokens),
-		CompactionThreshold: cloneIntPtr(res.Caps.CompactionThreshold),
-		MaxOutputTokens:     cloneIntPtr(res.Caps.MaxOutputTokens),
-		Reasoning:           cloneBoolPtr(res.Caps.Reasoning),
+		ContextWindow:       clonePtr(res.Caps.ContextWindow),
+		MaxInputTokens:      clonePtr(res.Caps.MaxInputTokens),
+		CompactionThreshold: clonePtr(res.Caps.CompactionThreshold),
+		MaxOutputTokens:     clonePtr(res.Caps.MaxOutputTokens),
+		Reasoning:           clonePtr(res.Caps.Reasoning),
 		DefaultEffort:       registry.StringValue(res.Caps.DefaultEffort),
 		EffortValues:        slices.Clone(res.Caps.EffortValues),
 		InputModalities:     slices.Clone(res.Caps.InputModalities),
-		Tools:               cloneBoolPtr(res.Caps.Tools),
+		Tools:               clonePtr(res.Caps.Tools),
 		Protocol:            res.Protocol,
 		Surface:             res.Surface,
 		ThinkingFormat:      registry.StringValue(res.Caps.ThinkingFormat),
@@ -116,14 +116,14 @@ func instanceModelEffectiveFrom(res registry.Resolved) appwire.InstanceModelEffe
 
 func instanceModelAuthoredFrom(m registry.Model) appwire.InstanceModelAuthored {
 	return appwire.InstanceModelAuthored{
-		CompactionThreshold: cloneIntPtr(m.Caps.CompactionThreshold),
-		ContextWindow:       cloneIntPtr(m.Caps.ContextWindow),
-		MaxOutputTokens:     cloneIntPtr(m.Caps.MaxOutputTokens),
-		Reasoning:           cloneBoolPtr(m.Caps.Reasoning),
+		CompactionThreshold: clonePtr(m.Caps.CompactionThreshold),
+		ContextWindow:       clonePtr(m.Caps.ContextWindow),
+		MaxOutputTokens:     clonePtr(m.Caps.MaxOutputTokens),
+		Reasoning:           clonePtr(m.Caps.Reasoning),
 		DefaultEffort:       registry.StringValue(m.Caps.DefaultEffort),
 		EffortValues:        slices.Clone(m.Caps.EffortValues),
 		InputModalities:     slices.Clone(m.Caps.InputModalities),
-		Tools:               cloneBoolPtr(m.Caps.Tools),
+		Tools:               clonePtr(m.Caps.Tools),
 		Protocol:            m.Protocol,
 		Surface:             m.Surface,
 		ThinkingFormat:      registry.StringValue(m.Caps.ThinkingFormat),
@@ -144,29 +144,7 @@ func normalizeModelProvenance(raw map[string]string) map[string]string {
 }
 
 func normalizeModelProvenanceValue(v string) string {
-	switch {
-	case v == "":
-		return ""
-	case v == registry.LayerSnapshot || strings.HasPrefix(v, registry.LayerSnapshot+"/") ||
-		v == registry.LayerCache || strings.HasPrefix(v, registry.LayerCache+"/"):
-		return "catalog"
-	case v == registry.LayerOverlay || strings.HasPrefix(v, registry.LayerOverlay+"/"):
-		return "overlay"
-	case v == registry.LayerLive || strings.HasPrefix(v, registry.LayerLive+"/"):
-		return "live"
-	case v == registry.LayerConfig+"/provider":
-		return "provider"
-	case strings.HasPrefix(v, registry.LayerConfig+"/glob:") || v == registry.LayerConfig+"/glob":
-		return "glob"
-	case v == registry.LayerConfig+"/row" || v == registry.LayerConfig:
-		return "config"
-	case v == "alias":
-		return "alias"
-	case v == "derived":
-		return "derived"
-	default:
-		return v
-	}
+	return registry.ProvenanceSource(v)
 }
 
 // EditModel creates, edits, resets, or removes per-model capability and
@@ -318,7 +296,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		if err != nil {
 			return err
 		}
-			if resAfter.Provenance["CompactionThreshold"] == "derived" && row.Caps.CompactionThreshold != nil {
+		if row.Caps.CompactionThreshold != nil && resAfter.Caps.CompactionThreshold == nil {
 			return fmt.Errorf("compaction_threshold exceeds model input ceiling (%d)", resAfter.Caps.InputCeiling())
 		}
 			detail, err := c.modelDetailLocked(reloaded, name, model)
@@ -371,37 +349,49 @@ func (c *hubInstancesController) commitModelMutation(
 	return nil
 }
 
+func checkModelEditFieldPairs(params appwire.InstanceModelEditParams) (hasAny bool, err error) {
+	type pair struct {
+		field string
+		set   bool
+		clear bool
+	}
+	pairs := []pair{
+		{"compactionThreshold", params.CompactionThreshold != nil, params.ClearCompactionThreshold},
+		{"contextWindow", params.ContextWindow != nil, params.ClearContextWindow},
+		{"maxOutputTokens", params.MaxOutputTokens != nil, params.ClearMaxOutputTokens},
+		{"reasoning", params.Reasoning != nil, params.ClearReasoning},
+		{"defaultEffort", strings.TrimSpace(params.DefaultEffort) != "", params.ClearDefaultEffort},
+		{"effortValues", params.EffortValues != nil, params.ClearEffortValues},
+		{"inputModalities", params.InputModalities != nil, params.ClearInputModalities},
+		{"tools", params.Tools != nil, params.ClearTools},
+		{"protocol", strings.TrimSpace(params.Protocol) != "", params.ClearProtocol},
+		{"surface", strings.TrimSpace(params.Surface) != "", params.ClearSurface},
+		{"thinkingFormat", strings.TrimSpace(params.ThinkingFormat) != "", params.ClearThinkingFormat},
+		{"thinkingShape", strings.TrimSpace(params.ThinkingShape) != "", params.ClearThinkingShape},
+		{"wireId", strings.TrimSpace(params.WireID) != "", params.ClearWireID},
+		{"aliasOf", strings.TrimSpace(params.AliasOf) != "", params.ClearAliasOf},
+	}
+	for _, p := range pairs {
+		if p.set || p.clear {
+			hasAny = true
+		}
+		if p.set && p.clear {
+			return hasAny, appwire.InvalidParams(p.field + " and its clear flag are never both meaningful in one request")
+		}
+	}
+	return hasAny, nil
+}
+
 func refuseModelEditSetClearPair(params appwire.InstanceModelEditParams) error {
-	if params.RemoveCustom && (params.Create || params.ResetAll || hasAnyModelFieldEdit(params)) {
+	hasAny, pairErr := checkModelEditFieldPairs(params)
+	if params.RemoveCustom && (params.Create || params.ResetAll || hasAny) {
 		return appwire.InvalidParams("removeCustom cannot be combined with create, resetAll, or field edits")
 	}
 	if params.Create && params.ResetAll {
 		return appwire.InvalidParams("create and resetAll are mutually exclusive")
 	}
-	type pair struct {
-		field string
-		both  bool
-	}
-	pairs := []pair{
-		{"compactionThreshold", params.CompactionThreshold != nil && params.ClearCompactionThreshold},
-		{"contextWindow", params.ContextWindow != nil && params.ClearContextWindow},
-		{"maxOutputTokens", params.MaxOutputTokens != nil && params.ClearMaxOutputTokens},
-		{"reasoning", params.Reasoning != nil && params.ClearReasoning},
-		{"defaultEffort", strings.TrimSpace(params.DefaultEffort) != "" && params.ClearDefaultEffort},
-		{"effortValues", params.EffortValues != nil && params.ClearEffortValues},
-		{"inputModalities", params.InputModalities != nil && params.ClearInputModalities},
-		{"tools", params.Tools != nil && params.ClearTools},
-		{"protocol", strings.TrimSpace(params.Protocol) != "" && params.ClearProtocol},
-		{"surface", strings.TrimSpace(params.Surface) != "" && params.ClearSurface},
-		{"thinkingFormat", strings.TrimSpace(params.ThinkingFormat) != "" && params.ClearThinkingFormat},
-		{"thinkingShape", strings.TrimSpace(params.ThinkingShape) != "" && params.ClearThinkingShape},
-		{"wireId", strings.TrimSpace(params.WireID) != "" && params.ClearWireID},
-		{"aliasOf", strings.TrimSpace(params.AliasOf) != "" && params.ClearAliasOf},
-	}
-	for _, p := range pairs {
-		if p.both {
-			return appwire.InvalidParams(p.field + " and its clear flag are never both meaningful in one request")
-		}
+	if pairErr != nil {
+		return pairErr
 	}
 	if !params.ClearEffortValues && params.EffortValues != nil && len(params.EffortValues) == 0 {
 		return appwire.InvalidParams("effortValues cannot be empty")
@@ -410,23 +400,6 @@ func refuseModelEditSetClearPair(params appwire.InstanceModelEditParams) error {
 		return appwire.InvalidParams("inputModalities cannot be empty")
 	}
 	return nil
-}
-
-func hasAnyModelFieldEdit(params appwire.InstanceModelEditParams) bool {
-	return params.CompactionThreshold != nil || params.ClearCompactionThreshold ||
-		params.ContextWindow != nil || params.ClearContextWindow ||
-		params.MaxOutputTokens != nil || params.ClearMaxOutputTokens ||
-		params.Reasoning != nil || params.ClearReasoning ||
-		strings.TrimSpace(params.DefaultEffort) != "" || params.ClearDefaultEffort ||
-		params.EffortValues != nil || params.ClearEffortValues ||
-		params.InputModalities != nil || params.ClearInputModalities ||
-		params.Tools != nil || params.ClearTools ||
-		strings.TrimSpace(params.Protocol) != "" || params.ClearProtocol ||
-		strings.TrimSpace(params.Surface) != "" || params.ClearSurface ||
-		strings.TrimSpace(params.ThinkingFormat) != "" || params.ClearThinkingFormat ||
-		strings.TrimSpace(params.ThinkingShape) != "" || params.ClearThinkingShape ||
-		strings.TrimSpace(params.WireID) != "" || params.ClearWireID ||
-		strings.TrimSpace(params.AliasOf) != "" || params.ClearAliasOf
 }
 
 func applyModelEditFields(row *registry.Model, params appwire.InstanceModelEditParams) {
@@ -474,20 +447,12 @@ func applyModelEditFields(row *registry.Model, params appwire.InstanceModelEditP
 	if params.ClearEffortValues {
 		row.Caps.EffortValues = nil
 	} else if len(params.EffortValues) > 0 {
-		vals := make([]string, 0, len(params.EffortValues))
-		for _, v := range params.EffortValues {
-			vals = append(vals, strings.TrimSpace(v))
-		}
-		row.Caps.EffortValues = vals
+		row.Caps.EffortValues = trimStrings(params.EffortValues)
 	}
 	if params.ClearInputModalities {
 		row.Caps.InputModalities = nil
 	} else if len(params.InputModalities) > 0 {
-		mods := make([]string, 0, len(params.InputModalities))
-		for _, m := range params.InputModalities {
-			mods = append(mods, strings.TrimSpace(m))
-		}
-		row.Caps.InputModalities = mods
+		row.Caps.InputModalities = trimStrings(params.InputModalities)
 	}
 	if params.ClearTools {
 		row.Caps.Tools = nil
@@ -552,16 +517,17 @@ func modelRowIsBare(row registry.Model) bool {
 	return reflect.DeepEqual(row, registry.Model{ID: row.ID})
 }
 
-func cloneIntPtr(p *int) *int {
+func clonePtr[T any](p *T) *T {
 	if p == nil {
 		return nil
 	}
 	return new(*p)
 }
 
-func cloneBoolPtr(p *bool) *bool {
-	if p == nil {
-		return nil
+func trimStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, strings.TrimSpace(s))
 	}
-	return new(*p)
+	return out
 }

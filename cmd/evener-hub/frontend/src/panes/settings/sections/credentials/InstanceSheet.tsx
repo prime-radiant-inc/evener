@@ -420,6 +420,23 @@ export function InstanceSheet({
     setActiveModelView(null);
   }
 
+  async function reanchorAfterEndpointConflict(expected: InstanceEntry): Promise<void> {
+    const listed = await confirmListingState(() => true);
+    if (!listed || shownName.current !== expected.name) return;
+    const refreshed = credentialsStore.getState().instances.find((i) => i.name === expected.name);
+    // Re-anchor only when the refreshed row is the same instance re-pointed
+    // - an identity match that ignores the endpoint fingerprint. Then the
+    // draft is left untouched and the next Save carries the user's edits and
+    // the destination now on screen. A replacement (a different
+    // provider/auth/base) or an absent row keeps handleSave's identity guard
+    // as the authority: it reseeds and refuses, because these edits must not
+    // land on a stranger.
+    if (refreshed === undefined) return;
+    if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(expected)) return;
+    seededIdentity.current = draftIdentity(refreshed);
+    seededFingerprint.current = refreshed.endpointFingerprint;
+  }
+
   async function handleConfirmRemoveCustomModel(): Promise<void> {
     if (!pendingRemoveModel) return;
     setRemoveModelBusy(true);
@@ -453,16 +470,12 @@ export function InstanceSheet({
         return;
       }
       if (isEndpointConflict(err)) {
-        const targetName = pendingRemoveModel.name;
+        const targetInstance = instance?.name === pendingRemoveModel.name ? instance : undefined;
         setPendingRemoveModel(null);
         toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
-        const listed = await confirmListingState(() => true);
-        if (!listed || shownName.current !== targetName || instance === undefined) return;
-        const refreshed = credentialsStore.getState().instances.find((i) => i.name === targetName);
-        if (refreshed === undefined) return;
-        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
-        seededIdentity.current = draftIdentity(refreshed);
-        seededFingerprint.current = refreshed.endpointFingerprint;
+        if (targetInstance !== undefined) {
+          await reanchorAfterEndpointConflict(targetInstance);
+        }
         return;
       }
       toast.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
@@ -802,20 +815,7 @@ export function InstanceSheet({
         // rather than left in flight: the re-anchor below has to see a listing
         // the store actually applied, never the stale row the refusal
         // described. A read that never applied leaves today's refusal in place.
-        const listed = await confirmListingState(() => true);
-        if (!listed || shownName.current !== instance.name) return;
-        const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
-        // Re-anchor only when the refreshed row is the same instance re-pointed
-        // - an identity match that ignores the endpoint fingerprint. Then the
-        // draft is left untouched and the next Save carries the user's edits and
-        // the destination now on screen. A replacement (a different
-        // provider/auth/base) or an absent row keeps handleSave's identity guard
-        // as the authority: it reseeds and refuses, because these edits must not
-        // land on a stranger.
-        if (refreshed === undefined) return;
-        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
-        seededIdentity.current = draftIdentity(refreshed);
-        seededFingerprint.current = refreshed.endpointFingerprint;
+        await reanchorAfterEndpointConflict(instance);
         return;
       }
       // A rename that stood but could not carry the instance's OAuth record
@@ -916,6 +916,7 @@ export function InstanceSheet({
         : "keeps-old-name"
       : undefined;
   const headingState = instance === undefined ? undefined : credentialState(instance, undefined);
+  const inModelView = activeModelView !== null;
 
   return (
     <>
@@ -926,25 +927,20 @@ export function InstanceSheet({
         side={isMobile ? "bottom" : "right"}
         size="wide"
         footer={
-          instance !== undefined &&
-          (activeModelView !== null ? (
+          instance !== undefined && (
             <Button
-              onClick={() => void modelSaveRef.current?.()}
-              aria-disabled={modelEditorState.busy}
-              disabled={!modelEditorState.canSave || writesRefused}
+              onClick={() => void (inModelView ? modelSaveRef.current?.() : handleSave())}
+              aria-disabled={inModelView ? modelEditorState.busy : busy}
+              disabled={!(inModelView ? modelEditorState.canSave : dirty) || writesRefused}
             >
               Save
             </Button>
-          ) : (
-            <Button onClick={() => void handleSave()} aria-disabled={busy} disabled={!dirty || writesRefused}>
-              Save
-            </Button>
-          ))
+          )
         }
       >
         {instance !== undefined && (
           <>
-            <div ref={overviewRef} hidden={activeModelView !== null}>
+            <div ref={overviewRef} hidden={inModelView}>
               <div className={CLASS.headingRow} data-credential-state={headingState}>
                 {headingState !== undefined && <StatusDot state={CREDENTIAL_DOT[headingState]} />}
                 {instance.isDefault && <Chip kind="default">★ default</Chip>}
