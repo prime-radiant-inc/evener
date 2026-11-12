@@ -1445,15 +1445,22 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if s.isRootDelegateAttentionReceiver() {
 		return s.finishRootDelegateAttentionTurn(ids, turnErr)
 	}
-	var covered []string
-	if turnErr == nil {
-		covered = s.unionCoveredAttention(ids)
+	if turnErr != nil {
+		s.restoreFoldedCoveredAttention()
+		return nil
 	}
+	covered := s.unionCoveredAttention(ids)
 	if len(covered) == 0 {
+		s.clearFoldedCoveredAttention()
 		return nil
 	}
 	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
-	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
+	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
+		s.restoreFoldedCoveredAttention()
+		return err
+	}
+	s.clearFoldedCoveredAttention()
+	return nil
 }
 
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
@@ -1477,6 +1484,11 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		ids = s.unionCoveredAttention(ids)
 	}
 	if len(ids) == 0 {
+		if turnErr != nil {
+			s.restoreFoldedCoveredAttention()
+		} else {
+			s.clearFoldedCoveredAttention()
+		}
 		return nil
 	}
 	var resolutionErr error
@@ -1484,6 +1496,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
 		if err == nil {
 			s.attentionMu.Lock()
+			s.attentionFoldedCovered = nil
 			s.rootAttentionPaused = false
 			for _, id := range ids {
 				delete(s.rootAttentionWakeIDs, id)
@@ -1497,6 +1510,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		}
 		resolutionErr = err
 	}
+	s.restoreFoldedCoveredAttention()
 	// A PERMANENT provider failure — a 401 from a dead credential, a
 	// request the provider will refuse every time — cannot be retried into
 	// success, and the paced retry never gives up on its own: re-arming it
@@ -1693,7 +1707,80 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionFoldedCovered = nil
 	s.attentionMu.Unlock()
+}
+
+func (s *Session) clearFoldedCoveredAttention() {
+	s.attentionMu.Lock()
+	s.attentionFoldedCovered = nil
+	s.attentionMu.Unlock()
+}
+
+// splitCoveredAttentionLocked separates attention turns already presented in a
+// settled round of this turn (attentionCoveredIDs) from turns still awaiting
+// presentation. A mid-turn compaction drops the covered turns instead of
+// re-injecting them after the summary, while keeping them on hand to restore if
+// the turn fails before resolving them durably. Caller holds attentionMu.
+func (s *Session) splitCoveredAttentionLocked(turns []schema.Turn) (uncovered, covered []schema.Turn) {
+	if len(s.attentionCoveredIDs) == 0 {
+		return turns, nil
+	}
+	for _, turn := range turns {
+		if _, ok := s.attentionCoveredIDs[turn.AttentionID]; ok {
+			covered = append(covered, turn)
+			continue
+		}
+		uncovered = append(uncovered, turn)
+	}
+	return uncovered, covered
+}
+
+// recordFoldedCoveredAttentionLocked records covered attention turns that a
+// winning fold removed from published history. Caller holds attentionMu.
+func (s *Session) recordFoldedCoveredAttentionLocked(published, covered []schema.Turn) {
+	for _, turn := range covered {
+		if slices.ContainsFunc(published, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
+			continue
+		}
+		if slices.ContainsFunc(s.attentionFoldedCovered, func(existing schema.Turn) bool {
+			return existing.AttentionID == turn.AttentionID
+		}) {
+			continue
+		}
+		s.attentionFoldedCovered = append(s.attentionFoldedCovered, turn)
+	}
+}
+
+// restoreFoldedCoveredAttention puts back into resident history any pending
+// attention turns that a mid-turn compaction suppressed as covered during a
+// turn that ultimately failed to consume them durably. Fast-paths without a
+// transcript read when no mid-turn fold suppressed a covered turn.
+func (s *Session) restoreFoldedCoveredAttention() {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if len(s.attentionFoldedCovered) == 0 {
+		return
+	}
+	folded := s.attentionFoldedCovered
+	s.attentionFoldedCovered = nil
+	pendingTurns, err := s.pendingAttentionTurnsLocked()
+	if err != nil {
+		for i, turn := range folded {
+			_ = s.retainDelegateAttentionTurn(turn, folded[i+1:]...)
+		}
+		return
+	}
+	foldedIDs := make(map[string]struct{}, len(folded))
+	for _, turn := range folded {
+		foldedIDs[turn.AttentionID] = struct{}{}
+	}
+	for i, durable := range pendingTurns {
+		if _, wasFolded := foldedIDs[durable.AttentionID]; !wasFolded {
+			continue
+		}
+		_ = s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...)
+	}
 }
 
 // unionCoveredAttention adds to the selected IDs the covered

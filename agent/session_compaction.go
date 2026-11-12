@@ -256,6 +256,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// presents it, so a fold in that one request can still drop an older
 	// trigger (#4300).
 	var keptAttention []schema.Turn
+	var suppressedCovered []schema.Turn
 	s.mu.Lock()
 	heldAttention := attentionTurns(s.history)
 	s.mu.Unlock()
@@ -264,6 +265,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		if keptAttention, err = s.pendingAttentionTurnsLocked(); err != nil {
 			keptAttention = heldAttention
 		}
+		keptAttention, suppressedCovered = s.splitCoveredAttentionLocked(keptAttention)
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
@@ -283,6 +285,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
 	published, restoredAt := withAttentionTurns(published, keptAttention)
+	s.recordFoldedCoveredAttentionLocked(published, suppressedCovered)
 	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
@@ -1002,6 +1005,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
 		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		if len(pendingCompactionTurns) > 0 && !superseded {
+			s.steerCompactionTaskReminderForFold(commit.publishedRevision)
+		}
 		if artifactProduced && !superseded {
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}

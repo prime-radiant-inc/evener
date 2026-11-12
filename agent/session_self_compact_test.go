@@ -1109,3 +1109,36 @@ func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
 func muteNoteElicitation(s *Session) {
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
 }
+
+func TestForceCompact_EnqueuesSingleTaskListReminder(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	muteNoteElicitation(sess)
+	rawArgs := json.RawMessage(`{"add":[{"type":"implement","description":"Fix compaction dedupe","prompt":"Ensure single task reminder"}]}`)
+	if res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "t1", Name: "task_list", Arguments: rawArgs}); res.IsError {
+		t.Fatalf("seed task_list: %s", res.Output)
+	}
+	// Clear any pre-compaction steering so only the compaction flush's reminders remain.
+	sess.mu.Lock()
+	sess.steeringQueue = nil
+	sess.mu.Unlock()
+
+	seedNumberedSessionHistory(t, sess, 12)
+	if err := sess.requestForceCompact("summarize earlier rounds"); err != nil {
+		t.Fatalf("requestForceCompact: %v", err)
+	}
+	sess.applyPendingForceCompact(context.Background())
+
+	sess.mu.Lock()
+	queued := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	var taskReminders int
+	for _, msg := range queued {
+		if msg.Kind == events.SteeringKindTaskList {
+			taskReminders++
+		}
+	}
+	if taskReminders != 1 {
+		t.Fatalf("ForceCompact enqueued %d SteeringKindTaskList reminders across checkpoint+summary layers, want 1", taskReminders)
+	}
+}
