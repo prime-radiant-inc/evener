@@ -423,7 +423,7 @@ export function InstanceSheet({
     if (!pendingRemoveModel) return;
     setRemoveModelBusy(true);
     try {
-      await credentialsStore.getState().editModel({
+      const result = await credentialsStore.getState().editModel({
         name: pendingRemoveModel.name,
         model: pendingRemoveModel.model,
         removeCustom: true,
@@ -431,8 +431,12 @@ export function InstanceSheet({
           ? { expectedEndpointFingerprint: pendingRemoveModel.expectedEndpointFingerprint }
           : {}),
       });
-      const refreshed = credentialsStore.getState().instances.find((i) => i.name === pendingRemoveModel.name);
-      if (refreshed !== undefined) reanchorFromModelSave(refreshed);
+      if (result.applied) {
+        const refreshed = credentialsStore.getState().instances.find((i) => i.name === pendingRemoveModel.name);
+        if (refreshed !== undefined) reanchorFromModelSave(refreshed);
+      } else {
+        seededIdentity.current = null;
+      }
       const removedModel = pendingRemoveModel.model;
       setPendingRemoveModel(null);
       setActiveModelView(null);

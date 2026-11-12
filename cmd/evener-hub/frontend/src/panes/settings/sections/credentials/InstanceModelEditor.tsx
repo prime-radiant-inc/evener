@@ -72,6 +72,8 @@ const ENDPOINT_CHANGED_MODEL_ERROR =
   "This instance changed to a different endpoint since the model editor was opened. Review its destination and save again.";
 const RENAME_PENDING_MODEL_ERROR =
   "This rename is still being confirmed; wait for the renamed instance to appear before saving.";
+const STALE_MODEL_SAVE_WARNING =
+  "Saved, but the list changed underneath; your edits were kept — refresh to see the current state";
 
 type ModelFormErrorReason =
   | "load-failed"
@@ -122,7 +124,7 @@ export function InstanceModelEditor({
   const backButtonRef = useRef<HTMLButtonElement>(null);
   const mountedMode = useRef(mode);
   const shownInstanceName = useRef(instance.name);
-  const seededIdentity = useRef(draftIdentity(instance));
+  const seededIdentity = useRef<string | null>(draftIdentity(instance));
   const seededFingerprint = useRef<string | undefined>(instance.endpointFingerprint);
   useFocusRehome(subviewRootRef);
 
@@ -237,6 +239,13 @@ export function InstanceModelEditor({
     setBusy(true);
     try {
       const result = await credentialsStore.getState().editModel(params);
+      if (!result.applied) {
+        if (shownInstanceName.current === instance.name) {
+          seededIdentity.current = null;
+        }
+        toast.push("warning", STALE_MODEL_SAVE_WARNING);
+        return;
+      }
       toast.push("success", `Saved ${params.model}`);
       if (shownInstanceName.current !== instance.name) return;
       const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
@@ -305,6 +314,13 @@ export function InstanceModelEditor({
         resetAll: true,
         ...(seededFingerprint.current ? { expectedEndpointFingerprint: seededFingerprint.current } : {}),
       });
+      if (!result.applied) {
+        if (shownInstanceName.current === instance.name) {
+          seededIdentity.current = null;
+        }
+        toast.push("warning", STALE_MODEL_SAVE_WARNING);
+        return;
+      }
       toast.push("success", `Reset overrides for ${detail.model}`);
       if (shownInstanceName.current !== instance.name) return;
       const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);

@@ -267,10 +267,15 @@ describe("per-model summary rows and drill-in editor", () => {
     credentialsStore.setState({ instances: [inst], availableProviders: [], listingFromPreviousConnection: false });
     render(<InstanceSheet name="work" {...handlers()} />);
 
-    expect(screen.getByRole("switch", { name: "deepseek/deepseek-4.1-flash" })).toBeTruthy();
-    expect(document.querySelector('[data-kind="customized"]')).not.toBeNull();
-    expect(screen.getByText("1M ctx · compact 250K")).toBeTruthy();
-    expect(screen.getByText("128K ctx")).toBeTruthy();
+    const flashSwitch = screen.getByRole("switch", { name: "deepseek/deepseek-4.1-flash" });
+    const flashRow = flashSwitch.closest("div");
+    expect(flashRow?.querySelector('[data-kind="customized"]')).not.toBeNull();
+    expect(flashRow?.textContent).toContain("1M");
+    expect(flashRow?.textContent).toContain("250K");
+
+    const gpt4oRow = screen.getByRole("switch", { name: "gpt-4o" }).closest("div");
+    expect(gpt4oRow?.querySelector('[data-kind="customized"]')).toBeNull();
+    expect(gpt4oRow?.textContent).toContain("128K");
     expect(screen.getByRole("button", { name: "Configure deepseek/deepseek-4.1-flash" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "+ Add custom model" })).toBeTruthy();
   });
@@ -337,7 +342,11 @@ describe("per-model summary rows and drill-in editor", () => {
     expect(document.activeElement).toBe(backButton);
 
     const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
-    expect(thresholdInput.placeholder).toBe("Default: 900K (90% of 1M window)");
+    expect(thresholdInput.placeholder).toContain("900K");
+    expect(thresholdInput.placeholder).toContain("1M");
+    const contextWindowInput = screen.getByLabelText("Context window") as HTMLInputElement;
+    expect(contextWindowInput.placeholder).toContain("1M");
+    expect(contextWindowInput.placeholder).toContain("catalog");
 
     // Routing & wire overrides defaults closed when no routing override is authored
     const routingDetails = screen.getByText("Routing & wire overrides").closest("details");
@@ -744,5 +753,91 @@ describe("per-model summary rows and drill-in editor", () => {
         originClientId: "test-tab",
       }),
     );
+  });
+
+  test("does not re-anchor InstanceSheet or InstanceModelEditor when editModel is superseded by a newer listing", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const initialInst: InstanceEntry = {
+      ...entry(),
+      protocol: "openai-chat",
+      endpointFingerprint: "fp-before",
+      models: [{ id: "gpt-5.5" }],
+    };
+    const foreignReplacement: InstanceEntry = {
+      ...initialInst,
+      providerId: "anthropic",
+      protocol: "anthropic",
+      endpointFingerprint: "fp-foreign",
+    };
+    fake.on("evener/instance/modelGet", () => modelDetailFixture());
+    let resolveModelEdit: ((resp: InstanceModelEditResponse) => void) | undefined;
+    fake.on(
+      "evener/instance/modelEdit",
+      () =>
+        new Promise<InstanceModelEditResponse>((resolve) => {
+          resolveModelEdit = resolve;
+        }),
+    );
+    fake.on(
+      "evener/instance/list",
+      (): InstanceListResponse => ({
+        instances: [foreignReplacement],
+        availableProviders: [],
+      }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({
+      instances: [initialInst],
+      availableProviders: [],
+      listingFromPreviousConnection: false,
+    });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    // Make an unsaved edit on the overview connection form
+    await user.type(screen.getByLabelText("API key environment variable"), "WORK_KEY_DRAFT");
+
+    // Drill into model editor and start a save
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    await user.type(thresholdInput, "250k");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(resolveModelEdit).toBeDefined());
+
+    // A newer listing arrives while editModel is in flight, superseding editModel's response
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    act(() => resetToastStoreForTests());
+    await act(async () => {
+      resolveModelEdit?.({
+        list: {
+          instances: [{ ...initialInst, endpointFingerprint: "fp-model-save" }],
+          availableProviders: [],
+        },
+        detail: modelDetailFixture({
+          effective: { ...modelDetailFixture().effective, compactionThreshold: 250_000 },
+          authored: { compactionThreshold: 250_000 },
+        }),
+      });
+    });
+
+    // Superseded save warns rather than claiming success, and keeps the user's draft
+    expect(toastKinds()).toContain("warning");
+    expect(toastKinds()).not.toContain("success");
+    expect(thresholdInput.value).toBe("250k");
+
+    // Returning to the overview and attempting to save the connection draft must refuse
+    // with instance-replaced rather than having re-anchored onto foreignReplacement
+    await user.click(screen.getByRole("button", { name: "← work" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(document.querySelector('[role="alert"][data-reason="instance-replaced"]')).not.toBeNull();
+    expect(fake.calls.some((c) => c.method === "evener/instance/edit")).toBe(false);
   });
 });

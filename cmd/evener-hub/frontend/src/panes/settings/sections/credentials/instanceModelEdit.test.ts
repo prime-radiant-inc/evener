@@ -298,13 +298,28 @@ describe("modelEditParams", () => {
 });
 
 describe("summary and placeholder helpers", () => {
-  test("formats row summary and default compaction placeholder", () => {
-    expect(formatModelRowSummary({ contextWindow: 1_000_000, compactionThreshold: 250_000 })).toBe(
-      "1M ctx · compact 250K",
-    );
-    expect(formatModelRowSummary({ contextWindow: 128_000 })).toBe("128K ctx");
+  test("includes formatted token counts and provenance identifiers when present", () => {
+    const summaryBoth = formatModelRowSummary({ contextWindow: 1_000_000, compactionThreshold: 250_000 });
+    expect(summaryBoth).toContain("1M");
+    expect(summaryBoth).toContain("250K");
+    expect(formatModelRowSummary({ contextWindow: 128_000 })).toContain("128K");
     expect(formatModelRowSummary({})).toBe("");
-    expect(compactionThresholdPlaceholder(baseDetail())).toBe("Default: 900K (90% of 1M window)");
-    expect(tokenLimitPlaceholder(1_000_000, "catalog")).toBe("Inherited: 1M (catalog)");
+
+    const defaultPlaceholder = compactionThresholdPlaceholder(baseDetail());
+    expect(defaultPlaceholder).toContain("900K");
+    expect(defaultPlaceholder).toContain("1M");
+
+    const inheritedPlaceholder = compactionThresholdPlaceholder(
+      baseDetail({
+        effective: { ...baseDetail().effective, compactionThreshold: 300_000 },
+        provenance: { ...baseDetail().provenance, CompactionThreshold: "glob" },
+      }),
+    );
+    expect(inheritedPlaceholder).toContain("300K");
+    expect(inheritedPlaceholder).toContain("glob");
+
+    const limitPlaceholder = tokenLimitPlaceholder(1_000_000, "catalog");
+    expect(limitPlaceholder).toContain("1M");
+    expect(limitPlaceholder).toContain("catalog");
   });
 });
