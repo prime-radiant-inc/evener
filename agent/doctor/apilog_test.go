@@ -1102,6 +1102,105 @@ func TestAPIHealthQuotaClassCountsExplicitQuotaExceeded(t *testing.T) {
 	}
 }
 
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndTurnsRan(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 1})
+	// 0-byte API log file as created by NewSessionOwnershipAPILogger when discardRecords is true
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
+func TestAPIHealth_RecordedWhenZeroAttemptsAndNoTurnsRan(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if !res.APILogEnabled {
+		t.Errorf("api_log_enabled = false, want true")
+	}
+	if res.Unrecorded {
+		t.Errorf("unrecorded = true, want false")
+	}
+	if res.Status != "recorded" {
+		t.Errorf("status = %q, want recorded", res.Status)
+	}
+}
+
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndAssistantTurnInTranscript(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	// Meta has TurnCount: 0, but transcript has assistant turn
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
 // classifyAPIErrorClass sorts a failed attempt into quota, permanent or
 // retryable: a quota class first, a caller cancel as permanent, then the status
 // code, then the error kind, and retryable when nothing says otherwise.

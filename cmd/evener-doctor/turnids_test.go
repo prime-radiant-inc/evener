@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/envvars"
 )
@@ -125,5 +126,57 @@ func TestRun_UsageListsTurnIDs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "turnids") {
 		t.Errorf("usage does not list turnids:\n%s", out.String())
+	}
+}
+
+func TestRun_TurnIDsFlags(t *testing.T) {
+	base, affected, _ := fixtureWithLegacyReservedTurnID(t)
+
+	// 1. Bucket flag matching the fixture bucket ("project-test-0123456789")
+	var out, errb bytes.Buffer
+	if code := run([]string{"turnids", "--bucket", "project-test-0123456789", "--json", "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionsScanned int `json:"sessions_scanned"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if res.SessionsScanned != 2 {
+		t.Errorf("sessions_scanned = %d, want 2", res.SessionsScanned)
+	}
+
+	// 2. Non-existent bucket flag
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"turnids", "--bucket", "non-existent-bucket", "--state-dir", base}, &out, &errb); code == 0 {
+		t.Errorf("exit %d, want non-zero for non-existent bucket", code)
+	}
+
+	// 3. Mutually exclusive --bucket and --all
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"turnids", "--bucket", "project-test-0123456789", "--all", "--state-dir", base}, &out, &errb); code == 0 {
+		t.Errorf("exit %d, want non-zero for mutually exclusive --bucket and --all", code)
+	}
+
+	// 4. Since flag: set affected's mtime to 10 days ago
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	sess := filepath.Join(base, "evener", "projects", "project-test-0123456789", "sessions")
+	if err := os.Chtimes(filepath.Join(sess, affected+".transcript.jsonl"), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"turnids", "--since", "24h", "--json", "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	res.SessionsScanned = 0
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if res.SessionsScanned != 1 {
+		t.Errorf("sessions_scanned with since = %d, want 1 (clean only)", res.SessionsScanned)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/chatcompletions"
@@ -324,6 +325,17 @@ type APIHealthResult struct {
 	// ErrorsByClassQuotaCaveat documents ErrorsByClass["quota"]'s
 	// confident-zero trap -- see apiHealthErrorsByClassQuotaCaveat.
 	ErrorsByClassQuotaCaveat string `json:"errors_by_class_quota_caveat"`
+
+	// APILogEnabled indicates whether API requests were logged for this session.
+	// False when model turns were processed but the API log contains 0 attempts.
+	APILogEnabled bool `json:"api_log_enabled"`
+
+	// Unrecorded is true when the session processed model turns (turn_count > 0 or
+	// assistant turns recorded in transcript) but API logging recorded 0 attempts.
+	Unrecorded bool `json:"unrecorded"`
+
+	// Status is "not_recorded" when Unrecorded is true, or "recorded" otherwise.
+	Status string `json:"status,omitempty"`
 }
 
 // apiHealthGroup is one attempt group's running tally while APIHealth scans
@@ -407,6 +419,30 @@ func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult
 			res.UnsettledGroups++
 		}
 	}
+		if res.Attempts == 0 {
+			ranTurns := false
+			if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && meta.TurnCount > 0 {
+				ranTurns = true
+			} else if doc, err := loadTranscriptContext(ctx, paths.TranscriptPath); err == nil {
+				for _, entry := range doc.Entries {
+					if entry.Turn.Kind == schema.TurnAssistant || entry.Turn.Message.Role == llm.RoleAssistant {
+						ranTurns = true
+						break
+					}
+				}
+			}
+			if ranTurns {
+				res.APILogEnabled = false
+				res.Unrecorded = true
+				res.Status = "not_recorded"
+			} else {
+				res.APILogEnabled = true
+				res.Status = "recorded"
+			}
+		} else {
+			res.APILogEnabled = true
+			res.Status = "recorded"
+		}
 	return res, nil
 }
 
@@ -484,9 +520,15 @@ func classifyAPIErrorClass(outcome apilog.AttemptOutcomeClass, statusCode *int, 
 // the provider surfaced as a rejection, in a log new enough to record it."
 func RenderAPIHealth(r APIHealthResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
-		r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
-		r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])
+	if r.Unrecorded || !r.APILogEnabled {
+		fmt.Fprintf(&b, "session %s: api_log=not_recorded attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
+			r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
+			r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])
+	} else {
+		fmt.Fprintf(&b, "session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
+			r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
+			r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])
+	}
 	fmt.Fprintf(&b, "* %s\n", r.ErrorsByClassQuotaCaveat)
 	return b.String()
 }
