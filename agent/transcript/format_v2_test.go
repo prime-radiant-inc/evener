@@ -1,12 +1,16 @@
 package transcript
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -167,5 +171,118 @@ func TestTranscriptAuthorshipStrictRoundtrip(t *testing.T) {
 		if _, err := DecodeEntry([]byte(raw)); err == nil {
 			t.Fatal("strict reader accepted malformed authorship")
 		}
+	}
+}
+
+// TestOpenWriterForSessionWithFS_OpenError covers the open-error path in
+// OpenWriterForSessionWithFS.
+func TestOpenWriterForSessionWithFS_OpenError(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	_, _, err := OpenWriterForSessionWithFS(fs, "/nonexistent/path/transcript.jsonl", "sid")
+	if err == nil {
+		t.Error("OpenWriterForSessionWithFS on nonexistent path should return error")
+	}
+}
+
+// TestResumeWriter_BlankLines covers the blank-line skip path in resumeWriter
+// : a transcript with blank lines between entries should skip
+// them without error.
+func TestResumeWriter_BlankLines(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	path := "/session/transcript.jsonl"
+	w, err := newWriterFS(fs, path, Header{
+		SessionID: "sid",
+		CreatedAt: time.Unix(0, 0).UTC(),
+		ProfileID: "openai",
+		Model:     "gpt-5.5",
+	}, true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hello"}},
+	})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Read the file, insert a blank line after the header, and rewrite.
+	data, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := splitTranscriptLines(data)
+	newContent := lines[0] + "\n\n" + lines[1] + "\n"
+	if err := afero.WriteFile(fs, path, []byte(newContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Resume — the blank line should be skipped.
+	w2, entries, err := OpenWriterForSessionWithFS(fs, path, "sid")
+	if err != nil {
+		t.Fatalf("OpenWriterForSessionWithFS: %v", err)
+	}
+	defer w2.Close()
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry (blank line skipped), got %d", len(entries))
+	}
+}
+
+// TestResumeWriter_MissingHeader covers the missing-header error path in
+// resumeWriter: a transcript with entries but no header should
+// return ErrUnsupportedFormat.
+func TestResumeWriter_MissingHeader(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	path := "/session/transcript.jsonl"
+	// Write only an entry, no header.
+	content := `{"kind":"entry","seq":1,"turn":{"kind":"user_input","message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}` + "\n"
+	if err := afero.WriteFile(fs, path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := OpenWriterForSessionWithFS(fs, path, "")
+	if err == nil {
+		t.Error("OpenWriterForSessionWithFS without header should return error")
+	}
+	if !errors.Is(err, ErrUnsupportedFormat) {
+		t.Errorf("expected ErrUnsupportedFormat, got: %v", err)
+	}
+}
+
+// splitTranscriptLines splits a transcript file's bytes into non-empty lines.
+func splitTranscriptLines(data []byte) []string {
+	var lines []string
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(line) > 0 {
+			lines = append(lines, string(line))
+		}
+	}
+	return lines
+}
+
+// TestOpenTranscriptAppendFile_NonRegular covers the non-regular-file branch: opening a device special file (which succeeds with
+// O_RDWR|O_NOFOLLOW) and then detecting it is not a regular file.
+func TestOpenTranscriptAppendFile_NonRegular(t *testing.T) {
+	// /dev/null is a character device — open succeeds, but Stat().IsRegular()
+	// returns false, triggering the "not a regular file" error.
+	_, err := openTranscriptAppendFile("/dev/null")
+	if err == nil {
+		t.Fatal("expected error opening non-regular file as transcript")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("error = %v, want 'not a regular file'", err)
+	}
+}
+
+// TestOpenTranscriptAppendFile_NotExist covers the open-error branch: a missing path returns an error.
+func TestOpenTranscriptAppendFile_NotExist(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "nope.jsonl")
+	_, err := openTranscriptAppendFile(missing)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("error = %v, want error containing 'no such file or directory'", err)
 	}
 }
