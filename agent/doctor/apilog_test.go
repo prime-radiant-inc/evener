@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -1246,6 +1247,72 @@ func TestAPIHealth_UnrecordedWhenZeroAttemptsAndAssistantTurnInTranscript(t *tes
 	human := RenderAPIHealth(res)
 	if !strings.Contains(human, "api_log=not_recorded") {
 		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndTurnFailureInTranscript(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	// Meta TurnCount is 0, but transcript records a TurnFailure from a rejected initial request
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnFailure, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{assistantText("provider 401 unauthorized")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+}
+
+func TestAPIHealth_MalformedTranscriptPropagatesError(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+	// Overwrite transcript with invalid json
+	transcriptPath := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte("invalid json line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := APIHealth(context.Background(), base, sidA)
+	if err == nil {
+		t.Fatal("expected error for malformed transcript, got nil")
+	}
+}
+
+func TestAPIHealth_HonorsContextCancellation(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := APIHealth(ctx, base, sidA)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 

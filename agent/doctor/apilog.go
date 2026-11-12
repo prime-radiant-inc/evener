@@ -425,14 +425,27 @@ func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult
 		}
 	}
 	if res.Attempts == 0 {
+		if err := ctx.Err(); err != nil {
+			return APIHealthResult{}, err
+		}
 		ranTurns := false
 		if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && meta.TurnCount > 0 {
 			ranTurns = true
-		} else if doc, err := loadTranscriptContext(ctx, paths.TranscriptPath); err == nil {
-			for _, entry := range doc.Entries {
-				if entry.Turn.Kind == schema.TurnAssistant || entry.Turn.Message.Role == llm.RoleAssistant {
-					ranTurns = true
-					break
+		} else {
+			doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return APIHealthResult{}, ctxErr
+				}
+				if !errors.Is(err, os.ErrNotExist) {
+					return APIHealthResult{}, fmt.Errorf("read transcript %s: %w", paths.TranscriptPath, err)
+				}
+			} else {
+				for _, entry := range doc.Entries {
+					if entry.Turn.Kind == schema.TurnAssistant || entry.Turn.Kind == schema.TurnFailure || entry.Turn.Message.Role == llm.RoleAssistant {
+						ranTurns = true
+						break
+					}
 				}
 			}
 		}
