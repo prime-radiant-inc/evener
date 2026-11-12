@@ -439,6 +439,39 @@ output = 7.5
 	if _, workExists := l.Providers["work"]; !workExists {
 		t.Fatal("[providers.work] was unexpectedly removed")
 	}
+
+	// Clearing the sole override on an uncredentialed implicit provider (deepseek)
+	// removes its empty shadow from providers.toml and still builds post-write Detail
+	// from the resolvable implicit catalog provider without failing r.Instance.
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	uncredCfg := cfg + `
+[providers.deepseek.models."deepseek-v4-flash"]
+compaction_threshold = 250000
+`
+	if err := os.WriteFile(f.tomlPath, []byte(uncredCfg), 0o600); err != nil {
+		t.Fatalf("WriteFile(uncredCfg): %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload(uncredCfg): %v", err)
+	}
+	var uncredResp appwire.InstanceModelEditResponse
+	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:     "deepseek",
+		Model:    "deepseek-v4-flash",
+		ResetAll: true,
+	}, &uncredResp); err != nil {
+		t.Fatalf("EditModel(uncredentialed implicit deepseek ResetAll): %v", err)
+	}
+	if uncredResp.Detail == nil || uncredResp.Detail.Effective.CompactionThreshold != nil {
+		t.Fatalf("expected cleared Detail on uncredentialed implicit deepseek, got %+v", uncredResp.Detail)
+	}
+	lAfterUncred, existsAfterUncred, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil || !existsAfterUncred {
+		t.Fatalf("ReadConfigFile(after uncred): exists=%v err=%v", existsAfterUncred, err)
+	}
+	if _, deepseekShadow := lAfterUncred.Providers["deepseek"]; deepseekShadow {
+		t.Fatalf("clearing sole override on uncredentialed implicit deepseek left shadow: %+v", lAfterUncred.Providers)
+	}
 }
 
 func TestInstances_ModelEditCreateAuthoredOnlyAndRemoveCustomSymmetry(t *testing.T) {

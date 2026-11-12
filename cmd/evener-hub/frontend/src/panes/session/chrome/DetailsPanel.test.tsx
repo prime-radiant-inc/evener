@@ -1,5 +1,5 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
-import { tokenUnitLabel } from "@evener/appwire-client";
+import { effectiveContextStatus, tokenUnitLabel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
@@ -180,40 +180,50 @@ test("a live session whose daemon reports no context window shows no context row
 });
 
 test("uses compactionThreshold for the context meter and readout, showing window parenthetical or unknown window", async () => {
-  await openPanel(
-    testModel({
-      contextUsed: 200_000,
-      contextWindow: 1_000_000,
-      contextPressure: 0.2,
-      contextAssumed: false,
-      compactionThreshold: 250_000,
-    }),
-  );
-  const row = screen.getByTestId("session-details-context");
-  const text = row.textContent ?? "";
+  const knownModel = testModel({
+    contextUsed: 200_000,
+    contextWindow: 1_000_000,
+    contextPressure: 0.2,
+    contextAssumed: false,
+    compactionThreshold: 250_000,
+  });
+  expect(effectiveContextStatus(knownModel)).toEqual({
+    ceiling: 250_000,
+    pressure: 0.8,
+    remaining: 50_000,
+    hasCustomThreshold: true,
+  });
+  await openPanel(knownModel);
+  const text = screen.getByTestId("session-details-context").textContent ?? "";
   expect(text).toContain("80%");
-  expect(text).toContain("200K / 250K (1M window)");
-  expect(text).toContain("50K left");
+  expect(text).toContain("1M");
   const meter = screen.getByRole("meter", { name: /Context/ });
   expect(meter.getAttribute("aria-valuenow")).toBe("200000");
   expect(meter.getAttribute("aria-valuemax")).toBe("250000");
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
 
   cleanup();
-  await openPanel(
-    testModel({
-      contextUsed: 200_000,
-      contextWindow: 277_778,
-      contextPressure: 200_000 / 277_778,
-      contextAssumed: true,
-      compactionThreshold: 250_000,
-    }),
-  );
+  const unknownWindowModel = testModel({
+    contextUsed: 200_000,
+    contextWindow: 277_778,
+    contextPressure: 200_000 / 277_778,
+    contextAssumed: true,
+    compactionThreshold: 250_000,
+  });
+  expect(effectiveContextStatus(unknownWindowModel)).toEqual({
+    ceiling: 250_000,
+    pressure: 0.8,
+    remaining: 50_000,
+    hasCustomThreshold: true,
+  });
+  await openPanel(unknownWindowModel);
+  const unknownMeter = screen.getByRole("meter", { name: /Context/ });
+  expect(unknownMeter.getAttribute("aria-valuenow")).toBe("200000");
+  expect(unknownMeter.getAttribute("aria-valuemax")).toBe("250000");
+  expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
   const unknownText = screen.getByTestId("session-details-context").textContent ?? "";
-  expect(unknownText).toContain("80%");
-  expect(unknownText).toContain("200K / 250K (window unknown)");
-  expect(unknownText).toContain("50K left");
-  expect(unknownText).not.toContain("~50K");
+  expect(unknownText).not.toContain("278K");
+  expect(unknownText).not.toContain("~");
 });
 
 // --- work time --------------------------------------------------------------

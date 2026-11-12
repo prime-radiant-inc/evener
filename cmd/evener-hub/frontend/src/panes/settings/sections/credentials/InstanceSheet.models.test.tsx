@@ -1099,4 +1099,75 @@ describe("per-model summary rows and drill-in editor", () => {
     expect(document.querySelector('[role="alert"][data-reason="instance-replaced"]')).not.toBeNull();
     expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
   });
+
+  test("dismissing a pending custom-model removal and opening another model preserves the newer editor and draft when removal completes", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const inst: InstanceEntry = {
+      ...entry(),
+      endpointFingerprint: "fp-1",
+      models: [
+        { id: "custom-r1", customized: true },
+        { id: "gpt-5.5", contextWindow: 1_000_000 },
+      ],
+    };
+    fake.on("evener/instance/modelGet", (raw) => {
+      const p = raw as { model: string };
+      if (p.model === "custom-r1") {
+        return modelDetailFixture({
+          model: "custom-r1",
+          authoredOnly: true,
+          authored: { compactionThreshold: 200_000 },
+        });
+      }
+      return modelDetailFixture({ model: "gpt-5.5" });
+    });
+    let resolveRemove: ((resp: InstanceModelEditResponse) => void) | undefined;
+    fake.on(
+      "evener/instance/modelEdit",
+      () =>
+        new Promise<InstanceModelEditResponse>((resolve) => {
+          resolveRemove = resolve;
+        }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [inst], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Configure custom-r1" }));
+    await user.click(await screen.findByRole("button", { name: "Remove custom model" }));
+    const confirmDialog = screen.getByRole("dialog", { name: "Remove custom model" });
+    await user.click(within(confirmDialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(resolveRemove).toBeDefined());
+
+    // Dismiss ConfirmDialog via Close while removal is pending, return to overview, open gpt-5.5, and enter an unsaved edit
+    await user.click(within(confirmDialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Remove custom model" })).toBeNull());
+    await user.click(screen.getByRole("button", { name: "← work" }));
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    await user.type(thresholdInput, "250k");
+    expect(thresholdInput.value).toBe("250k");
+
+    // Now the earlier custom-r1 removal completes
+    await act(async () => {
+      resolveRemove?.({
+        list: {
+          instances: [{ ...inst, models: [{ id: "gpt-5.5", contextWindow: 1_000_000 }] }],
+          availableProviders: [],
+        },
+        detail: undefined,
+      });
+    });
+
+    // The newer gpt-5.5 editor must remain mounted with its unsaved "250k" draft intact
+    expect(screen.getByRole("heading", { name: "gpt-5.5" })).toBeTruthy();
+    expect((screen.getByLabelText("Auto-compact threshold") as HTMLInputElement).value).toBe("250k");
+  });
 });

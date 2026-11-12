@@ -44,10 +44,15 @@ func (c *hubInstancesController) GetModel(params appwire.InstanceModelGetParams)
 
 func (c *hubInstancesController) modelDetailLocked(r *registry.Registry, name, model string) (appwire.InstanceModelDetailResponse, error) {
 	name = strings.TrimSpace(name)
-	model = strings.TrimSpace(model)
 	if _, ok := r.Instance(name); !ok {
 		return appwire.InstanceModelDetailResponse{}, instanceNotFound(name)
 	}
+	return c.modelDetailFromResolvable(r, name, model)
+}
+
+func (c *hubInstancesController) modelDetailFromResolvable(r *registry.Registry, name, model string) (appwire.InstanceModelDetailResponse, error) {
+	name = strings.TrimSpace(name)
+	model = strings.TrimSpace(model)
 	if model == "" || strings.Contains(model, "*") {
 		return appwire.InstanceModelDetailResponse{}, appwire.InvalidParams(fmt.Sprintf("model %q is not an exact model id", model))
 	}
@@ -271,7 +276,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	if !wasAuthoredProvider && providerIsBare(p) {
-		detail, err := c.modelDetailLocked(r, name, model)
+		detail, err := c.modelDetailFromResolvable(r, name, model)
 		if err != nil {
 			return err
 		}
@@ -299,7 +304,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		if row.Caps.CompactionThreshold != nil && resAfter.Caps.CompactionThreshold == nil {
 			return fmt.Errorf("compaction_threshold exceeds model input ceiling (%d)", resAfter.Caps.InputCeiling())
 		}
-		detail, err := c.modelDetailLocked(reloaded, name, model)
+		detail, err := c.modelDetailFromResolvable(reloaded, name, model)
 		if err != nil {
 			return err
 		}

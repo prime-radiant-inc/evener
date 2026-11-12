@@ -1,0 +1,24 @@
+{
+  "name": "instance-model-row-layout-phone",
+  "description": "InstanceSheet .modelRow 360px phone geometry: .modelNameSlot shrinks and wraps a long unbroken model ID beside .modelMeta without pushing .modelMeta past the 360px sheet row.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/switch/switch.module.css",
+    "widgets/button/button.module.css",
+    "panes/settings/sections/credentials/InstanceSheet.module.css"
+  ],
+  "viewport": {
+    "width": 360,
+    "height": 800,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "panes/settings/sections/credentials/InstanceSheet.module.css: .modelNameSlot { min-width: 0; overflow-wrap: anywhere } removed",
+    "verified": "2026-11-12",
+    "expect": "fail",
+    "note": "Measured 2026-11-12: removing min-width: 0 and overflow-wrap: anywhere from .modelNameSlot causes the unbroken model label to spill 366.6px into .modelMeta on the 360px phone sheet."
+  }
+}

@@ -1,14 +1,12 @@
 {
   "name": "instance-model-editor-layout",
-  "description": "InstanceSheet per-model settings desktop geometry: inside .fieldInline, .fieldGrow stretches the Input up to the Reset link button; inside .modelRow, .modelNameSlot wraps a long unbroken model ID without pushing .modelMeta past the row's right edge.",
+  "description": "InstanceModelEditor desktop geometry: inside .fieldInline, .fieldGrow stretches the Input across the FormRow up to the Reset link button.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
-    "widgets/switch/switch.module.css",
     "widgets/formrow/formrow.module.css",
     "widgets/input/input.module.css",
     "widgets/button/button.module.css",
-    "widgets/chip/chip.module.css",
     "panes/settings/sections/credentials/InstanceSheet.module.css"
   ],
   "viewport": {

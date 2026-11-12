@@ -438,30 +438,33 @@ export function InstanceSheet({
   }
 
   async function handleConfirmRemoveCustomModel(): Promise<void> {
-    if (!pendingRemoveModel) return;
+    const target = pendingRemoveModel;
+    if (!target) return;
+    const clearMatchingConfirm = () => setPendingRemoveModel((cur) => (cur === target ? null : cur));
     setRemoveModelBusy(true);
     try {
       const result = await credentialsStore.getState().editModel({
-        name: pendingRemoveModel.name,
-        model: pendingRemoveModel.model,
+        name: target.name,
+        model: target.model,
         removeCustom: true,
-        ...(pendingRemoveModel.expectedEndpointFingerprint
-          ? { expectedEndpointFingerprint: pendingRemoveModel.expectedEndpointFingerprint }
+        ...(target.expectedEndpointFingerprint
+          ? { expectedEndpointFingerprint: target.expectedEndpointFingerprint }
           : {}),
       });
-      if (result.applied) {
-        const refreshed = credentialsStore.getState().instances.find((i) => i.name === pendingRemoveModel.name);
-        if (refreshed !== undefined) reanchorFromModelSave(refreshed);
-      } else {
-        seededIdentity.current = null;
+      if (shownName.current === target.name) {
+        if (result.applied) {
+          const refreshed = credentialsStore.getState().instances.find((i) => i.name === target.name);
+          if (refreshed !== undefined) reanchorFromModelSave(refreshed);
+        } else {
+          seededIdentity.current = null;
+        }
+        setActiveModelView((cur) => (cur?.mode === "edit" && cur.model === target.model ? null : cur));
       }
-      const removedModel = pendingRemoveModel.model;
-      setPendingRemoveModel(null);
-      setActiveModelView(null);
-      toast.push("success", `Removed ${removedModel}`);
+      clearMatchingConfirm();
+      toast.push("success", `Removed ${target.model}`);
     } catch (err) {
       if (isStaleListingRefusal(err)) {
-        setPendingRemoveModel(null);
+        clearMatchingConfirm();
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         void credentialsStore
           .getState()
@@ -470,8 +473,9 @@ export function InstanceSheet({
         return;
       }
       if (isEndpointConflict(err)) {
-        const targetInstance = instance?.name === pendingRemoveModel.name ? instance : undefined;
-        setPendingRemoveModel(null);
+        const targetInstance =
+          shownName.current === target.name && instance?.name === target.name ? instance : undefined;
+        clearMatchingConfirm();
         toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
         if (targetInstance !== undefined) {
           await reanchorAfterEndpointConflict(targetInstance);
