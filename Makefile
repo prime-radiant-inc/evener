@@ -5,6 +5,13 @@
 GO_MODULES := . agent llm auth envvars invariant identifier execsupport
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 
+# Every workspace module as a package pattern from the repo root: the root
+# module as ./... and each sibling module directory as ./<dir>/... . go.work
+# resolves cross-module patterns in one invocation, so each lint regime below
+# sweeps the whole workspace once instead of once per module.
+WORKSPACE_LINT_PATTERNS := $(foreach m,$(filter-out .,$(FUZZ_GO_MODULES)),./$(m)/...)
+WORKSPACE_LINT_PATTERNS += ./...
+
 # golangci-lint caches raw findings before path-based suppressions and
 # exclusions run. Keep that cache durable within this worktree, but never let
 # sibling checkouts share it. `?=` deliberately preserves an operator's

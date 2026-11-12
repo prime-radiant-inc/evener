@@ -21,7 +21,6 @@ var subcommands = map[string]func(args []string) int{
 	"covstmt":            covstmtMain,
 	"hub-shards":         runHubShards,
 	"list-build-flags":   listBuildFlagsMain,
-	"module-lint":        lintMain,
 	"repo-audit":         repoAuditMain,
 	"root-test-flags":    rootTestFlagsMain,
 	"test-cpu-exec":      testCPUExecMain,

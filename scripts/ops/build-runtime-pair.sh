@@ -20,7 +20,7 @@ build_one() {
 
 # The evener binary embeds the frontend SPA (via the hub subcommand) and
 # contains the end-user subcommands. The evener-dev binary holds the
-# dev/test infrastructure subcommands (agent-shards, module-lint, fuzz-*, etc.).
+# dev/test infrastructure subcommands (agent-shards, fuzz-*, etc.).
 build_one evener ./cmd/evener/
 build_one evener-dev ./cmd/evener-dev/bin/
 

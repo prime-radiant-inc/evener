@@ -49,12 +49,15 @@ func lintTargets(t *testing.T) []string {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":             "./evener-dev tomlcheck",
-	"lint-gofmt":              "/bin/gofmt\" -l",
-	"lint-evenerfuzz":         "-tags evenerfuzz",
-	"lint-eval":               "-tags eval ",
-	"lint-internal":           "./evener-dev internalcheck",
-	"lint-golangci":           "module-lint",
+	"lint-naming":     "./evener-dev tomlcheck",
+	"lint-gofmt":      "/bin/gofmt\" -l",
+	"lint-evenerfuzz": "-tags evenerfuzz",
+	"lint-eval":       "-tags eval ",
+	"lint-internal":   "./evener-dev internalcheck",
+	// The merged sweep runs golangci-lint directly from the repo root, so
+	// the darwin cross-pass — the only GOOS=darwin invocation in any gate —
+	// is what distinguishes this recipe.
+	"lint-golangci":           "GOOS=darwin golangci-lint run",
 	"lint-generated":          "docs/appwire-protocol.md",
 	"lint-fuzz-registry":      "scripts/fuzz/fuzz-registry-check.sh",
 	"lint-package-imports":    "scripts/sdk/package-import-paths-check.sh",
@@ -287,6 +290,94 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 // with real git. A generated path deleted in HEAD is recreated as untracked;
 // `git diff HEAD -- <path>` alone does not report that file, so the gate must
 // also require every expected output to remain tracked.
+// mergedSweepModules is every go.work module as a package pattern from the
+// repository root: the root module as ./... and each sibling module directory
+// as ./<dir>/... . A sweep that names all of them in ONE invocation covers
+// exactly what the old per-module loops covered — FUZZ_GO_MODULES under
+// go.work, where a bare ./... resolves per-module.
+var mergedSweepModules = []string{
+	"./...", "./agent/...", "./llm/...", "./auth/...", "./envvars/...",
+	"./invariant/...", "./identifier/...", "./execsupport/...", "./fuzz/...",
+}
+
+// TestLintSweepsAreMergedPerBuildRegime asks make what each heavy lint lane
+// expands to and asserts the merged shape: one invocation per build regime
+// (host, GOOS=darwin, GOOS=windows, each build tag) covering every workspace
+// module, instead of the old one-invocation-per-module loops.
+//
+// The shape is what this pins, not the speed: golangci-lint compiles only the
+// files its GOOS selects, so the host and darwin sweeps can never be one pass —
+// each regime needs its own invocation. What CAN be merged is the module loop
+// inside a regime, because go.work resolves cross-module package patterns from
+// the root. Collapsing 9+ invocations per regime into 1 keeps the per-module
+// runner (cmd/evener-dev module-lint) and its LINT_PARALLEL knob from
+// shadowing golangci's own concurrency.
+//
+// The assertions run against `make -n` output rather than recipe text for the
+// reason makeLintDryRun gives: run_quiet_lint wraps recipes in `if ( … )`, so
+// a textual read of make/linting.mk sees the loop bodies, not what runs. Each
+// gate is dry-run alone (-k not needed: the wrapper prints its recipe even
+// when an earlier prerequisite would fail), and the dry run prints the recipe
+// once per lane.
+func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
+	t.Parallel()
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH (%v), so nothing can ask make what the lint lanes expand to", err)
+	}
+
+	// lint-evenerfuzz and lint-eval are .PHONY with no prerequisites, and
+	// lint-golangci's build-dev prerequisite is also .PHONY, so -n prints
+	// every recipe line without executing anything.
+	laneDryRun := func(target string) string {
+		t.Helper()
+		cmd := exec.Command(makePath, "-n", target)
+		for _, env := range os.Environ() {
+			name, _, _ := strings.Cut(env, "=")
+			if name == "MAKEFLAGS" || name == "MFLAGS" || name == "MAKELEVEL" {
+				continue
+			}
+			cmd.Env = append(cmd.Env, env)
+		}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		if strings.TrimSpace(stdout.String()) == "" {
+			t.Fatalf("`%s -n %s` printed no recipe lines (%v), so this audit has no subject:\n%s",
+				makePath, target, runErr, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	for _, lane := range []string{"lint-evenerfuzz", "lint-eval", "lint-golangci"} {
+		dryRun := laneDryRun(lane)
+
+		// (a) every workspace module appears in the lane's sweep patterns.
+		for _, pattern := range mergedSweepModules {
+			if !strings.Contains(dryRun, pattern) {
+				t.Errorf("%s does not sweep %s; the merged recipe must name every go.work module in each regime's invocation", lane, pattern)
+			}
+		}
+
+		// (b) every golangci-lint invocation in the lane runs under the
+		// per-worktree cache (the #290 cross-checkout poisoning guard). The
+		// recipe exports GOLANGCI_LINT_CACHE once up front, so counting
+		// occurrences proves every run inherits it: one export plus one
+		// occurrence per invocation means no golangci call bypasses it.
+		exports := strings.Count(dryRun, "GOLANGCI_LINT_CACHE=")
+		invocations := strings.Count(dryRun, "golangci-lint run")
+		if exports == 0 && invocations > 0 {
+			t.Errorf("%s runs golangci-lint without exporting GOLANGCI_LINT_CACHE; the per-worktree cache is the #290 poisoning guard", lane)
+		}
+
+		// (c) the per-module runner is gone from the recipe.
+		if strings.Contains(dryRun, "module-lint") {
+			t.Errorf("%s still runs the per-module module-lint runner; the merge replaced it with direct single invocations", lane)
+		}
+	}
+}
+
 func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
 	makePath, err := exec.LookPath("make")
 	if err != nil {

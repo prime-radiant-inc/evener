@@ -636,19 +636,23 @@ func webChecksRunNpmLint(a *audit) {
 // reaches main unlinted and first fails `make lint-golangci` for a macOS
 // contributor — agent/execenv/process_boundary_darwin.go reached main with
 // five findings that way (#2847). lint-golangci must therefore run a second
-// module-lint sweep with GOOS=darwin whenever the host is not darwin.
+// golangci-lint sweep with GOOS=darwin whenever the host is not darwin.
 func lintGolangciLintsDarwinOffDarwin(a *audit) {
 	recipes := makefileRecipes(a)
 	recipe, ok := recipes["lint-golangci"]
 	if !ok {
 		a.Fatal("make/linting.mk has no lint-golangci rule, so `make lint` lints no module")
 	}
-	if !strings.Contains(recipe, "module-lint") {
-		a.Fatalf("lint-golangci's recipe holds no module-lint invocation, so this audit has lost "+
+	if !strings.Contains(recipe, "golangci-lint run") {
+		a.Fatalf("lint-golangci's recipe holds no golangci-lint invocation, so this audit has lost "+
 			"its subject. Recipe:\n%s", strings.TrimSpace(recipe))
 	}
+	if strings.Contains(recipe, "module-lint") {
+		a.Fatalf("lint-golangci still dispatches through the retired module-lint runner; the merged "+
+			"recipe invokes golangci-lint directly. Recipe:\n%s", strings.TrimSpace(recipe))
+	}
 	if !strings.Contains(recipe, "GOOS=darwin") {
-		a.Fatalf("lint-golangci runs no GOOS=darwin module-lint pass, so CI (Linux) never compiles "+
+		a.Fatalf("lint-golangci runs no GOOS=darwin pass, so CI (Linux) never compiles "+
 			"a _darwin.go file and a darwin-only finding reaches main unlinted (#2928). Recipe:\n%s",
 			strings.TrimSpace(recipe))
 	}
