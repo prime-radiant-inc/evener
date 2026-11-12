@@ -171,7 +171,7 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 	// later notification turn of the same model turn. Await it across calls
 	// instead of pinning the first one; an end_turn=false acknowledgement keeps
 	// the turn alive for the pending frame.
-	awaitRoster := func(callID string) (frames []rosterFrameView, discovered bool) {
+	awaitRoster := func(callID string) (frames []rosterFrameView, discovered, joined bool) {
 		// A failed registration or end notice must end this turn before the
 		// retry: the model cannot finish a turn it keeps acknowledging with
 		// end_turn=false, so ProcessInput never returns through done. The call
@@ -185,7 +185,7 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 				frames = rosterFrames(t, call.request)
 				if rosterDiscoversFrames(frames, "local:b", "working") {
 					call.reply <- activityRelayTool("communicate", communicateArgs("reconnect discovered"))
-					return frames, true
+					return frames, true, false
 				}
 				if rosterRegistrationFailed(call.request, callID) || rosterWatchEnded(call.request) || calls >= callBound {
 					call.reply <- activityRelayTool("communicate", communicateArgs("reconnect registration ended"))
@@ -196,8 +196,15 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							return frames, false
+							return frames, discovered, true
 						case later := <-adapter.calls:
+							// The recovery frame can arrive while this turn drains.
+							// Remember it so the caller does not throw away a
+							// successful discovery and run an unnecessary retry.
+							frames = rosterFrames(t, later.request)
+							if rosterDiscoversFrames(frames, "local:b", "working") {
+								discovered = true
+							}
 							later.reply <- activityRelayTool("communicate", communicateArgs("turn drained"))
 						case <-ctx.Done():
 							t.Fatalf("reconnect turn did not drain after terminal acknowledgement; last frames = %+v: %v", frames, ctx.Err())
@@ -210,25 +217,28 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return frames, false
+				return frames, discovered, true
 			case <-ctx.Done():
 				t.Fatalf("roster frame local:b never arrived; last frames = %+v: %v", frames, ctx.Err())
 			}
 		}
 	}
-	_, discovered := awaitRoster("roster-reconnect")
+	_, discovered, joined := awaitRoster("roster-reconnect")
 	if !discovered {
 		// A failed reconnect handoff can durably end the watch with no frame at
 		// all. Drive the one documented re-register retry on its own input; the
 		// drain loop never runs two notification turns in a row.
 		startTurn("reconnect roster retry")
 		next().reply <- rosterRegister("roster-reconnect-retry")
-		frames, retried := awaitRoster("roster-reconnect-retry")
+		frames, retried, retryJoined := awaitRoster("roster-reconnect-retry")
 		if !retried {
 			t.Fatalf("broker reconnect frames after one re-register = %+v, want local:b as a working worker in a delta or full snapshot", frames)
 		}
+		joined = retryJoined
 	}
-	finishTurn()
+	if !joined {
+		finishTurn()
+	}
 }
 
 func rosterRegister(toolCallID string) llm.Response {
