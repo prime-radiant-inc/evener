@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -83,6 +84,85 @@ func TestWebFetchHTMLToMarkdown(t *testing.T) {
 	if strings.Contains(md, "<h1>") || strings.Contains(md, "<p>") {
 		t.Fatalf("markdown still contains HTML tags: %s", md)
 	}
+}
+
+// TestWebFetchHTMLToMarkdownKeepsDocumentTitle pins issue #6191: the
+// converter drops <head>, so a page whose only static identity is its <title>
+// (its visible heading injected by script) kept none of it in rendered.md.
+func TestWebFetchHTMLToMarkdownKeepsDocumentTitle(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		html string
+		want []string // the markdown's heading texts, in order
+	}{
+		{
+			name: "title absent from the body becomes the first heading",
+			html: `<html><head><title>Example Domain</title><script src="/s.js"></script></head><body><p>Used in documentation.</p></body></html>`,
+			want: []string{"Example Domain"},
+		},
+		{
+			name: "title the body already carries as a heading is not repeated",
+			html: `<html><head><title>Example Domain</title></head><body><h1>Example domain</h1><p>Used in documentation.</p></body></html>`,
+			want: []string{"Example domain"},
+		},
+		{
+			name: "a title ending in # matches the heading that carries it",
+			html: `<html><head><title>Learn C#</title></head><body><h1>Learn C#</h1></body></html>`,
+			want: []string{"Learn C#"},
+		},
+		{
+			name: "markdown syntax in a prepended title stays literal",
+			html: `<html><head><title>*C#* [notes] #1</title></head><body><p>text</p></body></html>`,
+			want: []string{"*C#* [notes] #1"},
+		},
+		{
+			name: "entities are decoded and whitespace collapsed",
+			html: "<html><head><title>\n  Tips &amp;\n  Tricks  </title></head><body><h2>Section</h2></body></html>",
+			want: []string{"Tips & Tricks", "Section"},
+		},
+		{
+			name: "an empty body still keeps the title",
+			html: `<html><head><title>Loading</title></head><body></body></html>`,
+			want: []string{"Loading"},
+		},
+		{
+			name: "a blank title adds nothing",
+			html: `<html><head><title>  </title></head><body><p>text</p></body></html>`,
+			want: nil,
+		},
+		{
+			name: "an svg title inside the body is not the page title",
+			html: `<html><body><svg><title>icon</title></svg><p>text</p></body></html>`,
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			md, err := htmlToMarkdown(tc.html)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown: %v", err)
+			}
+			if got := markdownHeadingTexts(md); !slices.Equal(got, tc.want) {
+				t.Fatalf("headings = %q, want %q\nmarkdown:\n%s", got, tc.want, md)
+			}
+		})
+	}
+}
+
+// markdownHeadingTexts returns the text of each ATX heading line in md, with
+// markdown backslash escapes removed so it reads as the source text did.
+func markdownHeadingTexts(md string) []string {
+	unescape := regexp.MustCompile(`\\([[:punct:]])`)
+	var headings []string
+	for line := range strings.SplitSeq(md, "\n") {
+		marks := len(line) - len(strings.TrimLeft(line, "#"))
+		if marks == 0 || marks > 6 || !strings.HasPrefix(line[marks:], " ") {
+			continue
+		}
+		headings = append(headings, unescape.ReplaceAllString(strings.TrimSpace(line[marks:]), "$1"))
+	}
+	return headings
 }
 
 func TestExtFromContentType(t *testing.T) {

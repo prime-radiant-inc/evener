@@ -13,6 +13,7 @@ import (
 	"time"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"golang.org/x/net/html"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/runetrim"
@@ -35,9 +36,100 @@ func webFetchCacheKey(rawURL string) string {
 	return nonProjectHash(rawURL)
 }
 
-// htmlToMarkdown converts an HTML string to markdown.
-func htmlToMarkdown(html string) (string, error) {
-	return htmltomarkdown.ConvertString(html)
+// htmlToMarkdown converts an HTML string to markdown. The converter drops
+// <head>, and with it the document <title>, so a title the converted body does
+// not already carry as a heading is prepended as one. web_fetch does not run
+// scripts: on a page whose visible heading is injected client-side, the static
+// title can be the only statement of what the page is.
+func htmlToMarkdown(src string) (string, error) {
+	md, err := htmltomarkdown.ConvertString(src)
+	if err != nil {
+		return "", err
+	}
+	title := htmlDocumentTitle(src)
+	if title == "" {
+		return md, nil
+	}
+	// The converter renders the title heading too, so it is escaped exactly as
+	// the body's headings are and the two compare as like with like.
+	heading, err := htmltomarkdown.ConvertString("<h1>" + html.EscapeString(title) + "</h1>")
+	if err != nil {
+		return md, nil //nolint:nilerr // the title is an addition; the page converted
+	}
+	heading = strings.TrimSpace(heading)
+	text, ok := atxHeadingText(heading)
+	if !ok || markdownHasHeading(md, text) {
+		return md, nil
+	}
+	if strings.TrimSpace(md) == "" {
+		return heading + "\n", nil
+	}
+	return heading + "\n\n" + md, nil
+}
+
+// htmlDocumentTitle returns the text of the document's first <title> before
+// <body>, entities decoded and whitespace collapsed, or "" when there is none.
+// An SVG or MathML <title> names that element, not the page, so the scan ends
+// at <body>, <svg> or <math>, whichever comes first.
+func htmlDocumentTitle(src string) string {
+	z := html.NewTokenizer(strings.NewReader(src))
+	inTitle := false
+	var text strings.Builder
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return ""
+		case html.StartTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "title":
+				inTitle = true
+			case "body", "svg", "math":
+				return ""
+			}
+		case html.TextToken:
+			if inTitle {
+				text.Write(z.Text())
+			}
+		case html.EndTagToken:
+			if name, _ := z.TagName(); inTitle && string(name) == "title" {
+				if title := strings.Join(strings.Fields(text.String()), " "); title != "" {
+					return title
+				}
+				inTitle = false
+				text.Reset()
+			}
+		}
+	}
+}
+
+// markdownHasHeading reports whether md has an ATX heading, at any level,
+// whose text is text, compared case-insensitively with whitespace collapsed.
+func markdownHasHeading(md, text string) bool {
+	want := strings.Join(strings.Fields(text), " ")
+	for line := range strings.Lines(md) {
+		got, ok := atxHeadingText(strings.TrimSpace(line))
+		if ok && strings.EqualFold(strings.Join(strings.Fields(got), " "), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// atxHeadingText returns the text of an ATX heading line ("## Text ##"), and
+// whether line is one: one to six #s, then a space or the end of the line.
+func atxHeadingText(line string) (string, bool) {
+	rest := strings.TrimLeft(line, "#")
+	if marks := len(line) - len(rest); marks == 0 || marks > 6 || (rest != "" && rest[0] != ' ') {
+		return "", false
+	}
+	text := strings.TrimSpace(rest)
+	// A closing run of #s is markup only after a space: in "# Learn C\#" the
+	// escaped # belongs to the text.
+	if closed := strings.TrimRight(text, "#"); closed == "" || strings.HasSuffix(closed, " ") {
+		text = strings.TrimSpace(closed)
+	}
+	return text, true
 }
 
 // webFetchCachePath returns the absolute per-fetch directory path under the XDG cache dir.
