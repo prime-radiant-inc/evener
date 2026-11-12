@@ -132,7 +132,8 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
   **`tools`** accepts string lists, comma-separated strings, single tool names,
   or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
   for accepted and rejected forms. Claude tool names are mapped to evener canonical
-  names at load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
+  names at load (`toolname.ImportClaudeToolName`, including `Skill -> use_skill` and
+  `mcp__<server>__<tool>` -> sanitized `<server>__<tool>`). `model`/`color` default to `inherit`/`blue`.
 - **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.

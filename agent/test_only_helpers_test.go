@@ -11,6 +11,8 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -390,4 +392,19 @@ func appendColdAttentionResolution(path, expectedSessionID string, ids []string,
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	p, _ := s.readMemoryScope(context.Background(), scope, nil)
 	return p
+}
+
+func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
+	}
+	return s.defaultToolSummaryForAgentFromRegistered(registered, agent)
+}
+
+func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
+	if reg == nil {
+		return nil
+	}
+	return delegateToolNameCeilingFromRegistered(reg.RegisteredNames(), reg, resultToolName, allTools, allowed, denied, canDelegate, isolation)
 }

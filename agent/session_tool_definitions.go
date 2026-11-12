@@ -26,30 +26,8 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 }
 
-func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
-	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
-
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent, allowance > 0)
-	var canonical []string
-	switch {
-	case allTools || len(allowedTools) == 0:
-		canonical = removeStrings(s.reg.Names(), deniedTools)
-	default:
-		canonical = append([]string(nil), allowedTools...)
-		canonical = appendUniqueStrings(canonical, s.resultToolName())
-	}
-	// Only strip root-only tools from the summary when there is no grantable
-	// allowance. When allowance > 0 a typed agent that lists delegate/job_watch
-	// keeps them in its printed summary so the DefaultTools line is truthful.
-	if allowance <= 0 {
-		canonical = removeRootOnlySubagentTools(canonical)
-	}
-	// ask_user is never callable by a subagent, including an all-tools role;
-	// keep the advertised capability set aligned with the unconditional grant
-	// guard rather than the parent's interactive-root registry.
-	canonical = removeStrings(canonical, protectedGrantTools())
-	// No delegate can save memory (filterUnavailableMemoryTools).
-	canonical = removeStrings(canonical, memorySaveToolNames)
+func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
+	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -57,6 +35,10 @@ func (s *Session) availableAgentEntries() []agentEntry {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
 	if allowance <= 0 || !s.canPromptDelegation() {
 		return nil
+	}
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
 	}
 
 	names := make([]string, 0, len(s.pluginAgents))
@@ -71,7 +53,7 @@ func (s *Session) availableAgentEntries() []agentEntry {
 		entries = append(entries, agentEntry{
 			Name:         name,
 			Description:  agent.Description,
-			DefaultTools: s.defaultToolSummaryForAgent(agent),
+			DefaultTools: s.defaultToolSummaryForAgentFromRegistered(registered, agent),
 			TaskList:     agentTaskEntries(agent.Tasks),
 		})
 	}
