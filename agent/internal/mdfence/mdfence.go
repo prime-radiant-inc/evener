@@ -96,7 +96,7 @@ func runAt(line string, base int) (char byte, n int, after string) {
 		return 0, 0, ""
 	}
 	line = line[base:]
-	indent := leadingSpaces(line)
+	indent := LeadingSpaces(line)
 	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
 		return 0, 0, ""
 	}
@@ -120,11 +120,11 @@ func runAt(line string, base int) (char byte, n int, after string) {
 // the fence opens at, and the column the matching closing fence is read from.
 // Its fence is 0 when the line is not a fence on a list item.
 func runInList(line string) (char byte, n, container int) {
-	indent := leadingSpaces(line)
+	indent := LeadingSpaces(line)
 	if indent > 3 || indent == len(line) {
 		return 0, 0, 0
 	}
-	marker, ok := listMarker(line[indent:])
+	marker, ok := ListMarker(line[indent:])
 	if !ok {
 		return 0, 0, 0
 	}
@@ -143,16 +143,16 @@ func runInList(line string) (char byte, n, container int) {
 	return char, n, indent + marker + spaces
 }
 
-// leadingSpaces returns the spaces line starts with. Fence indentation is
+// LeadingSpaces returns the ASCII spaces line starts with. Fence indentation is
 // spaces; a tab is content at this level, not indentation.
-func leadingSpaces(line string) int {
+func LeadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
-// listMarker returns the length in bytes of the list marker line starts with:
+// ListMarker returns the length in bytes of the list marker line starts with:
 // "-", "+" or "*", or one to nine digits followed by "." or ")". The space that
 // must follow the marker is not part of it.
-func listMarker(line string) (int, bool) {
+func ListMarker(line string) (int, bool) {
 	switch line[0] {
 	case '-', '+', '*':
 		return 1, true

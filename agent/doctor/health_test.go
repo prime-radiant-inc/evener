@@ -316,6 +316,7 @@ func TestTranscriptHealth_JSONFields(t *testing.T) {
 	for _, key := range []string{
 		"session_id", "tool_calls", "tool_errors", "longest_identical_run",
 		"truncation_warnings", "steering", "jobs", "stale_notifications", "user_corrections",
+		"assistant_fabrications",
 	} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("HealthResult JSON missing field %q: %s", key, string(b))
@@ -334,10 +335,62 @@ func TestRenderHealth_CompactTable(t *testing.T) {
 		sid, "shell", "denied=4", "timeout=1", "longest_identical_run: tool=shell length=4 all_errors=true",
 		"truncation_warnings: 1", "loop-detected=1", "notification=1",
 		"run_timeout=1", "zero_output_terminal=1", "stale_notifications: 1", "user_corrections (proxy): 2",
+		"assistant_fabrications: 0 (-)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered health missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestTranscriptHealth_AssistantFabrications(t *testing.T) {
+	t.Parallel()
+
+	// 1. Clean + fenced-code discussion reports 0 and nil map.
+	fencedTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("explain tags")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			assistantText("In fenced code:\n```xml\n<delegate-notification delegate_id=\"dlg_1\">ok</delegate-notification>\n<｜DSML｜ parameter name=\"x\">\n```\nInline `<job-notification>` too."),
+		}}),
+	}
+	cleanBase, cleanSID := rejectedSignatureFixture(t, fencedTurns)
+	cleanHealth, err := TranscriptHealth(context.Background(), cleanBase, cleanSID)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(clean): %v", err)
+	}
+	if cleanHealth.AssistantFabrications != 0 || cleanHealth.AssistantFabricationsByKind != nil {
+		t.Fatalf("clean health = (%d, %v), want (0, nil)", cleanHealth.AssistantFabrications, cleanHealth.AssistantFabricationsByKind)
+	}
+	if rendered := RenderHealth(cleanHealth); !strings.Contains(rendered, "assistant_fabrications: 0 (-)") {
+		t.Fatalf("clean RenderHealth missing 0 (-):\n%s", rendered)
+	}
+
+	// 2. 1 multi-tag harness_envelope turn + 1 tool_markup turn + 1 compaction fold copy of the envelope turn -> total 2 (1 each).
+	envelopeTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		assistantText("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>\n[answers]\n1. [q] -> \"yes\""),
+	}})
+	markupTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		assistantText("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi"),
+	}})
+	fabTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		envelopeTurn,
+		markupTurn,
+		schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+		foldCopy(envelopeTurn, 1),
+	}
+	fabBase, fabSID := rejectedSignatureFixture(t, fabTurns)
+	fabHealth, err := TranscriptHealth(context.Background(), fabBase, fabSID)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(fab): %v", err)
+	}
+	if fabHealth.AssistantFabrications != 2 ||
+		fabHealth.AssistantFabricationsByKind[fabricationKindHarnessEnvelope] != 1 ||
+		fabHealth.AssistantFabricationsByKind[fabricationKindToolMarkup] != 1 {
+		t.Fatalf("fab health = (%d, %v), want (2, harness_envelope=1 tool_markup=1)", fabHealth.AssistantFabrications, fabHealth.AssistantFabricationsByKind)
+	}
+	if rendered := RenderHealth(fabHealth); !strings.Contains(rendered, "assistant_fabrications: 2 (harness_envelope=1 tool_markup=1)") {
+		t.Fatalf("fab RenderHealth missing expected counts:\n%s", rendered)
 	}
 }
 

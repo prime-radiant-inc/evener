@@ -299,10 +299,11 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls lets notification acknowledgements finish idle. After a
-// terminal communicate, notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
-	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
+// routeNoToolCalls lets single-turn notification acknowledgements finish idle
+// before any tool batch has executed in the wake. After a terminal communicate,
+// notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, priorToolActivity bool, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (afterTerminalCommunicate || (!noContent && !priorToolActivity)) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -1529,6 +1530,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	admittedToRounds = true
 	s.beginAttentionCoverageRounds()
 	defer s.endAttentionCoverageRounds()
+	priorToolActivity := false
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -1799,7 +1801,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if len(calls) == 0 {
-			// A bare-text (non-empty) response to a notification turn
+			// A bare-text (non-empty) response to a notification turn before any tool batch runs
 			// is the agent acknowledging a frame it has nothing to act on (it often
 			// already read the job's output itself). Finish idle instead of scolding it
 			// toward a no-op communicate — the text is already in the transcript, and a
@@ -1820,7 +1822,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			route := routeNoToolCalls(kind, priorToolActivity, noContent, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -1852,6 +1854,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
+		priorToolActivity = true
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
