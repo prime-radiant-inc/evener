@@ -182,10 +182,10 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		}
 	}
 
-		before, _, err := c.read()
-		if err != nil {
-			return err
-		}
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -271,10 +271,10 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	if !wasAuthoredProvider && providerIsBare(p) {
-			detail, err := c.modelDetailLocked(r, name, model)
-			if err != nil {
-				return err
-			}
+		detail, err := c.modelDetailLocked(r, name, model)
+		if err != nil {
+			return err
+		}
 		if out != nil {
 			*out = appwire.InstanceModelEditResponse{
 				List:   c.listLocked(key, keyErr),
@@ -290,7 +290,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		l.Providers[name] = p
 	}
 
-		var committedDetail appwire.InstanceModelDetailResponse
+	var committedDetail appwire.InstanceModelDetailResponse
 	validate := func(reloaded *registry.Registry) error {
 		resAfter, err := reloaded.ResolveInstanceModelFacts(name, model)
 		if err != nil {
@@ -299,11 +299,11 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 		if row.Caps.CompactionThreshold != nil && resAfter.Caps.CompactionThreshold == nil {
 			return fmt.Errorf("compaction_threshold exceeds model input ceiling (%d)", resAfter.Caps.InputCeiling())
 		}
-			detail, err := c.modelDetailLocked(reloaded, name, model)
-			if err != nil {
-				return err
-			}
-			committedDetail = detail
+		detail, err := c.modelDetailLocked(reloaded, name, model)
+		if err != nil {
+			return err
+		}
+		committedDetail = detail
 		return nil
 	}
 
@@ -314,7 +314,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	if out != nil {
 		*out = appwire.InstanceModelEditResponse{
 			List:   c.listLocked(key, keyErr),
-				Detail: &committedDetail,
+			Detail: &committedDetail,
 		}
 	}
 	return nil

@@ -326,27 +326,27 @@ drain1:
 		t.Fatalf("unknown-window threshold marker = %q, must not cite synthetic window 277778", markerUnknown)
 	}
 
-		if err := s.SetModel("work/model-1m-none"); err != nil {
-			t.Fatalf("SetModel back to unthresholded 1M: %v", err)
-		}
-		var switchedBack *events.ModelChangedData
-	drain2:
-		for {
-			select {
-			case ev := <-s.Events():
-				if d, ok := ev.Data.(events.ModelChangedData); ok {
-					switchedBack = &d
-				}
-			default:
-				break drain2
+	if err := s.SetModel("work/model-1m-none"); err != nil {
+		t.Fatalf("SetModel back to unthresholded 1M: %v", err)
+	}
+	var switchedBack *events.ModelChangedData
+drain2:
+	for {
+		select {
+		case ev := <-s.Events():
+			if d, ok := ev.Data.(events.ModelChangedData); ok {
+				switchedBack = &d
 			}
+		default:
+			break drain2
 		}
-		if switchedBack == nil {
-			t.Fatal("no EventModelChanged emitted when switching back to work/model-1m-none")
-		}
-		if switchedBack.CompactionThreshold != 0 || switchedBack.ContextWindow != 1_000_000 || switchedBack.ContextAssumed {
-			t.Fatalf("EventModelChanged on switch back = %+v, want CompactionThreshold=0 ContextWindow=1000000 ContextAssumed=false", *switchedBack)
-		}
+	}
+	if switchedBack == nil {
+		t.Fatal("no EventModelChanged emitted when switching back to work/model-1m-none")
+	}
+	if switchedBack.CompactionThreshold != 0 || switchedBack.ContextWindow != 1_000_000 || switchedBack.ContextAssumed {
+		t.Fatalf("EventModelChanged on switch back = %+v, want CompactionThreshold=0 ContextWindow=1000000 ContextAssumed=false", *switchedBack)
+	}
 }
 
 func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
