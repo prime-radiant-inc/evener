@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,48 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+// TestProbeHarnessesScopeWorkspaceToWorkDir covers #3724: both harnesses must
+// make a WorkDir nested inside another repository its own writable workspace.
+// The CLI worker starts in WorkDir and carries its parent as a git ceiling; the
+// live resolver gets the same ceiling in its host facts.
+func TestProbeHarnessesScopeWorkspaceToWorkDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "nested", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantWork := identifier.ResolveClean(work)
+
+	cmd, err := cliProbeCommand(context.Background(), runConfig{model: "test/model"}, probeFile{}, probeResult{WorkDir: work})
+	if err != nil {
+		t.Fatalf("cliProbeCommand: %v", err)
+	}
+	if cmd.Dir != work {
+		t.Fatalf("CLI worker dir = %q, want %q", cmd.Dir, work)
+	}
+
+	origHost := runnerProbeSandboxHost
+	runnerProbeSandboxHost = func() sandbox.HostFacts { return enforceableSandboxHost(t) }
+	t.Cleanup(func() { runnerProbeSandboxHost = origHost })
+	host := liveProbeSandboxHost(work)
+	rp, err := sandbox.ResolveNamed("workspace-write", nil, host, work, nil)
+	if err != nil {
+		t.Fatalf("ResolveNamed: %v", err)
+	}
+	if rp.Git.WorktreeRoot != wantWork {
+		t.Fatalf("live worktree root = %q, want %q", rp.Git.WorktreeRoot, wantWork)
+	}
+	if want := []string{wantWork}; !slices.Equal(rp.FileTool.WriteRoots, want) {
+		t.Fatalf("live file-tool write roots = %v, want %v", rp.FileTool.WriteRoots, want)
+	}
+}
 
 // parseRunFlags parses args through the same defineRunFlags wiring runSuite
 // uses, so a test reads the flag defaults and values the runner actually gets.

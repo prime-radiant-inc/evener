@@ -8,7 +8,22 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
+
+// TestParseGitCeilingDirs keeps only absolute, resolved entries and ignores
+// relative ones, as git does (#3724).
+func TestParseGitCeilingDirs(t *testing.T) {
+	abs := t.TempDir()
+	got := parseGitCeilingDirs("relative" + string(os.PathListSeparator) + abs + string(os.PathListSeparator))
+	if want := []string{identifier.ResolveClean(abs)}; !slices.Equal(got, want) {
+		t.Fatalf("parseGitCeilingDirs = %v, want %v", got, want)
+	}
+	if got := parseGitCeilingDirs(""); got != nil {
+		t.Fatalf("parseGitCeilingDirs(\"\") = %v, want nil", got)
+	}
+}
 
 // The capability probe must exercise the exact version-gated flags Wrap emits,
 // so an older bwrap that lacks --argv0 / --new-session (Ubuntu 22.04 = 0.6.1,

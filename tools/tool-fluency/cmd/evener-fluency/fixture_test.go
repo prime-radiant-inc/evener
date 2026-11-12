@@ -145,6 +145,9 @@ func TestRunCLIProbeCutsTheFixtureOffFromAnEnclosingRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := filepath.Join(t.TempDir(), "rep-01", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	err := runCLIProbe(context.Background(), runConfig{evenerBin: bin, model: "openai/m", reasoningEffort: "low"},
 		probeFile{Prompt: "p"}, probeResult{WorkDir: work, StateDir: t.TempDir()}, &stdout, &stderr)

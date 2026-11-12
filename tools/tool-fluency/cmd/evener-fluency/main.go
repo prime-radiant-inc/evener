@@ -1014,18 +1014,31 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	args, err := cliProbeArgs(cfg, probe, res)
+	cmd, err := cliProbeCommand(ctx, cfg, probe, res)
 	if err != nil {
 		return err
-	}
-	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
-	cmd.Env = fixtureEnv(res.WorkDir)
-	if cfg.clearOpenAIAPIKey {
-		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
+}
+
+// cliProbeCommand is the CLI harness's worker launch. It starts in the probe's
+// WorkDir, and fixtureEnv names that directory's parent as a git ceiling, so a
+// WorkDir nested inside the checkout is its own writable workspace rather than
+// inheriting the whole enclosing repository (#3724).
+func cliProbeCommand(ctx context.Context, cfg runConfig, probe probeFile, res probeResult) (*exec.Cmd, error) {
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
+	cmd.Dir = res.WorkDir
+	cmd.Env = fixtureEnv(res.WorkDir)
+	if cfg.clearOpenAIAPIKey {
+		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
+	}
+	return cmd, nil
 }
 
 func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, error) {
@@ -1094,6 +1107,18 @@ var runnerLoadClient = cmdutil.LoadClient
 var runnerAttachAPILogger = cmdutil.AttachAPILogger
 var runnerMarshalEvent = json.Marshal
 var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProber{}.Probe() }
+
+// liveProbeSandboxHost scopes the live harness's sandbox to the probe's WorkDir:
+// its parent is a GIT_CEILING_DIRECTORIES boundary, so a WorkDir nested inside
+// another repository is classified as its own non-Git workspace (#3724).
+func liveProbeSandboxHost(workDir string) sandbox.HostFacts {
+	host := runnerProbeSandboxHost()
+	host.GitCeilingDirs = append([]string{}, host.GitCeilingDirs...)
+	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+		host.GitCeilingDirs = append(host.GitCeilingDirs, parent)
+	}
+	return host
+}
 
 // parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
 // for both harnesses, and returns the normalized wire mode and the resolved
@@ -1182,7 +1207,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	// a declared mode the host cannot serve fails closed here, before any
 	// provider call, rather than silently running the worker native and
 	// unsandboxed.
-	if err := cmdutil.ProvisionSandbox(env, &sessCfg, res.WorkDir, runnerProbeSandboxHost); err != nil {
+	if err := cmdutil.ProvisionSandboxWithHost(env, &sessCfg, res.WorkDir, liveProbeSandboxHost(res.WorkDir)); err != nil {
 		return err
 	}
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
