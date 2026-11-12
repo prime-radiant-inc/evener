@@ -57,14 +57,14 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 				_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"pdf-result-4463"}]},"finishReason":"STOP"}]}`))
 			}))
 			t.Cleanup(srv.Close)
-			configured := &fakeErrAdapter{name: "pdfroute", steps: []func(llm.Request) (llm.Response, error){
+			configured := newFakeErrAdapter("pdfroute", []func(llm.Request) (llm.Response, error){
 				func(llm.Request) (llm.Response, error) {
 					if route == "refusal" {
 						return llm.Response{}, visionRouteRefusal("pdfroute")
 					}
 					return llm.Response{}, visionRouteError("pdfroute")
 				},
-			}}
+			})
 			dir := t.TempDir()
 			client := registryClientAt(t, dir, map[string]registry.Provider{
 				// The configured vision route is deliberately a document-delivering

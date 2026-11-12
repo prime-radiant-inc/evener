@@ -391,14 +391,11 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 	const wantErrMarker = "provider boom 500"
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, errors.New(wantErrMarker)
-			},
+	c.Register(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, errors.New(wantErrMarker)
 		},
-	})
+	}))
 	noRetry := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
@@ -447,14 +444,11 @@ func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t 
 	t.Parallel()
 	joined := errors.Join(context.Canceled, &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false})
 	sess := newSession(t,
-		withAdapter(&fakeErrAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) (llm.Response, error){
-				func(req llm.Request) (llm.Response, error) {
-					return llm.Response{}, joined
-				},
+		withAdapter(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, joined
 			},
-		}),
+		})),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 0},

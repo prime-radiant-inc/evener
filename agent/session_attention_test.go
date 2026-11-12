@@ -749,21 +749,18 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 	})
 
 	fixture := newColdDelegateFixture(t, "")
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				close(providerEntered)
-				<-releaseProvider
-				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "terminal provider failure", nil, nil)
-			},
-			func(llm.Request) (llm.Response, error) {
-				close(successorEntered)
-				<-releaseSuccessor
-				return agenttest.FinalResponse("successor completed after recovery"), nil
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			close(providerEntered)
+			<-releaseProvider
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "terminal provider failure", nil, nil)
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			close(successorEntered)
+			<-releaseSuccessor
+			return agenttest.FinalResponse("successor completed after recovery"), nil
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
