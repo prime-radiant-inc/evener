@@ -52,7 +52,7 @@ type hubInstancesController struct {
 	// guessing it got there. Nil in production.
 	beforeCredentialLock func()
 	// applied records the providers.toml writes that landed during the current
-	// mutation, so instanceWrite learns a change happened from the write
+	// mutation, so the controller's commit port learns a change happened from the write
 	// primitive itself (write) rather than from a marker each error path has to
 	// remember to attach. Cleared when a mutation takes mu, and again when a
 	// rollback puts the previous file back.
@@ -66,6 +66,44 @@ type hubInstancesController struct {
 	// taken. A race test holds a post-mutation listing until a racing write
 	// completes. Nil in production.
 	beforeList func()
+
+	commitMu    sync.Mutex
+	onCommitted func(instanceCommitted)
+}
+
+// instanceCommitted is one provider-instance mutation's outcome: Err is the
+// error the mutation returned, and OriginClientID is the caller's own id. The
+// dispatcher echoes the origin only for a clean outcome; an applied-with-error
+// outcome is broadcast without one, because the issuing client cannot treat a
+// failed mutation's echo as its own success.
+type instanceCommitted struct {
+	OriginClientID string
+	Err            error
+}
+
+// OnCommitted registers the controller's one post-commit sink. It runs after
+// every mutation that reports an applied change - a clean write and the
+// applied-with-error case - so the RPC layer cannot pair a mutation with its
+// own broadcast, and a new handler cannot forget to.
+func (c *hubInstancesController) OnCommitted(fn func(instanceCommitted)) {
+	if c == nil {
+		return
+	}
+	c.commitMu.Lock()
+	defer c.commitMu.Unlock()
+	c.onCommitted = fn
+}
+
+func (c *hubInstancesController) committed(originClientID string, err error) {
+	if !writeDidApply(err) {
+		return
+	}
+	c.commitMu.Lock()
+	onCommitted := c.onCommitted
+	c.commitMu.Unlock()
+	if onCommitted != nil {
+		onCommitted(instanceCommitted{OriginClientID: originClientID, Err: err})
+	}
 }
 
 // observeInstancesController, when set, receives the instances controller the
@@ -127,11 +165,22 @@ func (c *hubInstancesController) captureApplied(errp *error) {
 // afterwards); a reload commits the credential view it
 // read, so one running across a credential write's clear could publish a state
 // that clear had already invalidated.
-func (c *hubInstancesController) lockMutation(errp *error) (release func()) {
+func (c *hubInstancesController) lockMutation(originClientID string, errp *error) (release func()) {
 	c.lockForWrite()
 	c.auth.credMu.Lock()
 	return func() {
 		c.auth.credMu.Unlock()
+		c.finishMutation(errp)()
+		c.committed(originClientID, *errp)
+	}
+}
+
+// finishMutation closes one mutation's critical section: it folds the write
+// record into the error and releases mu. The caller announces through the
+// commit port after this returns, so the sink may broadcast without holding the
+// controller's mutation lock.
+func (c *hubInstancesController) finishMutation(errp *error) func() {
+	return func() {
 		c.captureApplied(errp)
 		c.mu.Unlock()
 	}
@@ -1008,7 +1057,7 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 	if out != nil {
 		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
 	}
-	defer c.lockMutation(&err)()
+	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a create whose config parses but cannot load (#711) can
 	// be written back exactly as the file was, the way Edit restores its own.
@@ -1053,7 +1102,7 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 			// The entry this call wrote is still in the file, so the change
 			// stands and every other client's list is stale: the write primitive
 			// already marked the applied state, so the marker rides the plain
-			// error and instanceWrite broadcasts it.
+			// error and the commit port broadcasts it.
 			return fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
 		}
 		// The rollback put the previous file back, so the write this call made is
@@ -1125,7 +1174,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// edit captures under its write locks (listLocked), so it is resolved for
 	// every caller rather than only the captured-listing one.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
-	defer c.lockMutation(&err)()
+	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so if the edit parses fine but fails to load (#711),
 	// writing it back restores exactly what was on disk before this call.
@@ -1493,7 +1542,7 @@ func (c *hubInstancesController) moveCredentialsAfterRename(name, newName string
 		// persisted as one that ended cleanly and is announced the same
 		// way: renamePersistedError is what the RPC handler reads to hand
 		// the client the discriminator, and the write primitive's applied
-		// mark is what the handler broadcasts on.
+		// mark is what the commit port broadcasts on.
 		return renamePersistedError{reloadErr}
 	default:
 		// Both halves failed, and the caller has to hear both: the move
@@ -1633,7 +1682,7 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 // carries the new name, and what is unfinished is either the credential move
 // or the reload that would refresh the hub's own view of what the move
 // changed. Every other client's instance list is stale by exactly as much as
-// it would be after a clean rename, so the RPC handler broadcasts on it and
+// it would be after a clean rename, so the controller's commit port announces it and
 // still returns it, leaving the client that asked with the leftover to deal
 // with.
 type renamePersistedError struct{ err error }
@@ -1646,7 +1695,7 @@ func (e renamePersistedError) Unwrap() error { return e.err }
 // (or whose config entry left it) before a later step failed: the instance's
 // stored key or OAuth record is gone, so the removal stands even though the
 // call returns an error. Every other client's list is stale by exactly as much
-// as after a clean removal, so the RPC handler broadcasts on it and still
+// as after a clean removal, so the controller's commit port announces it and still
 // returns it, leaving the client that asked with what was left behind to
 // reconcile rather than retry against a missing instance.
 type removeAppliedError struct{ err error }
@@ -1789,7 +1838,7 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		// The rename reached the file, so it is as persisted as one that ended
 		// cleanly: renamePersistedError is what the RPC handler reads to hand
 		// the client the discriminator, and the config write the rename landed
-		// marked the applied state the handler broadcasts on.
+		// marked the applied state the commit port broadcasts on.
 		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
 	}
 	return nil
@@ -1886,6 +1935,12 @@ func (c *hubInstancesController) launchDefaultIs(name string) bool {
 // and Edit's convention (#717/#748): appwire.InvalidParams, not a generic wire
 // error.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (err error) {
+	// Registered first so it runs after every cleanup defer, including the
+	// credential-rejection reset below: clients that react to the broadcast must
+	// not read a rejection this removal has already settled.
+	defer func() {
+		c.committed(params.OriginClientId, err)
+	}()
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -1919,8 +1974,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 
 	c.lockForWrite()
-	defer c.mu.Unlock()
-	defer c.captureApplied(&err)
+	defer c.finishMutation(&err)()
 	// The lookup names what this call deletes - the authored entry, the
 	// stored key and the OAuth record under this name - so it is made under
 	// the lock that holds the deletion, as Edit's are: a rename landing
@@ -2179,7 +2233,7 @@ func (r *removal) failedReloadUnwritten(err error) error {
 		// could not be put back is a change every other client's
 		// credential status for this name is stale against, so the
 		// credential deletion's applied mark stays on the controller,
-		// which is what makes instanceWrite broadcast
+		// which is what makes the controller's commit port broadcast
 		// evener/auth/updated.
 		rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
 	}
@@ -2653,12 +2707,18 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 }
 
 // RefreshModels fetches one instance's live listing into the held registry
-// and reports only the fetch error; the caller's instanceWrite wrapper
+// and reports only the fetch error; the caller's commit port
 // produces the updated list. It is a read: no file is written, so it stays
 // available while writes are refused. A failed fetch is an error, not a
 // catalog-only list — the sheet keeps its catalog rows and toasts
 // the failure.
-func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) error {
+func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) (err error) {
+	// A refresh writes no providers.toml, but its answer can change the model
+	// rows every client shows; the handler always announced a clean refresh, so
+	// the owner emits the same outcome through its one commit port.
+	defer func() {
+		c.committed(params.OriginClientId, err)
+	}()
 	reg := c.reg.Get()
 	if reg == nil {
 		return errors.New("providers.toml cannot be read: the provider registry has not loaded")
@@ -2693,7 +2753,7 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The layer this call wrote is still in the file, like Create's
 			// failed rollback: the write primitive set the applied mark, so
-			// instanceWrite broadcasts the plain error's change.
+			// the commit port broadcasts the plain error's change.
 			return fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
 		}
 		// The rollback put the previous file back, so the write is undone.
@@ -2725,7 +2785,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	name := strings.TrimSpace(params.Name)
 	model := strings.TrimSpace(params.Model)
 
-	defer c.lockMutation(&err)()
+	defer c.lockMutation(params.OriginClientId, &err)()
 	if _, ok := c.reg.Get().Instance(name); !ok {
 		return instanceNotFound(name)
 	}
@@ -2777,7 +2837,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 	name := strings.TrimSpace(params.Name)
 
-	defer c.lockMutation(&err)()
+	defer c.lockMutation(params.OriginClientId, &err)()
 	// Checked under the lock that holds the write: a rename landing between
 	// the two would leave a default naming an instance that has moved, which
 	// the next load refuses while it sits on disk.
@@ -2794,6 +2854,6 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 	// The new default is on disk, so a failed reload is an applied write: only
 	// the hub's own view is behind, and every other client's list is stale. The
-	// write primitive set the applied mark instanceWrite broadcasts on.
+	// write primitive set the applied mark the commit port broadcasts on.
 	return c.reg.Reload()
 }

@@ -145,6 +145,44 @@ func TestHubRPCAgentsDocSetReplacesThePreviousContent(t *testing.T) {
 	}
 }
 
+// A save through the handler broadcasts exactly once: the store's OnCommitted
+// port is the only path, so the handler's former manual broadcast cannot double
+// it. Every subscriber sees one notification, and no second one trails it.
+func TestHubRPCAgentsDocSetBroadcastsExactlyOnce(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "evener")
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
+	defer hub.Close()
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		mustInitializeHubClient(t, client)
+	}
+
+	const content = "saved once"
+	var result appwire.AgentsDocResponse
+	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: content}, &result); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	want := appwire.AgentsDocResponse{Path: filepath.Join(root, "AGENTS.md"), Exists: true, Content: content}
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		if got := receiveAgentsDocChanged(t, client); got != want {
+			t.Fatalf("notification = %+v, want %+v", got, want)
+		}
+		assertNoAgentsDocNotification(t, client)
+	}
+}
+
+func assertNoAgentsDocNotification(t *testing.T, client *appwire.Client) {
+	t.Helper()
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("unexpected second notification %q", notification.Method)
+	default:
+	}
+}
+
 // A re-read that fails after the rename is a step after the write that
 // applied, so the requester must see the failure: swallowing it and returning
 // a fabricated success told the caller nothing went wrong. The write is still

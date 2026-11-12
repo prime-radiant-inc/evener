@@ -159,6 +159,64 @@ func saveAgentsDoc(path, content string) (appwire.AgentsDocResponse, error) {
 	return resp, nil
 }
 
+// agentsDocStore owns the personal AGENTS.md file: one mutex serializes every
+// read and save, and a save that reached the file emits exactly one committed
+// event after the lock is released. The store is the only writer, so a handler
+// cannot save without announcing it.
+type agentsDocStore struct {
+	path string
+
+	mu          sync.Mutex
+	onCommitted func(appwire.AgentsDocResponse)
+}
+
+func newAgentsDocStore(path string) *agentsDocStore {
+	return &agentsDocStore{path: path}
+}
+
+// OnCommitted registers the store's one post-commit sink. It runs after a save
+// that applied - including one whose read back failed, which still landed the
+// new bytes - with the response the save answered. The callback runs after the
+// store unlocks, so it may broadcast.
+func (s *agentsDocStore) OnCommitted(fn func(appwire.AgentsDocResponse)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onCommitted = fn
+}
+
+// Get reports the file as it is on disk, serialized against Set so a save's
+// rename and read back cannot interleave with an editor read.
+func (s *agentsDocStore) Get() (appwire.AgentsDocResponse, error) {
+	if s == nil || s.path == "" {
+		return appwire.AgentsDocResponse{}, errNoAgentsDocPath
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return readAgentsDoc(s.path)
+}
+
+// Set writes content and announces a save that applied. The broadcast carries
+// the response the save answered: when the read back failed after the rename,
+// that response describes the bytes the write landed, which is the state every
+// other client needs even though the requester still gets the error.
+func (s *agentsDocStore) Set(content string) (appwire.AgentsDocResponse, error) {
+	if s == nil || s.path == "" {
+		return appwire.AgentsDocResponse{}, errNoAgentsDocPath
+	}
+	s.mu.Lock()
+	resp, err := saveAgentsDoc(s.path, content)
+	committed := writeDidApply(err)
+	onCommitted := s.onCommitted
+	s.mu.Unlock()
+	if committed && onCommitted != nil {
+		onCommitted(resp)
+	}
+	return resp, err
+}
+
 // registerAgentsDocHandlers serves evener/settings/agentsDoc/{get,set}. Writes
 // serialize on one mutex so a save's rename, read back and broadcast land as
 // one unit: two clients saving at once could otherwise rename in one order
@@ -167,29 +225,19 @@ func saveAgentsDoc(path, content string) (appwire.AgentsDocResponse, error) {
 // last write wins, and every client hears about it. An empty path is a hub
 // with no user config root to edit under, and both methods refuse.
 func registerAgentsDocHandlers(server *appserver.Server, path string) {
-	var mu sync.Mutex
+	store := newAgentsDocStore(path)
+	// The store owns the post-commit announcement (#6224): a save that applied
+	// broadcasts the canonical response exactly once, and the handler below
+	// cannot pair a save with its own duplicate broadcast.
+	store.OnCommitted(func(resp appwire.AgentsDocResponse) {
+		server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsAgentsDocGet,
 		func(context.Context, appwire.EmptyParams) (appwire.AgentsDocResponse, error) {
-			if path == "" {
-				return appwire.AgentsDocResponse{}, errNoAgentsDocPath
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			return readAgentsDoc(path)
+			return store.Get()
 		})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsAgentsDocSet,
 		func(_ context.Context, params appwire.AgentsDocSetParams) (appwire.AgentsDocResponse, error) {
-			if path == "" {
-				return appwire.AgentsDocResponse{}, errNoAgentsDocPath
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			resp, err := saveAgentsDoc(path, params.Content)
-			// Announce only a save that applied: writeDidApply is false for
-			// one that never reached the file.
-			if writeDidApply(err) {
-				server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)
-			}
-			return resp, err
+			return store.Set(params.Content)
 		})
 }

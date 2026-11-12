@@ -1679,6 +1679,12 @@ func registerThreadHandlers(
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
 // auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
+	// The controller owns the post-commit notification (#6224): a credential or
+	// OAuth write that landed broadcasts once, through notifyAuthWrite's own
+	// rules, and the handlers below cannot pair a write with a second one.
+	authController.OnCommitted(func(committed authCommitted) {
+		notifyAuthWrite(server, committed.Err, committed.Status, committed.OriginClientID)
+	})
 	// A credential rejection appearing or clearing changes the instance's
 	// status (its Error) with no write behind it, so it is announced the way a
 	// write is: clients re-read statuses on evener/auth/updated. It is set here,
@@ -1701,61 +1707,31 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		return authController.LoginStart(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		resp, err := authController.LoginComplete(ctx, params)
-		// A restart answer discarded the flow and wrote nothing, so it owes no
-		// broadcast.
-		if err != nil || !resp.Restart {
-			notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
-		}
-		return resp, err
+		return authController.LoginComplete(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
-		resp, err := authController.Logout(params)
-		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
-		return resp, err
+		return authController.Logout(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 		return authController.List(params)
 	})
-	// ApiKeySet, ApiKeyClear and CredentialJsonSet all answer with a bare
-	// AuthStatusResponse, so one closure covers the broadcast every one of
-	// them owes evener/auth/updated when its write applied.
-	authStatusWrite := func(originClientID string, call func() (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
-		resp, err := call()
-		notifyAuthWrite(server, err, resp, originClientID)
-		return resp, err
-	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
-		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeySet(params) })
+		return authController.ApiKeySet(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
-		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
+		return authController.ApiKeyClear(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyConditionalSet, func(ctx context.Context, params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
-		resp, err := authController.ApiKeyConditionalSet(params)
-		// A skipped classification wrote nothing, so it owes no broadcast; a
-		// landed write - and a write whose post-write status read failed -
-		// broadcasts like every other credential write (notifyAuthWrite folds
-		// the applied-but-unread case).
-		if err != nil || resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
-			notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
-		}
-		return resp, err
+		return authController.ApiKeyConditionalSet(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
-		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })
+		return authController.CredentialJsonSet(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-		resp, err := authController.DevicePoll(ctx, params)
-		// A pending poll wrote nothing, which the state says; an authorized one
-		// wrote the record, whether or not the status read after it failed.
-		if resp.State == "authorized" {
-			notifyAuthWrite(server, err, *resp.Status, params.OriginClientId)
-		}
-		return resp, err
+		return authController.DevicePoll(ctx, params)
 	})
 }
 
@@ -1765,7 +1741,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 // steers to the new name - the old name is gone and re-issuing the rename can
 // only fail on a missing instance - instead of a failed save. Every other
 // failure is returned unchanged. The bool says whether the rename stood, which
-// is also what the handler broadcasts on.
+// is also what the controller's commit port announces on.
 func instanceRenameError(err error) (bool, error) {
 	if _, persisted := errors.AsType[renamePersistedError](err); persisted {
 		return true, appwire.InstanceRenamePersisted(err.Error())
@@ -1780,28 +1756,12 @@ func instanceRenameError(err error) (bool, error) {
 // retained for the name - instead of presenting a failed remove whose retry
 // targets an instance that is already gone. Every other failure is returned
 // unchanged. The bool says whether the removal stood, which is also what the
-// handler broadcasts on.
+// controller's commit port announces on.
 func instanceRemoveError(err error) (bool, error) {
 	if _, applied := errors.AsType[removeAppliedError](err); applied {
 		return true, appwire.InstanceRemoveApplied(err.Error())
 	}
 	return false, err
-}
-
-func instanceWriteResult[T any](server *appserver.Server, originClientID string, run func() (T, error)) (T, error) {
-	var zero T
-	res, err := run()
-	if writeDidApply(err) {
-		if err != nil {
-			notifyInstanceUpdated(server, "")
-		} else {
-			notifyInstanceUpdated(server, originClientID)
-		}
-	}
-	if err != nil {
-		return zero, err
-	}
-	return res, nil
 }
 
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
@@ -1813,24 +1773,34 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	if instancesController == nil {
 		return
 	}
+	// The controller owns the post-commit notification (#6224): every mutation
+	// that reports an applied change broadcasts once. Only a cleanly applied
+	// write echoes the caller's own originClientId, so that client recognizes
+	// its own change; an applied write that still returned an error broadcasts
+	// without one, because the issuing client cannot treat an errored mutation's
+	// echo as its own success - the broadcast can beat the failing reply, and
+	// consuming the marker then would suppress the invalidation a failed
+	// operation owes.
+	instancesController.OnCommitted(func(committed instanceCommitted) {
+		if committed.Err != nil {
+			notifyInstanceUpdated(server, "")
+			return
+		}
+		notifyInstanceUpdated(server, committed.OriginClientID)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 		return instancesController.List(), nil
 	})
-	// Every instance write answers the same way: a write that applied is
-	// announced, whether or not the step after it failed (writeDidApply), and
-	// the error still goes back to the client that asked, which is the only
-	// one that can act on what was left behind. Only a CLEANLY applied write
-	// echoes the caller's own originClientId, so that client recognizes its own
-	// change; an applied write that still returned an error broadcasts without
-	// one, because the issuing client cannot treat an errored mutation's echo as
-	// its own success - the broadcast can beat the failing reply, and consuming
-	// the marker then would suppress the invalidation a failed operation owes.
-	// apply performs the mutation and returns the listing to answer with, so
-	// the notify-and-answer block below is shared by every instance write. A
-	// create or edit passes its lock-scoped capture (see create and edit); the
-	// rest answer with a fresh List() via listAfter.
-	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
-		return instanceWriteResult(server, originClientId, apply)
+	// apply performs the mutation and returns the listing to answer with; the
+	// controller's commit port owns the broadcast. A create or edit passes its
+	// lock-scoped capture (see create and edit); the rest answer with a fresh
+	// List() via listAfter.
+	instanceWrite := func(apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
+		list, err := apply()
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return list, nil
 	}
 	listAfter := func(mutate func() error) func() (appwire.InstanceListResponse, error) {
 		return func() (appwire.InstanceListResponse, error) {
@@ -1841,7 +1811,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() (appwire.InstanceListResponse, error) {
 			var list appwire.InstanceListResponse
 			if err := instancesController.create(params, &list); err != nil {
 				return appwire.InstanceListResponse{}, err
@@ -1853,7 +1823,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		if err := refuseEditSetClearPair(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() (appwire.InstanceListResponse, error) {
 			var list appwire.InstanceListResponse
 			err := instancesController.edit(params, &list)
 			if err == nil {
@@ -1872,7 +1842,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() (appwire.InstanceListResponse, error) {
 			// A removal whose credential deletion applied before it failed is a
 			// write that stands, so it is announced (writeApplied, which the
 			// mutation folded onto its error) and the error goes back carrying
@@ -1889,31 +1859,35 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetDefault(params) }))
+		return instanceWrite(listAfter(func() error { return instancesController.SetDefault(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetModelDisabled(params) }))
+		return instanceWrite(listAfter(func() error { return instancesController.SetModelDisabled(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
+		return instanceWrite(listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceModelGet, func(_ context.Context, params appwire.InstanceModelGetParams) (appwire.InstanceModelDetailResponse, error) {
 		return instancesController.GetModel(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceModelEdit, func(_ context.Context, params appwire.InstanceModelEditParams) (appwire.InstanceModelEditResponse, error) {
-		return instanceWriteResult(server, params.OriginClientId, func() (appwire.InstanceModelEditResponse, error) {
-			var resp appwire.InstanceModelEditResponse
-			if err := instancesController.EditModel(params, &resp); err != nil {
-				return appwire.InstanceModelEditResponse{}, err
-			}
-			return resp, nil
-		})
+		var resp appwire.InstanceModelEditResponse
+		if err := instancesController.EditModel(params, &resp); err != nil {
+			return appwire.InstanceModelEditResponse{}, err
+		}
+		return resp, nil
 	})
 }
 
 // registerLaunchHandlers registers the evener/launch/* RPC handlers, routed to the
 // launch controller. Successful layer/trust mutations broadcast evener/launch/updated.
 func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunchController) {
+	// The controller owns the post-commit notification (#6224): a layer or trust
+	// write that applied broadcasts once, including the applied-with-error case.
+	// Wiring the port here removes the manual pairing a new handler could forget.
+	launchController.OnCommitted(func(committed launchCommitted) {
+		notifyLaunchUpdated(server, committed.CWD, committed.Layer)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)
 	})
@@ -1924,18 +1898,10 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 		return launchController.GetLayer(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
-		resp, err := launchController.SetLayer(ctx, params)
-		if writeDidApply(err) {
-			notifyLaunchUpdated(server, params.CWD, params.Layer)
-		}
-		return resp, err
+		return launchController.SetLayer(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-		resp, err := launchController.TrustRepo(ctx, params)
-		if writeDidApply(err) {
-			notifyLaunchUpdated(server, params.CWD, "repo")
-		}
-		return resp, err
+		return launchController.TrustRepo(ctx, params)
 	})
 }
 
