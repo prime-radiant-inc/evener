@@ -63,7 +63,7 @@ func SanitizeMCPToolName(name string) string {
 // including "mcp__plugin_<plugin>_<server>__<tool>") strip the "mcp__" prefix
 // and apply SanitizeMCPToolName to match mcp.Manager registration.
 func ImportClaudeToolName(name string) string {
-	if mapped, ok := claudeToEvener[name]; ok {
+	if mapped := ClaudeToEvener(name); mapped != name {
 		return mapped
 	}
 	if rest, ok := strings.CutPrefix(name, "mcp__"); ok {

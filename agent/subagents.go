@@ -509,7 +509,26 @@ func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools
 	if reg == nil {
 		return nil
 	}
-	registered := reg.RegisteredNames()
+	return delegateToolNameCeilingFromRegistered(reg.RegisteredNames(), reg, resultToolName, allTools, allowed, denied, canDelegate, isolation)
+}
+
+func (s *Session) subagentToolNameCeiling(agent *plugin.Agent, canDelegate bool, isolationName string) []string {
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
+	}
+	return s.subagentToolNameCeilingFromRegistered(registered, agent, canDelegate, isolationName)
+}
+
+func (s *Session) subagentToolNameCeilingFromRegistered(registered map[string]bool, agent *plugin.Agent, canDelegate bool, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, canDelegate)
+	return delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+}
+
+func delegateToolNameCeilingFromRegistered(registered map[string]bool, reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
+	if reg == nil {
+		return nil
+	}
 	selected := make(map[string]bool, len(registered))
 	switch {
 	case allTools:

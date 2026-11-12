@@ -698,9 +698,6 @@ func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, c
 	return old, true
 }
 
-// sanitizeToolName replaces characters invalid in LLM tool names (e.g. hyphens)
-// with underscores. MCP servers often use hyphens in tool names, but LLM
-// providers only accept [a-zA-Z0-9_].
 func sanitizeToolName(name string) string {
 	return toolname.SanitizeMCPToolName(name)
 }

@@ -17,7 +17,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
-		"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
@@ -150,12 +150,8 @@ func TestIntg_PluginAgentRetainsAndExecutesMappedMCPToolAtSpawn(t *testing.T) {
 
 	dir := makePluginDir(t, "mcp-plug")
 	pluginBin := filepath.Join(dir, "intgmcpserver")
-	binBytes, err := os.ReadFile(bin)
-	if err != nil {
-		t.Fatalf("read mcp server binary: %v", err)
-	}
-	if err := os.WriteFile(pluginBin, binBytes, 0o755); err != nil {
-		t.Fatalf("stage plugin mcp server binary: %v", err)
+	if err := os.Symlink(bin, pluginBin); err != nil {
+		t.Fatalf("symlink plugin mcp server binary: %v", err)
 	}
 	mcpJSON, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{

@@ -27,9 +27,15 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 }
 
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
-	canDelegate := s.delegationAllowance > 0 // read under caller's lock or during single-threaded init
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent, canDelegate)
-	canonical := delegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, "")
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
+	}
+	return s.defaultToolSummaryForAgentFromRegistered(registered, agent)
+}
+
+func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
+	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -37,6 +43,10 @@ func (s *Session) availableAgentEntries() []agentEntry {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
 	if allowance <= 0 || !s.canPromptDelegation() {
 		return nil
+	}
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
 	}
 
 	names := make([]string, 0, len(s.pluginAgents))
@@ -51,7 +61,7 @@ func (s *Session) availableAgentEntries() []agentEntry {
 		entries = append(entries, agentEntry{
 			Name:         name,
 			Description:  agent.Description,
-			DefaultTools: s.defaultToolSummaryForAgent(agent),
+			DefaultTools: s.defaultToolSummaryForAgentFromRegistered(registered, agent),
 			TaskList:     agentTaskEntries(agent.Tasks),
 		})
 	}
