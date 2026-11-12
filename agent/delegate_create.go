@@ -392,7 +392,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
 		Task:                          brief,
-		Description:                   brief,
+		Description:                   "",
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),

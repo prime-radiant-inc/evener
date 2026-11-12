@@ -208,6 +208,7 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap 
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Phase:                string(snapshot.phase),
 		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
@@ -235,6 +236,9 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap 
 		item.ExhaustionLimit = snapshot.lastOutcome.ExhaustionLimit
 		endedAt := snapshot.lastOutcome.EndedAt
 		item.EndedAt = timePtrOrNil(&endedAt)
+	}
+	if snapshot.latestPacket != nil && len(snapshot.latestPacket.Message) > 0 {
+		item.TotalBytes = int64(len(snapshot.latestPacket.Message))
 	}
 	return item
 }
@@ -285,6 +289,9 @@ func formatJobList(out jobListResult, maxChars int) string {
 	labels := make([]jobListLabel, len(out.Items))
 	for i, j := range out.Items {
 		description := j.Description
+		if description == "" && j.Task != "" {
+			description = j.Task
+		}
 		if description == "" && j.Command != nil {
 			description = *j.Command
 		}
@@ -351,7 +358,9 @@ func renderJobList(out jobListResult, labels []jobListLabel, labelLimit int) str
 		if j.ExitCode != nil {
 			detail = append(detail, fmt.Sprintf("exit %d", *j.ExitCode))
 		}
-		detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
+		if j.Type != "delegate" || j.TotalBytes > 0 {
+			detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
+		}
 		// Surface resumability only when a job actually is resumable; resumable=false
 		// for an ordinary shell job is noise (keeps rows lean).
 		if j.Resumable != nil && *j.Resumable {

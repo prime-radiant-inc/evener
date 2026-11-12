@@ -823,7 +823,7 @@
       "turnId": "turn_1",
       "toolName": "job_status",
       "callId": "call_job_status",
-      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "output": "{\"id\":\"job_fixture_1\",\"job_id\":\"job_fixture_1\",\"type\":\"shell\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
       "status": "completed",
       "completedAt": 1790625602000
     },

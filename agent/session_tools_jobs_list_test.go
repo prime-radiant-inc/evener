@@ -224,3 +224,55 @@ func TestJobListShowsTurnSlotOccupancy(t *testing.T) {
 		t.Fatalf("occupancy line missing: %q", output)
 	}
 }
+
+func TestJobListDelegateByteCountsAndPhase(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	started := time.Unix(100, 0).UTC()
+	ended := started.Add(time.Second)
+
+	seedStableToolRunningDelegate(t, s, "dlg_run", "", started)
+	seedStableToolDelegate(t, s, "dlg_done", "", started, ended)
+
+	result := jobListState(t, s, nil)
+	if len(result.Items) != 2 {
+		t.Fatalf("job_list items = %d, want 2", len(result.Items))
+	}
+
+	var runItem, doneItem *jobListEntry
+	for i := range result.Items {
+		switch result.Items[i].ID {
+		case "dlg_run":
+			runItem = &result.Items[i]
+		case "dlg_done":
+			doneItem = &result.Items[i]
+		}
+	}
+	if runItem == nil || doneItem == nil {
+		t.Fatalf("missing expected delegates: %#v", result.Items)
+	}
+	if runItem.Phase != "running" {
+		t.Errorf("running delegate phase = %q, want running", runItem.Phase)
+	}
+	if doneItem.Phase != "idle" {
+		t.Errorf("finished delegate phase = %q, want idle", doneItem.Phase)
+	}
+	if doneItem.TotalBytes <= 0 {
+		t.Errorf("finished delegate TotalBytes = %d, want > 0 for report payload", doneItem.TotalBytes)
+	}
+
+	output := callJobListText(t, s, `{}`)
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.HasPrefix(line, "dlg_run") && strings.Contains(line, " 0 bytes") {
+			t.Errorf("running delegate renders meaningless 0 bytes: %q", line)
+		}
+		if strings.HasPrefix(line, "dlg_done") {
+			if strings.Contains(line, " 0 bytes") {
+				t.Errorf("finished delegate with report renders 0 bytes: %q", line)
+			}
+			if !strings.Contains(line, fmt.Sprintf("%d bytes", doneItem.TotalBytes)) {
+				t.Errorf("finished delegate renders %q, want %d bytes", line, doneItem.TotalBytes)
+			}
+		}
+	}
+}

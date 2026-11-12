@@ -113,8 +113,12 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   const statusField = fields[fieldIndex];
-  const status = statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField) ? statusField : undefined;
-  if (status !== undefined) fieldIndex += 1;
+  let status = statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField) ? statusField : undefined;
+  if (status !== undefined) {
+    fieldIndex += 1;
+  } else if (KNOWN_DELEGATE_SEND_STATUSES.has(actionField)) {
+    status = actionField;
+  }
 
   const runningInBackground = fields[fieldIndex] === "running in background";
   if (runningInBackground) fieldIndex += 1;
