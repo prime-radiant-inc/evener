@@ -96,13 +96,13 @@ func settingsAgentRoster() []appwire.SettingsAgentEntry {
 // regardless of how many servers are configured.
 func settingsMCPOverview(ctx context.Context, cfg hubcore.WebConfig) *appwire.SettingsMCPOverview {
 	dir := mcpOverviewDiscoveryDir(cfg)
-	extraFiles, inlineSpecs, diagnostics := mcpOverviewLaunchSources(cfg, dir)
+	extraFiles, inlineSpecs, launchEnv, diagnostics := mcpOverviewLaunchSources(cfg, dir)
 	if cfg.MCPConfigPath != "" {
 		if _, err := os.Stat(cfg.MCPConfigPath); err == nil {
 			extraFiles = append(extraFiles, cfg.MCPConfigPath)
 		}
 	}
-	configs, warnings, err := mcpconfig.Discover(mcpOverviewDiscoveryEnv(dir), extraFiles, inlineSpecs)
+	configs, warnings, err := mcpconfig.DiscoverWithEnvLookup(mcpOverviewDiscoveryEnv(dir), extraFiles, inlineSpecs, mcpOverviewEnvLookup(launchEnv))
 	if err != nil {
 		return &appwire.SettingsMCPOverview{Error: err.Error()}
 	}
@@ -143,26 +143,26 @@ func mcpOverviewDiscoveryEnv(dir string) execenv.ExecutionEnvironment {
 }
 
 // mcpOverviewLaunchSources resolves the launch configuration for dir and
-// returns the MCP file list and inline servers a session spawned there
-// receives (launchconfig.ToArgs renders the same values as --mcp-config and
-// --mcp). A resolution failure is a diagnostic, not a failed overview: the
+// returns the MCP file list, inline servers, and effective env a session
+// spawned there receives (launchconfig.ToArgs and ToEnv render the same
+// values). A resolution failure is a diagnostic, not a failed overview: the
 // user-global and project layers are still discovered and reported.
-func mcpOverviewLaunchSources(cfg hubcore.WebConfig, dir string) (extraFiles, inlineSpecs, diagnostics []string) {
+func mcpOverviewLaunchSources(cfg hubcore.WebConfig, dir string) (extraFiles, inlineSpecs []string, launchEnv map[string]string, diagnostics []string) {
 	root := hubLaunchConfigRoot(cfg)
 	if root == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	resolved, err := mcpOverviewResolveLaunch(root, dir)
 	if err != nil {
-		return nil, nil, []string{fmt.Sprintf("launch config: %v", err)}
+		return nil, nil, nil, []string{fmt.Sprintf("launch config: %v", err)}
 	}
 
 	extraFiles = append(extraFiles, resolved.Effective.MCPConfigs...)
 	for _, server := range resolved.Effective.MCPs {
 		inlineSpecs = append(inlineSpecs, launchconfig.MCPSpecArg(server))
 	}
-	return extraFiles, inlineSpecs, nil
+	return extraFiles, inlineSpecs, resolved.Effective.Env, nil
 }
 
 // mcpOverviewResolveLaunch resolves every launch layer for dir. Without a
@@ -174,4 +174,16 @@ func mcpOverviewResolveLaunch(root, dir string) (launchconfig.Resolved, error) {
 		}
 	}
 	return launchconfig.ResolveUserOnly(root, launchconfig.Layer{})
+}
+
+// mcpOverviewEnvLookup resolves MCP config variables through the launch
+// layer's effective env first, then the hub process environment. The overlay
+// is a closure, so discovery never mutates the hub's environment.
+func mcpOverviewEnvLookup(overlay map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		if value, ok := overlay[name]; ok {
+			return value, true
+		}
+		return os.LookupEnv(name)
+	}
 }

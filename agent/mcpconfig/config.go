@@ -52,7 +52,15 @@ type mcpServerJSON struct {
 // LoadFile parses one .mcp.json file and returns server configs
 // with env vars expanded.
 func LoadFile(path string) ([]ServerConfig, error) {
-	return loadFile(path, expandEnvVars)
+	return loadFileWithEnv(path, os.LookupEnv)
+}
+
+// loadFileWithEnv is LoadFile with environment references resolved through
+// lookup instead of the process environment. A nil lookup uses os.LookupEnv.
+func loadFileWithEnv(path string, lookup func(string) (string, bool)) ([]ServerConfig, error) {
+	return loadFile(path, func(s string) (string, error) {
+		return expandEnvVarsWithLookup(s, lookup)
+	})
 }
 
 // LoadFileUntrusted is LoadFile for a config layer evener does not author —
@@ -60,7 +68,15 @@ func LoadFile(path string) ([]ServerConfig, error) {
 // expression here would run on the host the moment the config loads, so it
 // is refused at parse time instead of executed.
 func LoadFileUntrusted(path string) ([]ServerConfig, error) {
-	return loadFile(path, expandEnvVarsUntrusted)
+	return loadFileUntrustedWithEnv(path, os.LookupEnv)
+}
+
+// loadFileUntrustedWithEnv is LoadFileUntrusted with environment references
+// resolved through lookup instead of the process environment.
+func loadFileUntrustedWithEnv(path string, lookup func(string) (string, bool)) ([]ServerConfig, error) {
+	return loadFile(path, func(s string) (string, error) {
+		return expandEnvVarsUntrustedWithLookup(s, lookup)
+	})
 }
 
 func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig, error) {
@@ -184,7 +200,16 @@ func serverJSONToConfig(name string, sj mcpServerJSON, expand func(string) (stri
 // Any unresolved expression is an error, matching how MCP config treats a
 // missing variable today; the caller names the field it was expanding.
 func expandEnvVars(s string) (string, error) {
-	expanded, unresolved, err := valueexpr.Expand(s, os.LookupEnv)
+	return expandEnvVarsWithLookup(s, os.LookupEnv)
+}
+
+// expandEnvVarsWithLookup is expandEnvVars with the variable lookup supplied by
+// the caller. A nil lookup uses os.LookupEnv.
+func expandEnvVarsWithLookup(s string, lookup func(string) (string, bool)) (string, error) {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	expanded, unresolved, err := valueexpr.Expand(s, lookup)
 	if err != nil {
 		return "", fmt.Errorf("invalid $ expression: %w", err)
 	}
@@ -206,6 +231,12 @@ func expandEnvVars(s string) (string, error) {
 // runs commands on the host, so a $(command) expression there is refused at
 // load rather than executed.
 func expandEnvVarsUntrusted(s string) (string, error) {
+	return expandEnvVarsUntrustedWithLookup(s, os.LookupEnv)
+}
+
+// expandEnvVarsUntrustedWithLookup is expandEnvVarsUntrusted with the variable
+// lookup supplied by the caller.
+func expandEnvVarsUntrustedWithLookup(s string, lookup func(string) (string, bool)) (string, error) {
 	// The refusal keys on the command pieces alone, never on a clean scan:
 	// Scan reports what it found even when a later syntax error aborts it,
 	// and Expand executes command pieces as it walks, so a value like
@@ -213,7 +244,7 @@ func expandEnvVarsUntrusted(s string) (string, error) {
 	if scan, _ := valueexpr.Scan(s); len(scan.Commands) > 0 {
 		return "", errors.New("command expressions $(...) are allowed only in config you author yourself (the global mcp.json or --mcp-config files)")
 	}
-	return expandEnvVars(s)
+	return expandEnvVarsWithLookup(s, lookup)
 }
 
 // ParseInline parses a "name:command args..." inline spec into an ServerConfig.
@@ -281,6 +312,17 @@ func Merge(layers ...[]ServerConfig) []ServerConfig {
 // file is still silent, not a warning. CLI-supplied files/specs (layers 3-4)
 // are explicit user input for this invocation, so an error there stays fatal.
 func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, []string, error) {
+	return DiscoverWithEnvLookup(env, extraFiles, inlineSpecs, os.LookupEnv)
+}
+
+// DiscoverWithEnvLookup is Discover with environment references in the loaded
+// config files resolved through lookup, which may overlay launch environment
+// values on the process environment. A nil lookup uses os.LookupEnv. Inline
+// specs are not expanded today, matching Discover.
+func DiscoverWithEnvLookup(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, lookup func(string) (string, bool)) ([]ServerConfig, []string, error) {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
 	var layers [][]ServerConfig
 	var warnings []string
 
@@ -292,7 +334,7 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	if envvars.EVENERNoUserSkills.Getenv() != "1" {
 		globalPath := globalMCPConfigPath()
 		if globalPath != "" {
-			if configs, err := LoadFile(globalPath); err != nil {
+			if configs, err := loadFileWithEnv(globalPath, lookup); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
 				}
@@ -312,7 +354,7 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
 			projPath := filepath.Join(root, ".evener", "mcp.json")
-			if configs, err := LoadFileUntrusted(projPath); err != nil {
+			if configs, err := loadFileUntrustedWithEnv(projPath, lookup); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
 				}
@@ -324,7 +366,7 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 
 	// Layer 3: CLI config files.
 	for _, path := range extraFiles {
-		configs, err := LoadFile(path)
+		configs, err := loadFileWithEnv(path, lookup)
 		if err != nil {
 			return nil, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
 		}

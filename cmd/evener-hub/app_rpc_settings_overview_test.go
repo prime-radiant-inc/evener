@@ -383,6 +383,49 @@ func TestHubRPCSettingsOverview_MCPDiscoveredMalformedGlobalKeepsServers(t *test
 	}
 }
 
+// TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvExpansion proves a config
+// file referenced by launch.toml can use a variable defined in that same
+// launch configuration's env. Expansion must see the launch env as an overlay
+// without mutating the hub process environment.
+func TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvExpansion(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	const envName = "EVENER_TEST_MCP_BIN_4428"
+
+	mcpConfigFile := filepath.Join(t.TempDir(), "env-mcp.json")
+	writeMCPConfigLayer(t, mcpConfigFile, `{"mcpServers": {
+		"env-tool": {"command": "${`+envName+`}"}
+	}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `env = { `+envName+` = "true" }
+mcp_configs = ["`+mcpConfigFile+`"]
+`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if resp.McpDiscovered.Error != "" {
+		t.Errorf("McpDiscovered.Error = %q, want empty", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 1 {
+		t.Fatalf("McpDiscovered.Servers = %+v, want the env-expanded server", resp.McpDiscovered.Servers)
+	}
+	server := resp.McpDiscovered.Servers[0]
+	if server.Name != "env-tool" || server.Transport != "stdio" || server.Status != "available" {
+		t.Errorf("server = %+v, want {env-tool stdio available}", server)
+	}
+	if _, ok := os.LookupEnv(envName); ok {
+		t.Errorf("discovery leaked launch env %s into the hub process environment", envName)
+	}
+}
+
 // TestHubRPCSettingsOverview_MCPDiscoveredErrorOnMalformedSessionConfig pins
 // the error contract: an explicitly configured session-local file that fails to
 // parse surfaces as Error, the same failure a session's initMCP returns.
