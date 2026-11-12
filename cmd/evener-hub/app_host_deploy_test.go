@@ -238,7 +238,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 		RemoteHostPlanProbe:        probe,
 		HubBootID:                  "test-boot",
 	}
-	m := newHubHostManager(nil, nil, cfg, configPath, registry, func(string, ...any) {})
+	m := newHubHostManager(nil, nil, cfg, configPath, registry, silentLogger())
 	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool, _ func() error, _ *sshconn.DeploymentJournal) (string, sshconn.Preflight, error) {
 		return deploy(ctx, host, facts)
 	}
@@ -1855,7 +1855,7 @@ func TestEnsureRestartRefusesWithoutAStore(t *testing.T) {
 	entry := deployTestHost()
 	entry.Generation = 1
 	entry.IncarnationID = "inc-1"
-	m := &hubHostManager{cfg: &hostManagerConfig{logf: func(string, ...any) {}}}
+	m := &hubHostManager{cfg: &hostManagerConfig{log: silentLogger()}}
 	if _, err := m.EnsureRestart(entry); err == nil {
 		t.Fatal("EnsureRestart without an operation store succeeded")
 	}
@@ -1868,7 +1868,7 @@ func TestEnsureTriggeredDeployRefusesWithoutAStore(t *testing.T) {
 	entry := deployTestHost()
 	entry.Generation = 1
 	entry.IncarnationID = "inc-1"
-	m := &hubHostManager{cfg: &hostManagerConfig{logf: func(string, ...any) {}}}
+	m := &hubHostManager{cfg: &hostManagerConfig{log: silentLogger()}}
 	if _, err := m.EnsureDeploy(entry); err == nil {
 		t.Fatal("EnsureDeploy without an operation store succeeded")
 	}

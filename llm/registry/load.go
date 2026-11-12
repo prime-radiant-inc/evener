@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/componentlog"
 )
 
 // CredentialSource is the credentials-store view the registry needs: the
@@ -47,7 +48,7 @@ type options struct {
 	instances   map[string]Provider
 	snapshot    []byte
 	overlay     []byte
-	logf        func(format string, args ...any)
+	log         *slog.Logger
 	noCache     bool
 }
 
@@ -117,9 +118,9 @@ func WithoutCache() Option { return func(o *options) { o.noCache = true } }
 // WithOverlay replaces the embedded curated overlay (tests).
 func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = data } }
 
-// WithLog receives the one-line messages a failed background refresh
-// produces (default: log.Printf).
-func WithLog(logf func(format string, args ...any)) Option { return func(o *options) { o.logf = logf } }
+// WithLogger receives the messages a failed background refresh produces
+// (default: the "[registry] " component logger on stderr).
+func WithLogger(log *slog.Logger) Option { return func(o *options) { o.log = log } }
 
 // Registry is the loaded, layered provider registry (spec §5). It is
 // immutable after Load except for the live listings Resolve consults.
@@ -182,7 +183,7 @@ type capLayer struct {
 }
 
 func defaultOptions() *options {
-	return &options{env: os.LookupEnv, logf: log.Printf}
+	return &options{env: os.LookupEnv, log: componentlog.New("registry")}
 }
 
 // defaultConfigRoot resolves the registry's config root from its injected
@@ -1267,13 +1268,13 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	r.refreshDone = make(chan struct{})
 	// The sanity floors compare against the embedded snapshot (spec §6.4);
 	// o.snapshot is nil in production and the injected snapshot in tests.
-	stateRoot, logf, baseline := o.stateRoot, o.logf, o.snapshot
+	stateRoot, log, baseline := o.stateRoot, o.log, o.snapshot
 	go func() {
 		defer close(r.refreshDone)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Baseline: baseline}); err != nil {
-			logf("models.dev refresh: %v (keeping the previous catalog)", err)
+			log.Warn("models.dev refresh failed; keeping the previous catalog", "err", err)
 		}
 	}()
 }

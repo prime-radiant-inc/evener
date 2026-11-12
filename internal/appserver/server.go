@@ -3,11 +3,11 @@ package appserver
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/apphistory"
 )
 
@@ -229,7 +229,7 @@ func (s *Server) panicLogf(format string, args ...any) {
 		s.cfg.Logf(format, args...)
 		return
 	}
-	log.Printf(format, args...)
+	componentlog.New("appserver").Error(fmt.Sprintf(format, args...))
 }
 
 // evictSlowConsumer unregisters a connection whose outbound buffer is full.

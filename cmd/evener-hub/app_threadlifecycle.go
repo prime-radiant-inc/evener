@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"slices"
 	"strings"
@@ -1349,7 +1348,7 @@ func (f forkRequest) verifyLocked(ctx context.Context, locked forkLocked) (hubco
 		// permission or sandbox problem, not a per-fork one — would otherwise
 		// refuse every fork with no server-side trace, so the one refusal that
 		// reaches the client is traced here and only here.
-		log.Printf("fork refused: cannot verify session ownership for %s: %v", f.params.Ref, rendezvousErr)
+		hubLogFor(f.cfg).Warn(fmt.Sprintf("fork refused: cannot verify session ownership for %s: %v", f.params.Ref, rendezvousErr))
 		return hubcore.PastEntry{}, appwire.Unavailable("cannot verify session ownership: " + rendezvousErr.Error())
 	}
 	if current != sessionID || forkTargetSessionID(f.cfg, f.ref.ThreadID) != sessionID {

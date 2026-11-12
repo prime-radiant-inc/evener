@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
@@ -599,7 +599,7 @@ func (r *Registry) Register(t RegisteredTool) error {
 		t.Definition = WithIntentParameter(t.Definition)
 	}
 	if strings.TrimSpace(t.Definition.Description) == "" {
-		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
+		slog.Warn("tool registered with empty description", "tool", t.Definition.Name)
 	}
 	if t.Exec == nil {
 		return fmt.Errorf("tool %s missing executor", t.Definition.Name)
@@ -983,7 +983,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 			if data, err := json.Marshal(st.State); err == nil {
 				res.ToolState = data
 			} else {
-				log.Printf("tool %s: marshal StateResult.State: %v", name, err)
+				slog.Warn("tool StateResult.State marshal failed", "tool", name, "err", err)
 			}
 		}
 		return res

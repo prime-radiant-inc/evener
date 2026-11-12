@@ -803,12 +803,12 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	}
 }
 
-// TestHubLogfForSinkIsFixedAtConstruction pins that hubLogfFor resolves its
+// TestHubLogForSinkIsFixedAtConstruction pins that hubLogFor resolves its
 // default sink once, when it builds the logger, rather than reading the
 // os.Stderr global on every call. A live server goroutine logging through a
 // per-call read races any test that redirects os.Stderr (captureHubStderr);
 // the real startup path already sets the sink before any server runs (#2783).
-func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
+func TestHubLogForSinkIsFixedAtConstruction(t *testing.T) {
 	first, err := os.CreateTemp(t.TempDir(), "hub-logf-first-")
 	if err != nil {
 		t.Fatalf("os.CreateTemp: %v", err)
@@ -818,7 +818,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 	original := os.Stderr
 	t.Cleanup(func() { os.Stderr = original })
 	os.Stderr = first
-	logf := hubLogfFor(hubcore.WebConfig{})
+	log := hubLogFor(hubcore.WebConfig{})
 
 	second, err := os.CreateTemp(t.TempDir(), "hub-logf-second-")
 	if err != nil {
@@ -840,7 +840,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 				return
 			default:
 			}
-			logf("sink probe")
+			log.Info("sink probe")
 		}
 	}()
 	<-started
@@ -851,7 +851,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 	// The sink resolved at construction still receives a later line; the
 	// redirect now in effect does not, because the logger no longer reads the
 	// global per call.
-	logf("after swap")
+	log.Info("after swap")
 	os.Stderr = original
 
 	if size, err := first.Stat(); err != nil || size.Size() == 0 {

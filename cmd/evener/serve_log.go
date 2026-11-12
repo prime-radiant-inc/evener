@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/llm"
 )
 
@@ -19,7 +20,8 @@ import (
 const serveLogTimeLayout = "2006-01-02T15:04:05.000Z07:00"
 
 // serveLogf writes one [serve] line labelled with the session it belongs to
-// and the moment it happened.
+// and the moment it happened. Both travel as structured fields the
+// componentlog handler emits, so a sink can read them by name.
 //
 // A daemon's output lands in a sink it does not own, and on a hub that sink
 // holds every daemon's lines at once. Only this process authoritatively knows
@@ -32,8 +34,8 @@ func serveLogf(w io.Writer, sessionID, format string, args ...any) {
 
 // serveLogAt is serveLogf against a caller-supplied instant.
 func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any) {
-	_, _ = fmt.Fprintf(w, "[serve %s session=%s] %s\n",
-		at.UTC().Format(serveLogTimeLayout), sessionID, fmt.Sprintf(format, args...))
+	componentlog.NewWriter("serve", w).Info(fmt.Sprintf(format, args...),
+		"at", at.UTC().Format(serveLogTimeLayout), "session", sessionID)
 }
 
 // retirementAttemptSummary renders an automatic retirement attempt that did
