@@ -5,12 +5,14 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // An approval for an out-of-roots path targets the resolved location: the
@@ -303,17 +305,8 @@ func TestDenial_OutsideRootFIFONotOpenedForApproval(t *testing.T) {
 
 	// A producer blocked in open(2) until a reader connects, then writing.
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
-		if err != nil {
-			return
-		}
-		_, _ = f.Write([]byte("one line\n"))
-		_ = f.Close()
-	}()
-	// Leave the producer time to reach open(2) before the denial is built.
-	time.Sleep(100 * time.Millisecond)
+	go blockOnFIFOOpen(fifo, done)
+	testwait.Until(t, "the producer to block in open(2)", producerBlockedInOpen)
 	t.Cleanup(func() {
 		// Release and reap the producer even when an assertion fails early.
 		if r, err := os.OpenFile(fifo, os.O_RDONLY|unix.O_NONBLOCK, 0); err == nil {
@@ -348,4 +341,30 @@ func TestDenial_OutsideRootFIFONotOpenedForApproval(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("the producer did not finish after a reader opened the FIFO")
 	}
+}
+
+// blockOnFIFOOpen blocks in open(2) until a reader connects, then writes one
+// line. Its name is what producerBlockedInOpen looks for.
+func blockOnFIFOOpen(fifo string, done chan<- struct{}) {
+	defer close(done)
+	f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write([]byte("one line\n"))
+	_ = f.Close()
+}
+
+// producerBlockedInOpen reports whether blockOnFIFOOpen is currently in a
+// syscall. For a reader-less FIFO, open(2) blocks there until a reader
+// connects, which is the state the denial must not disturb.
+func producerBlockedInOpen() bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for block := range strings.SplitSeq(string(buf[:n]), "\n\n") {
+		if strings.Contains(block, "blockOnFIFOOpen") && strings.Contains(block, "[syscall") {
+			return true
+		}
+	}
+	return false
 }
