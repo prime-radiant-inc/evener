@@ -33,3 +33,13 @@ func TestDecodeValidatedEntryMatchesDecodeEntry(t *testing.T) {
 		t.Fatal("DecodeValidatedEntry accepted malformed JSON")
 	}
 }
+
+// TestDecodeEntry_MultipleJSONValues covers the "multiple JSON values" error
+// path in the shared decode helper.
+func TestDecodeEntry_MultipleJSONValues(t *testing.T) {
+	// An entry with trailing JSON should be rejected.
+	_, err := DecodeEntry([]byte(`{"kind":"entry","turn":{}}{"kind":"entry","turn":{}}`))
+	if err == nil {
+		t.Error("DecodeEntry with multiple JSON values should return error")
+	}
+}
