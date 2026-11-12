@@ -441,19 +441,19 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		result.TimedOut = true
 		return delegateSendOutcome{result: result}
 	}
-	completeDelegateSendResult(&result, *resolution.packet)
+	completeDelegateSendResult(&result, *resolution.packet, s.toolNameMap())
 	return inlineOutcome(result, resolution)
 }
 
 // completeDelegateSendResult fills result as a send whose wait reached
 // packet, a terminal result of its delegate.
-func completeDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+func completeDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket, nameMap ...map[string]string) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateDelegateSendResult(result, packet)
+	populateDelegateSendResult(result, packet, nameMap...)
 }
 
-func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket, nameMap ...map[string]string) {
 	if result == nil {
 		return
 	}
@@ -488,7 +488,11 @@ func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
-		result.Tools = append([]string(nil), metadata.Tools...)
+		tools := append([]string(nil), metadata.Tools...)
+		if len(nameMap) > 0 && nameMap[0] != nil {
+			tools = providerVisibleToolNames(tools, nameMap[0])
+		}
+		result.Tools = tools
 		result.RequestedModel = metadata.RequestedModel
 		result.ResolvedProfileID = metadata.ResolvedProfileID
 		result.ResolvedModel = metadata.ResolvedModel
@@ -552,10 +556,10 @@ func (runtime delegateRuntime) waitInline(ctx context.Context, waiter *delegateI
 // populateFailedSendResultFromPacket fills a failed start's result from a
 // terminal packet that answered it. The durable outcome already seeded Status
 // and Reason, and wins over what the packet's own report derives.
-func populateFailedSendResultFromPacket(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+func populateFailedSendResultFromPacket(result *sendMessageResult, packet delegatestore.TerminalPacket, nameMap ...map[string]string) {
 	durableStatus := result.Status
 	durableReason := result.Reason
-	populateDelegateSendResult(result, packet)
+	populateDelegateSendResult(result, packet, nameMap...)
 	if durableReason != "" {
 		result.Reason = durableReason
 	}
@@ -576,7 +580,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	if afterDispatch != nil {
 		afterDispatch()
 	}
-	result := delegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
+	result := delegateFailedSendResult(started, plans, errors.Join(cause, executeErr), runtime.owner.toolNameMap())
 	if waiter == nil || result.Action == "recovery_required" {
 		return delegateSendOutcome{result: result}
 	}
@@ -592,13 +596,17 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 		result.TimedOut = true
 		return delegateSendOutcome{result: result}
 	}
-	populateFailedSendResultFromPacket(&result, *resolution.packet)
+	populateFailedSendResultFromPacket(&result, *resolution.packet, runtime.owner.toolNameMap())
 	return inlineOutcome(result, resolution)
 }
 
-func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
+func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error, nameMap ...map[string]string) sendMessageResult {
 	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
 	resumable := snapshot.resumable
+	tools := append([]string(nil), started.descriptor.ToolNameCeiling...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	result := sendMessageResult{
 		Target:              started.lease.delegateID,
 		DelegateID:          started.lease.delegateID,
@@ -606,7 +614,7 @@ func delegateFailedSendResult(started delegateStartCommit, plans delegateMutatio
 		Status:              jobstore.StatusRunning,
 		AgentType:           started.descriptor.AgentType,
 		Name:                started.descriptor.Name,
-		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
+		Tools:               tools,
 		Resumable:           &resumable,
 		RunningInBackground: false,
 		Action:              "recovery_required",
@@ -621,7 +629,7 @@ func delegateFailedSendResult(started delegateStartCommit, plans delegateMutatio
 	deliveryID := delegateDeliveryID(started.lease.delegateID, started.lease.generation)
 	for _, delivery := range plans.deliveries {
 		if delivery.delegateID == started.lease.delegateID && delivery.deliveryID == deliveryID {
-			populateFailedSendResultFromPacket(&result, delivery.packet)
+			populateFailedSendResultFromPacket(&result, delivery.packet, nameMap...)
 			break
 		}
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 
 func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
 	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
+	canonical = ensureRecoveryReader(canonical, s.reg)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -209,6 +211,26 @@ func (s *Session) rebuildToolDefsCache() {
 					if props, ok := td.Parameters["properties"].(map[string]any); ok {
 						delete(props, "delegation_allowance")
 					}
+				}
+				if !s.hubEnabled && s.delegationAllowance > 0 && s.reg != nil && s.reg.Get("delegate") != nil {
+					regTool := s.reg.Get("delegate")
+					regTool.Definition = td
+					// The registry executor validates calls against regTool.Schema.
+					// Remove the static enum from regTool's parameters so tests and runtime plugins
+					// can add agents dynamically to s.pluginAgents without failing schema validation.
+					if paramsJSON, err := json.Marshal(td.Parameters); err == nil {
+						var regParams map[string]any
+						if err := json.Unmarshal(paramsJSON, &regParams); err == nil {
+							if props, ok := regParams["properties"].(map[string]any); ok {
+								if agentTypeProp, ok := props["agent_type"].(map[string]any); ok {
+									delete(agentTypeProp, "enum")
+								}
+							}
+							regTool.Definition.Parameters = regParams
+						}
+					}
+					regTool.Schema = nil
+					_ = s.reg.Register(*regTool)
 				}
 			}
 			if td.Name == "shell" {

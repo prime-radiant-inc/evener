@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
 
@@ -230,6 +231,33 @@ func TestBuiltinAgents_ExplorerIsReadOnly(t *testing.T) {
 	prompt := strings.ToLower(explorer.SystemPrompt)
 	if !strings.Contains(prompt, "read-only") {
 		t.Error("explorer system prompt should mention read-only constraint")
+	}
+}
+
+func TestBuiltinAgents_ExplorerScanWorkspaceTaskType(t *testing.T) {
+	t.Parallel()
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	explorer := agents["explorer"]
+	if len(explorer.Tasks) == 0 {
+		t.Fatal("expected explorer to have seeded tasks")
+	}
+	if got := explorer.Tasks[0].Type; got != "research" {
+		t.Errorf("explorer task[0].Type = %q, want %q", got, "research")
+	}
+
+	store := taskpkg.NewTaskStore(t.TempDir(), "explorer-test")
+	if err := store.Load(); err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if err := store.PopulateFromTemplates(explorer.Tasks, nil); err != nil {
+		t.Fatalf("PopulateFromTemplates: %v", err)
+	}
+	current, ok := store.CurrentInProgress()
+	if !ok || current.Type != taskpkg.TaskTypeResearch {
+		t.Fatalf("seeded task type = %q (found=%v), want %q", current.Type, ok, taskpkg.TaskTypeResearch)
 	}
 }
 

@@ -53,9 +53,9 @@ type delegateSendResult struct {
 	EarlierResults []delegateSendResult `json:"earlier_results,omitempty"`
 }
 
-func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
+func marshalDelegateSendResult(res sendMessageResult, maxChars int, nameMap ...map[string]string) (any, error) {
 	_ = maxChars
-	out := delegateSendResultFrom(res)
+	out := delegateSendResultFrom(res, nameMap...)
 	return tool.StateResult{
 		Output: formatDelegateSend(out),
 		State:  out,
@@ -66,7 +66,11 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 	}, nil
 }
 
-func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
+func delegateSendResultFrom(res sendMessageResult, nameMap ...map[string]string) delegateSendResult {
+	tools := append([]string(nil), res.Tools...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	out := delegateSendResult{
 		DelegateID:          res.DelegateID,
 		Type:                res.Type,
@@ -83,7 +87,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		Task:                res.Task,
 		Description:         res.Description,
 		AgentType:           res.AgentType,
-		Tools:               append([]string(nil), res.Tools...),
+		Tools:               tools,
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
@@ -121,9 +125,9 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 			}
 			earlier.Output = message
 		} else {
-			completeDelegateSendResult(&earlier, packet)
+			completeDelegateSendResult(&earlier, packet, nameMap...)
 		}
-		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
+		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier, nameMap...))
 	}
 	return out
 }
