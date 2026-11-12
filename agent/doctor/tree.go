@@ -79,14 +79,14 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 }
 
 func delegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) []TreeNode {
-	rows := projectDoctorDelegates(ownerSessionID, state)
+	rows := projectDoctorDelegates("", ownerSessionID, state)
 	children := make([]TreeNode, 0, len(rows))
 	for _, row := range rows {
 		child := TreeNode{
-			SessionID: row.ChildSessionID, TranscriptRef: row.TranscriptRef,
+			SessionID: row.ChildSessionID, TranscriptRef: "",
 			Name: row.Name, AgentType: row.AgentType, Status: row.Phase, Edge: "delegate",
 		}
-		childSelector := row.TranscriptRef
+		childSelector := strings.TrimSpace(row.TranscriptRef)
 		if childSelector == "" {
 			childSelector = row.ChildSessionID
 		}
@@ -96,9 +96,7 @@ func delegateChildren(stateBase, ownerSessionID string, state delegatestore.Stat
 			children = append(children, child)
 			continue
 		}
-		if child.TranscriptRef == "" {
-			child.TranscriptRef = childPaths.TranscriptRef
-		}
+		child.TranscriptRef = childPaths.TranscriptRef
 		if depthRemaining > 1 {
 			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited, delegates)
 		} else {
@@ -125,7 +123,7 @@ func stableDepthLimitNote(paths Paths, delegates delegateCache) string {
 	if err != nil {
 		return ""
 	}
-	if len(projectDoctorDelegates(paths.SessionID, state)) != 0 {
+	if len(projectDoctorDelegates("", paths.SessionID, state)) != 0 {
 		return "depth limit (children not expanded)"
 	}
 	return ""
