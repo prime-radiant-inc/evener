@@ -54,6 +54,10 @@ func (jm *jobManager) appendWatchRegisteredEvent(cfg *watchConfig) error {
 }
 
 func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	return jobstore.Event{
 		Kind:    jobstore.EventWatchRegistered,
 		TS:      jm.now(),
@@ -62,7 +66,7 @@ func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
 			Generation:       cfg.generation,
 			OwnerSessionID:   jm.sessionID,
 			VisibleSessionID: jm.sessionID,
-			Target:           cfg.target,
+			Target:           target,
 			SendTo:           watchSendTo(cfg),
 			ConfigHash:       cfg.configHash,
 			Condition:        watchConditionSummary(cfg),
@@ -171,10 +175,14 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	if cfg.receiverDelegateID != "" {
 		sendTo = ""
 	}
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
 		id:                 cfg.watchID,
 		source:             cfg.sourcePublic,
-		target:             cfg.target,
+		target:             target,
 		condition:          watchConditionSummary(cfg),
 		note:               cfg.note,
 		sendTo:             sendTo,

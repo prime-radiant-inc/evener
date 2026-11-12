@@ -676,7 +676,7 @@ func watchTargetTerminalError(target, status string) error {
 
 func isWatchSessionTarget(target string) bool {
 	switch target {
-	case runtimeMessageAliasCaller, "*":
+	case runtimeMessageAliasCaller, "self", "*":
 		return true
 	default:
 		return false

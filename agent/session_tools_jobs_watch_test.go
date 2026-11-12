@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -1291,5 +1293,171 @@ func TestJobWatchAdvertisedDefinitionUsesCanonicalEventKinds(t *testing.T) {
 	}
 	if got.Description != want.Description {
 		t.Fatalf("job_watch description drifted from WatchEventKindNames\n got: %q\nwant: %q", got.Description, want.Description)
+	}
+}
+
+func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	cfg := minimalTestSessionConfig(t)
+	cfg.StateDir = stateDir
+	s := newSession(t, withConfig(cfg))
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "server ready\n")
+	if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil); err != nil {
+		t.Fatalf("finalize manual job: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, rec.JobID)
+
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch1",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"ready"}`, rec.JobID)),
+	})
+	if watchRes.IsError {
+		t.Fatalf("terminal output_match catch-up must not error: %s", watchRes.Output)
+	}
+	var matched struct {
+		WatchID         string `json:"watch_id"`
+		Watching        bool   `json:"watching"`
+		Fired           bool   `json:"fired"`
+		TerminalCatchup bool   `json:"terminal_catchup"`
+		Status          string `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(watchRes), &matched); err != nil {
+		t.Fatalf("unmarshal watch output: %v (%s)", err, watchRes.Output)
+	}
+	if matched.WatchID == "" {
+		t.Fatal("terminal catch-up must return non-empty watch_id")
+	}
+	if !strings.Contains(watchRes.Output, "watch_id "+matched.WatchID) {
+		t.Fatalf("terminal catch-up tool output missing watch_id: %s", watchRes.Output)
+	}
+
+	// Inspect by the returned watch_id.
+	inspectRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "inspect1",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"inspect","watch_id":%q}`, matched.WatchID)),
+	})
+	if inspectRes.IsError {
+		t.Fatalf("inspect error: %s", inspectRes.Output)
+	}
+	if strings.Contains(inspectRes.Output, "not found") {
+		t.Fatalf("inspect must find the catch-up watch: %s", inspectRes.Output)
+	}
+	var inspectOut struct {
+		WatchID   string `json:"watch_id"`
+		Source    string `json:"source"`
+		Watching  bool   `json:"watching"`
+		Condition string `json:"condition"`
+		EndReason string `json:"end_reason"`
+	}
+	if err := json.Unmarshal(toolResultJSON(inspectRes), &inspectOut); err != nil {
+		t.Fatalf("unmarshal inspect output: %v (%s)", err, inspectRes.Output)
+	}
+	if inspectOut.WatchID != matched.WatchID || inspectOut.Watching || inspectOut.EndReason != "completed" || inspectOut.Source != rec.JobID {
+		t.Fatalf("inspect result = %+v, want WatchID=%s Watching=false EndReason=completed Source=%s", inspectOut, matched.WatchID, rec.JobID)
+	}
+
+	// Also verify that doctor_evener(command="watches") sees it in jobs.jsonl.
+	_ = os.WriteFile(schema.SessionTranscriptPath(s.stateDir, s.ID()), []byte("{}\n"), 0o644)
+	docReport, err := doctor.Watches(s.stateDir, s.ID(), doctor.WatchOpts{WatchID: matched.WatchID})
+	if err != nil {
+		t.Fatalf("doctor.Watches: %v", err)
+	}
+	if len(docReport.Watches) != 1 {
+		t.Fatalf("doctor.Watches found %d watches, want 1", len(docReport.Watches))
+	}
+	docView := docReport.Watches[0]
+	if docView.WatchID != matched.WatchID || docView.Active || docView.EndReason != "completed" || docView.Target != rec.JobID {
+		t.Fatalf("doctor watch view = %+v, want WatchID=%s Active=false EndReason=completed Target=%s", docView, matched.WatchID, rec.JobID)
+	}
+
+	// Non-matching terminal catch-up also returns a watch_id, records history, and is inspectable.
+	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch_nomatch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"not-found"}`, rec.JobID)),
+	})
+	if noMatchRes.IsError {
+		t.Fatalf("non-matching terminal catch-up error: %s", noMatchRes.Output)
+	}
+	var noMatch struct {
+		WatchID         string `json:"watch_id"`
+		Watching        bool   `json:"watching"`
+		Fired           bool   `json:"fired"`
+		TerminalCatchup bool   `json:"terminal_catchup"`
+	}
+	if err := json.Unmarshal(toolResultJSON(noMatchRes), &noMatch); err != nil {
+		t.Fatalf("unmarshal no-match watch output: %v (%s)", err, noMatchRes.Output)
+	}
+	if noMatch.WatchID == "" || noMatch.Watching || noMatch.Fired || !noMatch.TerminalCatchup {
+		t.Fatalf("no-match catch-up result = %+v, want non-empty WatchID, watching=false, fired=false, terminal_catchup=true", noMatch)
+	}
+	if !strings.Contains(noMatchRes.Output, "watch_id "+noMatch.WatchID) {
+		t.Fatalf("no-match catch-up tool output missing watch_id: %s", noMatchRes.Output)
+	}
+
+	inspectNoMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "inspect_nomatch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"inspect","watch_id":%q}`, noMatch.WatchID)),
+	})
+	if inspectNoMatchRes.IsError {
+		t.Fatalf("inspect no-match error: %s", inspectNoMatchRes.Output)
+	}
+	if strings.Contains(inspectNoMatchRes.Output, "not found") {
+		t.Fatalf("inspect must find the no-match catch-up watch: %s", inspectNoMatchRes.Output)
+	}
+	var inspectNoMatchOut struct {
+		WatchID   string `json:"watch_id"`
+		EndReason string `json:"end_reason"`
+	}
+	if err := json.Unmarshal(toolResultJSON(inspectNoMatchRes), &inspectNoMatchOut); err != nil {
+		t.Fatalf("unmarshal inspect no-match output: %v", err)
+	}
+	if inspectNoMatchOut.WatchID != noMatch.WatchID || inspectNoMatchOut.EndReason != "completed" {
+		t.Fatalf("inspect no-match result = %+v, want WatchID=%s EndReason=completed", inspectNoMatchOut, noMatch.WatchID)
+	}
+}
+
+func TestSourceSelfPersistsAsSelfAndRendersSelf(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	cfg := minimalTestSessionConfig(t)
+	cfg.StateDir = stateDir
+	s := newSession(t, withConfig(cfg))
+
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch_self",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["communicate"]}`),
+	})
+	if watchRes.IsError {
+		t.Fatalf("job_watch create source=self: %s", watchRes.Output)
+	}
+
+	watches, err := s.jobManager.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if len(watches) != 1 {
+		t.Fatalf("LoadWatches found %d watches, want 1", len(watches))
+	}
+	for _, w := range watches {
+		if w.Target != "self" {
+			t.Fatalf("durable watch Target = %q, want self (not caller)", w.Target)
+		}
+	}
+
+	_ = os.WriteFile(schema.SessionTranscriptPath(s.stateDir, s.ID()), []byte("{}\n"), 0o644)
+	docReport, err := doctor.Watches(s.stateDir, s.ID(), doctor.WatchOpts{})
+	if err != nil {
+		t.Fatalf("doctor.Watches: %v", err)
+	}
+	rendered := doctor.RenderWatches(docReport)
+	if !strings.Contains(rendered, "target=self") || strings.Contains(rendered, "target=caller") {
+		t.Fatalf("doctor RenderWatches must contain target=self and not target=caller:\n%s", rendered)
 	}
 }

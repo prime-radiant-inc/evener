@@ -504,7 +504,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return watchResult{}, err
 	}
 
-	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: terminalReason}
+	result := watchResult{WatchID: cfg.watchID, Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: terminalReason}
 
 	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
 	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
@@ -513,9 +513,32 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	}
 	last, matched := cfg.outputMatcher.ScanRetained([]byte(data))
 	if !matched {
+		registryEvents := []jobstore.Event{
+			watchRegisteredEvent(jm, cfg),
+			watchClearedEvent(jm, cfg, "completed"),
+		}
+		if err := jm.appendWatchRegistryEvents(registryEvents); err != nil {
+			return watchResult{}, err
+		}
+		jm.mu.Lock()
+		jm.recordWatchEndedLocked(key, cfg, "completed")
+		jm.mu.Unlock()
 		return result, nil
 	}
 	result.Fired = true
+	if a.Send == nil {
+		cfg.deliveries = 1
+	}
+	registryEvents := []jobstore.Event{
+		watchRegisteredEvent(jm, cfg),
+		watchClearedEvent(jm, cfg, "completed"),
+	}
+	if err := jm.appendWatchRegistryEvents(registryEvents); err != nil {
+		return watchResult{}, err
+	}
+	jm.mu.Lock()
+	jm.recordWatchEndedLocked(key, cfg, "completed")
+	jm.mu.Unlock()
 	matchReason := "output_match: " + last
 
 	if a.Send == nil {

@@ -290,6 +290,37 @@ func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	}
 }
 
+func TestWatches_HistoricalCallerTargetNormalizedToSelf(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	writeSession(t, bucket, sid)
+	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+
+	writeJobsEvents(t, jobsPath, []jobstore.Event{
+		{Kind: jobstore.EventWatchRegistered, WatchID: "w_caller", Watch: &jobstore.WatchEvent{
+			Generation: "g1", OwnerSessionID: sid, VisibleSessionID: sid,
+			Target: "caller", Condition: "assistant.message", ConfigHash: "cfg1"}},
+	})
+
+	r, err := Watches(base, sid, WatchOpts{})
+	if err != nil {
+		t.Fatalf("Watches: %v", err)
+	}
+	w := findWatch(r, "w_caller")
+	if w == nil {
+		t.Fatal("w_caller missing from report")
+	}
+	if w.Target != "self" {
+		t.Errorf("w.Target = %q, want %q", w.Target, "self")
+	}
+	out := RenderWatches(r)
+	if !strings.Contains(out, "target=self") || strings.Contains(out, "target=caller") {
+		t.Errorf("render output must contain target=self and not target=caller; got:\n%s", out)
+	}
+}
+
 // A terminal event kind with no short label is reported by its raw kind.
 func TestTerminalKind_Default(t *testing.T) {
 	if got := terminalKind(jobstore.EventKind("something_else")); got != "something_else" {
