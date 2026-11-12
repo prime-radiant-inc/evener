@@ -250,15 +250,53 @@ func TestListDirToolUsesProviderWireNameInPaginationFooter(t *testing.T) {
 	env, root := listdirBudget_flat(t)
 	sess := newSession(t, withDir(root), withProfile(newGeminiProfile("gemini-2.5-pro")))
 
-	res := listdirBudget_call(t.Context(), t, sess.reg, env, map[string]any{"path": root, "limit": 2.0, "depth": 1.0})
-	if res.IsError {
-		t.Fatalf("list_dir on Gemini profile errored: %s", res.Output)
+	shallow := listdirBudget_call(t.Context(), t, sess.reg, env, map[string]any{"path": root, "limit": 2.0, "depth": 1.0})
+	if shallow.IsError {
+		t.Fatalf("list_dir on Gemini profile errored: %s", shallow.Output)
 	}
-	_, footer := listdirBudget_body(res.Output)
-	if !strings.Contains(footer, "list_directory(offset=2)") {
-		t.Fatalf("Gemini pagination footer must use wire name list_directory(offset=2), got:\n%s", footer)
+	_, shallowFooter := listdirBudget_body(shallow.Output)
+	if strings.Count(shallowFooter, "list_directory(offset=2)") != 1 {
+		t.Fatalf("depth=1 Gemini pagination footer must carry one wire-name next-page call, got:\n%s", shallowFooter)
 	}
-	if strings.Contains(footer, "list_dir(") {
-		t.Fatalf("Gemini pagination footer leaked canonical list_dir name:\n%s", footer)
+	if strings.Contains(shallowFooter, "list_dir(") {
+		t.Fatalf("Gemini pagination footer leaked canonical list_dir name:\n%s", shallowFooter)
+	}
+
+	deep := listdirBudget_call(t.Context(), t, sess.reg, env, map[string]any{"path": root, "limit": 2.0, "depth": 2.0})
+	if deep.IsError {
+		t.Fatalf("depth=2 list_dir on Gemini profile errored: %s", deep.Output)
+	}
+	_, deepFooter := listdirBudget_body(deep.Output)
+	if len(deepFooter) <= len(shallowFooter) {
+		t.Fatalf("depth=2 footer should add recursive guidance absent at depth=1:\ndepth=1: %s\ndepth=2: %s", shallowFooter, deepFooter)
+	}
+	if strings.Count(deepFooter, "list_directory(offset=2)") != 2 {
+		t.Fatalf("depth=2 Gemini pagination footer must use wire name in both header and note, got:\n%s", deepFooter)
+	}
+	if strings.Contains(deepFooter, "list_dir(") {
+		t.Fatalf("depth=2 Gemini pagination footer leaked canonical list_dir name:\n%s", deepFooter)
+	}
+}
+
+func TestFormatDirListingHitWalkCapOffersNextPageAtEveryDepth(t *testing.T) {
+	t.Parallel()
+	entries := []execenv.DirEntry{{Name: "a.txt", Size: 1}, {Name: "b.txt", Size: 1}}
+	for _, depth := range []int{1, 3} {
+		out := formatDirListing(listDirResult{
+			Entries:         entries,
+			Returned:        2,
+			Offset:          0,
+			Depth:           depth,
+			ToolName:        "list_directory",
+			WalkTruncatedAt: 2,
+			HitWalkCap:      true,
+		})
+		_, footer := listdirBudget_body(out)
+		if !strings.Contains(footer, "list_directory(offset=2)") {
+			t.Fatalf("HitWalkCap footer at depth=%d must offer list_directory(offset=2), got:\n%s", depth, footer)
+		}
+		if strings.Contains(footer, "list_dir(") {
+			t.Fatalf("HitWalkCap footer at depth=%d leaked canonical list_dir name:\n%s", depth, footer)
+		}
 	}
 }

@@ -128,13 +128,14 @@ function listTarget(args: Record<string, unknown>): { path: string; pattern?: st
 
 // list_dir ends its listing with the count it returned: "3 entries" after a
 // blank line, the count alone for an empty directory, or "2 of 5 entries
-// (offset 0) — more…" for a page of a longer one. A summary says how many it
-// returned; an output without a count counts its lines. The footer is always
-// the last line, so only the last line is read, and only the whole footer
+// (offset 0) — more…" (with an optional walk-stop note beneath it) for a page
+// of a longer one. A summary says how many it returned; an output without a
+// count counts its lines. Only the count header of the trailing footer block
 // (agent/session_tools_shell.go's formatDirListing) counts: an entry named
-// like a count ("2 entries.md", "2 entries (notes)") never reads as one.
+// like a count ("2 entries.md", "2 entries (notes)", "0 entries") in the
+// listing body never reads as one.
 const LIST_DIR_COUNT_RE =
-  /^(\d+)(?:(?: of \d+)? entries \(offset \d+\)(?: — more with list_(?:dir|directory)\(offset=\d+\))?| entries)$/;
+  /^(\d+)(?:(?: of \d+)? entries \(offset \d+\)(?: — more with [A-Za-z][A-Za-z0-9_-]*\(offset=\d+\))?| entries)$/;
 
 function entries(n: number | string): string {
   return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
@@ -150,7 +151,10 @@ function footerCountHeader(tail: string): string {
   }
   const nl = trimmed.indexOf("\n");
   if (nl >= 0 && trimmed.startsWith("0 ")) {
-    return trimmed.slice(0, nl);
+    const note = trimmed.slice(nl + 1);
+    if (note.startsWith("The walk stopped ") || note.startsWith("The listing stopped ")) {
+      return trimmed.slice(0, nl);
+    }
   }
   return lastLine(trimmed);
 }

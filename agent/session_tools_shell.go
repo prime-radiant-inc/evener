@@ -108,11 +108,10 @@ func formatDirListing(r listDirResult) string {
 			fmt.Fprintf(&b, "%d entries", r.Returned)
 		}
 		if r.HitWalkCap {
-			fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or ", r.WalkTruncatedAt)
 			if r.Depth > 1 {
-				b.WriteString("reduce depth to see the rest.")
+				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path, reduce depth, or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
 			} else {
-				fmt.Fprintf(&b, "page with %s(offset=%d) to see the rest.", toolName, nextOffset)
+				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
 			}
 		} else {
 			fmt.Fprintf(&b, "\nThe walk stopped after %d entries once this page filled; total count was not enumerated.", r.WalkTruncatedAt)
