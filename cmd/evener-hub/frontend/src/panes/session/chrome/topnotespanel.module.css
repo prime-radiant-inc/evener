@@ -1,19 +1,23 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* Attached to the header: the top edge is flush to the header's bottom
-   * border, so the panel reads as a continuation of the header rather than
-   * a floating card. The top is square (no radius, no top border on that
-   * edge) and the card keeps its horizontal inset via the body's side
-   * padding. The negative top margin cancels the body's top padding so
-   * there is no gap below the header, and the top border is omitted to
-   * avoid a doubled line against the header's own border-bottom. Only the
-   * bottom corners are rounded. */
+  /* Attached to the header: the top edge sits flush against the header's
+   * 1px hairline so the panel reads as a continuation of the header, not a
+   * floating card. The top is square (no radius, no top border) and the
+   * horizontal inset comes from the body's own side padding. The negative top
+   * margin cancels the body's top padding so there is no gap below the header;
+   * the seam itself is the header's single border-bottom. Only the bottom
+   * corners are rounded. Shadow is the intentional separation from the
+   * transcript — layered soft bloom rather than a hard bar. */
   margin-top: calc(-1 * var(--space-5));
-  border: 1px solid var(--edge-strong);
+  position: relative;
+  z-index: var(--z-raised);
+  border: 1px solid var(--edge);
   border-top: none;
   border-radius: 0 0 var(--radius-panel) var(--radius-panel);
-  box-shadow: 0 8px 28px var(--shadow-color);
+  box-shadow:
+    0 1px 3px var(--shadow-color),
+    0 8px 24px var(--shadow-color);
   /* The boundary is a real border, NOT --shadow-overlay's ring: the ring is a
    * spread box-shadow, which paints OUTSIDE the border box and is shaved
    * wherever a clipping ancestor cuts the card's edge - the pane body's
