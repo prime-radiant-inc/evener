@@ -843,6 +843,9 @@ func TestWebFetchHTMLToMarkdown_PreservesTitleWhenAbsentFromBody(t *testing.T) {
 			"<h1><div>WFBR44A</div><div>WFBR44B</div></h1>",
 			"<h1>WFBR44A <textarea>WFIGNORE99</textarea> WFBR44B</h1>",
 			`<h1>WFBR44A WFBR44B <a href="#anchor" aria-hidden="true">#</a></h1>`,
+			`<h1>WFBR44A WFBR44B<a href="#anchor">¶</a></h1>`,
+			"<h1><code>WFBR44A WFBR44B</code></h1>",
+			"<h1><em>WFBR44A</em> WFBR44B</h1>",
 		} {
 			title := "WFBR44A WFBR44B"
 			needle := "WFBR44A WFBR44B"
@@ -855,9 +858,39 @@ func TestWebFetchHTMLToMarkdown_PreservesTitleWhenAbsentFromBody(t *testing.T) {
 			if err != nil {
 				t.Fatalf("htmlToMarkdown(%s): %v", bodyHeading, err)
 			}
-			if got := strings.Count(strings.ToUpper(md), needle); got != 1 {
+			plain := strings.NewReplacer("*", "", "`", "").Replace(strings.ToUpper(md))
+			if got := strings.Count(plain, needle); got != 1 {
 				t.Fatalf("matching <title> and %s emitted %d occurrences of %s, want 1:\n%s", bodyHeading, got, needle, md)
 			}
+		}
+	})
+
+	t.Run("fenced_code_comment_or_partial_link_heading_keeps_title", func(t *testing.T) {
+		t.Parallel()
+		const (
+			codeTitle    = "WFCODEINSTALL91"
+			partialTitle = "WFPARTIAL77"
+		)
+		for _, raw := range []string{
+			fmt.Sprintf("<html><head><title>%s</title></head><body><pre><code># %s\necho ok</code></pre></body></html>", codeTitle, codeTitle),
+			fmt.Sprintf("<html><head><title>%s</title></head><body><ul><li><p>Step:</p><pre><code># %s</code></pre></li></ul></body></html>", codeTitle, codeTitle),
+		} {
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown: %v", err)
+			}
+			if !strings.HasPrefix(md, "# "+codeTitle+"\n\n") {
+				t.Fatalf("fenced code comment suppressed <title>: %q", md)
+			}
+		}
+
+		partial := fmt.Sprintf(`<html><head><title>%s</title></head><body><h1>%s <a href="#a">Part 1</a> extra (note)</h1></body></html>`, partialTitle, partialTitle)
+		mdPartial, err := htmlToMarkdown(partial)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(partial): %v", err)
+		}
+		if !strings.HasPrefix(mdPartial, "# "+partialTitle+"\n\n") {
+			t.Fatalf("non-trailing fragment link falsely suppressed <title>: %q", mdPartial)
 		}
 	})
 

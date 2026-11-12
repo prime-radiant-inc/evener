@@ -16,6 +16,7 @@ import (
 	"golang.org/x/net/html"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/llm"
 )
@@ -123,12 +124,19 @@ func renderTitleHeading(title string) (string, error) {
 }
 
 func markdownHasTitleHeading(md, headingBody string) bool {
+	var fences mdfence.Tracker
 	for line := range strings.SplitSeq(md, "\n") {
+		if fences.StepInBlock(line) {
+			continue
+		}
 		body, ok := atxHeadingBody(line)
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(body, headingBody) || strings.EqualFold(stripTrailingFragmentLink(body), headingBody) {
+		trimmed := stripTrailingFragmentLink(body)
+		if strings.EqualFold(body, headingBody) ||
+			strings.EqualFold(trimmed, headingBody) ||
+			strings.EqualFold(stripInlineFormatting(trimmed), headingBody) {
 			return true
 		}
 	}
@@ -136,7 +144,14 @@ func markdownHasTitleHeading(md, headingBody string) bool {
 }
 
 func atxHeadingBody(line string) (string, bool) {
-	line = strings.TrimLeft(line, " ")
+	spaces := 0
+	for spaces < len(line) && line[spaces] == ' ' {
+		spaces++
+	}
+	if spaces > 3 {
+		return "", false
+	}
+	line = line[spaces:]
 	hashes := 0
 	for hashes < len(line) && line[hashes] == '#' {
 		hashes++
@@ -155,11 +170,34 @@ func stripTrailingFragmentLink(s string) string {
 	if mid < 0 {
 		return s
 	}
-	open := strings.LastIndex(s[:mid], " [")
-	if open < 0 {
+	if strings.ContainsAny(s[mid+3:len(s)-1], ") \t") {
+		return s
+	}
+	open := strings.LastIndex(s[:mid], "[")
+	if open < 0 || (open > 0 && s[open-1] == '\\') {
 		return s
 	}
 	return strings.TrimSpace(s[:open])
+}
+
+func stripInlineFormatting(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i])
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		switch s[i] {
+		case '*', '_', '`':
+			continue
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func htmlNodeText(root *html.Node) string {
