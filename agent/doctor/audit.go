@@ -367,12 +367,8 @@ func (c AuditCheck) evaluate(source metricSource) (bool, error) {
 		}
 		want := cond.Value
 		if cond.Metric == "longest_identical_run.tool" {
-			if s, ok := want.(string); ok {
-				_, exactCall := source.health.ToolCalls[s]
-				_, exactErr := source.health.ToolErrors[s]
-				if !exactCall && !exactErr {
-					want = wirenames.Canonical(s)
-				}
+			if s, ok := want.(string); ok && !source.hasExactTool(s) {
+				want = wirenames.Canonical(s)
 			}
 		}
 		ok, err := compareMetric(actual, cond.Op, want)
@@ -396,6 +392,12 @@ type metricSource struct {
 	haveAPILog    bool
 	apiHealth     APIHealthResult
 	haveAPIHealth bool
+}
+
+func (m metricSource) hasExactTool(name string) bool {
+	_, exactCall := m.health.ToolCalls[name]
+	_, exactErr := m.health.ToolErrors[name]
+	return exactCall || exactErr
 }
 
 // resolve maps a runbook's dotted metric path to its current value, per the
@@ -459,8 +461,8 @@ func (m metricSource) resolve(path string) (any, error) {
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_calls.<tool>", path)
 		}
-		if v, exact := m.health.ToolCalls[rest]; exact {
-			return v, nil
+		if m.hasExactTool(rest) {
+			return m.health.ToolCalls[rest], nil
 		}
 		return m.health.ToolCalls[wirenames.Canonical(rest)], nil
 	case "tool_errors":
@@ -468,8 +470,8 @@ func (m metricSource) resolve(path string) (any, error) {
 		if tool == "" || class == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_errors.<tool>.<class>", path)
 		}
-		if byClass, exact := m.health.ToolErrors[tool]; exact {
-			return byClass[class], nil
+		if m.hasExactTool(tool) {
+			return m.health.ToolErrors[tool][class], nil
 		}
 		return m.health.ToolErrors[wirenames.Canonical(tool)][class], nil
 	case "apilog":

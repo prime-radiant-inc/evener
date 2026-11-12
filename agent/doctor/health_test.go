@@ -762,7 +762,7 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 			healthToolCall("c3", "run_shell_command", `{"message":"done","end_turn":true}`),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			healthToolResult("c1", "shell", "/tmp", false),
+			healthToolResult("c1", "shell", "permission denied", true),
 			healthToolResult("c2", "grep_search", "bad query", true),
 			healthToolResult("c2b", "grep_search", "bad query", true),
 			healthToolResult("c3", "run_shell_command", `{"accepted":true}`, false),
@@ -789,6 +789,9 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 		t.Errorf("custom session ToolErrors = %+v, want grep_search[other]=2 and grep empty", hc.ToolErrors)
 	}
 	mc := metricSource{health: hc}
+	if got, err := mc.resolve("tool_errors.run_shell_command.denied"); err != nil || got != 0 {
+		t.Errorf("resolve(tool_errors.run_shell_command.denied) = (%v, %v), want (0, nil)", got, err)
+	}
 	grepRunChk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "grep"}}}
 	if matched, err := grepRunChk.evaluate(mc); err != nil || matched {
 		t.Errorf("custom grep_search run matched canonical grep = (%t, %v), want (false, nil)", matched, err)
