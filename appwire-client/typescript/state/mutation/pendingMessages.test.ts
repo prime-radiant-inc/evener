@@ -417,7 +417,11 @@ test("a carried row leaves on lineage alone when the promotion names no queue en
           {
             id: "i1",
             turnId: "t1",
-            type: "userMessage",
+            // The daemon records a promotion as steering with source "user";
+            // SteeringItem renders that through UserMessageView, so it is a
+            // visible replacement just as a userMessage item is.
+            type: "steering",
+            source: "user",
             text: "queued elsewhere",
             clientMutationId: "consumer",
             conversationInputIds: ["client:m9"],

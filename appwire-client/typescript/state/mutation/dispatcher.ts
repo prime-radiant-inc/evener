@@ -201,10 +201,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       const next = this.#acceptedCopyReplayAuthority.get(targetRef);
       this.#acceptedCopyReplayAuthority.delete(targetRef);
       // Every caller passes a freshly built set, so identity never proves
-      // equality. A pass that adds no authority has nothing left to replay.
+      // equality. A pass that changes nothing has nothing left to replay - but
+      // a SHRINKING set changes the answer too: an id it drops becomes
+      // eligible for the replay the previous pass skipped it in.
       if (!next) return;
-      const added = [...next].filter((id) => !ids.has(id));
-      if (added.length === 0) return;
+      const sameSize = next.size === ids.size;
+      const changed = !sameSize || [...next].some((id) => !ids.has(id));
+      if (!changed) return;
       ids = next;
     }
   }
