@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,8 +19,84 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+// TestProbeHarnessesScopeWorkspaceToWorkDir covers #3724: both harnesses must
+// make a WorkDir nested inside another repository its own writable workspace.
+// The CLI worker starts in WorkDir and carries its parent as a git ceiling; the
+// live resolver gets the same ceiling in its host facts.
+func TestProbeHarnessesScopeWorkspaceToWorkDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "nested", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantWork := identifier.ResolveClean(work)
+
+	cmd, err := cliProbeCommand(context.Background(), runConfig{model: "test/model"}, probeFile{}, probeResult{WorkDir: work})
+	if err != nil {
+		t.Fatalf("cliProbeCommand: %v", err)
+	}
+	if cmd.Dir != work {
+		t.Fatalf("CLI worker dir = %q, want %q", cmd.Dir, work)
+	}
+
+	origHost := runnerProbeSandboxHost
+	runnerProbeSandboxHost = func() sandbox.HostFacts { return enforceableSandboxHost(t) }
+	t.Cleanup(func() { runnerProbeSandboxHost = origHost })
+	host := liveProbeSandboxHost(work)
+	rp, err := sandbox.ResolveNamed("workspace-write", nil, host, work, nil)
+	if err != nil {
+		t.Fatalf("ResolveNamed: %v", err)
+	}
+	if rp.Git.WorktreeRoot != wantWork {
+		t.Fatalf("live worktree root = %q, want %q", rp.Git.WorktreeRoot, wantWork)
+	}
+	if want := []string{wantWork}; !slices.Equal(rp.FileTool.WriteRoots, want) {
+		t.Fatalf("live file-tool write roots = %v, want %v", rp.FileTool.WriteRoots, want)
+	}
+}
+
+// parseRunFlags parses args through the same defineRunFlags wiring runSuite
+// uses, so a test reads the flag defaults and values the runner actually gets.
+func parseRunFlags(t *testing.T, args ...string) runConfig {
+	t.Helper()
+	var cfg runConfig
+	var systemPromptAppend cmdutil.StringSliceFlag
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	defineRunFlags(fs, &cfg, &systemPromptAppend)
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("parse %v: %v", args, err)
+	}
+	cfg.sandbox = sandboxModeOrDefault(cfg.sandbox)
+	cfg.systemPromptAppend = []string(systemPromptAppend)
+	return cfg
+}
+
+// TestDefaultSandboxIsWorkspaceWrite: a probe runs confined by default so it
+// cannot write outside its work dir; --sandbox off is the explicit opt-out for
+// a task that needs the whole host (#3724).
+func TestDefaultSandboxIsWorkspaceWrite(t *testing.T) {
+	cfg := parseRunFlags(t)
+	if cfg.sandbox != "workspace-write" {
+		t.Fatalf("default --sandbox = %q, want workspace-write", cfg.sandbox)
+	}
+	if mode, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil || mode != sandbox.ModeWorkspaceWrite {
+		t.Fatalf("default sandbox mode = %v, %v; want workspace-write", mode, err)
+	}
+	if got := parseRunFlags(t, "--sandbox", "off").sandbox; got != "off" {
+		t.Fatalf("--sandbox off = %q, want the opt-out", got)
+	}
+	// An unset variable in --sandbox "$MODE" must not read as off.
+	if got := parseRunFlags(t, "--sandbox", "").sandbox; got != "workspace-write" {
+		t.Fatalf("--sandbox with an empty value = %q, want the safe default", got)
+	}
+}
 
 // enforceableSandboxHost is a host that can serve the full mode matrix: bwrap
 // present and able to create its namespaces. Tests use it instead of probing

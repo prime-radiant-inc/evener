@@ -67,6 +67,36 @@ func mustResolve(t *testing.T, pol SandboxPolicy, host HostFacts, cwd string) Re
 	return rp
 }
 
+// TestWorkspaceWriteStopsAtGitCeiling covers #3724 at the resolver: a
+// workspace-write policy for a WorkDir nested inside a repository grants only
+// that WorkDir when the host facts carry its parent as a git ceiling.
+func TestWorkspaceWriteStopsAtGitCeiling(t *testing.T) {
+	root := clean(t.TempDir())
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "nested", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	host := bwrapHost()
+	host.GitCeilingDirs = []string{root}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, host, work)
+	if rp.Git.WorktreeRoot != work {
+		t.Fatalf("worktree root = %q, want the ceiling-scoped %q", rp.Git.WorktreeRoot, work)
+	}
+	if want := []string{work}; !slices.Equal(rp.FileTool.WriteRoots, want) {
+		t.Fatalf("file-tool write roots = %v, want %v", rp.FileTool.WriteRoots, want)
+	}
+
+	// Without the ceiling the enclosing checkout is the workspace.
+	rp = mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, bwrapHost(), work)
+	if rp.Git.WorktreeRoot != root {
+		t.Fatalf("worktree root without the ceiling = %q, want %q", rp.Git.WorktreeRoot, root)
+	}
+}
+
 func mustRefuse(t *testing.T, pol SandboxPolicy, host HostFacts, cwd, wantBackend string) *RefusalError {
 	t.Helper()
 	_, err := Resolve(pol, host, cwd)
