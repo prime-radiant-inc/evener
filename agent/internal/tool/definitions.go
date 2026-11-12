@@ -441,14 +441,14 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 func DefModelList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "model_list",
-		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the next field of the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 512, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
 		},
 	}

@@ -1432,7 +1432,7 @@
       "turnId": "turn_1",
       "toolName": "model_list",
       "callId": "call_model_list_next",
-      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.3\"\n  ],\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": true,\n  \"status\": {\n    \"openai\": {\n      \"kind\": \"success\",\n      \"detail\": \"enumeration succeeded\"\n    },\n    \"router\": {\n      \"kind\": \"failure\",\n      \"detail\": \"enumeration did not complete\"\n    }\n  },\n  \"provenance\": \"startup-frozen\"\n}",
+      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.3\"\n  ],\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": true,\n  \"provenance\": \"startup-frozen\"\n}",
       "status": "completed",
       "completedAt": 1790625602000
     },

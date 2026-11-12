@@ -1023,6 +1023,14 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
 		}
 	}
+
+	maxBytesProp, ok := props["max_bytes"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing max_bytes prop")
+	}
+	if minBytes, ok := maxBytesProp["minimum"].(int); !ok || minBytes != 512 {
+		t.Errorf("model_list max_bytes minimum = %v, want 512", maxBytesProp["minimum"])
+	}
 }
 
 // TestAllBuiltinParametersCarryDescriptions is the description audit as a
