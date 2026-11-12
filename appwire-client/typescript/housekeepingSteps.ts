@@ -127,7 +127,7 @@ const HOUSEKEEPING: Record<string, HousekeepingTool> = {
       }
       const terminalMatch = step.output?.match(/^The goal for this session is already terminal \(([^)]+)\)/);
       if (terminalMatch) {
-        return { verb, detail: `already ${terminalMatch[1]}` };
+        return { verb: "Left the goal unchanged", detail: `already ${terminalMatch[1]}` };
       }
       return { verb };
     },
