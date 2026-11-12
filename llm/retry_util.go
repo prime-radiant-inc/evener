@@ -85,8 +85,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if !retryableError(err) {
 			return zero, err
 		}
-		wallBudgeted := policy.WallBudgetedRateLimit(err)
-		if wallBudgeted {
+		if policy.WallBudgetedRateLimit(err) {
 			if !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
@@ -98,46 +97,25 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if !ok {
 			return zero, err
 		}
-		wait := delay
-		var remaining time.Duration
-		if wallBudgeted {
-			remaining = rateLimitRemaining(ctx, policy, start, ownerBudget)
+		if policy.WallBudgetedRateLimit(err) {
+			remaining := rateLimitRemaining(ctx, policy, start, ownerBudget)
 			if remaining <= 0 {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
-			if wait > remaining {
+			if delay > remaining {
 				// Do not start a wait that would carry the group beyond its wall
 				// budget. Sleeping the remaining slice makes the elapsed budget
 				// deterministic, then the original provider error is returned.
-				wait = remaining
+				delay = remaining
 			}
 		}
 		if policy.OnRetry != nil {
-			policy.OnRetry(err, attempt+1, wait)
+			policy.OnRetry(err, attempt+1, delay)
 		}
-		var waitErr error
-		if wallBudgeted && policy.Quota != nil && policy.QuotaKey != "" {
-			waitErr = policy.Quota.Wait(ctx, QuotaWait{
-				Key:  policy.QuotaKey,
-				Lane: policy.QuotaLane,
-				// Publish the provider's full retry delay, not this caller's
-				// budget-clipped wait, so other sessions do not retry before
-				// the known cooldown expires. Budget bounds only this caller.
-				Cooldown: delay,
-				Budget:   remaining,
-			}, sleep)
-			if waitErr != nil {
-				if ctx.Err() != nil || errors.Is(waitErr, errQuotaWaitExhausted) {
-					return zero, rateLimitBudgetExhausted(ctx, err)
-				}
-			}
-		} else {
-			waitErr = sleep(ctx, wait)
+		if err := sleep(ctx, delay); err != nil {
+			return zero, err
 		}
-		if waitErr != nil {
-			return zero, waitErr
-		}
-		if wallBudgeted && rateLimitRemaining(ctx, policy, start, ownerBudget) <= 0 {
+		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
 			return zero, rateLimitBudgetExhausted(ctx, err)
 		}
 	}
