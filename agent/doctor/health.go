@@ -6,7 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -166,6 +167,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	var occurrences []toolCallOccurrence
 	resultSeen := map[string]bool{}
 	resultErrors := map[string]bool{}
+	resolver := newSessionToolResolver(doc.Entries, resultTool)
 
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
@@ -174,7 +176,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				if part.ToolCall == nil {
 					continue
 				}
-				name := part.ToolCall.Name
+				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
 				occurrences = append(occurrences, toolCallOccurrence{
 					signature: toolCallSignature(name, part.ToolCall),
@@ -194,10 +196,11 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 					resultErrors[part.ToolResult.ToolCallID] = part.ToolResult.IsError
 				}
 				if part.ToolResult.IsError {
-					if res.ToolErrors[part.ToolResult.Name] == nil {
-						res.ToolErrors[part.ToolResult.Name] = map[string]int{}
+					errTool := resolver.resultName(part.ToolResult)
+					if res.ToolErrors[errTool] == nil {
+						res.ToolErrors[errTool] = map[string]int{}
 					}
-					res.ToolErrors[part.ToolResult.Name][classifyToolError(text)]++
+					res.ToolErrors[errTool][classifyToolError(text)]++
 				}
 			}
 		}
@@ -321,11 +324,12 @@ func callArgsEndTurn(rawArgs json.RawMessage) bool {
 func RenderHealth(r HealthResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s\n", r.SessionID)
-	if len(r.ToolCalls) == 0 {
+	toolNames := unionToolNames(r.ToolCalls, r.ToolErrors)
+	if len(toolNames) == 0 {
 		b.WriteString("tool_calls: (none)\n")
 	} else {
 		b.WriteString("tool_calls:\n")
-		for _, name := range sortedKeys(r.ToolCalls) {
+		for _, name := range toolNames {
 			fmt.Fprintf(&b, "  %-20s calls=%-4d errors=%s\n", name, r.ToolCalls[name], renderCounts(r.ToolErrors[name]))
 		}
 	}
@@ -358,10 +362,16 @@ func renderCounts(m map[string]int) string {
 }
 
 func sortedKeys(m map[string]int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	return slices.Sorted(maps.Keys(m))
+}
+
+func unionToolNames(calls map[string]int, errs map[string]map[string]int) []string {
+	seen := make(map[string]struct{}, len(calls)+len(errs))
+	for k := range calls {
+		seen[k] = struct{}{}
 	}
-	sort.Strings(keys)
-	return keys
+	for k := range errs {
+		seen[k] = struct{}{}
+	}
+	return slices.Sorted(maps.Keys(seen))
 }

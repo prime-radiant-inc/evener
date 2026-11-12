@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 )
 
 // Finding is the atomic output of a doctor audit, per
@@ -363,7 +365,13 @@ func (c AuditCheck) evaluate(source metricSource) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		ok, err := compareMetric(actual, cond.Op, cond.Value)
+		want := cond.Value
+		if cond.Metric == "longest_identical_run.tool" {
+			if s, ok := want.(string); ok && !source.hasExactTool(s) {
+				want = wirenames.Canonical(s)
+			}
+		}
+		ok, err := compareMetric(actual, cond.Op, want)
 		if err != nil {
 			return false, fmt.Errorf("metric %s: %w", cond.Metric, err)
 		}
@@ -384,6 +392,12 @@ type metricSource struct {
 	haveAPILog    bool
 	apiHealth     APIHealthResult
 	haveAPIHealth bool
+}
+
+func (m metricSource) hasExactTool(name string) bool {
+	_, exactCall := m.health.ToolCalls[name]
+	_, exactErr := m.health.ToolErrors[name]
+	return exactCall || exactErr
 }
 
 // resolve maps a runbook's dotted metric path to its current value, per the
@@ -447,13 +461,19 @@ func (m metricSource) resolve(path string) (any, error) {
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_calls.<tool>", path)
 		}
-		return m.health.ToolCalls[rest], nil
+		if m.hasExactTool(rest) {
+			return m.health.ToolCalls[rest], nil
+		}
+		return m.health.ToolCalls[wirenames.Canonical(rest)], nil
 	case "tool_errors":
 		tool, class, _ := strings.Cut(rest, ".")
 		if tool == "" || class == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_errors.<tool>.<class>", path)
 		}
-		return m.health.ToolErrors[tool][class], nil
+		if m.hasExactTool(tool) {
+			return m.health.ToolErrors[tool][class], nil
+		}
+		return m.health.ToolErrors[wirenames.Canonical(tool)][class], nil
 	case "apilog":
 		if apiHealthMetricNames[path] || strings.HasPrefix(rest, "errors_by_class.") {
 			if !m.haveAPIHealth {

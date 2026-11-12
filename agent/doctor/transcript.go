@@ -7,9 +7,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -92,18 +94,139 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 	if err != nil {
 		return CountResult{}, err
 	}
+	resultTool := resolveResultTool(paths)
+	resolver := newSessionToolResolver(doc.Entries, resultTool)
+	target := tool
+	mentionNames := []string{tool}
+	if tool != resultTool {
+		target = wirenames.Canonical(tool)
+		aliases := wirenames.NamesOf(target)
+		if slices.Contains(aliases, tool) {
+			mentionNames = make([]string, 0, len(aliases))
+			for _, a := range aliases {
+				if a != resultTool {
+					mentionNames = append(mentionNames, a)
+				}
+			}
+		}
+	}
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == tool {
-				res.Calls++
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+				resolved := resolver.callName(part.ToolCall)
+				if tool == resultTool {
+					if resolved == resultTool {
+						res.Calls++
+					}
+				} else if resolved == target || (resolved == tool && resolved != resultTool) {
+					res.Calls++
+				}
 			}
 			if e.Turn.Kind == schema.TurnAssistant && part.Kind == llm.ContentText {
-				res.MentionsAssistantText += strings.Count(part.Text, tool)
+				res.MentionsAssistantText += countToolMentions(part.Text, mentionNames)
 			}
 		}
 	}
 	return res, nil
+}
+
+type sessionToolResolver struct {
+	resultTool string
+	callByID   map[string]string
+	resultByID map[string]string
+}
+
+func newSessionToolResolver(entries []transcript.Entry, resultTool string) sessionToolResolver {
+	r := sessionToolResolver{
+		resultTool: resultTool,
+		callByID:   make(map[string]string),
+		resultByID: make(map[string]string),
+	}
+	for _, e := range entries {
+		for _, part := range e.Turn.Message.Content {
+			switch part.Kind {
+			case llm.ContentToolCall:
+				if part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name != "" {
+					if _, exists := r.callByID[part.ToolCall.ID]; !exists {
+						r.callByID[part.ToolCall.ID] = part.ToolCall.Name
+					}
+				}
+			case llm.ContentToolResult:
+				if part.ToolResult != nil && part.ToolResult.ToolCallID != "" && part.ToolResult.Name != "" {
+					if _, exists := r.resultByID[part.ToolResult.ToolCallID]; !exists {
+						r.resultByID[part.ToolResult.ToolCallID] = part.ToolResult.Name
+					}
+				}
+			}
+		}
+	}
+	return r
+}
+
+func (r sessionToolResolver) canonicalize(name string) string {
+	if name == r.resultTool {
+		return name
+	}
+	return wirenames.Canonical(name)
+}
+
+func (r sessionToolResolver) callName(tc *llm.ToolCallData) string {
+	if tc.Name == r.resultTool {
+		return tc.Name
+	}
+	if resName := r.resultByID[tc.ID]; resName != "" {
+		if resName == tc.Name {
+			return resName
+		}
+		return r.canonicalize(resName)
+	}
+	return r.canonicalize(tc.Name)
+}
+
+func (r sessionToolResolver) resultName(tr *llm.ToolResultData) string {
+	if tr.Name == r.resultTool {
+		return tr.Name
+	}
+	if callName := r.callByID[tr.ToolCallID]; callName != "" && callName == tr.Name {
+		return tr.Name
+	}
+	return r.canonicalize(tr.Name)
+}
+
+func countToolMentions(text string, names []string) int {
+	var candidates []string
+	for _, n := range names {
+		if n != "" {
+			candidates = append(candidates, n)
+		}
+	}
+	if len(candidates) == 0 || text == "" {
+		return 0
+	}
+	slices.SortFunc(candidates, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	count := 0
+	for i := 0; i < len(text); {
+		matchedLen := 0
+		for _, cand := range candidates {
+			if strings.HasPrefix(text[i:], cand) {
+				matchedLen = len(cand)
+				break
+			}
+		}
+		if matchedLen > 0 {
+			count++
+			i += matchedLen
+		} else {
+			i++
+		}
+	}
+	return count
 }
 
 // RenderCount renders the structural count with the mention disambiguation —
