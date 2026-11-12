@@ -1722,13 +1722,17 @@ export class Driver {
   // Finding, hit-testing and pressing in one page turn keeps the pressed
   // element the one that was checked.
   async clickQueueRowControl({ rowText, label, ref = null }) {
-    const selector = `button[aria-label="${label}"]`;
+    // A row control names itself either with aria-label or with its own
+    // visible text: the queue strip used labelled icon buttons, and the
+    // pending stack renders worded buttons. Match on both, so the guard
+    // presses the same action whichever surface carries the row.
     const result = await evaluate(
       this.send,
       `(() => {
         const strip = ${this.queueStripRootExpr(ref)};
         if (!strip) return "missing";
-        const button = [...strip.querySelectorAll(${JSON.stringify(selector)})]
+        const button = [...strip.querySelectorAll("button")]
+          .filter((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent ?? "").trim() === ${JSON.stringify(label)})
           .find((candidate) => (candidate.closest("li")?.textContent ?? "").includes(${JSON.stringify(rowText)}));
         if (!button) return "missing";
         if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";

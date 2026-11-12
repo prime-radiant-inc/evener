@@ -1552,9 +1552,7 @@ test("usePendingMessages keeps one snapshot while a carried row exists", async (
       consumedClientMutationIds: ["m9"],
     },
   } as never);
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(consumedQueueEntriesFor("ref_a")).toHaveLength(1);
 
   const pending = renderHook(() => usePendingMessages("ref_a"));
