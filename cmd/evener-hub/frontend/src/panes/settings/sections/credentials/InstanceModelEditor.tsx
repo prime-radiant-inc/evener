@@ -460,7 +460,7 @@ export function InstanceModelEditor({
           {`← ${instance.name}`}
         </Button>
         {mode === "edit" && detail !== null && hasAuthoredOverrides(detail.authored) && (
-          <Button variant="quiet" size="sm" disabled={busy || writesRefused} onClick={() => void handleResetAll()}>
+          <Button variant="secondary" size="xs" disabled={busy || writesRefused} onClick={() => void handleResetAll()}>
             Reset all overrides
           </Button>
         )}
@@ -578,7 +578,7 @@ export function InstanceModelEditor({
                   <Button
                     key={level}
                     size="xs"
-                    variant={selected ? "secondary" : "quiet"}
+                    variant={selected ? "primary" : "secondary"}
                     aria-pressed={selected}
                     disabled={busy}
                     onClick={() =>
