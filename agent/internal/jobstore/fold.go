@@ -136,6 +136,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 			rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
 			rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
 			rec.StableReceiver = e.Watch.Config.StableReceiver
+			rec.Note = e.Watch.Config.Note
 		}
 		watches[e.WatchID] = rec
 	case EventWatchCleared:

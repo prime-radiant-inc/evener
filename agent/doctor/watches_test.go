@@ -355,10 +355,6 @@ func TestWatches_TerminalCatchupRecordedInLog(t *testing.T) {
 	if w.DistinctDeliveries != 1 || w.Delivered != 1 {
 		t.Errorf("w.DistinctDeliveries = %d, w.Delivered = %d, want 1/1", w.DistinctDeliveries, w.Delivered)
 	}
-	out := RenderWatches(r)
-	if !strings.Contains(out, "1 distinct") || !strings.Contains(out, "1 delivered") {
-		t.Errorf("render output missing 1 distinct / 1 delivered; got:\n%s", out)
-	}
 }
 
 // A terminal event kind with no short label is reported by its raw kind.

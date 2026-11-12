@@ -733,6 +733,7 @@ func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
 			source:             source,
 			target:             target,
 			condition:          rec.Condition,
+			note:               rec.Note,
 			sendTo:             rec.SendTo,
 			receiverSessionID:  rec.ReceiverSessionID,
 			receiverDelegateID: rec.ReceiverDelegateID,

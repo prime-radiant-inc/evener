@@ -66,6 +66,7 @@ type WatchRecord struct {
 	SendTo                   string    `json:"send_to,omitempty"`
 	ConfigHash               string    `json:"config_hash"`
 	Condition                string    `json:"condition,omitempty"`
+	Note                     string    `json:"note,omitempty"`
 	Deliveries               int       `json:"deliveries,omitempty"`
 	Active                   bool      `json:"active"`
 	EndReason                string    `json:"end_reason,omitempty"`

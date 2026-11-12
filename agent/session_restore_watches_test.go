@@ -104,7 +104,7 @@ func TestRestoreHistoricalWatchesEndedSeqAndTimestamp(t *testing.T) {
 	t4 := time.Date(2026, 8, 1, 14, 0, 0, 0, time.UTC) // runtime_lost
 
 	// w_early registered first
-	_ = store.Append(jobstore.Event{Kind: jobstore.EventWatchRegistered, TS: t0, WatchID: "w_early", Watch: &jobstore.WatchEvent{Generation: "g1", OwnerSessionID: sid, VisibleSessionID: sid, Target: "job_a", ConfigHash: "cfgA"}})
+	_ = store.Append(jobstore.Event{Kind: jobstore.EventWatchRegistered, TS: t0, WatchID: "w_early", Watch: &jobstore.WatchEvent{Generation: "g1", OwnerSessionID: sid, VisibleSessionID: sid, Target: "job_a", ConfigHash: "cfgA", Config: &jobstore.WatchConfigSnapshot{Note: "; events: [communicate]"}}})
 	// w_late registered second
 	_ = store.Append(jobstore.Event{Kind: jobstore.EventWatchRegistered, TS: t1, WatchID: "w_late", Watch: &jobstore.WatchEvent{Generation: "g2", OwnerSessionID: sid, VisibleSessionID: sid, Target: "job_b", ConfigHash: "cfgB"}})
 	// w_lost registered
@@ -148,6 +148,9 @@ func TestRestoreHistoricalWatchesEndedSeqAndTimestamp(t *testing.T) {
 	inspected := jm.inspectWatchByID("w_early")
 	if inspected.EndedAt != wantT3 {
 		t.Fatalf("inspected.EndedAt = %q, want %q", inspected.EndedAt, wantT3)
+	}
+	if inspected.Note != "; events: [communicate]" {
+		t.Fatalf("inspected.Note = %q, want %q", inspected.Note, "; events: [communicate]")
 	}
 
 	// runtime_lost watch does not enter history

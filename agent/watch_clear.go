@@ -14,14 +14,15 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	jm.mu.Lock()
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch cleared", jm.now())
 	if key.SendTo != "" {
-		cfg := jm.watches[key]
-		targets = append(targets, watchConfigTerminalSnapshot{
-			key:        key,
-			cfg:        cfg,
-			terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-			endReason:  "cleared",
-			deliveries: cfg.deliveries,
-		})
+		if cfg := jm.watches[key]; cfg != nil {
+			targets = append(targets, watchConfigTerminalSnapshot{
+				key:        key,
+				cfg:        cfg,
+				terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+				endReason:  "cleared",
+				deliveries: cfg.deliveries,
+			})
+		}
 	} else {
 		for existingKey, cfg := range jm.watches {
 			if watchKeyMatchesClearRequest(existingKey, key) {
