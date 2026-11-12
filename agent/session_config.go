@@ -242,6 +242,14 @@ type SessionConfig struct {
 	// default time.Sleep. A test-injection point (see LLMRetryPolicy above).
 	LLMSleep llm.SleepFunc `json:"-"`
 
+	// QuotaCoordinator, when non-nil, shares a rate-limit cooldown with every
+	// other session on this host retrying the same provider instance. Hosts
+	// (run and serve) construct one per process from the host state root.
+	// Nil keeps the per-session wall budget and is the test shape.
+	//
+	// Engine-only like StateDir: never persisted, supplied by the host.
+	QuotaCoordinator *llm.QuotaCoordinator `json:"-"`
+
 	// clock is the session's sole source of time: every time.Now read, sleep,
 	// timer, ticker, and watchdog in the turn / job / goal lifecycle routes
 	// through it. Nil defaults to clock.Real() (the standard library). It is

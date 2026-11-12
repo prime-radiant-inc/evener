@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
 )
@@ -132,7 +133,8 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 		if !retryableError(err) {
 			return err
 		}
-		if opts.Policy.WallBudgetedRateLimit(err) {
+		wallBudgeted := opts.Policy.WallBudgetedRateLimit(err)
+		if wallBudgeted {
 			if !rateLimitBudgetRemains(ctx, opts.Policy, err, start, ownerBudget) {
 				return rateLimitBudgetExhausted(ctx, err)
 			}
@@ -143,24 +145,44 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 		if !ok {
 			return err
 		}
-		if opts.Policy.WallBudgetedRateLimit(err) {
-			remaining := rateLimitRemaining(ctx, opts.Policy, start, ownerBudget)
+		wait := delay
+		var remaining time.Duration
+		if wallBudgeted {
+			remaining = rateLimitRemaining(ctx, opts.Policy, start, ownerBudget)
 			if remaining <= 0 {
 				return rateLimitBudgetExhausted(ctx, err)
 			}
-			if delay > remaining {
+			if wait > remaining {
 				// Wait only to the wall-budget boundary; do not start another
 				// attempt after the policy has expired.
-				delay = remaining
+				wait = remaining
 			}
 		}
 		if opts.Policy.OnRetry != nil {
-			opts.Policy.OnRetry(err, n+1, delay)
+			opts.Policy.OnRetry(err, n+1, wait)
 		}
-		if sleepErr := sleep(ctx, delay); sleepErr != nil {
-			return sleepErr
+		var waitErr error
+		if wallBudgeted && opts.Policy.Quota != nil && opts.Policy.QuotaKey != "" {
+			waitErr = opts.Policy.Quota.Wait(ctx, QuotaWait{
+				Key:  opts.Policy.QuotaKey,
+				Lane: opts.Policy.QuotaLane,
+				// Publish the provider's full retry delay; Budget bounds only
+				// this caller's wait.
+				Cooldown: delay,
+				Budget:   remaining,
+			}, sleep)
+			if waitErr != nil {
+				if ctx.Err() != nil || errors.Is(waitErr, errQuotaWaitExhausted) {
+					return rateLimitBudgetExhausted(ctx, err)
+				}
+			}
+		} else {
+			waitErr = sleep(ctx, wait)
 		}
-		if opts.Policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, opts.Policy, err, start, ownerBudget) {
+		if waitErr != nil {
+			return waitErr
+		}
+		if wallBudgeted && rateLimitRemaining(ctx, opts.Policy, start, ownerBudget) <= 0 {
 			return rateLimitBudgetExhausted(ctx, err)
 		}
 		// Discard partial output before re-running so the next attempt replaces

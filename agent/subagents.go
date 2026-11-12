@@ -787,6 +787,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 	subCfg.LLMSleep = parentCfg.LLMSleep
+	subCfg.QuotaCoordinator = parentCfg.QuotaCoordinator
 	subCfg.clock = parentCfg.clock
 	subCfg.StateDir = parentCfg.StateDir
 	subCfg.AcquireSessionOwnership = parentCfg.AcquireSessionOwnership
