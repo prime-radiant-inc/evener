@@ -56,7 +56,7 @@ func TestAPITreeDeletedWorktreeSessionsStayInOriginalProject(t *testing.T) {
 	seed(deadB, 0)
 
 	past := newRebuiltPastIndex(t, filepath.Join(stateRoot, "*"))
-	web := NewWebServer(hubcore.WebConfig{Past: past, RemoteThreadCache: &hubcore.RemoteThreadCache{}})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{Past: past, RemoteThreadCache: &hubcore.RemoteThreadCache{}})
 	snapshot := web.navigationSnapshotInputs(t.Context())
 	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, map[hubcore.ArchiveKey]bool{}, snapshot.projects)
 
