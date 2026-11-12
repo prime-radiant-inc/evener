@@ -130,27 +130,30 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 	}
 
 	s.mu.Lock()
-	if s.loadErr != nil {
-		err := fmt.Errorf("transcript display state is unavailable: %w", s.loadErr)
+	var (
+		committed   bool
+		changed     appwire.TranscriptDisplayChangedParams
+		onCommitted = s.onCommitted
+	)
+	defer func() {
 		s.mu.Unlock()
-		return appwire.TranscriptDisplayPatchResponse{}, err
+		if committed && onCommitted != nil {
+			onCommitted(changed)
+		}
+	}()
+	if s.loadErr != nil {
+		return appwire.TranscriptDisplayPatchResponse{}, fmt.Errorf("transcript display state is unavailable: %w", s.loadErr)
 	}
 
 	current := transcriptDisplaySnapshotLayout(s.state, params.Layout)
 	if current.Revision != params.ExpectedRevision {
-		err := transcriptDisplayConflict(params.Layout, current, params.ExpectedRevision)
-		s.mu.Unlock()
-		return appwire.TranscriptDisplayPatchResponse{}, err
+		return appwire.TranscriptDisplayPatchResponse{}, transcriptDisplayConflict(params.Layout, current, params.ExpectedRevision)
 	}
 	if reflect.DeepEqual(current.Config, params.Config) {
-		result := transcriptDisplayPatchResponse(params.Layout, current)
-		s.mu.Unlock()
-		return result, nil
+		return transcriptDisplayPatchResponse(params.Layout, current), nil
 	}
 	if current.Revision == math.MaxUint64 {
-		err := fmt.Errorf("transcript display %s revision overflow", params.Layout)
-		s.mu.Unlock()
-		return appwire.TranscriptDisplayPatchResponse{}, err
+		return appwire.TranscriptDisplayPatchResponse{}, fmt.Errorf("transcript display %s revision overflow", params.Layout)
 	}
 
 	next := cloneTranscriptDisplaySnapshot(s.state)
@@ -158,19 +161,10 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 	updated.Revision++
 	updated.Config = cloneTranscriptDisplayConfig(params.Config)
 	renamed, err := saveTranscriptDisplaySnapshotFS(s.fs, s.root, next, s.faults)
-	var changed appwire.TranscriptDisplayChangedParams
 	if renamed {
 		s.state = next
-		changed = appwire.TranscriptDisplayChangedParams{
-			Layout:   params.Layout,
-			Revision: updated.Revision,
-			Config:   cloneTranscriptDisplayConfig(updated.Config),
-		}
-	}
-	onCommitted := s.onCommitted
-	s.mu.Unlock()
-	if renamed && onCommitted != nil {
-		onCommitted(changed)
+		committed = true
+		changed = appwire.TranscriptDisplayChangedParams(transcriptDisplayPatchResponse(params.Layout, *updated))
 	}
 	if err != nil {
 		if renamed {
