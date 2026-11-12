@@ -6,7 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -361,12 +362,7 @@ func renderCounts(m map[string]int) string {
 }
 
 func sortedKeys(m map[string]int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 func unionToolNames(calls map[string]int, errs map[string]map[string]int) []string {
@@ -377,10 +373,5 @@ func unionToolNames(calls map[string]int, errs map[string]map[string]int) []stri
 	for k := range errs {
 		seen[k] = struct{}{}
 	}
-	keys := make([]string, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(seen))
 }

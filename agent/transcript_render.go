@@ -66,9 +66,8 @@ type pairedResult struct {
 // byCallID maps a call ID to the result that answers it; consumed records which
 // result IDs were claimed by a rendered call so the rest can render as orphaned.
 type resultIndex struct {
-	byCallID  map[string]pairedResult
-	consumed  map[string]bool
-	callNames map[string]string
+	byCallID map[string]pairedResult
+	consumed map[string]bool
 }
 
 func collectToolCallNames(entries []transcript.Entry) map[string]string {
@@ -103,11 +102,7 @@ func collectToolCallNames(entries []transcript.Entry) map[string]string {
 // we deliberately do not route them anywhere (YAGNI for unreachable input); this
 // comment just states the dropping honestly.
 func buildResultIndex(entries []transcript.Entry, startSeq int) resultIndex {
-	idx := resultIndex{
-		byCallID:  map[string]pairedResult{},
-		consumed:  map[string]bool{},
-		callNames: collectToolCallNames(entries),
-	}
+	idx := resultIndex{byCallID: map[string]pairedResult{}, consumed: map[string]bool{}}
 	for i, e := range entries {
 		seq := startSeq + i
 		for j := range e.Turn.Message.Content {
@@ -621,9 +616,6 @@ const userRangeTooLarge = "requested range could not be delivered with complete 
 // non-user entries. Unlike anchor-only trimming, an oversized candidate does not
 // stop selection of smaller turns farther into the requested range.
 func renderUserPrioritizedRange(header transcript.Header, entries []transcript.Entry, start, end int, rangeSpec string, opt renderOpts) (string, readMeta) {
-	if opt.callNames == nil {
-		opt.callNames = collectToolCallNames(entries)
-	}
 	selected := make([]bool, len(entries))
 	content, evidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 	priority := rangePriority(start, end, rangeSpec)
@@ -1301,8 +1293,6 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 		pr := idx.byCallID[id]
 		displayName := pr.result.Name
 		if callName := opt.callNames[id]; callName != "" {
-			displayName = callName
-		} else if callName := idx.callNames[id]; callName != "" {
 			displayName = callName
 		}
 		var result strings.Builder

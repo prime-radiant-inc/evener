@@ -684,19 +684,19 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 	turns := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("check")}}),
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "g1", Name: "grep_search", Arguments: []byte(`{"pattern":"x"}`)}},
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s1", Name: "run_shell_command", Arguments: []byte(`{"command":"rm /etc/hosts"}`)}},
+			healthToolCall("g1", "grep_search", `{"pattern":"x"}`),
+			healthToolCall("s1", "run_shell_command", `{"command":"rm /etc/hosts"}`),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "g1", Name: "grep", Content: "no matches", IsError: false}},
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "s1", Name: "shell", Content: "permission denied", IsError: true}},
+			healthToolResult("g1", "grep", "no matches", false),
+			healthToolResult("s1", "shell", "permission denied", true),
 		}}),
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "s2", Name: "run_shell_command", Arguments: []byte(`{"command":"rm /etc/hosts"}`)}},
+			healthToolCall("s2", "run_shell_command", `{"command":"rm /etc/hosts"}`),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "s2", Name: "shell", Content: "permission denied", IsError: true}},
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "l1", Name: "list_dir", Content: "permission denied", IsError: true}},
+			healthToolResult("s2", "shell", "permission denied", true),
+			healthToolResult("l1", "list_dir", "permission denied", true),
 		}}),
 	}
 	writeSessionsFixtureSession(t, bucket, sidA,
@@ -746,5 +746,10 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 		if val != metric.want {
 			t.Errorf("resolve(%q) = %v, want %d", metric.path, val, metric.want)
 		}
+	}
+
+	chk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "run_shell_command"}}}
+	if matched, err := chk.evaluate(m); err != nil || !matched {
+		t.Errorf("AuditCheck(longest_identical_run.tool == run_shell_command) = (%t, %v), want (true, nil)", matched, err)
 	}
 }
