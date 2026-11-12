@@ -640,10 +640,13 @@ func TestDelegateFinalizationTurnWaitsForQuota(t *testing.T) {
 	})
 
 	// The job finishes; its completion's notification turn meets the limit.
+	// Enqueue the completion before the job leaves the running map, the order
+	// armFinalizedJob uses: a drain pass that lands between the two must see
+	// the pending notification, never neither signal.
+	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	jm.mu.Lock()
 	delete(jm.running, running.JobID)
 	jm.mu.Unlock()
-	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	s.notify()
 	testwait.Until(t, "the finalization turn waits for quota", func() bool {
 		select {
