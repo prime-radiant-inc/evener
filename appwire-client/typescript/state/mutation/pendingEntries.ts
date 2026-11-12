@@ -277,6 +277,11 @@ export function recordedInputLineage(model: ThreadModel | undefined): Set<string
   const ids = new Set<string>();
   for (const turn of model?.turns ?? []) {
     for (const item of turn.items) {
+      // Only a rendered user message is a replacement the reader can see. A
+      // steering item carries the same lineage but renders inside the turn it
+      // steered, so retiring a carried row on it would drop the only visible
+      // copy of the message.
+      if (item.type !== "userMessage") continue;
       for (const id of item.conversationInputIds ?? []) {
         ids.add(id);
       }

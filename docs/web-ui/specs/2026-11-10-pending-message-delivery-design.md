@@ -40,6 +40,14 @@ dedupes by text.
 - the visible transcript item identities;
 - a page-lifetime set of identities already seen as delivered;
 - the thread model's status for the Stop-parked queue state.
+- `conversationProvenance.retiredInputs`, the daemon's list of inputs that
+  ended before reaching history (a cancellation, or a failed preparation);
+- a page-lifetime set of queue rows another client consumed, with their text;
+- the mutation-authority flags `mutationStateAuthoritative` and
+  `mutationSnapshotCurrent`, which gate every absence-based retirement so a
+  stale snapshot can never delete a message still in flight;
+- `submittedHere` timestamps and the local-record ownership predicate, which
+  decide whether a row was authored in this pane.
 
 The projection keys rows by the effective wire identity (`clientMutationId`).
 A legacy queue row with no identity is keyed `queue:<entryId>` and merged in
@@ -111,7 +119,10 @@ existence, carry the fence.
   position and identity. Cancellation and promotion now carry the queue entry
   identity they consumed, so every client can retire the same display copy.
 - No fake transcript items and no in-place replacement inside recorded history.
-- No native client change in this implementation; `mobile-native`'s ghost
+- No native renderer change in this implementation; `mobile-native`'s ghost
+  screen keeps its own layout. The native outbox storage does carry the
+  accepted record's `queueEntryIds`, so the shared projection can join a
+  native row to the queue entry that produced it.
   projection can adopt the shared rows later.
 - No text deduplication.
 

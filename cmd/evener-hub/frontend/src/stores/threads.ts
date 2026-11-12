@@ -6856,6 +6856,10 @@ function handleNotification(n: AnyNotification): void {
       // build's own authority gates the answer: a stale snapshot proves
       // nothing about an input that is still waiting.
       if (runtime && settledModel && n.method === "thread/conversation-provenance/changed" && settlementRef) {
+        // The registry is the carried row's only home. A cancellation arrives
+        // here and nowhere else, so it must prune directly rather than wait
+        // for a read that may never come.
+        pruneConsumedQueueRows(settlementRef, settledModel);
         settleConsumedFromModel(runtime, settlementRef, settledModel);
       }
     }

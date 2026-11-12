@@ -213,7 +213,15 @@ test("an accepted source retires when a complete snapshot shows its queue entry 
       {
         id: "t1",
         status: "completed",
-        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued", clientMutationId: "m2" }],
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued",
+            clientMutationId: "m1",
+          },
+        ],
       },
     ],
   });
@@ -504,6 +512,41 @@ test("a carried row stays while the daemon has retired a different input", () =>
     ],
   });
   expect(rows).toHaveLength(1);
+});
+
+// A session with any earlier turn already has transcript identities. Hiding a
+// source row must depend on THIS message's identity being visible, not on the
+// model having some transcript at all: a message cancelled by another client
+// is never recorded, and the weak rule deleted it on the strength of an
+// unrelated turn.
+test("an unrelated earlier turn does not make a canceled queue row look delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "turn_earlier",
+        status: "completed",
+        items: [
+          {
+            id: "i_earlier",
+            turnId: "turn_earlier",
+            type: "userMessage",
+            text: "earlier",
+            clientMutationId: "unrelated",
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    optimistic: [accepted("canceled-elsewhere", "turn/queue", "gone", { queueEntryIds: ["q1"] })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "canceled-elsewhere", text: "gone" });
 });
 
 test("an accepted source stays while the daemon still projects its queue entry", () => {

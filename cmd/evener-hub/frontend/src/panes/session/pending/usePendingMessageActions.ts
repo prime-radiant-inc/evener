@@ -403,8 +403,14 @@ export function usePendingMessageActions(context: PendingActionContext) {
         case "recovery":
           return row.interrupt !== true && row.recovery?.recoveryKind !== "orphaned";
         case "queue":
+          // The composer cannot take attachments back (the parity contract
+          // keeps them out of a queued edit), and the queue projection does
+          // not carry their bytes. Offering Edit on such a row would cancel
+          // the entry and silently destroy the images, so it is refused.
           return (
-            row.textComplete && (row.text.trim() !== "" || row.skillNames.length > 0 || row.commandNames.length > 0)
+            row.imageCount === 0 &&
+            row.textComplete &&
+            (row.text.trim() !== "" || row.skillNames.length > 0 || row.commandNames.length > 0)
           );
         case "local":
           return row.outbox !== undefined && canEditQueuedMessage(row.outbox) && context.onEditRecovery !== undefined;

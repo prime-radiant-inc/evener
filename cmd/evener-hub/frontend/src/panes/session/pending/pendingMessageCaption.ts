@@ -17,7 +17,11 @@ export function pendingMessageCaption(
     case "queued":
       return "Queued, sends when this turn ends";
     case "held":
-      return "Held after Stop";
+      // The daemon keeps its Stop-parked flag in the mutation journal and
+      // never puts it on the wire, so this state also covers the ordinary
+      // "queued in a resting session" case. Naming Stop here told users a
+      // message had been parked by a Stop that never happened.
+      return "Queued, sends with the next turn";
     case "delivering":
       return "Delivering";
     case "uncertain":

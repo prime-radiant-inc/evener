@@ -519,9 +519,10 @@ function deliveredSourceRow<A extends MutationAttachmentRef>(
   mutationStateAuthoritative: boolean,
   mutationSnapshotCurrent: boolean,
   deliveredAny: boolean,
+  isDelivered: (id: string) => boolean,
+  entryRecordedOwners: ReadonlySet<string>,
 ): boolean {
-  if (!deliveredAny || !queueKnown || !pendingKnown || !mutationStateAuthoritative || !mutationSnapshotCurrent)
-    return false;
+  if (!queueKnown || !pendingKnown || !mutationStateAuthoritative || !mutationSnapshotCurrent) return false;
   // Only the original queue command is a source. A promotion or drain owns the
   // queue entry it consumed, so its own accepted copy must stay until the
   // transcript records that mutation.
@@ -529,7 +530,17 @@ function deliveredSourceRow<A extends MutationAttachmentRef>(
   if (pendingMutationIds.has(row.id)) return false;
   if (!row.optimistic || row.outbox || row.recovery) return false;
   if (row.queueEntryIds.length === 0) return false;
-  return row.queueEntryIds.every((id) => !queuedEntryIds.has(id) && !pendingEntryIds.has(id));
+  if (!row.queueEntryIds.every((id) => !queuedEntryIds.has(id) && !pendingEntryIds.has(id))) return false;
+  // Absence from the queue proves delivery only together with evidence for
+  // THIS message. A model-wide "some transcript item exists" is always true in
+  // any session with an earlier turn, so it once hid messages another client
+  // cancelled. Two identities count: the row's own wire identity, and the
+  // queue entry it owned when a recorded mutation consumed that entry (a
+  // promotion records its own id, never the source's). A legacy row with no
+  // wire identity has nothing to match and keeps the weaker rule.
+  if (row.id.startsWith("queue:")) return deliveredAny;
+  const own = isDelivered(row.id);
+  return own || row.queueEntryIds.some((id) => entryRecordedOwners.has(id));
 }
 
 export function projectPendingMessages<A extends MutationAttachmentRef = MutationAttachmentRef>(
@@ -574,6 +585,13 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     // same proof for a promotion or drain whose pending owner already settled.
     recordedLineage.has(`client:${entry.clientMutationId}`);
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
+  // Queue entries a recorded mutation consumed. A promotion records its own
+  // id, so this is what ties a delivered item back to the entry it replaced.
+  const recordedEntryOwners = new Set<string>();
+  for (const mutation of model?.pendingMutations ?? []) {
+    if (!transcriptIds.has(mutation.clientMutationId)) continue;
+    for (const id of mutation.queueEntryIds ?? []) recordedEntryOwners.add(id);
+  }
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
   const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
   // A consumed row this client never owned stays until a current snapshot
@@ -834,6 +852,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
           mutationStateAuthoritative,
           mutationSnapshotCurrent,
           deliveredAny,
+          isDelivered,
+          recordedEntryOwners,
         ),
     )
     .map(drainFallback);
