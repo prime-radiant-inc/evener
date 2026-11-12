@@ -7682,12 +7682,24 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
   const pending = pendingConsumedSettlements.get(ref);
   if (!pending || pending.size === 0) return;
   const present = transcriptMutationIds(model);
+  // An input the daemon names as retired will never be recorded, so it settles
+  // without the transcript evidence the rest of this needs. That is the only
+  // way a cancellation settles in a session this client never typed into,
+  // where no recorded clientMutationId exists at all.
+  const retiredInputs = new Set(
+    (model.conversationProvenance?.retiredInputs ?? []).map((id) =>
+      id.startsWith("client:") ? id.slice("client:".length) : id,
+    ),
+  );
+  const settled = [...pending].filter((id) => retiredInputs.has(id));
   // Without a recorded user item the replacement is not visible yet; keep the
   // display copy rather than blinking the message out between the two states.
-  if (present.size === 0) return;
-  for (const id of model.queue?.clientMutationIds ?? []) present.add(id);
-  for (const mutation of model.pendingMutations ?? []) present.add(mutation.clientMutationId);
-  const retired = [...pending].filter((id) => !present.has(id));
+  if (present.size > 0) {
+    for (const id of model.queue?.clientMutationIds ?? []) present.add(id);
+    for (const mutation of model.pendingMutations ?? []) present.add(mutation.clientMutationId);
+    for (const id of pending) if (!present.has(id) && !retiredInputs.has(id)) settled.push(id);
+  }
+  const retired = [...new Set(settled)];
   if (retired.length === 0) return;
   for (const id of retired) pending.delete(id);
   if (pending.size === 0) pendingConsumedSettlements.delete(ref);

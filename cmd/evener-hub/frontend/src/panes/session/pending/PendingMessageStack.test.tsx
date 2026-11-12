@@ -233,6 +233,45 @@ test("a queue row with no entry id exposes no edit or remove action", () => {
   expect(screen.queryByRole("button", { name: "Remove from queue" })).toBeNull();
 });
 
+// A promotion refused before it was attempted still carries its source entry's
+// queueIndex. That index belongs to the message the promotion would consume,
+// not to an entry the daemon owns for this row, so the row must stay local: an
+// Edit here would race the daemon's entry, and Remove must discard only the
+// local promotion rather than cancel that entry.
+test("a refused unattempted promotion keeps its own actions, not the queue entry's", async () => {
+  const cancelQueued = vi.spyOn(threadsStore.getState(), "cancelQueued").mockResolvedValue(undefined);
+  try {
+    renderStack(
+      [
+        row({
+          method: "promote",
+          state: "waiting",
+          queueIndex: 0,
+          queueEntryId: "q1",
+          outbox: {
+            clientMutationId: "m1",
+            method: "turn/promoteQueuedAsSteer",
+            state: "submitting",
+            attempted: false,
+            queueEntryIds: ["q1"],
+          } as unknown as PendingMessage["outbox"],
+        }),
+      ],
+      context,
+    );
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+    const removeButton = screen.getByRole("button", { name: "Remove from queue" });
+    await act(async () => {
+      fireEvent.click(removeButton);
+    });
+    // Remove must not reach the daemon's queue: the index belongs to the entry
+    // this promotion would consume, not to a row this action owns.
+    expect(cancelQueued).not.toHaveBeenCalled();
+  } finally {
+    cancelQueued.mockRestore();
+  }
+});
+
 test("steering captions distinguish the running step, the next turn, a hub wait, and elapsed time", () => {
   const steering = row({
     state: "steering",

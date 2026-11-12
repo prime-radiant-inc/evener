@@ -46,14 +46,19 @@ function rowKind(row: PendingMessage): PendingRowKind {
   // daemon's queued entry behind; an independently edited recovery is its own
   // composition and keeps recovery ownership.
   const editedRecovery = (row.recovery?.compositionRevision ?? 0) > 0;
-  if (row.queueEntryId !== undefined && row.queueIndex !== undefined && !editedRecovery) return "queue";
-  if (row.recovery) return "recovery";
+  // An unattempted or canceled local promotion inherits its source entry's
+  // queueIndex. That index describes the message this promotion would consume,
+  // not an entry the daemon owns on its behalf, so this must answer before the
+  // queue branch or Remove would cancel the original entry instead of only
+  // discarding the local promotion.
   const local = row.outbox;
   if (
     local?.method === "turn/promoteQueuedAsSteer" &&
     (row.state === "canceled" || (local.attempted === false && row.state !== "delivering"))
   )
     return "local";
+  if (row.queueEntryId !== undefined && row.queueIndex !== undefined && !editedRecovery) return "queue";
+  if (row.recovery) return "recovery";
   if (row.queueEntryId !== undefined && row.queueIndex !== undefined) return "queue";
   return "local";
 }
