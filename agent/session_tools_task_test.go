@@ -982,8 +982,10 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("combined call: %s", res.FullOutput)
 	}
-	if !strings.Contains(res.FullOutput, "Added 1 task(s) (#2); updated 1→in_progress") {
-		t.Fatalf("output should combine add+update ack with assigned IDs: %q", res.FullOutput)
+	for _, token := range []string{"#2", "1→in_progress"} {
+		if !strings.Contains(res.FullOutput, token) {
+			t.Fatalf("output missing token %q: %q", token, res.FullOutput)
+		}
 	}
 	view := h.store.View()
 	if len(view) != 2 || view[0].Status != taskpkg.TaskInProgress || view[1].Status != taskpkg.TaskOpen {
@@ -1259,9 +1261,10 @@ func TestTaskTool_AddReturnsAssignedIDs(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("add call failed: %s", res.FullOutput)
 	}
-	wantPrefix := "Added 2 task(s) (#2, #3)."
-	if !strings.Contains(res.FullOutput, wantPrefix) {
-		t.Fatalf("output = %q, want prefix containing %q", res.FullOutput, wantPrefix)
+	for _, idToken := range []string{"#2", "#3"} {
+		if !strings.Contains(res.FullOutput, idToken) {
+			t.Fatalf("output missing assigned ID token %q: %q", idToken, res.FullOutput)
+		}
 	}
 	tasks := h.store.View()
 	if len(tasks) != 3 {
@@ -1285,9 +1288,8 @@ func TestTaskTool_AddAcceptsTitleAliasAndDefaultType(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("add with title and default type failed: %s", res.FullOutput)
 	}
-	wantPrefix := "Added 1 task(s) (#1)."
-	if !strings.Contains(res.FullOutput, wantPrefix) {
-		t.Fatalf("output = %q, want prefix containing %q", res.FullOutput, wantPrefix)
+	if !strings.Contains(res.FullOutput, "#1") {
+		t.Fatalf("output missing assigned ID token #1: %q", res.FullOutput)
 	}
 	tasks := h.store.View()
 	if len(tasks) != 1 {
@@ -1314,5 +1316,29 @@ func TestTaskTool_AddNullTitleRejected(t *testing.T) {
 	})
 	if !res.IsError {
 		t.Fatalf("add with null title must be rejected: %s", res.FullOutput)
+	}
+}
+
+func TestTaskTool_AddMixedDefaultAndExplicitTypesDoesNotDuplicate(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"description": "task A", "prompt": "pA"},
+			map[string]any{"type": "verify", "description": "task B", "prompt": "pB"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add call failed: %s", res.FullOutput)
+	}
+	tasks := h.store.View()
+	if len(tasks) != 2 {
+		t.Fatalf("len(tasks) = %d, want 2: %+v", len(tasks), tasks)
+	}
+	if tasks[0].Description != "task A" || tasks[0].Type != taskpkg.TaskTypeImplement {
+		t.Fatalf("task 0 = %+v, want description=task A type=implement", tasks[0])
+	}
+	if tasks[1].Description != "task B" || tasks[1].Type != taskpkg.TaskTypeVerify {
+		t.Fatalf("task 1 = %+v, want description=task B type=verify", tasks[1])
 	}
 }

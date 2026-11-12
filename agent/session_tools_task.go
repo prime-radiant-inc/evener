@@ -426,9 +426,6 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		for i, raw := range rawAdds {
 			entry, isObject := raw.(map[string]any)
 			if !isObject {
-				if cleanedAdds != nil {
-					cleanedAdds = append(cleanedAdds, raw)
-				}
 				continue
 			}
 			clean := maps.Clone(entry)
@@ -463,8 +460,6 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 					cleanedAdds = append([]any(nil), rawAdds...)
 				}
 				cleanedAdds[i] = clean
-			} else if cleanedAdds != nil {
-				cleanedAdds = append(cleanedAdds, raw)
 			}
 		}
 	}
