@@ -263,16 +263,18 @@ func TestHubRPCAgentsDocConcurrentSavesLeaveTheFinalNotificationMatchingTheFile(
 	clients := make([]*appwire.Client, saves)
 	for i := range clients {
 		clients[i] = dialHubRPC(t, hub)
-		defer clients[i].Close()
 		mustInitializeHubClient(t, clients[i])
 	}
+	t.Cleanup(func() {
+		for _, client := range clients {
+			client.Close()
+		}
+	})
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, saves)
 	for i, client := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			var resp appwire.AgentsDocResponse
 			err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet,
@@ -280,7 +282,7 @@ func TestHubRPCAgentsDocConcurrentSavesLeaveTheFinalNotificationMatchingTheFile(
 			if err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
