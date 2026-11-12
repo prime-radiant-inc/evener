@@ -358,10 +358,10 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 		named, namedCeiling, ok := testCeiling(t.name, perTestCeilings)
 		if ok {
 			if t.seconds > namedCeiling*wallSlowdown {
-				c.lines = append(c.lines, fmt.Sprintf("FAIL  %s: test %s took %.2fs, over its %s ceiling (named '%s' in testing-budget.json perTestCeiling)", t.pkg, t.name, t.seconds, pythonG(namedCeiling), named))
+				c.lines = append(c.lines, fmt.Sprintf("FAIL  %s: test %s took %.2fs, over its %ss ceiling (named '%s' in testing-budget.json perTestCeiling)", t.pkg, t.name, t.seconds, pythonG(namedCeiling), named))
 				c.raise(timingWorstFail)
 			} else {
-				c.lines = append(c.lines, fmt.Sprintf("OK    %s: test %s %.2fs (named ceiling %s)", t.pkg, t.name, t.seconds, pythonG(namedCeiling)))
+				c.lines = append(c.lines, fmt.Sprintf("OK    %s: test %s %.2fs (named ceiling %ss)", t.pkg, t.name, t.seconds, pythonG(namedCeiling)))
 			}
 			continue
 		}
