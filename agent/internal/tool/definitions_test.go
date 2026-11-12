@@ -775,7 +775,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	}
 
 	// Per-operation args from spec §2's table, flattened.
-	for _, k := range []string{"name", "base_ref", "path", "force", "force_dirty", "delete_branch", "id"} {
+	for _, k := range []string{"name", "base_ref", "path", "force", "force_dirty", "delete_branch", "id", "limit", "offset"} {
 		if _, ok := props[k]; !ok {
 			t.Errorf("manage_worktree missing param %q", k)
 		}
@@ -788,6 +788,15 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	deleteBranchProp, ok := props["delete_branch"].(map[string]any)
 	if !ok || deleteBranchProp["type"] != "boolean" {
 		t.Errorf("delete_branch property = %v, want boolean type", props["delete_branch"])
+	}
+
+	limitProp, ok := props["limit"].(map[string]any)
+	if !ok || limitProp["type"] != "integer" || limitProp["maximum"] != 15 || limitProp["minimum"] != 1 {
+		t.Errorf("limit property = %v, want integer type with min 1, max 15", props["limit"])
+	}
+	offsetProp, ok := props["offset"].(map[string]any)
+	if !ok || offsetProp["type"] != "integer" || offsetProp["minimum"] != 0 {
+		t.Errorf("offset property = %v, want integer type with min 0", props["offset"])
 	}
 }
 
