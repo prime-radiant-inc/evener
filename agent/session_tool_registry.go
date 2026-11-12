@@ -123,6 +123,7 @@ type toolDeps struct {
 	// the handler.
 	requestSkillCompaction func(ctx context.Context, note, instructions string, selection schema.SkillReloadSelection) (uint64, error)
 	pressure               func() float64
+	hasFoldableHistory     func() bool
 
 	// skillInventory exposes the session's successful-activation inventory so
 	// the compact tool can validate a reload selection.
@@ -379,6 +380,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		requestSkillCompaction: s.requestSkillCompaction,
 		pressure:               s.contextPressure,
+		hasFoldableHistory:     s.hasFoldableHistory,
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
