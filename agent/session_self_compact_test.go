@@ -1141,4 +1141,17 @@ func TestForceCompact_EnqueuesSingleTaskListReminder(t *testing.T) {
 	if taskReminders != 1 {
 		t.Fatalf("ForceCompact enqueued %d SteeringKindTaskList reminders across checkpoint+summary layers, want 1", taskReminders)
 	}
+
+	sess.mu.Lock()
+	sess.steeringQueue = nil
+	sess.mu.Unlock()
+	sess.handleCompactionTurn(schema.NewTurn(schema.TurnUserInput, llm.User("ordinary turn")))
+	sess.mu.Lock()
+	afterNonCompaction := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	for _, msg := range afterNonCompaction {
+		if msg.Kind == events.SteeringKindTaskList {
+			t.Fatalf("non-compaction turn passed to handleCompactionTurn enqueued SteeringKindTaskList: %+v", msg)
+		}
+	}
 }

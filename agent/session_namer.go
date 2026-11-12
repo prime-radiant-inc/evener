@@ -470,7 +470,9 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 		s.attentionMu.Unlock()
 	}
 	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
-	s.steerCompactionTaskReminderForFold(publishedRevision)
+	if isSessionNameCompactionTurn(t) {
+		s.steerCompactionTaskReminderForFold(publishedRevision)
+	}
 	// A retained compaction-turn write (whole line landed, sync failed) returns
 	// nil and queues its diagnostic; surface it now, outside the door.
 	s.surfaceTranscriptWarnings()

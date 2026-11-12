@@ -256,7 +256,6 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// presents it, so a fold in that one request can still drop an older
 	// trigger (#4300).
 	var keptAttention []schema.Turn
-	var suppressedCovered []schema.Turn
 	s.mu.Lock()
 	heldAttention := attentionTurns(s.history)
 	s.mu.Unlock()
@@ -265,7 +264,6 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		if keptAttention, err = s.pendingAttentionTurnsLocked(); err != nil {
 			keptAttention = heldAttention
 		}
-		keptAttention, suppressedCovered = s.splitCoveredAttentionLocked(keptAttention)
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
@@ -284,8 +282,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		commit.prepareVoicePresentationLocked(voiceBefore, published)
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
-	published, restoredAt := withAttentionTurns(published, keptAttention)
-	s.recordFoldedCoveredAttentionLocked(published, suppressedCovered)
+	published, restoredAt := s.restoreUncoveredAttentionLocked(published, keptAttention)
 	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
