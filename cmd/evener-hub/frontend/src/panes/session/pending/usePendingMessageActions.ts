@@ -428,11 +428,14 @@ export function usePendingMessageActions(context: PendingActionContext) {
     },
     canRetry: (row: PendingMessage) => {
       const record = row.outbox;
+      // Busy is deliberately not part of eligibility: the button stays
+      // mounted and the row's busy state disables it. Removing it from the
+      // tree on press dropped the keyboard focus the user arrived with, so a
+      // retry that failed left nothing focused.
       return (
         record !== undefined &&
         (record.state === "blockedUnknown" || record.state === "canceled") &&
-        !retryBlockedForTarget(record.targetRef) &&
-        !busyIds.has(row.id)
+        !retryBlockedForTarget(record.targetRef)
       );
     },
   };
