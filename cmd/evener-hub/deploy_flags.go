@@ -231,16 +231,17 @@ func (o hubOptions) deployHelp() string {
 	return hubDeployHelpNoSource
 }
 
-// deployPathLogLine is the one startup line that records the deploy source the
-// hub actually chose, so an operator can see whether the default fired, an
-// explicit source won, or -no-deploy disabled deploys — and which named sources
-// an opt-out overrode. It returns "" when there is no deploy source and nothing
+// deployPathLogLine is the message for the one startup line that records the
+// deploy source the hub actually chose, so an operator can see whether the
+// default fired, an explicit source won, or -no-deploy disabled deploys — and
+// which named sources an opt-out overrode. The caller tags it with the hub
+// component prefix. It returns "" when there is no deploy source and nothing
 // to say: a non-evener executable (an embedder or test binary) keeps exactly the
 // old silence, and its refusals still name the remedy through the unwired
 // state's text (hubDeployHelpUnwired or hubDeployHelpNoSource).
 func (o hubOptions) deployPathLogLine() string {
 	if o.noDeploy {
-		line := "[hub] deploy path: " + noDeployFlag + " (deploys disabled)"
+		line := "deploy path: " + noDeployFlag + " (deploys disabled)"
 		var ignored []string
 		if o.deployBinary != "" {
 			ignored = append(ignored, deployBinaryFlag+" "+o.deployBinary)
@@ -255,13 +256,13 @@ func (o hubOptions) deployPathLogLine() string {
 	}
 	switch {
 	case o.deployBinary != "" && o.buildSource != "":
-		return fmt.Sprintf("[hub] deploy path: %s %s takes precedence over %s %s", deployBinaryFlag, o.deployBinary, buildSourceFlag, o.buildSource)
+		return fmt.Sprintf("deploy path: %s %s takes precedence over %s %s", deployBinaryFlag, o.deployBinary, buildSourceFlag, o.buildSource)
 	case o.deployDefault:
-		return fmt.Sprintf("[hub] deploy path: %s %s (default: this hub's own executable)", deployBinaryFlag, o.deployBinary)
+		return fmt.Sprintf("deploy path: %s %s (default: this hub's own executable)", deployBinaryFlag, o.deployBinary)
 	case o.deployBinary != "":
-		return fmt.Sprintf("[hub] deploy path: %s %s", deployBinaryFlag, o.deployBinary)
+		return fmt.Sprintf("deploy path: %s %s", deployBinaryFlag, o.deployBinary)
 	case o.buildSource != "":
-		return fmt.Sprintf("[hub] deploy path: %s %s", buildSourceFlag, o.buildSource)
+		return fmt.Sprintf("deploy path: %s %s", buildSourceFlag, o.buildSource)
 	}
 	return ""
 }
