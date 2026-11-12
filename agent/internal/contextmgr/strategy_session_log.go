@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -146,7 +147,12 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
-	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
+	// The prompt and the log are free text. Render each in its own fence so a
+	// fence opened inside either one — a prompt truncated mid-block, say —
+	// cannot stay open and make the Markdown reader skip the conversation
+	// section below (#6228).
+	b.WriteString("Original prompt:\n")
+	writeMarkdownFence(&b, originalPrompt)
 	if s.session != nil {
 		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
 	}
@@ -155,9 +161,9 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	b.WriteString("Session log:\n")
 	logStr := s.log.String()
 	if logStr != "" {
-		b.WriteString(logStr)
+		writeMarkdownFence(&b, logStr)
 	} else {
-		b.WriteString("(no entries)")
+		b.WriteString("(no entries)\n")
 	}
 	// The checkpoint carries the partner's messages it folds verbatim, in the
 	// shared conversation format. The session log is navigation, not authority:
@@ -196,6 +202,9 @@ func extractOriginalPrompt(history []schema.Turn) string {
 			if prompt := extractOriginalPromptLine(text, "Original task: "); prompt != "" {
 				return prompt
 			}
+			if prompt, ok := extractFencedOriginalPrompt(text); ok {
+				return prompt
+			}
 			continue
 		}
 		if strings.HasPrefix(text, summaryMarkerStart) {
@@ -213,6 +222,33 @@ func extractOriginalPromptLine(text, prefix string) string {
 	}
 	rest, _, _ = strings.Cut(rest, "\n")
 	return rest
+}
+
+// extractFencedOriginalPrompt reads the current checkpoint's prompt block:
+// "Original prompt:" followed by a fenced block. The block is written with
+// writeMarkdownFence, so its closing fence cannot be confused with text the
+// prompt holds (#6228).
+func extractFencedOriginalPrompt(text string) (string, bool) {
+	_, rest, found := strings.Cut(text, "Original prompt:\n")
+	if !found {
+		return "", false
+	}
+	lines := strings.Split(rest, "\n")
+	var fence mdfence.Tracker
+	if len(lines) < 2 || !fence.Step(lines[0]) {
+		return "", false
+	}
+	var body []string
+	for i := 1; i < len(lines); i++ {
+		if fence.Step(lines[i]) {
+			if fence.Inside() {
+				return "", false
+			}
+			return strings.Join(body, "\n"), true
+		}
+		body = append(body, lines[i])
+	}
+	return "", false
 }
 
 // AfterAction forks a summarization of the recent turns and appends the

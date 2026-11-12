@@ -120,7 +120,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header, got: %s", checkpointText[:min(200, len(checkpointText))])
 	}
-	if !strings.Contains(checkpointText, "Original prompt: fix the login bug") {
+	if !strings.Contains(checkpointText, "Original prompt:") || !strings.Contains(checkpointText, "fix the login bug") {
 		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
 	}
 	// Verify session log entries appear in the checkpoint.
@@ -270,7 +270,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header in: %s", checkpointText)
 	}
-	if !strings.Contains(checkpointText, "Original prompt: do something") {
+	if !strings.Contains(checkpointText, "Original prompt:") || !strings.Contains(checkpointText, "do something") {
 		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
 	}
 }
@@ -281,7 +281,8 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 		text string
 		want string
 	}{
-		{name: "current", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
+		{name: "fenced", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt:\n```text\nfix the login bug\n```\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
+		{name: "inline", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
 		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n", want: "fix the auth bug"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -290,6 +291,52 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+// TestSessionLogStrategy_PromptFenceTruncationKeepsPartnerMessages covers
+// #6228: a prompt whose closing fence falls beyond the 500-byte truncation used
+// to leave the checkpoint's free-text prefix inside an open fence, so the next
+// checkpoint could not find the conversation heading and dropped the partner's
+// messages. Two checkpoints must keep the hold.
+func TestSessionLogStrategy_PromptFenceTruncationKeepsPartnerMessages(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2 // checkpoints only, no summaries
+	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
+
+	// The fence opens after the first line and its closing fence is beyond the
+	// 500-byte truncation, so the checkpoint keeps an unmatched opener.
+	longPrompt := "Here is the plan:\n```\n" + strings.Repeat("x", 700) + "\n```\n"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(longPrompt)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("understood")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(partnerHold)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	emit := func(events.EventKind, events.EventData) {}
+
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("first checkpoint: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the first checkpoint dropped the hold it folded:\n%s", history[0].Message.Text())
+	}
+
+	history = append(history, moreTurns()...)
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("second checkpoint: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the second checkpoint lost the hold the first carried:\n%s", history[0].Message.Text())
 	}
 }
 
