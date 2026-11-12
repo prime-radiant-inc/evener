@@ -166,7 +166,7 @@ func formatDelegateSend(out delegateSendResult) string {
 	if out.DelegateID != "" {
 		foot = append([]string{"delegate_id " + out.DelegateID}, foot...)
 	}
-	if out.Status != "" {
+	if out.Status != "" && out.Status != out.Action {
 		foot = append(foot, out.Status)
 	}
 	if out.RunningInBackground {

@@ -1094,7 +1094,9 @@ Canonical return shape:
 
 ```json
 {
+  "id": "job_...",
   "job_id": "job_...",
+  "type": "shell",
   "kind": "shell",
   "status": "running",
   "phase": "process_running",
@@ -1112,10 +1114,10 @@ Canonical return shape:
 
 Canonical behavior:
 
-- A shell returns `kind="shell"`, observable process `phase`,
+- A shell returns `id="job_..."`, `type="shell"`, `job_id="job_..."`, `kind="shell"`, observable process `phase`,
   `job:<job_id>`, output/exit metadata, and the shell status/reason model.
-- A delegate returns `id="dlg_..."`, `type="delegate"`, public lifecycle status,
-  descriptor metadata, run/latest-activity timing, resumability, and its child
+- A delegate returns `id="dlg_..."`, `type="delegate"`, public lifecycle status, observable `phase`,
+  descriptor metadata (`description` is omitted when identical to `task`), run/latest-activity timing, resumability, and its child
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
@@ -1133,6 +1135,7 @@ Stable delegate example:
   "id": "dlg_...",
   "type": "delegate",
   "status": "running",
+  "phase": "running",
   "task": "Investigate parser failures",
   "agent_type": "explorer",
   "resumable": true,
@@ -1304,7 +1307,7 @@ ref (`job:` for shell, session ref for delegate).
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match: <regex>`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for any watch that carries one; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
 - `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log; cleared and completed watches in `jobs.jsonl` rehydrate into the bounded ring across session restore (`runtime_lost` excluded).
 
-`description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
+`description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task; `description` is omitted when identical to `task` (when omitted, `job_list` label preview falls back to `task`).
 
 `last_activity` is the most recent parent-observable activity timestamp. A
 running delegate that is working silently stays at its run start until it emits
@@ -1317,7 +1320,7 @@ fresh activity, which is the signal the quiet watchdog acts on. A per-action
 
 `exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a job that did not exit on its own from its `status` + `reason`, never from `exit_code`.
 
-`job_list` returns a collection. Status/stop operate on one typed `target`.
+`job_list` returns a collection. Status/stop operate on one typed `target` (`job_...` or `dlg_...`). Both shell and delegate `job_status` results provide consistent top-level `id` and `type` fields (alongside legacy `job_id` and `kind` on shell targets), plus observable `phase` on delegates.
 
 ### `job_stop`
 
@@ -1509,7 +1512,7 @@ Replacement mapping:
 | --- | --- | --- |
 | `spawn_agent(blocking=false)` | `delegate` | starts a new delegate conversation and returns its stable `delegate_id` |
 | `spawn_agent(blocking=true)` | `delegate`, then await its automatic completion notification | creation has no inline-wait option |
-| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=...)` | steers if running; starts or resumes the delegate's next job automatically when idle |
+| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=...)` | steers if running; starts or resumes the delegate's next job automatically when idle; model-facing footer elides status when equal to action (e.g. `[delegate_id <id> · completed]`) |
 | `wait` / `wait_job` | no direct replacement; wait for the automatic terminal notification | no read blocks; `job_watch` is the only way to be told about a condition |
 | `cancel_agent` / `job_kill` | `job_stop(target=<delegate_id>)` | recursively stops current work while retaining the delegate resource |
 | `close_agent` | none | retention automatic; transcript remains accessible |

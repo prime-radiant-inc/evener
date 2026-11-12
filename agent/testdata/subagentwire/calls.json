@@ -89,7 +89,7 @@
       "turnId": "turn_1",
       "toolName": "delegate_send",
       "callId": "call_send_2",
-      "output": "Yes: tree settle now waits for the drain, and a test pins the order.\n[delegate_id dlg_02wMz5TxvSettleRace001 · completed · completed]",
+      "output": "Yes: tree settle now waits for the drain, and a test pins the order.\n[delegate_id dlg_02wMz5TxvSettleRace001 · completed]",
       "status": "completed",
       "completedAt": 1790625602000,
       "raw": {
@@ -102,7 +102,6 @@
         "output": "Yes: tree settle now waits for the drain, and a test pins the order.",
         "truncated": false,
         "task": "Find and fix the race between tree settle and the drain.",
-        "description": "Find and fix the race between tree settle and the drain.",
         "agent_type": "default",
         "tools": [
           "apply_patch",

@@ -823,7 +823,7 @@
       "turnId": "turn_1",
       "toolName": "job_status",
       "callId": "call_job_status",
-      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "output": "{\"id\":\"job_fixture_1\",\"job_id\":\"job_fixture_1\",\"type\":\"shell\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -833,7 +833,7 @@
       "turnId": "turn_1",
       "toolName": "job_list",
       "callId": "call_job_list",
-      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
+      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · transcript_ref job:job_fixture_2 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · phase process_running · running_for_ms 2000 · quiet_for_ms 2000 · transcript_ref job:job_fixture_1 · 8 bytes]\n\n2 job(s).",
       "status": "completed",
       "completedAt": 1790625602000
     },

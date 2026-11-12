@@ -295,7 +295,9 @@ var stopNestedOrLocalForJobStop = func(s *Session, jobID string) (*jobstore.JobR
 }
 
 type jobStatusResult struct {
+	ID               string  `json:"id"`
 	JobID            string  `json:"job_id"`
+	Type             string  `json:"type"`
 	Kind             string  `json:"kind"`
 	Status           string  `json:"status"`
 	Description      string  `json:"description"`
@@ -321,6 +323,7 @@ type delegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Phase              string                 `json:"phase,omitempty"`
 	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
@@ -354,6 +357,7 @@ func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Phase:              string(snapshot.phase),
 		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
@@ -595,7 +599,9 @@ func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
 	}
 
 	out := jobStatusResult{
+		ID:               rec.JobID,
 		JobID:            rec.JobID,
+		Type:             string(rec.Type),
 		Kind:             publicJobKind(rec.Type),
 		Status:           string(rec.Status),
 		Description:      jobRecordDisplayLabel(rec),

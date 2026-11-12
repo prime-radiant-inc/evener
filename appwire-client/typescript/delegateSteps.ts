@@ -3,11 +3,12 @@
 // delegate_send row and the phone's step line read these; the web's body
 // reads the footer and the raw state through the same helpers.
 //
-// Ground truth: agent/session_tools_jobs.go's formatDelegateSend prints any
+// Ground truth: agent/session_tools_delegate_send.go's formatDelegateSend prints any
 // earlier results a wait carried (each numbered and printed as a reply is),
 // then any reply, then a bracketed footer "[delegate_id <id> · <action> ·
-// <status> · running in background · wait ignored: <why>]" (every field after
-// the action optional), then structured_result and watch lines;
+// <status> · running in background · wait ignored: <why>]" (status is omitted
+// when equal to action; every field after the action optional), then
+// structured_result and watch lines;
 // marshalDelegateSendResult returns the same fields as the step's raw state,
 // the earlier results under earlier_results.
 
@@ -113,8 +114,12 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   const statusField = fields[fieldIndex];
-  const status = statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField) ? statusField : undefined;
-  if (status !== undefined) fieldIndex += 1;
+  let status = statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField) ? statusField : undefined;
+  if (status !== undefined) {
+    fieldIndex += 1;
+  } else if (KNOWN_DELEGATE_SEND_STATUSES.has(actionField)) {
+    status = actionField;
+  }
 
   const runningInBackground = fields[fieldIndex] === "running in background";
   if (runningInBackground) fieldIndex += 1;

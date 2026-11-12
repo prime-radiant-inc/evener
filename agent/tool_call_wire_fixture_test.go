@@ -340,6 +340,7 @@ var (
 	toolWireJobMs     = regexp.MustCompile(`"(running_for_ms|quiet_for_ms)":\d+`)
 	toolWireJobAt     = regexp.MustCompile(`"(started_at|last_event_at)":"[^"]+"`)
 	toolWireJobListAt = regexp.MustCompile(`started \d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
+	toolWireJobListMs = regexp.MustCompile(`\b(running_for_ms|quiet_for_ms) \d+`)
 )
 
 // withFixedJobClock records a job tool's result with the job fixed as
@@ -348,7 +349,8 @@ func withFixedJobClock(res tool.ExecResult) tool.ExecResult {
 	res = withFixedJob(res)
 	out := toolWireJobMs.ReplaceAllString(res.Output, `"$1":2000`)
 	out = toolWireJobAt.ReplaceAllString(out, `"$1":"`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
-	res.Output = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	out = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	res.Output = toolWireJobListMs.ReplaceAllString(out, "$1 2000")
 	return res
 }
 
