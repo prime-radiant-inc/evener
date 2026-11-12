@@ -33,17 +33,13 @@ func registerFavoriteHandler(server *appserver.Server, cfg hubcore.WebConfig, na
 		if err := cfg.Favorite.Set(source, params.Kind, params.ID, params.Favorited, time.Now()); err != nil {
 			return appwire.FavoriteSetResponse{}, appwire.InternalError("favorite store error: " + err.Error())
 		}
-		if navigation == nil {
-			return appwire.FavoriteSetResponse{}, appwire.Unavailable("navigation service not configured")
-		}
 		// The favorite decision's effect on the tree reaches navigation through
 		// the source fingerprint delta; navigationChangeHint.Projects is not
 		// consumed, so no per-project hint is fabricated here.
-		mutation, err := navigation.Refresh(ctx, navigationChangeHint{})
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, true, navigationChangeHint{})
 		if err != nil {
-			return appwire.FavoriteSetResponse{}, appwire.Unavailable(err.Error())
+			return appwire.FavoriteSetResponse{}, err
 		}
-		pokeMutationAttention(cfg)
 		return appwire.FavoriteSetResponse{OK: true, Navigation: mutation}, nil
 	})
 }

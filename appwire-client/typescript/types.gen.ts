@@ -2580,6 +2580,11 @@ export interface NavigationManifest {
 export interface NavigationMutation {
   generation_id: string;
   targets: NavigationInvalidationTarget[];
+  /**
+   * Deferred claims a pending rebuild, so it is set only when one is
+   * actually armed. Never retry the mutation itself when it is set.
+   */
+  deferred?: boolean;
 }
 
 export interface NavigationOrderContainer {

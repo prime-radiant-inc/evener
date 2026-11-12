@@ -119,23 +119,15 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	// Project scoping is derived from the navigation source's fingerprint delta
 	// (the rebuilt tree reflects the decision); navigationChangeHint.Projects is
 	// not consumed by commitTargetsLocked, so the handler does not fabricate a
-	// per-project hint that no read path honors.
+	// per-project hint that no read path honors. The archive store's change
+	// hook has already armed the rebuild, so a refresh deadline defers only the
+	// receipt while a permanent failure still surfaces.
 	hint := navigationChangeHint{AllLoadedProjects: params.Kind == appwire.ArchiveTargetSession}
-	if navigation == nil {
-		return appwire.ArchiveResponse{}, appwire.Unavailable("navigation unavailable")
+	navigationMutation, err := commitNavigationChange(ctx, cfg, navigation, true, hint)
+	if err != nil {
+		return appwire.ArchiveResponse{}, err
 	}
-	navigationMutation, err := navigation.Refresh(ctx, hint)
-	deferred := err != nil
-	if deferred {
-		// The decision persisted before this refresh, and the archive store's
-		// change hook (hub_startup wires Archive.SetOnChange to bump the inputs
-		// version and Invalidate) has already scheduled the rebuild. Report the
-		// committed decision and defer only the receipt; a zero mutation would
-		// reset a converging client's generation, so carry the live one.
-		navigationMutation = navigation.EmptyMutation()
-	}
-	pokeMutationAttention(cfg)
-	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation, NavigationDeferred: deferred}, nil
+	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation, NavigationDeferred: navigationMutation.Deferred}, nil
 }
 
 // archivedSessionIdleTimeout is the automatic idle-retirement deadline the Hub

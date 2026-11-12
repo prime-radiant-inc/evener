@@ -64,7 +64,7 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 	if err != nil {
 		return appwire.SessionSeenSetResponse{}, appwire.InternalError("seen marker store error: " + err.Error())
 	}
-	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed, navigationChangeHint{})
 	if err != nil {
 		return appwire.SessionSeenSetResponse{}, err
 	}

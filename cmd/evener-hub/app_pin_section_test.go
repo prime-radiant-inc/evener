@@ -282,3 +282,43 @@ func TestHubPinningRequiresConfiguredStore(t *testing.T) {
 	_, err := dispatchPinning[appwire.PinSectionDeleteResponse](t, web, appwire.MethodEvenerPinSectionDelete, appwire.PinSectionDeleteParams{SectionID: "missing"})
 	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
 }
+
+// A pin assignment is durable before its receipt is built. When the forced
+// refresh exhausts its deadline with the store's rebuild still armed, the
+// handler must report the committed pin and defer the receipt instead of
+// failing a completed mutation.
+func TestHubSessionPinAssignDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	navigation := newChurningNavigationService(t)
+	store.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{}) })
+	attentionPokes := 0
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		PinSections:   store,
+		PokeAttention: func() { attentionPokes++ },
+	})
+	resolve := func(context.Context, string) (pinSession, error) {
+		return pinSession{sessionID: "session-a"}, nil
+	}
+	name := "Research"
+
+	response, err := pinAssign(t.Context(), cfg, navigation, resolve, appwire.SessionPinAssignParams{
+		SessionRef: "local:session-a", SectionName: &name,
+	})
+	if err != nil {
+		t.Fatalf("pin of a persisted decision failed: %v", err)
+	}
+	if !response.OK || !response.Changed || !response.Navigation.Deferred {
+		t.Fatalf("response = %+v, want a committed change with a deferred navigation receipt", response)
+	}
+	assertDeferredNavigationReceipt(t, navigation, response.Navigation)
+	assignments, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := assignments[hubcore.SessionPinKey("", "session-a")]; !held {
+		t.Fatalf("pin assignment not persisted: %+v", assignments)
+	}
+	if attentionPokes != 1 {
+		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)
+	}
+}
