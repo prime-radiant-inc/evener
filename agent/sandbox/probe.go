@@ -848,7 +848,7 @@ func parseGitCeilingDirs(value string) []string {
 		return nil
 	}
 	var dirs []string
-	for _, dir := range strings.Split(value, string(os.PathListSeparator)) {
+	for dir := range strings.SplitSeq(value, string(os.PathListSeparator)) {
 		if dir == "" || !filepath.IsAbs(dir) {
 			continue
 		}
