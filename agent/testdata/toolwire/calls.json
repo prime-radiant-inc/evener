@@ -19,7 +19,7 @@
     "call_job_stop": "The same job stopped.",
     "call_list_dir": "A directory listing: one name and size per entry, then a blank line and the entry count.",
     "call_list_dir_empty": "An empty directory: the count alone.",
-    "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
+    "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many entries were returned, where the next page starts, and where the budgeted walk stopped.",
     "call_mcp": "Hand-written (needs an MCP server): an MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
     "call_mcp_hyphenated": "Hand-written (needs an MCP server): an MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
     "call_model_list": "The first page of the model list, bounded to one choice so a continuation follows (its cursor fixed in the items).",
@@ -718,7 +718,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir_page",
-      "output": "drain_test.go\t14\ntree.go\t32\n\n2 entries (offset 0) — more with list_dir(offset=2)\nThe listing stopped after visiting its cap of 3 entries; there may be more beyond the cap. Narrow the path or reduce depth to see the rest.",
+      "output": "drain_test.go\t14\ntree.go\t32\n\n2 entries (offset 0) — more with list_dir(offset=2)\nThe walk stopped after 3 entries once this page filled; total count was not enumerated.",
       "status": "completed",
       "completedAt": 1790625602000
     },

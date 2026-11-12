@@ -311,6 +311,28 @@ func TestListDirBudgetStopsAtTheWalkEntriesCap(t *testing.T) {
 	if !slices.Equal(got, legacy[:6]) {
 		t.Fatalf("capped walk = %v, want the legacy prefix %v", got, legacy[:6])
 	}
+	if !budget.HitWalkCap() {
+		t.Fatal("walk clamped by maxListDirWalkEntries reported HitWalkCap()=false, want true")
+	}
+
+	pageBudget := NewDirListBudget(0, 2, 0)
+	if _, err := env.ListDirectoryWithBudget(t.Context(), root, 4, pageBudget); err != nil {
+		t.Fatalf("limit=2 walk: %v", err)
+	}
+	if pageBudget.TruncatedAt() != 3 || pageBudget.HitWalkCap() {
+		t.Fatalf("limit=2 walk = (truncatedAt=%d, hitWalkCap=%t), want (3, false)", pageBudget.TruncatedAt(), pageBudget.HitWalkCap())
+	}
+
+	charRoot := t.TempDir()
+	listDirCharWindowFixture(t, charRoot, 10)
+	charEnv := NewLocalExecutionEnvironment(charRoot)
+	charBudget := NewDirListBudget(0, 1000, 100)
+	if _, err := charEnv.ListDirectoryWithBudget(t.Context(), charRoot, 2, charBudget); err != nil {
+		t.Fatalf("char-budgeted walk: %v", err)
+	}
+	if charBudget.TruncatedAt() != 5 || charBudget.HitWalkCap() {
+		t.Fatalf("char-budgeted walk = (truncatedAt=%d, hitWalkCap=%t), want (5, false)", charBudget.TruncatedAt(), charBudget.HitWalkCap())
+	}
 }
 
 // TestListDirBudgetConstructorClampsOffsetAndLimit pins the arithmetic that
@@ -477,6 +499,9 @@ func TestSandboxedListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 	}
 	if budget.TruncatedAt() != 2 {
 		t.Fatalf("limit=1 confined walk reported truncatedAt=%d, want 2", budget.TruncatedAt())
+	}
+	if budget.HitWalkCap() {
+		t.Fatal("limit=1 confined walk reported HitWalkCap()=true, want false")
 	}
 	if budget.listings != 2 {
 		t.Fatalf("limit=1 confined walk listed %d directories, want 2 (the root and the first subdirectory)", budget.listings)
