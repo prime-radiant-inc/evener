@@ -3,10 +3,12 @@ package evener_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -16,6 +18,60 @@ const timingBudgetScript = "scripts/gate/test-timing-budget.sh"
 // hugeCeilingSeconds is a JSON integer too large to convert to a float — the
 // shape issue #4629 crashed on — shared by the tests that drive it.
 var hugeCeilingSeconds = strings.Repeat("9", 400)
+
+// timingEvenerDevBin is built once for the package run when the first test
+// drives the runner. The script now asks evener-dev for its verdict, so
+// rebuilding the binary for every fixture run would dominate these tests.
+var (
+	timingBinOnce sync.Once
+	timingBinDir  string
+	timingBinErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if timingBinDir != "" {
+		_ = os.RemoveAll(timingBinDir)
+	}
+	os.Exit(code)
+}
+
+func timingEvenerDevBin(t *testing.T) string {
+	t.Helper()
+	timingBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "evener-timing-test-")
+		if err != nil {
+			timingBinErr = err
+			return
+		}
+		timingBinDir = dir
+		bin := filepath.Join(dir, "evener-dev")
+		build := exec.Command("go", "build", "-o", bin, "./cmd/evener-dev/bin")
+		build.Env = append(os.Environ(), "GOFLAGS=", "GOENV=off")
+		if out, err := build.CombinedOutput(); err != nil {
+			timingBinErr = fmt.Errorf("building evener-dev for the timing tests: %w\n%s", err, out)
+		}
+	})
+	if timingBinErr != nil {
+		t.Fatal(timingBinErr)
+	}
+	return filepath.Join(timingBinDir, "evener-dev")
+}
+
+// timingScriptEnv is the runner's isolated environment plus the binary built
+// once for this package run.
+func timingScriptEnv(t *testing.T, tmpDir string, extra ...string) []string {
+	t.Helper()
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"LC_ALL=C",
+		"EVENER_DEV_BIN=" + timingEvenerDevBin(t),
+	}
+	if tmpDir != "" {
+		env = append(env, "TMPDIR="+tmpDir)
+	}
+	return append(env, extra...)
+}
 
 // runTimingBudgetCompare drives the runner's comparison half under the CI-strict
 // policy through the --measured fixture seam: the fixture IS the measurement the
@@ -54,7 +110,7 @@ func runTimingBudgetFixture(t *testing.T, measuredPath, budgetPath, dir string, 
 	args := append([]string{timingBudgetScript,
 		"--measured", measuredPath, "--budget", budgetPath, "--no-web"}, flags...)
 	cmd := exec.Command("bash", args...)
-	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}, extraEnv...)
+	cmd.Env = timingScriptEnv(t, tmpDir, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -139,7 +195,7 @@ func runBlessCommand(t *testing.T, budgetJSON string, args ...string) (string, s
 	cmd := exec.Command("bash", append([]string{
 		timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 	}, args...)...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	cmd.Env = timingScriptEnv(t, tmpDir)
 	out, runErr := cmd.CombinedOutput()
 	got, readErr := os.ReadFile(budget)
 	if readErr != nil {
@@ -186,7 +242,7 @@ func blessFixtureModule(t *testing.T, burn string) (cpu, wall float64) {
 	writeAuditScriptFixture(t, budget, `{"perTestCeilingSeconds":3,"packages":{}}`)
 	cmd := exec.Command("bash", timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 		"--modules", "cmd/evener-dev/testdata/shardfixture")
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN="+burn)
+	cmd.Env = append(os.Environ(), "EVENER_DEV_BIN="+timingEvenerDevBin(t), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN="+burn)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bless over the fixture module: %v\n%s", err, out)
 	}
@@ -329,7 +385,7 @@ func TestTimingBudgetFailsWhenTheMeasuredFileIsMissing(t *testing.T) {
 	missing := filepath.Join(dir, "no-such-measured.tsv")
 	cmd := exec.Command("bash", timingBudgetScript,
 		"--measured", missing, "--budget", budget, "--no-web", "--check", "--strict")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	cmd.Env = timingScriptEnv(t, tmpDir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("a missing measured file must fail --check, not pass silently:\n%s", out)
