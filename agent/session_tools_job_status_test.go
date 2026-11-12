@@ -60,14 +60,17 @@ func TestJobStatusConsistentKeysDelegate(t *testing.T) {
 	if state["id"] != id {
 		t.Errorf("delegate job_status id = %v, want %q", state["id"], id)
 	}
-	if state["job_id"] != id {
-		t.Errorf("delegate job_status job_id = %v, want %q", state["job_id"], id)
+	if jobID, exists := state["job_id"]; exists && jobID != nil {
+		t.Errorf("delegate job_status must not expose job_id, got %v", jobID)
 	}
 	if state["type"] != "delegate" {
 		t.Errorf("delegate job_status type = %v, want delegate", state["type"])
 	}
-	if state["kind"] != "delegate" {
-		t.Errorf("delegate job_status kind = %v, want delegate", state["kind"])
+	if kind, exists := state["kind"]; exists && kind != nil {
+		t.Errorf("delegate job_status must not expose kind, got %v", kind)
+	}
+	if state["phase"] != "idle" {
+		t.Errorf("delegate job_status phase = %v, want idle", state["phase"])
 	}
 }
 

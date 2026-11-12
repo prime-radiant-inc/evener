@@ -87,7 +87,7 @@ function JobListBody({ item, live }: ToolRenderProps) {
             rawStatus === undefined ? undefined : jobStatusDisplay(rawStatus, reason),
             textField(job, "phase"),
           ].filter((field): field is string => field !== undefined);
-          const description = textField(job, "description");
+          const description = textField(job, "description") || textField(job, "task");
           return (
             <div key={identity} data-testid="job-list-row">
               <EntityRef id={identity} />

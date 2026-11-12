@@ -500,13 +500,6 @@ func TestDefJobListAdvertisesCommandOutcomeStatuses(t *testing.T) {
 	}
 }
 
-func TestDefJobListDescriptionDoesNotPromiseUnrenderedColumns(t *testing.T) {
-	def := DefJobList()
-	if strings.Contains(def.Description, "phase, running_for_ms, quiet_for_ms, and transcript_ref") {
-		t.Fatalf("job_list description promises columns that renderJobList does not render: %q", def.Description)
-	}
-}
-
 func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	def := DefJobWatch([]string{"communicate", "job.notification"})
 	if def.Name != "job_watch" {

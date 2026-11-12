@@ -68,13 +68,16 @@ func TestJobListRowIsLean(t *testing.T) {
 		t.Fatalf("lean shell row = %#v", item)
 	}
 	rendered := formatJobList(result, jobToolResultDefaultMaxChar)
-	for _, banned := range []string{"transcript_ref", "resumable", "visible_to_session_id", "null", "{"} {
+	for _, banned := range []string{"visible_to_session_id", "null", "{"} {
 		if strings.Contains(rendered, banned) {
 			t.Fatalf("lean job_list output contains %q:\n%s", banned, rendered)
 		}
 	}
 	if !strings.Contains(rendered, "lean shell") || !strings.Contains(rendered, "bytes") {
 		t.Fatalf("shell row lacks label or output size:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "transcript_ref "+shellTranscriptRef(record.JobID)) {
+		t.Fatalf("shell row lacks transcript_ref:\n%s", rendered)
 	}
 }
 
@@ -257,22 +260,67 @@ func TestJobListDelegateByteCountsAndPhase(t *testing.T) {
 	if doneItem.Phase != "idle" {
 		t.Errorf("finished delegate phase = %q, want idle", doneItem.Phase)
 	}
-	if doneItem.TotalBytes <= 0 {
-		t.Errorf("finished delegate TotalBytes = %d, want > 0 for report payload", doneItem.TotalBytes)
-	}
 
 	output := callJobListText(t, s, `{}`)
 	for line := range strings.SplitSeq(output, "\n") {
-		if strings.HasPrefix(line, "dlg_run") && strings.Contains(line, " 0 bytes") {
-			t.Errorf("running delegate renders meaningless 0 bytes: %q", line)
+		if strings.HasPrefix(line, "dlg_run") {
+			if strings.Contains(line, "bytes") {
+				t.Errorf("running delegate must omit bytes token entirely: %q", line)
+			}
+			if !strings.Contains(line, "phase running") {
+				t.Errorf("running delegate lacks phase: %q", line)
+			}
+			if !strings.Contains(line, "running_for_ms") || !strings.Contains(line, "quiet_for_ms") {
+				t.Errorf("running delegate lacks running/quiet clocks: %q", line)
+			}
+			if !strings.Contains(line, "transcript_ref local:child-dlg_run") {
+				t.Errorf("running delegate lacks transcript_ref: %q", line)
+			}
 		}
 		if strings.HasPrefix(line, "dlg_done") {
-			if strings.Contains(line, " 0 bytes") {
-				t.Errorf("finished delegate with report renders 0 bytes: %q", line)
+			if strings.Contains(line, "bytes") {
+				t.Errorf("finished delegate must omit bytes token entirely: %q", line)
 			}
-			if !strings.Contains(line, fmt.Sprintf("%d bytes", doneItem.TotalBytes)) {
-				t.Errorf("finished delegate renders %q, want %d bytes", line, doneItem.TotalBytes)
+			if !strings.Contains(line, "phase idle") {
+				t.Errorf("finished delegate lacks phase: %q", line)
+			}
+			if !strings.Contains(line, "transcript_ref local:child-dlg_done") {
+				t.Errorf("finished delegate lacks transcript_ref: %q", line)
 			}
 		}
+	}
+}
+
+func TestJobListRowRendersOrientationFieldsShell(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	record, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30", Description: "running shell"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, record.JobID) })
+
+	output := callJobListText(t, s, `{}`)
+	var shellLine string
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.HasPrefix(line, record.JobID) {
+			shellLine = line
+			break
+		}
+	}
+	if shellLine == "" {
+		t.Fatalf("job_list output missing shell row: %q", output)
+	}
+	if !strings.Contains(shellLine, "phase process_running") {
+		t.Errorf("shell row lacks phase: %q", shellLine)
+	}
+	if !strings.Contains(shellLine, "running_for_ms") {
+		t.Errorf("shell row lacks running_for_ms: %q", shellLine)
+	}
+	if !strings.Contains(shellLine, "quiet_for_ms") {
+		t.Errorf("shell row lacks quiet_for_ms: %q", shellLine)
+	}
+	if !strings.Contains(shellLine, "transcript_ref "+shellTranscriptRef(record.JobID)) {
+		t.Errorf("shell row lacks transcript_ref: %q", shellLine)
 	}
 }

@@ -237,9 +237,6 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap 
 		endedAt := snapshot.lastOutcome.EndedAt
 		item.EndedAt = timePtrOrNil(&endedAt)
 	}
-	if snapshot.latestPacket != nil && len(snapshot.latestPacket.Message) > 0 {
-		item.TotalBytes = int64(len(snapshot.latestPacket.Message))
-	}
 	return item
 }
 
@@ -352,13 +349,25 @@ func renderJobList(out jobListResult, labels []jobListLabel, labelLimit int) str
 		if started := shortTimestamp(j.StartedAt); started != "" {
 			detail = append(detail, "started "+started)
 		}
+		if j.Phase != "" {
+			detail = append(detail, "phase "+j.Phase)
+		}
+		if j.RunningForMS != nil {
+			detail = append(detail, fmt.Sprintf("running_for_ms %d", *j.RunningForMS))
+		}
+		if j.QuietForMS != nil {
+			detail = append(detail, fmt.Sprintf("quiet_for_ms %d", *j.QuietForMS))
+		}
+		if j.TranscriptRef != nil && *j.TranscriptRef != "" {
+			detail = append(detail, "transcript_ref "+*j.TranscriptRef)
+		}
 		if j.Reason != nil && *j.Reason != "" {
 			detail = append(detail, *j.Reason)
 		}
 		if j.ExitCode != nil {
 			detail = append(detail, fmt.Sprintf("exit %d", *j.ExitCode))
 		}
-		if j.Type != "delegate" || j.TotalBytes > 0 {
+		if j.Kind != "delegate" && j.Type != "delegate" {
 			detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
 		}
 		// Surface resumability only when a job actually is resumable; resumable=false
