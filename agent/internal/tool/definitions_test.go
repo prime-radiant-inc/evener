@@ -1028,7 +1028,7 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing max_bytes prop")
 	}
-	if min, ok := maxBytesProp["minimum"].(int); !ok || min != 512 {
+	if minBytes, ok := maxBytesProp["minimum"].(int); !ok || minBytes != 512 {
 		t.Errorf("model_list max_bytes minimum = %v, want 512", maxBytesProp["minimum"])
 	}
 }

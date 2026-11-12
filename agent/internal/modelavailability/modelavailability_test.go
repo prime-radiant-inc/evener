@@ -378,7 +378,7 @@ func TestCursorRejectsAuthenticatedUnknownAndTrailingFields(t *testing.T) {
 func TestPageOmitsStatusOnContinuationPages(t *testing.T) {
 	s := testSnapshot("v1", true, "p1/m1", "p1/m2", "p1/m3")
 	s.Status = make(map[string]ProviderStatus)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		s.Status[fmt.Sprintf("provider-%02d", i)] = ProviderStatus{
 			Kind:   StatusSuccess,
 			Detail: "enumeration succeeded with extra descriptive text",
@@ -434,7 +434,7 @@ func TestPageEnvelopeBudgetTooSmallIncludesByteFloor(t *testing.T) {
 func TestPageBudgetErrorFixedPointRetrySucceedsOnFirstAttempt(t *testing.T) {
 	choices := make([]string, 0, 16)
 	status := make(map[string]ProviderStatus, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		p := fmt.Sprintf("provider-%02d", i)
 		status[p] = ProviderStatus{Kind: StatusSuccess, Detail: "enumeration succeeded"}
 		choices = append(choices, p+"/model-a", p+"/model-b")

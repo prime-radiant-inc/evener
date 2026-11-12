@@ -549,7 +549,7 @@ func TestModelListContinuationOmitsStatusUnderTightBudget(t *testing.T) {
 	if first.Next == "" {
 		t.Fatalf("first page = %+v, want a continuation", first)
 	}
-	if first.Status == nil || len(first.Status) < 2 {
+	if len(first.Status) < 2 {
 		t.Fatalf("first page status = %#v, want multi-provider status", first.Status)
 	}
 

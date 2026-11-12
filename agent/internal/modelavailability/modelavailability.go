@@ -20,49 +20,6 @@ import (
 
 type StatusKind string
 
-func (p Page) MarshalJSON() ([]byte, error) {
-	if p.Status != nil {
-		type withStatus struct {
-			Choices    []string                  `json:"choices,omitempty"`
-			Oversized  []int                     `json:"oversized,omitempty"`
-			Next       string                    `json:"next,omitempty"`
-			Version    string                    `json:"version"`
-			Complete   bool                      `json:"complete"`
-			Terminal   bool                      `json:"terminal"`
-			Status     map[string]ProviderStatus `json:"status"`
-			Provenance string                    `json:"provenance"`
-		}
-		return json.Marshal(withStatus{
-			Choices:    p.Choices,
-			Oversized:  p.Oversized,
-			Next:       p.Next,
-			Version:    p.Version,
-			Complete:   p.Complete,
-			Terminal:   p.Terminal,
-			Status:     p.Status,
-			Provenance: p.Provenance,
-		})
-	}
-	type withoutStatus struct {
-		Choices    []string `json:"choices,omitempty"`
-		Oversized  []int    `json:"oversized,omitempty"`
-		Next       string   `json:"next,omitempty"`
-		Version    string   `json:"version"`
-		Complete   bool     `json:"complete"`
-		Terminal   bool     `json:"terminal"`
-		Provenance string   `json:"provenance"`
-	}
-	return json.Marshal(withoutStatus{
-		Choices:    p.Choices,
-		Oversized:  p.Oversized,
-		Next:       p.Next,
-		Version:    p.Version,
-		Complete:   p.Complete,
-		Terminal:   p.Terminal,
-		Provenance: p.Provenance,
-	})
-}
-
 const (
 	StatusSuccess StatusKind = "success"
 	StatusEmpty   StatusKind = "empty-success"
@@ -107,7 +64,7 @@ type Page struct {
 	Version    string                    `json:"version"`
 	Complete   bool                      `json:"complete"`
 	Terminal   bool                      `json:"terminal"`
-	Status     map[string]ProviderStatus `json:"status,omitempty"`
+	Status     map[string]ProviderStatus `json:"status,omitzero"`
 	Provenance string                    `json:"provenance"`
 }
 
