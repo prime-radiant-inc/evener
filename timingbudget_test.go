@@ -25,7 +25,7 @@ var hugeCeilingSeconds = strings.Repeat("9", 400)
 var (
 	timingBinOnce sync.Once
 	timingBinDir  string
-	timingBinErr  error
+	errTimingBin  error
 )
 
 func TestMain(m *testing.M) {
@@ -41,7 +41,7 @@ func timingEvenerDevBin(t *testing.T) string {
 	timingBinOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "evener-timing-test-")
 		if err != nil {
-			timingBinErr = err
+			errTimingBin = err
 			return
 		}
 		timingBinDir = dir
@@ -49,11 +49,11 @@ func timingEvenerDevBin(t *testing.T) string {
 		build := exec.Command("go", "build", "-o", bin, "./cmd/evener-dev/bin")
 		build.Env = append(os.Environ(), "GOFLAGS=", "GOENV=off")
 		if out, err := build.CombinedOutput(); err != nil {
-			timingBinErr = fmt.Errorf("building evener-dev for the timing tests: %w\n%s", err, out)
+			errTimingBin = fmt.Errorf("building evener-dev for the timing tests: %w\n%s", err, out)
 		}
 	})
-	if timingBinErr != nil {
-		t.Fatal(timingBinErr)
+	if errTimingBin != nil {
+		t.Fatal(errTimingBin)
 	}
 	return filepath.Join(timingBinDir, "evener-dev")
 }
