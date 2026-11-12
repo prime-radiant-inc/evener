@@ -3,13 +3,16 @@ import {
   encodeTranscriptItem,
   hydrateThread,
   invalidateHistory,
+  type ThreadHistoryReadResponse,
+  type ThreadHistoryTurnsListResponse,
   type ThreadItem,
   type ThreadModel,
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
+  threadModelFromCache,
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -23,6 +26,7 @@ import {
   SESSION_CACHE_LOOKUP_DEADLINE_MS,
   type TranscriptResolvedIdentity,
 } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdIndexedDBEvent, holdNextTransaction } from "./testing/stalledIndexedDB";
 import { TranscriptRepository } from "./transcriptRepository";
@@ -308,6 +312,1048 @@ function countPositionReads(model: ThreadModel) {
   }
   return { items, reads: () => reads };
 }
+function finitePage(length: number, entries: number[]): ThreadHistoryTurnsListResponse {
+  return {
+    data: (rangedRead(Math.min(...entries), Math.max(...entries)).thread.turns ?? []).map((turn) => ({
+      ...turn,
+      itemsView: "fragment",
+      items: (turn.items ?? []).filter((item) => entries.includes(item.position?.entry ?? -1)),
+    })),
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: identity.incarnation, length },
+    asOf: "2026-11-08T00:00:00Z",
+    nextCursor: `before-${Math.min(...entries)}`,
+    servedFrom: "live-daemon",
+  };
+}
+
+function updatedPage(length: number, entries: number[], text: string): ThreadHistoryTurnsListResponse {
+  const page = finitePage(length, entries);
+  for (const turn of page.data)
+    for (const item of turn.items ?? []) {
+      item.version = length;
+      if (item.type === "agentMessage") item.text = text;
+    }
+  return page;
+}
+
+async function repositoryWithPage() {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  const baseline = readMany(9);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "page-seed", boundary: "page-seed" })).toBe(true);
+  await owner.settled();
+  const rows = await fixture.cache.getLatest(historyKey, 40);
+  expect(rows.map((row) => row.transcriptKey)).toEqual(Array.from({ length: 9 }, (_, i) => `item-${i + 1}`));
+  expect(
+    owner.acceptPage(finitePage(120, [3, 7]), {
+      lifetime: 1,
+      readId: "page-120",
+      boundary: "page-120",
+      authority: owner.getBaselineIdentity(),
+      before: { entry: 8, item: 0 },
+    }),
+  ).toBe(true);
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.transcriptKey),
+  ).toEqual(["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"]);
+  expect(reader.getSnapshot()?.history?.length).toBe(100);
+  await owner.settled();
+  expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual([
+    "item-1",
+    "item-2",
+    "item-3",
+    "item-7",
+    "item-8",
+    "item-9",
+  ]);
+  return { fixture, owner, reader, rows };
+}
+
+it("persists the page observation snapshot rather than the latest completeness watermark", async () => {
+  const { fixture, owner, reader, rows } = await repositoryWithPage();
+  try {
+    expect(
+      (
+        await fixture.cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          items: rows.filter((row) => row.transcriptKey === "item-5"),
+          sourceAuthority: {
+            bootGeneration: "1",
+            epoch: 0,
+            incarnation: identity.incarnation,
+            representedSnapshot: 110,
+          },
+        })
+      ).outcome,
+    ).toBe("committed");
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual([
+      "item-1",
+      "item-2",
+      "item-3",
+      "item-7",
+      "item-8",
+      "item-9",
+    ]);
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("persists the original wire interval when a newer observation filters the older page's upper row", async () => {
+  const { fixture, owner, reader } = await repositoryWithPage();
+  try {
+    expect(
+      owner.acceptPage(finitePage(110, [1, 5]), {
+        lifetime: 1,
+        readId: "partial-110",
+        boundary: "partial-110",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    const expected = ["item-1", "item-3", "item-7", "item-8", "item-9"];
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toEqual(expected);
+    expect(reader.getSnapshot()?.history?.length).toBe(100);
+    await owner.settled();
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(expected);
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("retains omission ordering through a persisted bodyless header and an older normal page", async () => {
+  const { fixture, owner, reader } = await repositoryWithPage();
+  reader.dispose();
+  owner.dispose();
+  const header = (await fixture.cache.getSessionMetadata(historyKey))?.cachedHeader;
+  if (!header) throw new Error("persisted repository header is missing");
+  const shell = threadModelFromCache({ ...header, history: { ...header.history, turns: [] } }, 2);
+  const reopened = repository(fixture.cache, 2, shell);
+  const reopenedReader = reopened.attachReader();
+  try {
+    expect(
+      (await reopenedReader.openLocal(40)).model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey),
+    ).toEqual(["item-8", "item-9"]);
+    expect(
+      reopened.acceptPage(finitePage(110, [3, 5, 7]), {
+        lifetime: 2,
+        readId: "reopened-110",
+        boundary: "reopened-110",
+        authority: reopened.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    expect(reopenedReader.getSnapshot()?.history?.length).toBe(100);
+    expect(
+      reopenedReader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).not.toContain("item-5");
+    await expect(reopened.settled()).rejects.toBeInstanceOf(Error);
+    expect(reopened.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect(
+      (await fixture.cache.getBefore(historyKey, { entry: 8, item: 0 }, 40)).map((row) => row.transcriptKey),
+    ).toEqual(["item-1", "item-2", "item-3", "item-7"]);
+    expect(
+      reopened.acceptPage(finitePage(130, [3, 7]), {
+        lifetime: 2,
+        readId: "reopened-130",
+        boundary: "reopened-130",
+        authority: reopened.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await reopened.settled();
+    expect(reopened.getRecoveryStateForTesting().cacheContinuityLost).toBe(false);
+    expect(
+      reopenedReader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toEqual(["item-3", "item-7", "item-8", "item-9"]);
+  } finally {
+    reopenedReader.dispose();
+    reopened.dispose();
+  }
+});
+
+it.each(["opening", "older"] as const)(
+  "does not restore a normal page's omitted rows while its real background write is queued: %s",
+  async (stage) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const baseline = readMany(9);
+    baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+    expect(owner.acceptRead(baseline, { lifetime: 1, readId: "pending-seed", boundary: "pending-seed" })).toBe(true);
+    await owner.settled();
+    const admission = entryWriteAdmissionFor(fixture.cache);
+    const blocker = {};
+    expect(
+      admission.tryAcquireBackground(
+        blocker,
+        () => false,
+        () => {},
+      ),
+    ).toBe(true);
+    let reader: ReturnType<TranscriptRepository["attachReader"]> | undefined;
+    try {
+      expect(
+        owner.acceptPage(finitePage(120, [3, 7]), {
+          lifetime: 1,
+          readId: "pending-page",
+          boundary: "pending-page",
+          authority: owner.getBaselineIdentity(),
+          before: { entry: 8, item: 0 },
+        }),
+      ).toBe(true);
+      const expected = ["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"];
+      expect(
+        owner
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.transcriptKey),
+      ).toEqual(expected);
+      expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(
+        Array.from({ length: 9 }, (_, i) => `item-${i + 1}`),
+      );
+      reader = owner.attachReader();
+      const opening = await reader.openLocal(stage === "opening" ? 40 : 2);
+      expect(opening.model?.history?.length).toBe(100);
+      if (stage === "opening") {
+        expect(opening.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toEqual(expected);
+      } else {
+        expect(opening.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).not.toContain(
+          "item-5",
+        );
+        expect(owner.localOlderPosition()).toBeDefined();
+        const older = await owner.loadOlderPage(40, 1);
+        expect(older.kind).toBe("local");
+        if (older.kind === "local") {
+          expect(older.model.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toEqual(expected);
+        }
+      }
+    } finally {
+      admission.releaseBackground(blocker);
+      await owner.settled().catch(() => {});
+      reader?.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["queued", "refused"] as const)(
+  "restores a newer committed item omitted by an older uncommitted page: %s",
+  async (schedule) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const initial = repository(fixture.cache);
+    const baseline = readMany(9);
+    baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+    expect(initial.acceptRead(baseline, { lifetime: 1, readId: "newer-seed", boundary: "newer-seed" })).toBe(true);
+    await initial.settled();
+    initial.dispose();
+    const cached = (await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-5");
+    if (!cached) throw new Error("missing committed fixture item");
+    const newer = {
+      id: "item-5",
+      transcriptKey: "item-5",
+      turnId: "turn_1",
+      type: "agentMessage",
+      text: "newer committed body",
+      position: { entry: 5, item: 0 },
+      version: 150,
+    };
+    await fixture.cache.putItems([{ ...cached, version: 150, item: encodeTranscriptItem(newer) }]);
+    const limited = rangedRead(8, 9);
+    limited.snapshot = { incarnation: identity.incarnation, length: 100 };
+    limited.olderCursor = "before-8";
+    const refused = schedule === "refused";
+    const cache = refused
+      ? new SessionEntryCache({
+          indexedDB: fixture.indexedDB,
+          keyRange: IDBKeyRange,
+          databaseName: fixture.name,
+          maxBytes: 2_000,
+        })
+      : fixture.cache;
+    const owner = repository(cache, 2, hydrateThread(limited, ref, 2));
+    const admission = entryWriteAdmissionFor(cache);
+    const blocker = {};
+    let reader: ReturnType<TranscriptRepository["attachReader"]> | undefined;
+    const commits = vi.spyOn(cache, "commitBatch");
+    try {
+      if (!refused) {
+        expect(
+          admission.tryAcquireBackground(
+            blocker,
+            () => false,
+            () => {},
+          ),
+        ).toBe(true);
+      }
+      expect(
+        owner.acceptPage(updatedPage(130, [3, 7], refused ? "x".repeat(20_000) : "page body"), {
+          lifetime: 2,
+          readId: "older-omission",
+          boundary: "older-omission",
+          authority: owner.getBaselineIdentity(),
+          before: { entry: 8, item: 0 },
+        }),
+      ).toBe(true);
+      expect(
+        owner
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.transcriptKey),
+      ).not.toContain("item-5");
+      if (refused) {
+        await owner.settled();
+        expect(await commits.mock.results[0]?.value).toEqual({ outcome: "refused", reason: "capacity" });
+      }
+      expect(
+        (await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-5")?.version,
+      ).toBe(150);
+      reader = owner.attachReader();
+      const model = (await reader.openLocal(40)).model;
+      const items = model?.turns.flatMap((turn) => turn.items);
+      expect(items?.find((item) => item.transcriptKey === "item-5")).toMatchObject({
+        version: 150,
+        text: "newer committed body",
+      });
+      expect(items?.map((item) => item.transcriptKey)).not.toContain("item-4");
+      expect(items?.map((item) => item.transcriptKey)).not.toContain("item-6");
+    } finally {
+      admission.releaseBackground(blocker);
+      reader?.dispose();
+      owner.dispose();
+      await owner.settled().catch(() => {});
+      commits.mockRestore();
+      if (cache !== fixture.cache) cache.close();
+    }
+  },
+);
+
+it("restores committed page bodies from an untrusted bodyless header without claiming currentness", async () => {
+  const { fixture, owner, reader } = await repositoryWithPage();
+  reader.dispose();
+  owner.dispose();
+  const header = (await fixture.cache.getSessionMetadata(historyKey))?.cachedHeader;
+  if (!header) throw new Error("persisted repository header is missing");
+  const shell = threadModelFromCache({ ...header, history: { ...header.history, turns: [] } }, 2);
+  const reopened = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: shell,
+  });
+  const reopenedReader = reopened.attachReader();
+  try {
+    const opening = await reopenedReader.openLocal(40);
+    expect(opening.status).not.toBe("current");
+    expect(opening.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toEqual([
+      "item-1",
+      "item-2",
+      "item-3",
+      "item-7",
+      "item-8",
+      "item-9",
+    ]);
+  } finally {
+    reopenedReader.dispose();
+    reopened.dispose();
+  }
+});
+
+it("keeps page omissions during local recovery after the real page transaction is refused for capacity", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const initial = repository(fixture.cache);
+  const resident = initial.attachReader();
+  const baseline = readMany(9);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+  expect(initial.acceptRead(baseline, { lifetime: 1, readId: "capacity-seed", boundary: "capacity-seed" })).toBe(true);
+  await initial.settled();
+  const seed = resident.getSnapshot();
+  resident.dispose();
+  initial.dispose();
+  const small = new SessionEntryCache({
+    indexedDB: fixture.indexedDB,
+    keyRange: IDBKeyRange,
+    databaseName: fixture.name,
+    maxBytes: 2_000,
+  });
+  const owner = repository(small, 2, seed);
+  const reader = owner.attachReader();
+  const commits = vi.spyOn(small, "commitBatch");
+  try {
+    const page = updatedPage(120, [3, 7], "x".repeat(20_000));
+    expect(
+      owner.acceptPage(page, {
+        lifetime: 2,
+        readId: "capacity-page",
+        boundary: "capacity-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled();
+    expect(await commits.mock.results[0]?.value).toEqual({ outcome: "refused", reason: "capacity" });
+    const expected = ["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"];
+    expect(
+      reader
+        .getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toEqual(expected);
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(
+      Array.from({ length: 9 }, (_, i) => `item-${i + 1}`),
+    );
+    const recoveryReader = owner.attachReader();
+    try {
+      const opening = await recoveryReader.openLocal(40);
+      expect(opening.status).not.toBe("current");
+      expect(opening.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toEqual(expected);
+    } finally {
+      recoveryReader.dispose();
+    }
+  } finally {
+    commits.mockRestore();
+    reader.dispose();
+    owner.dispose();
+    small.close();
+  }
+});
+
+it.each(["queued", "retry", "preflight"] as const)(
+  "persists a retained page observation across a later disjoint normal read: %s",
+  async (schedule) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const cache = new SessionEntryCache({
+      indexedDB: fixture.indexedDB,
+      keyRange: IDBKeyRange,
+      databaseName: fixture.name,
+      maxBytes: 30_000,
+    });
+    const scheduled: Array<() => void> = [];
+    const owner = new TranscriptRepository(cache, {
+      ref,
+      threadId,
+      historyKey,
+      identity,
+      clearEpoch: 0,
+      lifetime: 1,
+      retryScheduler: (_attempt, run) => {
+        scheduled.push(run);
+        return () => {};
+      },
+    });
+    let reader = owner.attachReader();
+    const admission = entryWriteAdmissionFor(cache);
+    const blocker = {};
+    let putHold: ReturnType<typeof holdNextEntryPut> | undefined;
+    let planHold: ReturnType<typeof holdNextTransaction> | undefined;
+    let readHold: ReturnType<typeof holdNextTransaction> | undefined;
+    const commits = vi.spyOn(cache, "commitBatch");
+    try {
+      const baseline = readMany(9);
+      baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+      expect(owner.acceptRead(baseline, { lifetime: 1, readId: "delay-seed", boundary: "delay-seed" })).toBe(true);
+      await owner.settled();
+      commits.mockClear();
+      if (schedule === "preflight") {
+        const oversized = updatedPage(110, [3, 7], "x".repeat(20_000));
+        expect(
+          owner.acceptPage(oversized, {
+            lifetime: 1,
+            readId: "oversized-page",
+            boundary: "oversized-page",
+            authority: owner.getBaselineIdentity(),
+            before: { entry: 8, item: 0 },
+          }),
+        ).toBe(true);
+        await owner.settled();
+        expect(await commits.mock.results[0]?.value).toEqual({ outcome: "refused", reason: "capacity" });
+        planHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_TURN_STORE], "readonly");
+      } else if (schedule === "queued") {
+        reader.dispose();
+        expect(
+          admission.tryAcquireBackground(
+            blocker,
+            () => false,
+            () => {},
+          ),
+        ).toBe(true);
+      } else {
+        putHold = holdNextEntryPut("item-3");
+      }
+      const page = updatedPage(120, [3, 7], "small");
+      expect(
+        owner.acceptPage(page, {
+          lifetime: 1,
+          readId: "retained-page",
+          boundary: "retained-page",
+          authority: owner.getBaselineIdentity(),
+          before: { entry: 8, item: 0 },
+        }),
+      ).toBe(true);
+      if (schedule === "preflight") {
+        await planHold?.reached;
+      } else if (schedule === "retry") {
+        await putHold?.reached;
+        putHold?.abort();
+        putHold = undefined;
+        await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+        expect(scheduled).toHaveLength(1);
+      } else {
+        reader = owner.attachReader();
+      }
+      if (schedule !== "preflight")
+        readHold = holdNextTransaction(
+          [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE],
+          "readwrite",
+        );
+      const latest: ThreadHistoryReadResponse = rangedRead(8, 9);
+      latest.snapshot = { incarnation: identity.incarnation, length: 130 };
+      latest.servedFrom = "live-daemon";
+      latest.olderCursor = "before-8";
+      expect(owner.acceptRead(latest, { lifetime: 1, readId: "newer-latest", boundary: "newer-latest" })).toBe(true);
+      if (schedule === "preflight") {
+        planHold?.release();
+        planHold = undefined;
+        readHold = holdNextTransaction(
+          [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE],
+          "readwrite",
+        );
+      }
+      await readHold?.reached;
+      const expected = ["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"];
+      expect(reader.getSnapshot()?.history?.length).toBe(130);
+      expect(
+        reader
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.transcriptKey),
+      ).toEqual(expected);
+      expect(reader.getSnapshot()?.history?.replacementScopes).toEqual([
+        {
+          from: { entry: 3, item: 0 },
+          to: { entry: 7, item: 0 },
+          representedSnapshot: 120,
+          representedOrdinal: 120,
+        },
+      ]);
+      readHold?.release();
+      readHold = undefined;
+      if (schedule === "preflight") planHold?.release();
+      else if (schedule === "retry") scheduled[0]?.();
+      else admission.releaseBackground(blocker);
+      await owner.settled();
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(130);
+      expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(expected);
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.replacementScopes).toEqual([
+        { from: { entry: 3, item: 0 }, to: { entry: 7, item: 0 }, representedSnapshot: 120 },
+      ]);
+    } finally {
+      putHold?.abort();
+      planHold?.release();
+      readHold?.release();
+      admission.releaseBackground(blocker);
+      reader.dispose();
+      owner.dispose();
+      await owner.settled().catch(() => {});
+      commits.mockRestore();
+      cache.close();
+    }
+  },
+);
+
+it("keeps an uncommitted latest-read suffix when a disjoint bounded page commits", async () => {
+  const { fixture, owner, reader } = await repositoryWithPage();
+  const admission = entryWriteAdmissionFor(fixture.cache);
+  const blocker = {};
+  expect(
+    admission.tryAcquireBackground(
+      blocker,
+      () => false,
+      () => {},
+    ),
+  ).toBe(true);
+  reader.dispose();
+  let foreground: ReturnType<TranscriptRepository["attachReader"]> | undefined;
+  try {
+    const latest: ThreadHistoryReadResponse = rangedRead(8, 9);
+    latest.snapshot = { incarnation: identity.incarnation, length: 130 };
+    latest.servedFrom = "live-daemon";
+    latest.olderCursor = "before-8";
+    for (const turn of latest.thread.turns ?? []) for (const item of turn.items ?? []) item.version = 130;
+    expect(owner.acceptRead(latest, { lifetime: 1, readId: "queued-latest", boundary: "queued-latest" })).toBe(true);
+    foreground = owner.attachReader();
+    expect(
+      owner.acceptPage(updatedPage(140, [3, 7], "page-140"), {
+        lifetime: 1,
+        readId: "disjoint-page",
+        boundary: "disjoint-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled().catch(() => {});
+    expect((await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-3")?.version).toBe(
+      140,
+    );
+    const newest: ThreadHistoryReadResponse = rangedRead(9, 9);
+    newest.snapshot = { incarnation: identity.incarnation, length: 150 };
+    newest.servedFrom = "live-daemon";
+    newest.olderCursor = "before-9";
+    for (const turn of newest.thread.turns ?? []) for (const item of turn.items ?? []) item.version = 150;
+    expect(owner.acceptRead(newest, { lifetime: 1, readId: "latest-150", boundary: "latest-150" })).toBe(true);
+    admission.releaseBackground(blocker);
+    await owner.settled();
+    expect((await fixture.cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(150);
+    expect(
+      foreground
+        .getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .find((item) => item.transcriptKey === "item-8")?.version,
+    ).toBe(130);
+    expect((await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-8")?.version).toBe(
+      130,
+    );
+  } finally {
+    admission.releaseBackground(blocker);
+    foreground?.dispose();
+    owner.dispose();
+    await owner.settled().catch(() => {});
+  }
+});
+
+it("does not repair a refused page extent beyond a bounded replacement's upper edge", async () => {
+  const { fixture, owner: initial, reader: resident } = await repositoryWithPage();
+  const seed = resident.getSnapshot();
+  resident.dispose();
+  initial.dispose();
+  const cache = new SessionEntryCache({
+    indexedDB: fixture.indexedDB,
+    keyRange: IDBKeyRange,
+    databaseName: fixture.name,
+    maxBytes: 30_000,
+  });
+  const owner = repository(cache, 2, seed);
+  const reader = owner.attachReader();
+  const commits = vi.spyOn(cache, "commitBatch");
+  try {
+    expect(
+      owner.acceptPage(updatedPage(130, [3, 7], "x".repeat(20_000)), {
+        lifetime: 2,
+        readId: "refused-wide",
+        boundary: "refused-wide",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled();
+    expect(await commits.mock.results[0]?.value).toEqual({ outcome: "refused", reason: "capacity" });
+    expect(
+      owner.acceptPage(updatedPage(140, [3, 5], "small"), {
+        lifetime: 2,
+        readId: "partial-repair",
+        boundary: "partial-repair",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled();
+    expect((await commits.mock.results[1]?.value)?.outcome).toBe("committed");
+    expect(
+      reader
+        .getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .find((item) => item.transcriptKey === "item-7")?.version,
+    ).toBe(130);
+    expect((await cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-7")?.version).toBe(7);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+  } finally {
+    commits.mockRestore();
+    reader.dispose();
+    owner.dispose();
+    cache.close();
+  }
+});
+
+it("keeps coverage current when a delayed page is already covered by a newer committed page on this baseline", async () => {
+  const { fixture, owner, reader } = await repositoryWithPage();
+  const admission = entryWriteAdmissionFor(fixture.cache);
+  const blocker = {};
+  expect(
+    admission.tryAcquireBackground(
+      blocker,
+      () => false,
+      () => {},
+    ),
+  ).toBe(true);
+  reader.dispose();
+  let foreground: ReturnType<TranscriptRepository["attachReader"]> | undefined;
+  try {
+    expect(
+      owner.acceptPage(updatedPage(125, [3, 7], "old"), {
+        lifetime: 1,
+        readId: "delayed-page",
+        boundary: "delayed-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    foreground = owner.attachReader();
+    expect(
+      owner.acceptPage(updatedPage(130, [3, 5, 7], "current"), {
+        lifetime: 1,
+        readId: "covering-page",
+        boundary: "covering-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled().catch(() => {});
+    expect(await fixture.cache.getCoverage(historyKey, "page:covering-page:covering-page")).toMatchObject({
+      authority: owner.getBaselineIdentity(),
+      representedSnapshot: 130,
+      start: { entry: 3, item: 0 },
+      end: { entry: 7, item: 0 },
+    });
+    expect((await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-5")?.version).toBe(
+      130,
+    );
+    admission.releaseBackground(blocker);
+    await owner.settled();
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(false);
+    expect(
+      foreground
+        .getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .find((item) => item.transcriptKey === "item-5")?.version,
+    ).toBe(130);
+  } finally {
+    admission.releaseBackground(blocker);
+    foreground?.dispose();
+    owner.dispose();
+    await owner.settled().catch(() => {});
+  }
+});
+
+it.each(["live", "saved", "fallback", "legacy"] as const)(
+  "persists finite page omissions across disposal and reopen without removing outside rows: %s",
+  async (source) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const reader = owner.attachReader();
+    const baseline = readMany(9);
+    baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+    expect(owner.acceptRead(baseline, { lifetime: 1, readId: "page-seed", boundary: "page-seed" })).toBe(true);
+    await owner.settled();
+    const beforeRows = await fixture.cache.getLatest(historyKey, 40);
+    expect(beforeRows.map((row) => row.transcriptKey)).toEqual(Array.from({ length: 9 }, (_, i) => `item-${i + 1}`));
+    const page: ThreadHistoryTurnsListResponse = {
+      data: (rangedRead(3, 7).thread.turns ?? []).map((turn) => ({
+        ...turn,
+        itemsView: "fragment",
+        items: (turn.items ?? []).filter((item) => item.position?.entry === 3 || item.position?.entry === 7),
+      })),
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length: 120 },
+      asOf: "2026-11-08T00:00:00Z",
+      nextCursor: "before-3",
+      servedFrom: source === "live" ? "live-daemon" : "saved-index",
+      ...(source === "fallback" ? { fallbackReason: "live-read-failed" } : {}),
+    };
+    const response =
+      source === "legacy"
+        ? {
+            data: page.data,
+            bootGeneration: page.bootGeneration,
+            epoch: page.epoch,
+            snapshot: page.snapshot,
+            nextCursor: page.nextCursor,
+          }
+        : page;
+    expect(
+      owner.acceptPage(response, {
+        lifetime: 1,
+        readId: "finite-page",
+        boundary: "finite-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    const expected =
+      source === "live" || source === "saved"
+        ? ["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"]
+        : beforeRows.map((row) => row.transcriptKey);
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toEqual(expected);
+    expect(reader.getSnapshot()?.history?.length).toBe(100);
+    await owner.settled();
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(expected);
+    const outside = (await fixture.cache.getLatest(historyKey, 40)).filter(
+      (row) => row.position.entry < 3 || row.position.entry > 7,
+    );
+    expect(outside).toEqual(beforeRows.filter((row) => row.position.entry < 3 || row.position.entry > 7));
+    reader.dispose();
+    owner.dispose();
+    const header = (await fixture.cache.getSessionMetadata(historyKey))?.cachedHeader;
+    if (!header) throw new Error("persisted repository header is missing");
+    const shell = threadModelFromCache({ ...header, history: { ...header.history, turns: [] } }, 2);
+    const reopened = repository(fixture.cache, 2, shell);
+    const reopenedReader = reopened.attachReader();
+    try {
+      const opening = await reopenedReader.openLocal(40);
+      expect(opening.model?.history?.length).toBe(100);
+      expect(opening.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toEqual(
+        source === "live" || source === "saved" ? ["item-8", "item-9"] : expected,
+      );
+      expect(
+        (await fixture.cache.getBefore(historyKey, { entry: 8, item: 0 }, 40)).map((row) => row.transcriptKey),
+      ).toEqual(expected.filter((key) => key !== "item-8" && key !== "item-9"));
+    } finally {
+      reopenedReader.dispose();
+      reopened.dispose();
+    }
+  },
+);
+
+it.each(["saved", "live", "legacy-authoritative", "fallback", "legacy-merge"] as const)(
+  "persists same-identity returned-window policy without resurrecting omitted rows: %s",
+  async (source) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const reader = owner.attachReader();
+    const baseline: ThreadHistoryReadResponse = readMany(4);
+    baseline.servedFrom = "live-daemon";
+    baseline.authoritative = true;
+    expect(owner.acceptRead(baseline, { lifetime: 1, readId: "window-before", boundary: "window-before" })).toBe(true);
+    await owner.settled();
+    const beforeRows = await fixture.cache.getLatest(historyKey, 40);
+    expect(beforeRows.map((row) => row.transcriptKey)).toEqual(["item-1", "item-2", "item-3", "item-4"]);
+    const beforeCoverage = await fixture.cache.getCoverage(historyKey, "read:window-before");
+    expect(beforeCoverage).toBeDefined();
+    const replacement: ThreadHistoryReadResponse = rangedRead(2, 4);
+    replacement.thread.turns![0]!.items = replacement.thread.turns![0]!.items!.filter(
+      (item) => item.transcriptKey !== "item-3",
+    );
+    replacement.olderCursor = "older-before-2";
+    replacement.requestGeneration = 1;
+    replacement.authoritative = source === "legacy-authoritative";
+    if (source === "saved" || source === "fallback") replacement.servedFrom = "saved-index";
+    if (source === "live") replacement.servedFrom = "live-daemon";
+    if (source === "fallback") replacement.fallbackReason = "live-read-failed";
+    expect(owner.acceptRead(replacement, { lifetime: 1, readId: "window-after", boundary: "window-after" })).toBe(true);
+    const expected =
+      source === "fallback" || source === "legacy-merge"
+        ? ["item-1", "item-2", "item-3", "item-4"]
+        : ["item-1", "item-2", "item-4"];
+    expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).toEqual(
+      expected,
+    );
+    await owner.settled();
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toEqual(expected);
+    // The older row and its pre-window coverage are outside the replacement.
+    expect((await fixture.cache.getLatest(historyKey, 40))[0]).toEqual(beforeRows[0]);
+    if (source === "fallback" || source === "legacy-merge") {
+      expect(await fixture.cache.getCoverage(historyKey, "read:window-before")).toEqual(beforeCoverage);
+    } else {
+      expect(await fixture.cache.getCoverage(historyKey, "kept:read:window-before")).toMatchObject({
+        start: { entry: 1, item: 0 },
+        end: { entry: 1, item: 0 },
+        before: { entry: 2, item: 0 },
+      });
+    }
+    const reopened = owner.attachReader();
+    try {
+      const opening = await reopened.openLocal(40);
+      expect(opening.status).toBe("current");
+      expect(opening.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).toEqual(expected);
+    } finally {
+      reopened.dispose();
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it("retires a captured local opening when a normal page removes held identities", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const resident = owner.attachReader();
+  const baseline = readMany(9);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 100 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "before-page", boundary: "before-page" })).toBe(true);
+  await owner.settled();
+  const hold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+  const reader = owner.attachReader();
+  const opening = reader.openLocal(40);
+  try {
+    await hold.reached;
+    const page: ThreadHistoryTurnsListResponse = {
+      data: (rangedRead(3, 7).thread.turns ?? []).map((turn) => ({
+        ...turn,
+        itemsView: "fragment",
+        items: (turn.items ?? []).filter((item) => item.position?.entry === 3 || item.position?.entry === 7),
+      })),
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length: 120 },
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+      nextCursor: "before-3",
+    };
+    expect(
+      owner.acceptPage(page, {
+        lifetime: 1,
+        readId: "during-opening",
+        boundary: "during-opening",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    expect(
+      resident
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toEqual(["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"]);
+    hold.release();
+    const opened = await opening;
+    expect(opened.status).toBe("recovery-needed");
+    expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).not.toContain("item-5");
+    expect(
+      resident
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).not.toContain("item-5");
+    await owner.settled();
+  } finally {
+    hold.release();
+    await opening;
+    reader.dispose();
+    resident.dispose();
+    owner.dispose();
+  }
+});
+
+it.each(["saved", "live"] as const)(
+  "retires a captured local opening before same-identity %s window replacement commits",
+  async (source) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    expect(owner.acceptRead(readMany(3), { lifetime: 1, readId: "captured-before", boundary: "captured-before" })).toBe(
+      true,
+    );
+    await owner.settled();
+    const hold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+    const reader = owner.attachReader();
+    const opening = reader.openLocal(40);
+    try {
+      await hold.reached;
+      const replacement: ThreadHistoryReadResponse = rangedRead(1, 3);
+      replacement.thread.turns![0]!.items = replacement.thread.turns![0]!.items!.filter(
+        (item) => item.transcriptKey !== "item-2",
+      );
+      replacement.authoritative = false;
+      replacement.servedFrom = source === "saved" ? "saved-index" : "live-daemon";
+      replacement.requestGeneration = 1;
+      expect(owner.acceptRead(replacement, { lifetime: 1, readId: "captured-after", boundary: "captured-after" })).toBe(
+        true,
+      );
+      expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).toEqual([
+        "item-1",
+        "item-3",
+      ]);
+      hold.release();
+      const opened = await opening;
+      expect(opened.status).toBe("recovery-needed");
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).not.toContain(
+        "item-2",
+      );
+      expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).toEqual([
+        "item-1",
+        "item-3",
+      ]);
+      await owner.settled();
+    } finally {
+      hold.release();
+      await opening;
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["fallback-incarnation", "normal-incarnation", "thread", "session", "ref", "lifetime", "stale-read"] as const)(
+  "fallback incarnation admission keeps the repository owner fence: %s",
+  async (difference) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const held = read("held");
+    held.requestGeneration = 2;
+    expect(owner.acceptRead(held, { lifetime: 1, readId: "held", boundary: "held" })).toBe(true);
+    const before = owner.getSnapshot();
+    const fallback: ThreadHistoryReadResponse = read("fallback", 2);
+    fallback.servedFrom = "saved-index";
+    if (difference !== "normal-incarnation") fallback.fallbackReason = "live-read-failed";
+    fallback.snapshot = { incarnation: "saved-inc", length: 2 };
+    fallback.requestGeneration = difference === "stale-read" ? 1 : 3;
+    if (difference === "thread") fallback.thread.id = "other-thread";
+    if (difference === "session") fallback.thread.sessionId = "other-session";
+    if (difference === "ref") fallback.thread.evener.ref = "other-ref";
+    const accepted = owner.acceptRead(fallback, {
+      lifetime: difference === "lifetime" ? 2 : 1,
+      readId: "fallback",
+      boundary: "fallback",
+    });
+    expect(accepted).toBe(difference === "fallback-incarnation");
+    if (accepted) {
+      expect(owner.getSnapshot()?.history?.incarnation).toBe(identity.incarnation);
+      expect(owner.getSnapshot()?.servingFacts).toMatchObject({
+        servedFrom: "saved-index",
+        fallbackReason: "live-read-failed",
+      });
+    } else expect(owner.getSnapshot()).toBe(before);
+    await owner.settled();
+    owner.dispose();
+  },
+);
 
 it.each(
   (["end", "final"] as const).flatMap((source) =>
@@ -1542,6 +2588,229 @@ it.each(["baseline", "Clear"] as const)("a held raw older lookup cannot publish 
   owner.dispose();
 });
 
+it("keeps a notification body the reducer keeps when a delayed versioned refresh lands", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const writeGate = gateEntryCommit(fixture.cache, "item-pending");
+  try {
+    expect(owner.acceptRead(readMany(45), { lifetime: 1, readId: "seed", boundary: "seed" })).toBe(true);
+    await owner.settled();
+    // The recorded body for entry 46 arrives while the refresh is in flight.
+    owner.accept(historyUpdate("pending", 46), { lifetime: 1 });
+    await writeGate.reached;
+    // The refresh completes later and claims a longer snapshot, while its
+    // reported entries still stop at 45.
+    const refresh = {
+      ...readMany(45),
+      snapshot: { incarnation: identity.incarnation, length: 100 },
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(refresh, { lifetime: 1, readId: "refresh", boundary: "refresh" })).toBe(true);
+    writeGate.release();
+    await owner.settled();
+    const keys = (await fixture.cache.getLatest(historyKey, 60)).map((row) => row.transcriptKey);
+    expect(keys).toContain("item-pending");
+  } finally {
+    writeGate.release();
+    owner.dispose();
+  }
+});
+
+it("a saved page never carries a durable replacement", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  try {
+    expect(
+      owner.acceptRead(
+        { ...readMany(9), olderCursor: "live-cursor" },
+        { lifetime: 1, readId: "seed", boundary: "seed" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    const fallback = {
+      ...readMany(9),
+      olderCursor: "live-cursor",
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" })).toBe(true);
+    await owner.settled();
+    // A saved page that claims a range still cannot delete live cached rows.
+    const page = { ...finitePage(120, [3, 7]), servedFrom: "saved-index" } as Record<string, unknown>;
+    expect(
+      owner.acceptPage(page as never, {
+        lifetime: 1,
+        readId: "saved-page",
+        boundary: "saved-page",
+        authority: owner.getBaselineIdentity(),
+        before: { entry: 8, item: 0 },
+      }),
+    ).toBe(true);
+    await owner.settled();
+    const keys = (await fixture.cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey);
+    expect(keys).toContain("item-5");
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("admits a saved page whose incarnation is the saved index's", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  try {
+    expect(
+      owner.acceptRead(
+        { ...readMany(45), olderCursor: "live-cursor" },
+        { lifetime: 1, readId: "seed", boundary: "seed" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    const liveCursor = owner.getSnapshot()?.olderCursor;
+    const liveIdentity = owner.getSnapshot()?.history?.incarnation;
+    const fallback = {
+      ...readMany(45),
+      olderCursor: "live-cursor",
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" })).toBe(true);
+    await owner.settled();
+    // The saved index answers with its own incarnation.
+    const page = { ...finitePage(45, [1]), servedFrom: "saved-index", nextCursor: "saved-page" } as Record<
+      string,
+      unknown
+    >;
+    page.snapshot = { incarnation: "saved-child", length: 45 };
+    const accepted = owner.acceptPage(page as never, {
+      lifetime: 1,
+      readId: "saved-page",
+      boundary: "saved-page",
+      authority: owner.getBaselineIdentity(),
+      before: { entry: 2, item: 0 },
+    });
+    expect(accepted).toBe(true);
+    const snapshot = owner.getSnapshot();
+    expect(snapshot?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toContain("item-1");
+    // The saved page cannot replace the live identity or continuation.
+    expect(snapshot?.history?.incarnation).toBe(liveIdentity);
+    expect(snapshot?.olderCursor).toBe(liveCursor);
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("keeps the live continuation when a saved fallback page lands", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  try {
+    expect(
+      owner.acceptRead(
+        { ...readMany(45), olderCursor: "live-cursor" },
+        { lifetime: 1, readId: "seed", boundary: "seed" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    const liveCursor = owner.getSnapshot()?.olderCursor;
+    expect(liveCursor).toBeDefined();
+    const fallback = {
+      ...readMany(45),
+      olderCursor: "live-cursor",
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" })).toBe(true);
+    await owner.settled();
+    expect(owner.getSnapshot()?.olderCursor).toBe(liveCursor);
+    // A saved-view page reached cursor-free from the oldest held row.
+    const page = { ...finitePage(45, [1, 5]), existed: undefined } as Record<string, unknown>;
+    page.servedFrom = "saved-index";
+    page.nextCursor = "saved-page";
+    const accepted = owner.acceptPage(page as never, {
+      lifetime: 1,
+      readId: "saved-page",
+      boundary: "saved-page",
+      authority: owner.getBaselineIdentity(),
+      before: { entry: 6, item: 0 },
+    });
+    // Whether the page merges or is discarded, the live continuation stays.
+    expect(typeof accepted).toBe("boolean");
+    expect(owner.getSnapshot()?.olderCursor).toBe(liveCursor);
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("starts a whole-transcript saved fallback exhausted", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  try {
+    expect(
+      owner.acceptRead(
+        { ...readMany(9), olderCursor: "live-cursor" },
+        { lifetime: 1, readId: "seed", boundary: "seed" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    // The saved index serves the whole transcript: it names no continuation.
+    const fallback = {
+      ...readMany(9),
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" })).toBe(true);
+    await owner.settled();
+    // The view has no older page to demand; advertising one leaves the paging
+    // demand pending against a read that can never produce a page.
+    expect(owner.savedViewExhausted()).toBe(true);
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("keeps a committed notification body when a later refresh lands at a newer snapshot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  try {
+    expect(owner.acceptRead(readMany(45), { lifetime: 1, readId: "seed", boundary: "seed" })).toBe(true);
+    await owner.settled();
+    owner.accept(historyUpdate("pending", 46), { lifetime: 1 });
+    await owner.settled();
+    expect((await fixture.cache.getLatest(historyKey, 60)).map((row) => row.transcriptKey)).toContain("item-pending");
+    // The refresh claims a longer snapshot while its own entries still stop
+    // at 45, so the committed body is newer than everything it reported.
+    const refresh = {
+      ...readMany(45),
+      snapshot: { incarnation: identity.incarnation, length: 100 },
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    expect(owner.acceptRead(refresh, { lifetime: 1, readId: "refresh", boundary: "refresh" })).toBe(true);
+    await owner.settled();
+    expect((await fixture.cache.getLatest(historyKey, 60)).map((row) => row.transcriptKey)).toContain("item-pending");
+  } finally {
+    owner.dispose();
+  }
+});
+
 it.each([false, true])("authoritative durable replacement reopens without superseded keys, empty=%s", async (empty) => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -2136,6 +3405,45 @@ it("a merge-shaped read between a windowed replace and its restore does not forg
   reader.dispose();
   owner.dispose();
 });
+
+it.each(["first read", "replacement", "intervening read"] as const)(
+  "a versioned live window restores recorded history after %s",
+  async (scenario) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const seeder = repository(fixture.cache);
+    seeder.acceptRead(readMany(80), { lifetime: 1, readId: "seed", boundary: "seed-boundary" });
+    await seeder.settled();
+    const lifetime = scenario === "first read" ? 2 : 1;
+    if (scenario === "first read") seeder.dispose();
+    const owner = scenario === "first read" ? repository(fixture.cache, lifetime) : seeder;
+    owner.noteOwedRecordedRange();
+    const liveWindow = (total: number): ThreadHistoryReadResponse => ({
+      ...windowedRead(total, 1),
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+      instanceId: identity.incarnation,
+      authoritative: true,
+    });
+    expect(owner.acceptRead(liveWindow(81), { lifetime, readId: "window", boundary: "window-boundary" })).toBe(true);
+    await owner.settled();
+    const total = scenario === "intervening read" ? 82 : 81;
+    if (scenario === "intervening read") {
+      expect(owner.acceptRead(liveWindow(total), { lifetime, readId: "refresh", boundary: "refresh-boundary" })).toBe(
+        true,
+      );
+      await owner.settled();
+    }
+    const reader = owner.attachReader();
+    const opened = await reader.openLocal(200);
+    expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+      Array.from({ length: total }, (_, index) => `row-${index + 1}`),
+    );
+    expect(opened.olderCursor).toBe(`opaque-server-before-item-${total - 40}`);
+    reader.dispose();
+    owner.dispose();
+  },
+);
 
 it("a repository whose first read is windowed still owes the recorded range below its window", async () => {
   const fixture = createEntryCacheFixture();

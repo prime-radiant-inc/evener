@@ -34,23 +34,37 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  /* The engaged row's line break is decided by honest flex bases: the status
-     chrome carries its measured compact rung as its basis
-     (sessionchrome.module.css, because its container-contained .body cannot
-     report one), so the chrome plus the wrapped strip no longer fit on one
-     line exactly when one line cannot hold both - and the strip takes the
-     next line, keeping the model picker at a real width and every count at
-     the tap floor. When everything fits, no line breaks and this behaves
-     exactly like the single-line row. */
-  flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
-  /* The phone's activity chips ride in this slot (ActivityChips reuses the
-     statusbar's compact presentation), so the slot carries the same named
-     container the statusbar's own bar declares: chips drop their names and
-     glyphs by this slot's measured width, not the page's. Desktop renders
-     no chips here, so the container only ever holds them on a phone. */
-  container: statusbar / inline-size;
+  /* The attach control and the chrome's compact rung cannot share one line
+     with the verbs at the narrowest engaged panes; the chrome takes the next
+     line and keeps the model picker at a readable width. */
+  flex-wrap: wrap;
+}
+
+/* The session's own status (model · effort, context, menu) sits at the row's
+ * far end, beside the verbs: the field leads, and the facts that describe
+ * where the prompt will go follow it. The slot carries the compact rung as
+ * its basis, so the leading's wrap calculation reserves room for the
+ * pickers before it decides whether the activity chips fit beside them; it
+ * grows into an expanded row. The folded row has no free space to give, so
+ * there it takes the intrinsic width below. */
+.chromeSlot {
+  display: flex;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* The phone's activity counts sit on a glance line below the composer card,
+ * where the desktop status bar puts them: not a control in the writing row.
+ * The line is the pane's bottom edge, and the chips are already the tap
+ * floor, so it adds no height of its own. */
+.activityRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: var(--tap-min);
+  flex: none;
 }
 
 .attachments {
@@ -224,4 +238,29 @@
   .composer {
     gap: var(--space-1);
   }
+}
+
+/* The folded row is content-sized, so this slot must report the chrome's
+ * intrinsic width. The chrome's own contained body contributes none, and
+ * contain-intrinsic-inline-size only applies under inline-size containment,
+ * so the folded slot declares it here. The width is the 320px status rung plus
+ * the session-menu trigger and the gap between them.
+ *
+ * A compact resting row is excluded: it holds the menu alone, so the folded
+ * reservation's width is all gap there. WebKit sizes the control row from the
+ * reservation rather than the compact basis, which collapsed the writing
+ * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
+.leading[data-folded="true"]:not([data-compact="true"]) {
+  container-type: inline-size;
+  contain-intrinsic-inline-size: 356px;
+}
+
+/* The phone's compact resting row keeps only the menu in this slot; it must
+ * hug that menu so the field keeps the line and Send stays at the far edge.
+ * The explicit basis also overrides the folded reservation's contribution in
+ * engines that size the row from it. */
+.leading[data-compact="true"] {
+  flex: 0 0 var(--tap-min);
+  min-width: var(--tap-min);
+  contain-intrinsic-inline-size: none;
 }

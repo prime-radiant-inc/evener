@@ -79,10 +79,6 @@ func (t declaredCompressionTransport) RoundTrip(*http.Request) (*http.Response, 
 	}, nil
 }
 
-func (declaredCompressionTransport) APILogTransportUsesStandardCompression() bool {
-	return true
-}
-
 func TestDoWithAPIAttemptsDoesNotEmulateOrUnwrapGzipTransport(t *testing.T) {
 	compressed := gzipBytes(t, []byte("provider body"))
 	client := &http.Client{Transport: declaredCompressionTransport{body: compressed}}

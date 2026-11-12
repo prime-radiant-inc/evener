@@ -51,7 +51,7 @@ func TestDiscardRestoredCandidateKeepsItsNamedUnsandboxedScratch(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	candidate := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	candidate := newSession(t, withClient(client), withDir(t.TempDir()))
 	local, ok := candidate.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("restore candidate env = %T, want a local environment", candidate.currentEnv())

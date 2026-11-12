@@ -43,7 +43,6 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	runs := []struct {
 		id     string

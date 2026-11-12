@@ -29,7 +29,7 @@ var checks = []check{
 	{"custom-content-selection-one-rule", customContentSelectionHasOneRule},
 	{"projection-work-policy-in-host", projectionWorkPolicyLivesInTheHost},
 	{"effort-vocabulary-one-source", effortVocabularyHasOneSource},
-	{"canonical-temp-dir-one-helper", noCommandTestMintsItsOwnCanonicalTempDir},
+	{"canonical-temp-dir-one-helper", noTestMintsItsOwnCanonicalTempDir},
 	{"e2e-providers-toml-one-writer", e2eProvidersTOMLHasOneWriter},
 	{"e2e-scripts-pin-providers-config", e2eScriptsPinProvidersConfig},
 	{"coverage-scripts-use-covstmt", coverageScriptsUseGoCovstmt},
@@ -41,13 +41,39 @@ var checks = []check{
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
 	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
+	{"fake-timers-no-wall-clock-drift", fakeTimersDoNotFollowWallTime},
+	{"test-sleeps-within-baseline", testSleepsStayWithinBaseline},
+	{"mcp-transport-one-package", mcpTransportBuiltInOnePackage},
+	{"knob-has-consumer", everyKnobHasAConsumer},
+	{"execsupport-library-scope", execsupportStaysInLibraryScope},
+	{"execsupport-library-scope-unlisted-goos", execsupportStaysInLibraryScopeForUnlistedGOOS},
+	{"execsupport-covers-supported-goos", execsupportCoversSupportedGOOS},
+	{"revive-exported-covers-library-files", reviveExportedRuleCoversLibraryFiles},
+	{"scenario-source-citations-resolve", scenarioSourceCitationsResolve},
+	{"scenario-source-symbols-declared", scenarioSourceSymbolsAreDeclared},
+	{"scenario-device-flow-cites-package-default", scenarioDeviceFlowCitesPackageDefault},
+	{"scenario-bare-line-anchors-resolve", scenarioBareLineAnchorsResolve},
+	{"runbook-isolation-through-helper", runbooksRouteIsolationThroughTheHelper},
+	{"makefile-phony-has-rule", everyPhonyTargetHasARule},
+	{"makefile-lint-target-phony-with-rule", everyLintTargetIsPhonyAndHasARule},
+	{"makefile-linting-rule-in-lint-targets", everyLintingRuleIsInLintTargets},
+	{"makefile-rule-is-phony", everyRuleIsPhony},
+	{"makefile-rule-has-recipe", everyRuleHasARecipe},
+	{"makefile-root-has-no-rules", rootMakefileHasNoRules},
+	{"makefile-one-lint-targets-definition", exactlyOneLintTargetsDefinition},
+	{"makefile-generated-region-in-staleness-diff", everyGeneratedRegionIsInTheStalenessDiff},
+	{"makefile-frontend-lint-from-frontend-dir", frontendLintRunsFromTheFrontendDirectory},
+	{"makefile-golangci-lints-darwin", lintGolangciLintsDarwinOffDarwin},
 }
 
-// audit collects one check's findings. Errorf records a finding and the check
-// goes on; Fatalf records one and ends the check, for a check that cannot read
-// what it holds a rule over.
+// audit collects one check's findings and notes. Errorf records a finding and
+// the check goes on; Fatalf records one and ends the check, for a check that
+// cannot read what it holds a rule over. Notef records a note, which is
+// reported without failing the run: a ratchet uses it to ask for its baseline
+// to come down.
 type audit struct {
 	findings []string
+	notes    []string
 }
 
 // stopCheck is the panic value Fatal and Fatalf end a check with; runCheck
@@ -62,6 +88,10 @@ func (a *audit) Errorf(format string, args ...any) {
 	a.findings = append(a.findings, fmt.Sprintf(format, args...))
 }
 
+func (a *audit) Notef(format string, args ...any) {
+	a.notes = append(a.notes, fmt.Sprintf(format, args...))
+}
+
 func (a *audit) Fatal(args ...any) {
 	a.Error(args...)
 	panic(stopCheck{})
@@ -72,23 +102,22 @@ func (a *audit) Fatalf(format string, args ...any) {
 	panic(stopCheck{})
 }
 
-// runCheck runs one check and returns its findings.
-func runCheck(c check) (findings []string) {
-	a := &audit{}
+// runCheck runs one check and returns what it recorded.
+func runCheck(c check) (a *audit) {
+	a = &audit{}
 	defer func() {
 		if r := recover(); r != nil {
 			if _, stopped := r.(stopCheck); !stopped {
 				panic(r)
 			}
 		}
-		findings = a.findings
 	}()
 	c.run(a)
-	return a.findings
+	return a
 }
 
 // Run runs every check against the repository in the working directory, which
-// must be its root, and reports each finding under its check's name. It
+// must be its root, and reports each note and finding under its check's name. It
 // returns 1 when any check found something and 0 otherwise.
 func Run(stdout io.Writer) int {
 	return runChecks(checks, stdout)
@@ -97,7 +126,7 @@ func Run(stdout io.Writer) int {
 // runChecks runs cs concurrently, since the copy-only scans dominate the wall
 // time, and reports them in order so the output is stable.
 func runChecks(cs []check, stdout io.Writer) int {
-	results := make([][]string, len(cs))
+	results := make([]*audit, len(cs))
 	var wg sync.WaitGroup
 	for i, c := range cs {
 		wg.Go(func() { results[i] = runCheck(c) })
@@ -105,7 +134,10 @@ func runChecks(cs []check, stdout io.Writer) int {
 	wg.Wait()
 	status := 0
 	for i, c := range cs {
-		for _, finding := range results[i] {
+		for _, note := range results[i].notes {
+			_, _ = fmt.Fprintf(stdout, "NOTE %s: %s\n", c.name, note)
+		}
+		for _, finding := range results[i].findings {
 			status = 1
 			_, _ = fmt.Fprintf(stdout, "FAIL %s: %s\n", c.name, finding)
 		}

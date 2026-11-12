@@ -191,6 +191,10 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 // daemon with nothing to say reports.
 type sessionTaskEnvelopeSource struct{ sess *agent.Session }
 
+func (s sessionTaskEnvelopeSource) LatestExecutionTurnID() string {
+	return s.sess.LatestExecutionTurnID()
+}
+
 func (s sessionTaskEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
 	return server.ContextMetrics{}, 0
 }

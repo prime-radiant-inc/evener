@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe("ActivityTree watch row ticks", () => {
   test("a collapsed watch row does not re-render on a tick while an open one still updates", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     vi.setSystemTime(NOW);
     try {
       // watchMeta is called by WatchRowView on every row render; watchFacts
@@ -115,7 +115,7 @@ describe("ActivityTree watch row ticks", () => {
   // ages in its detail - reads that tick, while a collapsed row carries no
   // clock-derived part at all and so stays asleep through it.
   test("the tree's own tick re-renders the open watch row and leaves the collapsed one alone", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     vi.setSystemTime(NOW);
     try {
       const rowRender = vi.spyOn(activityRows, "watchMeta");

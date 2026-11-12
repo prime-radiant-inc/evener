@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -32,17 +31,6 @@ func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
 	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches one local or remote session. A hub create takes the ordinary `note` payload (it comes back with every fire) and `every` where the hub object selects exactly one event kind (each Nth matching observation fires); ordinary arguments a session watch cannot express are refused naming the argument. hub={scope:\"top_level\"} is one aggregate global roster watch with fixed events: new, needs_you, error, disappeared; events and completion cannot be selected for this scope. Re-register the same roster watch — hub={\"scope\":\"top_level\"} with the same note — after resync for a fresh snapshot. Completion fires when the watched turn is accepted as ended, including targets that do not offer an end reason, such as delegates and headless sessions. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends a target watch, and Manager runtime restart requires re-registration."
 	def.Parameters = params
 	return def
-}
-
-// liveSteerWaitIgnoredReason returns a note when a caller passed a positive
-// max_wait_ms but the send was a live steer of a running delegate, which returns on
-// delivery and cannot honor the wait. It returns "" when the wait was honored (a
-// resumed job) or not requested, so the field stays omitted in the common case.
-func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, action string) string {
-	if blockTimeoutMS > 0 && (status == jobstore.StatusRunning && action == "steered" || action == "delivered") {
-		return "live steer returns on delivery; max_wait_ms applies only to started jobs"
-	}
-	return ""
 }
 
 func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
@@ -455,6 +443,7 @@ type jobWatchToolResult struct {
 	Watching           bool                     `json:"watching"`
 	OutputMatch        string                   `json:"output_match,omitempty"`
 	Events             []string                 `json:"events,omitempty"`
+	Every              int                      `json:"every,omitempty"`
 	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
 	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
 	AfterSeconds       int                      `json:"after_seconds,omitempty"`
@@ -511,6 +500,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Watching:           res.Watching,
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
+		Every:              res.Every,
 		ProgressIntervalMS: res.ProgressIntervalMS,
 		Note:               res.Note,
 		ReplacedExisting:   res.ReplacedExisting,
@@ -585,6 +575,9 @@ func formatJobWatch(out jobWatchToolResult) string {
 	}
 	if len(out.Events) > 0 {
 		events := "events: " + strings.Join(out.Events, ",")
+		if out.Every > 0 {
+			events += fmt.Sprintf(" every %d", out.Every)
+		}
 		if filter := formatJobWatchEventFilter(out.EventFilter); filter != "" {
 			events += " " + filter
 		}

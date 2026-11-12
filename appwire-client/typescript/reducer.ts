@@ -21,6 +21,7 @@ import {
   publicModel,
   wireFragment,
   withDisplay,
+  withoutNewerPageOmissions,
 } from "./transcriptHistory";
 import { upsertStableDelegate } from "./transcriptItems";
 import type {
@@ -47,7 +48,14 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   const action = classifySignal(held, signal);
   if (action === "invalidate") return { ...live, history: invalidated(held, signal) };
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
-  const turns = mergeHistory(held.turns, wireFragment(params.turns, params.items, modelImageSessionRoute(model)));
+  // A notification projected after the page that omitted one of its identities
+  // must not put it back: the page's observation still wins.
+  const fragment = withoutNewerPageOmissions(
+    held,
+    wireFragment(params.turns, params.items, modelImageSessionRoute(model)),
+    params.snapshot.length,
+  );
+  const turns = mergeHistory(held.turns, fragment);
   if (turns === held.turns) return live;
   return withDisplay(live, { ...held, turns }, model.overlay ?? {});
 }

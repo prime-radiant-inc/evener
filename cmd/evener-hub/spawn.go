@@ -224,8 +224,6 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, nil)
-	prepareDone := trace.stage(ctx, "launch_preparation")
 	// The rendezvous wait must cover the daemon's whole state restore, not
 	// just process startup; resumeRendezvousTimeout carries the rationale.
 	timeout := resumeRendezvousTimeout
@@ -237,13 +235,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 			req.Project, req.StateDir, err = resolveEvenerLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		}
 		if err != nil {
-			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
 	}
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
-		prepareDone(err)
 		return rendezvous.Entry{}, err
 	}
 	defer cleanup()
@@ -260,7 +256,6 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
 	if err != nil {
-		prepareDone(err)
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
@@ -284,7 +279,6 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		// model-stripped (buildResumeArgs) and the launch-contract check
 		// below stays model-blind; only the credential gate is model-aware.
 		if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
-			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -292,14 +286,9 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	// session's persisted metadata, not ambient launch config, selects the model;
 	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
 	// resume because of a stale launch-config model.
-	contractDone := trace.stage(ctx, "launch_contract")
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
-		contractDone(err)
-		prepareDone(err)
 		return rendezvous.Entry{}, err
 	}
-	contractDone(nil)
-	prepareDone(nil)
 	return resumeDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
@@ -434,6 +423,12 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 		// launch-layer override replaces it.
 		resumeResolved.Effective.CommitProvenance = ""
 	}
+	if resumeResolved.Provenance["compact_at_percent"] != launchconfig.LayerLaunch {
+		// A resume keeps the trigger saved with the session; the builtin
+		// default must not overwrite it. Only an explicit launch-layer
+		// override replaces it.
+		resumeResolved.Effective.CompactAtPercent = nil
+	}
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }
@@ -446,11 +441,6 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 // Caller does NOT manage the subprocess lifecycle: the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
 func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
-	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
-	daemonStarted := time.Now()
-	trace.record(ctx, "daemon", "begin", daemonStarted, nil, 0, 0)
-	defer func() { trace.record(ctx, "daemon", "complete", daemonStarted, launchErr, entry.PID, 0) }()
-	launchDone := trace.stage(ctx, "launch")
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -465,21 +455,18 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 	// the id and reports it through rendezvous, so the file is adopted below.
 	dlog, err := openDaemonLog(runDir, "")
 	if err != nil {
-		launchDone(err)
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
-		launchDone(err)
 		dlog.close()
 		// Nothing was ever written to it and no session will ever claim it.
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	cleanupProvider := providerConfig.transferToChild()
-	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
@@ -491,10 +478,7 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
-	waitStarted := time.Now()
-	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, cmd.Process.Pid, 0)
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
-	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		// Take the tail FIRST: it is the only account of this failure anyone
@@ -502,17 +486,11 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 		// named it only ever arrives with the rendezvous entry this launch did
 		// not get, so nothing will ever read it again (kata dd8d).
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("daemon spawn", err), err, tail)
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, failure
 	}
 	dlog.adopt(entry.SessionID)
-	// A fresh daemon only reveals its session through rendezvous. Bind that
-	// identity to the final record without mutating a caller's context trace.
-	completedTrace := *trace
-	completedTrace.sessionID = entry.SessionID
-	trace = &completedTrace
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }
@@ -611,10 +589,6 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 }
 
 func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
-	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, hubLog)
-	done := trace.stage(ctx, "daemon")
-	defer func() { done(launchErr) }()
-	launchDone := trace.stage(ctx, "launch")
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -628,13 +602,11 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	// session's own log.
 	dlog, err := openDaemonLog(runDir, req.SessionID)
 	if err != nil {
-		launchDone(err)
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
 	startedAt := time.Now()
 	if err := ctx.Err(); err != nil {
-		launchDone(err)
 		dlog.close()
 		dlog.removeIfUncommitted()
 		failure := errors.Join(rendezvousWaitError(ctx), err)
@@ -642,7 +614,6 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	}
 	if req.ActiveResume != nil {
 		if err := req.ActiveResume.BeforeLaunch(); err != nil {
-			launchDone(err)
 			dlog.close()
 			dlog.removeIfUncommitted()
 			return rendezvous.Entry{}, fmt.Errorf("prepare resume ownership: %w", err)
@@ -658,11 +629,9 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 				err = errors.Join(err, &resumeCleanupError{cause: cleanupErr})
 			}
 		}
-		launchDone(err)
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	cleanupProvider := providerConfig.transferToChild()
-	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
@@ -702,14 +671,10 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
-	waitStarted := time.Now()
-	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, child.pid, 0)
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
-	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, child.pid, 0)
 	if err != nil {
 		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
@@ -717,7 +682,6 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	if err := dlog.promote(); err != nil {
 		promotionErr := errors.Join(fmt.Errorf("promote daemon log: %w", err), finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure

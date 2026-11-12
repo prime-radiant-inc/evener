@@ -5,7 +5,6 @@ package sshconn
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -72,19 +71,15 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				}
 				if remote == serviceLockVnodeTestCommand(currentRoot, pid) {
 					vnodeReads++
-					// The kernel lists the lock mode the holder took: WRITE for the
-					// exclusive lock, READ for the shared one, nothing once unlocked.
-					mode, rows := "WRITE", 1
+					// The candidate's own fdinfo carries the lock mode the holder
+					// took: WRITE for the exclusive lock, READ for the shared one,
+					// nothing once unlocked. Only the simulated query failures stub
+					// the read.
+					prefix := ""
 					switch name {
-					case "unlocked-read-only":
-						rows = 0
-					case "shared-lock":
-						mode = "READ"
 					case "lock-query-ambiguous":
-						rows = 2
-					}
-					prefix := "awk() { [ \"$#\" -eq 6 ] && [ \"$6\" = /proc/locks ] || return 25; command awk \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" " + shellquote.RemoteWord(lockTableFixture(t, filepath.Join(currentRoot, "hub.lock"), pid, mode, rows)) + "; }; "
-					if name == "lock-query-unavailable" {
+						prefix = "awk() { printf '2\\n'; }; "
+					case "lock-query-unavailable":
 						prefix = "awk() { return 23; }; "
 					}
 					return exec.CommandContext(ctx, "/bin/sh", "-c", prefix+remote).CombinedOutput()
@@ -223,26 +218,58 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 	}
 }
 
-// lockTableFixture writes a /proc/locks table with rows identical FLOCK records
-// of pid in mode on lock's real device and inode, and returns its path.
-func lockTableFixture(t *testing.T, lock, pid, mode string, rows int) string {
-	t.Helper()
-	var stat unix.Stat_t
-	if err := unix.Stat(lock, &stat); err != nil {
+// TestServiceLockVnodeChecksEveryDescriptor pins the multi-open case: the
+// first descriptor to the selected inode is unlocked, the second holds the
+// flock. The witness must keep scanning and match the locked descriptor.
+func TestServiceLockVnodeChecksEveryDescriptor(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "hub.lock")
+	if err := os.WriteFile(lockPath, []byte("test-owned lock bytes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var table strings.Builder
-	for i := 1; i <= rows; i++ {
-		fmt.Fprintf(&table, "%d: FLOCK  ADVISORY  %s %s %02x:%02x:%d 0 EOF\n", i, mode, pid, unix.Major(stat.Dev), unix.Minor(stat.Dev), stat.Ino)
-	}
-	path := filepath.Join(t.TempDir(), "locks")
-	if err := os.WriteFile(path, []byte(table.String()), 0600); err != nil {
+	first, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
+	second, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate both to two-digit descriptors so the shell's lexicographic
+	// /proc/<pid>/fd/* walk sees the unlocked descriptor first, then close the
+	// originals so no smaller descriptor bypasses the intended order.
+	unlocked, err := unix.FcntlInt(first.Fd(), unix.F_DUPFD, 10)
+	if err != nil {
+		_ = first.Close()
+		_ = second.Close()
+		t.Fatal(err)
+	}
+	locked, err := unix.FcntlInt(second.Fd(), unix.F_DUPFD, 10)
+	if err != nil {
+		_ = first.Close()
+		_ = second.Close()
+		_ = unix.Close(unlocked)
+		t.Fatal(err)
+	}
+	_ = first.Close()
+	_ = second.Close()
+	if err := syscall.Flock(locked, syscall.LOCK_EX); err != nil {
+		_ = unix.Close(unlocked)
+		_ = unix.Close(locked)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(locked, syscall.LOCK_UN)
+		_ = unix.Close(unlocked)
+		_ = unix.Close(locked)
+	})
+	out, err := exec.Command("/bin/sh", "-c", serviceLockVnodeRemote(root, strconv.Itoa(os.Getpid()))).Output()
+	if err != nil || string(out) != "match\n" {
+		t.Fatalf("witness = (%q, %v), want match; first descriptor unlocked, second held", out, err)
+	}
 }
 
 // This literal allowlist is independent of the production command constructor.
 func serviceLockVnodeTestCommand(root, pid string) string {
-	return "lock=" + shellquote.RemoteWord(filepath.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; [ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); awk -v key=\"$key\" -v pid=" + pid + " '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { count++; owner=$5 } END { if (count != 1 || owner != pid) exit 1 }' /proc/locks || exit; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
+	return "lock=" + shellquote.RemoteWord(filepath.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); found=; [ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; [ \"$current\" = \"$identity\" ] || continue; count=$(awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key { count++ } END { print count + 0 }' \"/proc/" + pid + "/fdinfo/${fd##*/}\" 2>/dev/null) || continue; if [ \"$count\" = 1 ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
 }

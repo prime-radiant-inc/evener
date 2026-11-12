@@ -120,18 +120,10 @@ describe("a subagent's state is its own (spec 9)", () => {
 		]);
 	});
 
-	it("reads a turn container by its turns", () => {
-		expect(subagentState(delegate("t", { type: "turns", turns: [job(true), job(false)] }))).toBe("running");
-		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "failure" }), job(true)] }))).toBe(
-			"failed",
-		);
-		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "success" })] }))).toBe("done");
-	});
-
 	it("counts the running subagents among any it is given", () => {
-		const turnContainer = delegate("t", { type: "turns", turns: [job(false)] });
+		const notStarted = delegate("t");
 		expect(
-			runningSubagentCount([running("a"), turnContainer, failed("b"), done("c"), done("s", { outcome: "stopped" })]),
+			runningSubagentCount([running("a"), notStarted, failed("b"), done("c"), done("s", { outcome: "stopped" })]),
 		).toBe(2);
 		expect(runningSubagentCount([])).toBe(0);
 	});

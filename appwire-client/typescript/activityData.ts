@@ -15,10 +15,10 @@ export interface ActivityCounts {
 // A terminal entry's failure is the outcome the daemon already decided
 // (agent/jobs_activity.go's aggregateActivity counts nothing else), and each
 // kind states it in its own vocabulary. activityOutcome derives a shell job's
-// and a delegate turn's outcome from its jobstore status, so a failure arrives
-// as "failure"; a stable delegate carries its delegatestore outcome verbatim,
-// so a failure arrives as "failed" or "exhausted". These are the one definition
-// per kind, shared by the rows and by the merged summaries.
+// outcome from its jobstore status, so a failure arrives as "failure"; a stable
+// delegate carries its delegatestore outcome verbatim, so a failure arrives as
+// "failed" or "exhausted". These are the one definition per kind, shared by the
+// rows and by the merged summaries.
 // The status fallback below serves readers with no outcome (the activity
 // tree's status dot): it knows the daemon's failure statuses, including the
 // command-outcome statuses a nonzero exit or a signal death ends in.
@@ -121,6 +121,8 @@ export interface ActivitySessionNode {
   branch: ActivityBranchState;
 }
 
+// Wire truth: appwire.JobActivityDelegate. Updates replace the whole delegate,
+// ordered by projectionRevision; there is no turn container.
 export interface ActivityDelegate {
   name?: string;
   runGeneration?: number;
@@ -180,27 +182,8 @@ export interface ActivityDelegate {
   parentWatchGranted?: boolean;
   worktree?: ActivityWorktree;
   usage?: ActivityUsage;
-  turns?: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
-}
-
-// The one place that decides which shape a delegate is. `type` is optional on
-// the wire (appwire/types_thread.go gives it `json:"type,omitempty"`, and the
-// generated types.gen.ts declares `type?: string`), so an empty value arrives
-// as no field at all - and the daemon's only delegate construction site sets
-// "delegate" (agent/jobs_activity.go:988). A turn container is therefore a
-// delegate that says it is something else; silence means the stable form, the
-// only shape the daemon actually emits.
-//
-// No turn-container type exists yet, so this knowingly sends an unrecognized
-// one down the container path - no count of its own, no projection fence -
-// rather than the milder stable default. Listing recognized values instead
-// would mean writing today's fixture string into the protocol, and an empty
-// list would leave the container path unreachable. When a real
-// turn-container type is defined, narrow this to that value.
-export function isTurnContainer(delegate: Pick<ActivityDelegate, "type">): boolean {
-  return !!delegate.type && delegate.type !== "delegate";
 }
 
 export interface ActivityWorktree {
@@ -561,13 +544,6 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
   }
-  if (Array.isArray(raw.turns)) {
-    const turns = raw.turns.map(parseActivityJob);
-    if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
-    delegate.turns = turns as ActivityJob[];
-  } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {
-    return { value: null, incomplete: true };
-  }
   if (Object.hasOwn(raw, "message")) delegate.message = raw.message;
   if (Object.hasOwn(raw, "structuredResult")) delegate.structuredResult = raw.structuredResult;
   const warnings = parseStringArray(raw.warnings);
@@ -684,8 +660,7 @@ function jobIsActive(job: ActivityJob): boolean {
 
 export function delegateHasActiveWork(delegate: ActivityDelegate): boolean {
   const childActive = delegate.child ? sessionHasActiveWork(delegate.child) : false;
-  if (!isTurnContainer(delegate)) return delegate.terminal !== true || childActive;
-  return (delegate.turns ?? []).some((turn) => !turn.terminal) || childActive;
+  return delegate.terminal !== true || childActive;
 }
 
 function entryHasActiveWork(entry: ActivityEntry): boolean {

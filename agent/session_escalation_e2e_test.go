@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -62,6 +63,15 @@ func sbxRestrictedTurnSession(t *testing.T, steps ...func(llm.Request) llm.Respo
 // watchAndResolve drains the session event stream and answers the FIRST escalation
 // with the given decision, recording the path shown on the card.
 func watchAndResolve(sess *Session, approve bool, sawPath *string) {
+	watchAndResolveCard(sess, approve, func(card events.SandboxEscalationRequestedData) {
+		*sawPath = card.DeniedPath
+	})
+}
+
+// watchAndResolveCard drains the session event stream and answers each escalation
+// with the given decision after handing its card to beforeResolve, which runs
+// while the tool call is still blocked on the human.
+func watchAndResolveCard(sess *Session, approve bool, beforeResolve func(events.SandboxEscalationRequestedData)) {
 	go func() {
 		for ev := range sess.Events() {
 			if ev.Kind != events.EventSandboxEscalationRequested {
@@ -71,7 +81,7 @@ func watchAndResolve(sess *Session, approve bool, sawPath *string) {
 			if !ok {
 				continue
 			}
-			*sawPath = d.DeniedPath
+			beforeResolve(d)
 			_ = sess.ResolveSandboxEscalation(d.EscalationID, approve)
 		}
 	}()
@@ -161,5 +171,155 @@ func TestE2E_FileToolEscalation_DenyReturnsTypedError(t *testing.T) {
 	}
 	if !strings.Contains(results, "sandbox") || !strings.Contains(results, "denied") {
 		t.Fatalf("deny must return the typed sandbox denial to the model, got:\n%s", results)
+	}
+}
+
+func fileToolTurn(name string, args map[string]any) []func(llm.Request) llm.Response {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		panic(err)
+	}
+	call := llm.ToolCallData{ID: "c1", Name: name, Arguments: raw, Type: "function"}
+	return []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}
+}
+
+// symlinkedOutsideDir builds, outside every sandbox root, a real directory and a
+// symlink naming it, and returns both.
+func symlinkedOutsideDir(t *testing.T) (realDir, link string) {
+	t.Helper()
+	base := testfs.CanonicalTempDir(t)
+	realDir = filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	// The base is canonical, so the card names the canonical location.
+	return realDir, link
+}
+
+func runApprovalTurn(t *testing.T, sess *Session) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted model adapter over a real sandboxed turn (fd-anchored grant); only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "change the file", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+}
+
+// An approved write requested through a symlinked directory lands at the
+// resolved location the card showed.
+func TestE2E_FileToolEscalation_ApprovedWriteThroughSymlinkLandsAtResolvedTarget(t *testing.T) {
+	realDir, link := symlinkedOutsideDir(t)
+	const content = "APPROVED-THROUGH-SYMLINK"
+	requested := filepath.Join(link, "target.txt")
+	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("write_file", map[string]any{
+		"file_path": requested, "content": content,
+	})...)
+	cards := make(chan events.SandboxEscalationRequestedData, 1)
+	watchAndResolveCard(sess, true, func(card events.SandboxEscalationRequestedData) { cards <- card })
+	runApprovalTurn(t, sess)
+
+	card := <-cards
+	if card.DeniedPath != filepath.Join(realDir, "target.txt") || card.RequestedPath != requested {
+		t.Fatalf("card shows target %q requested as %q; want target %q requested as %q", card.DeniedPath, card.RequestedPath, filepath.Join(realDir, "target.txt"), requested)
+	}
+	got, err := os.ReadFile(filepath.Join(realDir, "target.txt"))
+	if err != nil || string(got) != content {
+		t.Fatalf("approved write did not land at the resolved target: data=%q err=%v\nmodel saw:\n%s", got, err, toolResultsText(sess))
+	}
+}
+
+// An approved edit requested through a symlinked directory edits the file at
+// the resolved location the card showed.
+func TestE2E_FileToolEscalation_ApprovedEditThroughSymlinkLandsAtResolvedTarget(t *testing.T) {
+	realDir, link := symlinkedOutsideDir(t)
+	if err := os.WriteFile(filepath.Join(realDir, "target.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("edit_file", map[string]any{
+		"file_path": filepath.Join(link, "target.txt"), "old_string": "before", "new_string": "after",
+	})...)
+	watchAndResolveCard(sess, true, func(events.SandboxEscalationRequestedData) {})
+	runApprovalTurn(t, sess)
+
+	got, err := os.ReadFile(filepath.Join(realDir, "target.txt"))
+	if err != nil || string(got) != "after\n" {
+		t.Fatalf("approved edit did not change the resolved target: data=%q err=%v\nmodel saw:\n%s", got, err, toolResultsText(sess))
+	}
+}
+
+// A symlink retargeted while the card waits never redirects the approved write:
+// the requested spelling no longer resolves to the approved target, so the
+// write is refused and neither directory gains the file.
+func TestE2E_FileToolEscalation_SymlinkSwappedAfterCardRefusesWrite(t *testing.T) {
+	realDir, link := symlinkedOutsideDir(t)
+	other := filepath.Join(filepath.Dir(realDir), "other")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("write_file", map[string]any{
+		"file_path": filepath.Join(link, "target.txt"), "content": "SWAPPED",
+	})...)
+	swapErr := make(chan error, 1)
+	watchAndResolveCard(sess, true, func(events.SandboxEscalationRequestedData) {
+		err := os.Remove(link)
+		if err == nil {
+			err = os.Symlink(other, link)
+		}
+		swapErr <- err
+	})
+	runApprovalTurn(t, sess)
+	if err := <-swapErr; err != nil {
+		t.Fatalf("retarget the symlink: %v", err)
+	}
+
+	for _, dir := range []string{realDir, other} {
+		if _, err := os.Lstat(filepath.Join(dir, "target.txt")); !os.IsNotExist(err) {
+			t.Fatalf("a write approved for %s must not land in %s after the swap (err=%v)", realDir, dir, err)
+		}
+	}
+	if !toolResultIsError(sess, "c1") {
+		t.Fatalf("the refused write must reach the model as an error, got:\n%s", toolResultsText(sess))
+	}
+}
+
+// toolResultIsError reports whether the model saw callID's result as an error.
+func toolResultIsError(sess *Session, callID string) bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, turn := range sess.history {
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				return part.ToolResult.IsError
+			}
+		}
+	}
+	return false
+}
+
+// An approved edit of a file outside the roots changes that file.
+func TestE2E_FileToolEscalation_ApprovedEditOutsideRootsSucceeds(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "target.txt")
+	if err := os.WriteFile(outside, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("edit_file", map[string]any{
+		"file_path": outside, "old_string": "before", "new_string": "after",
+	})...)
+	watchAndResolveCard(sess, true, func(events.SandboxEscalationRequestedData) {})
+	runApprovalTurn(t, sess)
+
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "after\n" {
+		t.Fatalf("approved edit did not change the file: data=%q err=%v\nmodel saw:\n%s", got, err, toolResultsText(sess))
 	}
 }

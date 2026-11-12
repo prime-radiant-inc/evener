@@ -42,9 +42,7 @@ func TestManagerWatchCompletionExecutionBoundary(t *testing.T) {
 			if !managerWatchActive(jm, w.WatchID) {
 				t.Fatal("live historical A completed watch for B")
 			}
-			if err := jm.suspendHubWatch(w.WatchID); err != nil {
-				t.Fatal(err)
-			}
+			jm.suspendHubWatch(w.WatchID)
 			newer := done("C", "newer")
 			snapshot("C", []appwire.Turn{{ID: "C", Items: []appwire.ThreadItem{{Observation: &newer}}}})
 			live(newer)

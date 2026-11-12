@@ -17,7 +17,7 @@ import (
 func summaryRepeatManager(respFn func(llm.Request) (llm.Response, error)) *Manager {
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: respFn})
-	return newCompactionManager(client, minSummarizingWindow, 2, 2, 2, 0.0001)
+	return newCompactionManager(client, minSummarizingWindow, 2, 0.0001)
 }
 
 // emptyThenValidReply scripts a model that answers empty while empty is set
@@ -248,4 +248,66 @@ func TestSummaryFailureRepeatLatchConcurrentAccess(t *testing.T) {
 	if !cm.claimSummaryFailureRepeat(&diagnostic.SummaryFailure{Terminal: diagnostic.SummaryAttempt{Route: "session", Kind: "rejected_output", Reason: "empty_reply", Status: 500, Attempts: 3}}) {
 		t.Fatal("a failure differing only in status was suppressed as a repeat")
 	}
+}
+
+// The route role is part of the signature: a reconfigured profile can move the
+// same provider/model from the cheap route to the session route, and the two
+// failures publish different hints. The second one is news even though every
+// other field is identical.
+func TestSummaryFailureRepeatLatchDistinguishesRouteRole(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
+	cheapFailure := &diagnostic.SummaryFailure{Terminal: diagnostic.SummaryAttempt{
+		Provider: "openai", Model: "shared-summary-model", Route: "cheap",
+		Kind: "rejected_output", Reason: "empty_reply", Status: 429, Attempts: 1,
+	}}
+	if !cm.claimSummaryFailureRepeat(cheapFailure) {
+		t.Fatal("first failure was suppressed")
+	}
+	sessionFailure := *cheapFailure
+	sessionFailure.Terminal.Route = "session"
+	if !cm.claimSummaryFailureRepeat(&sessionFailure) {
+		t.Fatal("a failure differing only in route role was suppressed as a repeat; its cheap-model hint differs")
+	}
+}
+
+// The latch keys on the whole record the warning publishes, not a hand-listed
+// subset: Stage selects the warning's info source and Retryable ships in the
+// daemon-log record, so a difference in either is news.
+func TestSummaryFailureRepeatLatchKeysOnThePublishedRecord(t *testing.T) {
+	t.Parallel()
+	base := &diagnostic.SummaryFailure{Terminal: diagnostic.SummaryAttempt{
+		Provider: "openai", Model: "shared-summary-model", Route: "session",
+		Kind: "provider", Stage: "provider", Reason: "unavailable", Status: 503, Attempts: 1,
+	}}
+	newManager := func() *Manager {
+		client := llm.NewClient()
+		return NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
+	}
+	t.Run("stage", func(t *testing.T) {
+		t.Parallel()
+		cm := newManager()
+		if !cm.claimSummaryFailureRepeat(base) {
+			t.Fatal("first failure was suppressed")
+		}
+		otherStage := *base
+		otherStage.Terminal.Stage = "unknown"
+		if !cm.claimSummaryFailureRepeat(&otherStage) {
+			t.Fatal("a failure differing only in stage was suppressed as a repeat")
+		}
+	})
+	t.Run("retryable", func(t *testing.T) {
+		t.Parallel()
+		cm := newManager()
+		if !cm.claimSummaryFailureRepeat(base) {
+			t.Fatal("first failure was suppressed")
+		}
+		retryable := true
+		otherRetry := *base
+		otherRetry.Terminal.Retryable = &retryable
+		if !cm.claimSummaryFailureRepeat(&otherRetry) {
+			t.Fatal("a failure differing only in retryability was suppressed as a repeat")
+		}
+	})
 }

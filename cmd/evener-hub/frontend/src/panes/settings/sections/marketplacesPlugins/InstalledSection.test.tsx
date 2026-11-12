@@ -43,7 +43,7 @@ afterEach(() => {
 test("renders a row per plugin with name, marketplace, and version", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(screen.getByText("linter")).toBeTruthy();
   expect(screen.getByText("@ acme-plugins · v1.2.0")).toBeTruthy();
 });
@@ -51,14 +51,14 @@ test("renders a row per plugin with name, marketplace, and version", () => {
 test("shows v.unknown when version is empty", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, version: "" }] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(screen.getByText("@ acme-plugins · vunknown")).toBeTruthy();
 });
 
 test("shows the empty state when no plugins are installed", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(showsEmptyRow()).toBe(true);
 });
 
@@ -67,14 +67,14 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
   });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(chipKinds()).toEqual(["broken", "disabled", "auto-upgrade"]);
 });
 
 test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(chipKinds()).toEqual([]);
 });
 
@@ -87,26 +87,26 @@ test("the status dot reads broken > disabled > idle, in that priority order", ()
       { ...LINTER, plugin: "healthy-one", broken: false, enabled: true },
     ],
   });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(screen.getAllByRole("img", { name: "Failed" })).toHaveLength(1);
   expect(screen.getAllByRole("img", { name: "Ended" })).toHaveLength(1);
   expect(screen.getAllByRole("img", { name: "Idle" })).toHaveLength(1);
 });
 
-test("clicking a row calls onSelect with the plugin and marketplace", async () => {
+test("clicking a row calls onToggle with the plugin and marketplace", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
-  const onSelect = vi.fn();
-  render(<InstalledSection onSelect={onSelect} />);
+  const onToggle = vi.fn();
+  render(<InstalledSection expanded={null} onToggle={onToggle} />);
   await user.click(screen.getByRole("button", { name: /formatter/ }));
-  expect(onSelect).toHaveBeenCalledWith({ plugin: "formatter", marketplace: "other-market" });
+  expect(onToggle).toHaveBeenCalledWith({ plugin: "formatter", marketplace: "other-market" });
 });
 
-test("rows carry no per-row action buttons - actions live in the detail sheet", () => {
+test("rows carry no per-row action buttons - actions live in the expanded detail body", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
@@ -118,7 +118,7 @@ test("the filter narrows rows by plugin name, case-insensitively", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "FORM");
   expect(screen.queryByText("linter")).toBeNull();
   expect(screen.getByText("formatter")).toBeTruthy();
@@ -128,7 +128,7 @@ test("the filter also matches the marketplace name", async () => {
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "other-mark");
   expect(screen.queryByText("linter")).toBeNull();
   expect(screen.getByText("formatter")).toBeTruthy();
@@ -138,7 +138,7 @@ test("a filter with no match says so, and clearing it restores the rows", async 
   const user = userEvent.setup();
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   const filter = screen.getByRole("textbox", { name: "Filter installed" });
   await user.type(filter, "zzz");
   expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
@@ -150,7 +150,7 @@ test("a filter with no match says so, and clearing it restores the rows", async 
 test("marks a plugin the hub found an update for", () => {
   connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   expect(chipKinds()).toEqual(["update-available"]);
 });
 
@@ -168,7 +168,7 @@ test("a loaded cache entry shows the plugin's component counts in its row meta",
       [pluginComponentsKey({ plugin: LINTER.plugin, marketplace: LINTER.marketplace }), entry],
     ]),
   });
-  render(<InstalledSection onSelect={() => {}} />);
+  render(<InstalledSection expanded={null} onToggle={() => {}} />);
   const row = screen.getByRole("button", { name: /linter/ });
   expect(row.getAttribute("data-kind")).toBe("plugin-row");
   expect(row.getAttribute("data-mode")).toBe("installed");

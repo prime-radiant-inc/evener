@@ -585,7 +585,7 @@ func TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets(t *testin
 // consistent with events -- covering exactly what got included, nothing
 // more -- so a later incremental call resuming from that offset sees only
 // what comes after this line, never re-decoding it for a caller that
-// concatenates prior.events with the new delta (extendHistoricalJobFold's
+// folds the new delta onto what it already holds (extendHistoricalJobFold's
 // exact shape). This is the sibling of
 // TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets, which
 // only exercises a SYNTACTICALLY INCOMPLETE trailing line -- a

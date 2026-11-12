@@ -672,7 +672,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
 			t.Fatal(err)
@@ -718,7 +718,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil); err != nil {
 			t.Fatal(err)
@@ -770,7 +770,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root), withStateDir(t.TempDir()),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		s.pluginAgents["preload-role"] = plugin.Agent{
 			Name: "preload-role", PluginName: "test", AllTools: true,
 			SystemPrompt: "preload role", Skills: []string{"opaque"},
@@ -840,7 +840,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
 			t.Fatal(err)
 		}
@@ -884,7 +884,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
 			t.Fatal(err)
 		}
@@ -939,7 +939,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		_, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil)
 		stop()
@@ -965,7 +965,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "/nosuch REQUEST_93d2", nil); err != nil {
 			t.Fatal(err)
@@ -1002,7 +1002,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		// A plain inline mention is ordinary prose, never a user_slash route.
 		if _, err := s.ProcessInput(context.Background(), "please apply /opaque here", nil); err != nil {
@@ -1076,7 +1076,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withProfile(newAnthropicProfile("claude-test")),
 			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{pluginDir}}))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
@@ -1109,7 +1109,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withProfile(newAnthropicProfile("claude-test")),
 			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{first, second}}))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
@@ -1149,7 +1149,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withProfile(newAnthropicProfile("claude-test")),
 			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{pluginDir}}))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "/probe REQUEST_93d2", nil); err != nil {
@@ -1175,7 +1175,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		s.pluginCommands = map[string]plugin.Command{
 			"review": {Name: "review", Body: "command $ARGUMENTS", Source: "project"},
 		}
@@ -1210,7 +1210,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		for _, d := range s.skills.ModelEntries() {
 			if d.CatalogName == "opaque" {
 				t.Fatal("hidden skill leaked into the advertised model catalog")
@@ -1241,7 +1241,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			withProfile(newAnthropicProfile("claude-test")))
 		evs, stop := captureEvents(s)
 		if _, err := s.ProcessInput(context.Background(), "/opaque FIRST_ARGS", nil); err != nil {
 			t.Fatal(err)
@@ -1308,7 +1308,7 @@ func TestSkillActivation_RawRead(t *testing.T) {
 		}
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	evs, stop := captureEvents(s)
 	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
 		t.Fatal(err)
@@ -1361,7 +1361,7 @@ func TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave(t *testing.T
 	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	first, err := s.mintSkillOperationID()
 	if err != nil {
 		t.Fatal(err)
@@ -1395,7 +1395,7 @@ func TestPrepareSelectedInput_DuplicateNamesInvokeOnce(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_dup1")
 	writeSkillMD(t, root, "second", "---\nname: second\ndescription: fixture\n---\nBODY_dup2")
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: t.TempDir()}))
 	batch, err := s.prepareSelectedInput(context.Background(), queuedInput{
 		ID:         "q-dup-1",
 		SkillNames: []string{"opaque", "second", "opaque"},
@@ -1429,7 +1429,7 @@ func TestSkillActivation_AdmissionSaveFailureAdmitsNothing(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_admit_save")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	batch, err := s.prepareSelectedInput(context.Background(), queuedInput{
 		ID:         "q-admit-save",
 		SkillNames: []string{"opaque"},

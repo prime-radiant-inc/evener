@@ -85,6 +85,17 @@ body {
   scrollbar-color: var(--ink-low) transparent;
 }
 
+/* A keyboard scroll-into-view aligns the focused box with the scrollport
+ * edge; the focus ring paints outside that box, so without a scroll margin
+ * the ring clips (issue #5578). One global rule owns the invariant for every
+ * focusable element instead of asking each widget stylesheet to repeat it;
+ * --focus-ring-scroll-margin covers the ring width plus the largest positive
+ * outline-offset (see tokens.css), and token-contract checks that reach
+ * against every offset declared in the tree. */
+:focus-visible {
+  scroll-margin: var(--focus-ring-scroll-margin);
+}
+
 /* The mobile app shell owns the viewport; panes provide their own scroll
  * containers. The document lock and overscroll containment keep browser/PWA
  * pull-to-refresh, page bounce, and root scroll chaining from moving the app

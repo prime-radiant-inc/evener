@@ -87,15 +87,27 @@
    * a horizontal scrollbar. */
   overflow-x: clip;
   padding: var(--space-5);
-  /* End-of-scroll content stays clear of a phone's home-indicator band now
-   * that StackHost's blanket host padding is gone (see that rule's comment):
-   * footer-less panes (welcome, settings, spawn, doc) dock nothing of their
-   * own, so their scroll padding carries the inset. env() is 0 on desktop,
-   * where this resolves to plain --space-4. The inset yields when the on-screen
-   * keyboard covers the home-indicator band (useKeyboardInset's
-   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
-   * full inset when the keyboard is closed and plain --space-5 when open. */
-  padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+  /* The body's own end-of-scroll clearance, as a value. It stays a property
+   * rather than living inline on .body:last-child because the phone block must
+   * change only the step, which it can do at .body's (0,1,0) while a
+   * .body:last-child there would be (0,2,0) and would beat .bodyNoScroll's
+   * tie below, restoring padding on the cascade's flush columns. */
+  --pane-body-edge-inset: calc(var(--space-5) + var(--dock-clearance));
+}
+
+/* The inset applies only to a body that IS the pane's bottom edge; a slot
+ * below it - the padded footer or the flush edgeFooter - owns the clearance
+ * instead, and an inset here would be a dead band above that surface. Keyed
+ * on position rather than on which slot exists, so every bottom slot,
+ * including a future one, gets it for free. Written as a pair at two-class
+ * specificity so the mobile block's `padding` shorthand cannot reset the
+ * bottom, and placed before .bodyNoScroll below, whose tie later in the file
+ * wins: the cascade's flush body must stay edge to edge. */
+.body:not(:last-child) {
+  padding-bottom: 0;
+}
+.body:last-child {
+  padding-bottom: var(--pane-body-edge-inset);
 }
 
 /* A pane that owns its scrolling internally (the cascade's columns) renders
@@ -118,9 +130,8 @@
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-5);
-  /* This dock owns safe-area clearance. The inset yields when the on-screen
-   * keyboard covers the home-indicator band (--keyboard-inset is 0 elsewhere). */
-  padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+  /* This dock owns the home-indicator band. */
+  padding-bottom: calc(var(--space-3) + var(--dock-clearance));
   border-top: 1px solid var(--edge);
 }
 
@@ -152,15 +163,16 @@
   }
 
   /* The phone keeps the tighter edge inset: 24px a side would spend 48px of
-   * a 375px screen on margins. */
+   * a 375px screen on margins. Only the step changes; the selector pair above
+   * still decides which bodies get it. */
   .body {
     padding: var(--space-4);
-    padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+    --pane-body-edge-inset: calc(var(--space-4) + var(--dock-clearance));
   }
 
   .footer {
     padding: var(--space-3) var(--space-4);
-    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+    padding-bottom: var(--dock-clearance);
   }
 
   /* The flush edge footer below this dock is the pane's bottom edge and owns
@@ -176,18 +188,35 @@
    * keyboard. The editing attribute also holds while a composer control or
    * menu owns focus. */
   :global(body):has([data-composer-editing]) .footerBeforeEdge {
-    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+    padding-bottom: var(--dock-clearance);
+  }
+
+  /* The composer's activity line is the phone's bottom edge when it renders:
+   * its chips are already the tap-floor height, and reserving the
+   * home-indicator band below them spends that band twice. A phone pane
+   * renders no edge footer, so the composer sits in .footer itself - the
+   * session's flush-footer exemption above addresses the desktop status bar,
+   * not this one. */
+  .footer:has(:global([data-composer-activity-line="true"])) {
+    padding-bottom: 0;
   }
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
   .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
     padding: var(--space-1) var(--space-2);
-    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+    padding-bottom: var(--dock-clearance);
   }
 
   .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
     padding-bottom: var(--space-1);
+  }
+
+  /* The Duo cover's tighter dock already drops the band; the activity line
+   * repeats the rule so the two overrides cannot disagree about it. The
+   * specificity here must beat the cover rule above, hence the pane anchor. */
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer:has(:global([data-composer-activity-line="true"])) {
+    padding-bottom: 0;
   }
 }
 

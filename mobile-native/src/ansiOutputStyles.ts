@@ -1,4 +1,5 @@
 import { type AnsiColor, type AnsiLine, type AnsiRun, parseAnsiLines } from "@evener/appwire-client";
+import { palettes } from "@evener/appwire-client/palette";
 
 export interface NativeAnsiTextStyle {
 	color?: string;
@@ -9,47 +10,8 @@ export interface NativeAnsiTextStyle {
 	textDecorationLine?: "underline" | "line-through" | "underline line-through";
 }
 
-const ANSI_COLORS = {
-	dark: {
-		black: "#5E6E80",
-		red: "#E06C75",
-		green: "#4FBF9A",
-		yellow: "#E8B04B",
-		blue: "#81B4E8",
-		magenta: "#A88FD8",
-		cyan: "#6BC4D4",
-		white: "#E5ECF4",
-		"bright-black": "#71839A",
-		"bright-red": "#EC858D",
-		"bright-green": "#6CD3B1",
-		"bright-yellow": "#F0C374",
-		"bright-blue": "#9CC6EF",
-		"bright-magenta": "#BFA9E6",
-		"bright-cyan": "#8AD4E1",
-		"bright-white": "#FFFFFF",
-	},
-	light: {
-		black: "#1F2124",
-		red: "#A33226",
-		green: "#2E6E4E",
-		yellow: "#7A5208",
-		blue: "#2450B8",
-		magenta: "#7A3E9D",
-		cyan: "#0E6B6E",
-		white: "#62656B",
-		"bright-black": "#62656B",
-		"bright-red": "#B3382C",
-		"bright-green": "#35835F",
-		"bright-yellow": "#8A5A0B",
-		"bright-blue": "#2E5FD0",
-		"bright-magenta": "#8E4EC6",
-		"bright-cyan": "#0E7490",
-		"bright-white": "#17181A",
-	},
-} as const;
-
 function colorValue(color: AnsiColor, dark: boolean): string {
-	return color.kind === "rgb" ? `rgb(${color.value})` : ANSI_COLORS[dark ? "dark" : "light"][color.name];
+	return color.kind === "rgb" ? `rgb(${color.value})` : palettes[dark ? "dark" : "light"][`ansi-${color.name}`];
 }
 
 export function ansiRunTextStyle(run: AnsiRun, dark: boolean): NativeAnsiTextStyle {

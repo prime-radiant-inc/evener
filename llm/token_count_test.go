@@ -555,7 +555,7 @@ func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *te
 		t.Fatalf("resolved anthropic image history = %d, want %d: the row's media family decides", got, want)
 	}
 	openai := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}
-	if got, want := EstimateMessagesInputTokensForResolved(openai, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openai, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("resolved openai image history = %d, want %d", got, want)
 	}
 	// Without a row there is no identity to key on, so the generic fallback stands.
@@ -590,7 +590,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *t
 	}
 	// No surface: the protocol is the next-best axis.
 	openaiChatRow := registry.Resolved{Instance: "custom", Protocol: registry.ProtocolOpenAIChat}
-	if got, want := EstimateMessagesInputTokensForResolved(openaiChatRow, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openaiChatRow, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("openai-chat image history = %d, want %d", got, want)
 	}
 }
@@ -620,7 +620,7 @@ func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(
 		Instance: "gateway", ModelID: "gpt-5.2", Protocol: registry.ProtocolAnthropic,
 		Model: registry.Model{Family: "gpt"},
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(anthropicProtocolGPT, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(anthropicProtocolGPT, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("anthropic-protocol gpt image history = %d, want %d: the family outranks the protocol", got, want)
 	}
 	// A family with no image-token rules of its own leaves the protocol in charge.
@@ -698,7 +698,7 @@ func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *tes
 	}
 	for _, modelID := range []string{"o", "o3", "o4-mini", "o-mini", "o-pro", "openai/o3", "openai.o4"} {
 		row := registry.Resolved{Instance: "gateway", ModelID: modelID, Protocol: registry.ProtocolAnthropic}
-		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 			t.Fatalf("o-series row %q image history = %d, want %d: the o-series is OpenAI's", modelID, got, want)
 		}
 	}
@@ -888,9 +888,10 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenThe
 			t.Fatalf("chat tool-result image = %d, want the text-only estimate %d: the builder never serializes the image", got, want)
 		}
 	}
-	google := registry.Resolved{Instance: "google", ModelID: "gemini-3-pro", Protocol: registry.ProtocolGoogle}
+	google := registry.Resolved{Instance: "google", ModelID: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
+		Caps: registry.Caps{InputModalities: []string{"text", "image"}}}
 	googleOn, googleOff := google, google
-	googleOn.Caps = registry.Caps{MultimodalToolResults: &declared}
+	googleOn.Caps = registry.Caps{InputModalities: []string{"text", "image"}, MultimodalToolResults: &declared}
 	googleOff.Caps = registry.Caps{MultimodalToolResults: &undeclared}
 	if got, want := EstimateMessagesInputTokensForResolved(googleOn, toolResult(true)).Tokens, textOnly(googleOn)+imageCost(googleOn); got != want {
 		t.Fatalf("declared-cap google tool-result image = %d, want %d: the adapter emits it in the function response", got, want)
@@ -899,12 +900,21 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenThe
 		t.Fatalf("undeclared-cap google tool-result image = %d, want the text-only estimate %d: the builder refuses the request", got, want)
 	}
 	for _, row := range []registry.Resolved{
-		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic},
-		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIResponses},
+		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic, Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
 	} {
 		if got, want := EstimateMessagesInputTokensForResolved(row, toolResult(true)).Tokens, textOnly(row)+imageCost(row); got != want {
 			t.Fatalf("%s tool-result image = %d, want %d: the adapter emits it regardless of the cap", row.Protocol, got, want)
 		}
+	}
+	blind := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic}
+	if got, want := EstimateMessagesInputTokensForResolved(blind, toolResult(true)).Tokens, textOnly(blind); got != want {
+		t.Fatalf("image-blind anthropic tool-result image = %d, want the text-only estimate %d: request assembly drops the bytes (#4217)", got, want)
+	}
+	synthesized := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic,
+		Synthesized: true, Caps: registry.Caps{InputModalities: []string{"text", "image"}}}
+	if got, want := EstimateMessagesInputTokensForResolved(synthesized, toolResult(true)).Tokens, textOnly(synthesized); got != want {
+		t.Fatalf("synthesized-row tool-result image = %d, want %d: projection and accounting share RowSeesToolResultMedia", got, want)
 	}
 	if got := EstimateMessagesInputTokens(toolResult(true)).Tokens; got <= EstimateMessagesInputTokens(toolResult(false)).Tokens {
 		t.Fatalf("name-based tool-result image = %d, want more than the text-only estimate: names carry no cap to read", got)
@@ -1114,7 +1124,7 @@ func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(
 		Instance: "anthropic", ModelID: "gateway-zz",
 		Protocol: registry.ProtocolOpenAIResponses,
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(aliased, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(aliased, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("aliased row image history = %d, want %d: the protocol decides, not the instance alias", got, want)
 	}
 }
@@ -1152,7 +1162,7 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 		Instance: "gateway", ModelID: "o4-mini",
 		Protocol: registry.ProtocolAnthropic, Model: registry.Model{Family: "o"},
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("o-series image history = %d, want %d: the o family is OpenAI's", got, want)
 	}
 	// gpt-oss is generic per §6.1, not an OpenAI claim, and the carve-out has to
@@ -1247,7 +1257,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceAndProtocolNameTheFamily(
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
 	}}}
 	openaiSurfaced := registry.Resolved{Instance: "gateway", ModelID: "zz", Surface: registry.SurfaceOpenAI}
-	if got, want := EstimateMessagesInputTokensForResolved(openaiSurfaced, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(openaiSurfaced, messages).Tokens, estimateOpenAIImageTokens(1024, 1024); got != want {
 		t.Fatalf("openai-surfaced row image history = %d, want %d: the surface names the family", got, want)
 	}
 	googleProtocol := registry.Resolved{Instance: "gateway", ModelID: "mystery-zz", Protocol: registry.ProtocolGoogle}

@@ -1,0 +1,27 @@
+{
+  "name": "pane-body-composer-gap-phone",
+  "description": "On a phone the breakpoint's own .body rule declares a different bottom inset; a pane with any slot below its body (a padded footer, or a flush edge footer alone) must still close its scrolling body on that surface's hairline, while a footer-less pane keeps the phone's inset.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "widthMatrix": [
+    {
+      "width": 390
+    }
+  ],
+  "mutation": {
+    "declaration": "panescaffold.module.css: (a) remove the `.body:not(:last-child)` / `.body:last-child` pair, or (b) on the phone case only, remove the phone block's `--pane-body-edge-inset` restatement",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Measured 2026-11-11 at 390px. Removing the phone block's token restatement fails the footer-less fixture with 24.0px where the breakpoint's token declares 16px - the two-sided check is what catches a leaked desktop value. Removing the selector pair fails both docked fixtures with a 16.0px band. Restoring both passes all four."
+  }
+}

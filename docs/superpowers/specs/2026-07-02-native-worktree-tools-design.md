@@ -564,9 +564,10 @@ A hard crash while inside a worktree leaves a **stale lock**. That is
 deliberate fail-safe behavior: the reason names the owning session, `list`
 surfaces it, and clearing it is an explicit `git worktree unlock` by a human
 or agent who has verified the owner is dead — or the owner itself resuming
-(same session id → adopt). `manage_worktree` never force-unlocks another
-owner's lock and `force` does not escalate to git's `remove -f -f`
-double-force.
+(same session id → adopt). `manage_worktree unlock` releases only the owning
+parent's own direct delegate-lane marker (issue #481), without retiring the
+delegate; it never force-unlocks another owner's lock, and `force` does not
+escalate to git's `remove -f -f` double-force.
 
 The one exception is the operator-directed orphan arm (#5471): a delegate
 lane's lock belongs to its parent's disposal lifecycle, and when the parent
@@ -614,6 +615,7 @@ a bug — report it.
 | `remove` target, session inside | proceed | unlock at the restore step | — |
 | delegate creation (§9) | atomic `add --lock` with `evener:dlg:` marker | — | — |
 | delegate revival (`delegate_send` on a kept lane) | lock (`evener:dlg:`) | adopt | refuse revival |
+| delegate lane unlock (issue #481, parent-only) | — (no marker to release) | unlock, keep the lane | refuse |
 | disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
 | disposal, changed lane | keep | unlock, keep | — |
 | `prune` candidate | eligible (other conditions apply) | skip when the session occupies the lane; the marker does not block when it does not (crash residue), and is released only where the lane is actually collected | skip, except the operator-directed orphan arm (#5471): a delegate marker whose parent provably cannot act is released, then judged by the ordinary gates |
@@ -1336,10 +1338,17 @@ running. Because the delegate holds its lock for its entire lifetime, the
 parent cannot `switch` into an isolated delegate's worktree at all while the
 delegate exists (§4 step 2 refuses on the foreign lock) — inspection of a
 lane happens read-only from outside (shell `git -C <path> log/diff/status`
-from the main root, or the per-job report). After close-time disposal keeps a
-changed lane, it is unlocked and `switch`-able like any managed worktree —
-until the lane's delegate is revived by `delegate_send`, which re-takes the
-`evener:dlg:` lock (§7) and refuses if someone has switched in meanwhile.
+from the main root, or the per-job report). The owning parent can end that
+occupancy without retiring the delegate: `manage_worktree unlock` releases the
+`evener:dlg:` lock (after the dispose quiescence ladder and the subtree
+handoff fence), leaving resumability, the worktree, branch and uncommitted
+work intact, so the parent can switch in and recover a delegate it can no
+longer reach. The delegate's own lane is evicted first if a resident runtime
+still holds it. After close-time disposal keeps a changed lane, it is unlocked
+and `switch`-able like any managed worktree — until the lane's delegate is
+revived by `delegate_send`, which re-takes the `evener:dlg:` lock (§7) and
+refuses if someone has switched in meanwhile; the same re-lock applies after
+`unlock`.
 
 ## 10. Testing
 

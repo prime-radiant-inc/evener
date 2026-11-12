@@ -161,7 +161,7 @@ type liveThreadEnvelopeSource struct {
 
 func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
 	metrics, pressure := l.session().ContextStatus()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}, pressure
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed, WindowSource: metrics.WindowSource}, pressure
 }
 
 func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
@@ -221,6 +221,10 @@ func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	sess := l.session()
 	p := sess.Profile()
 	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+}
+
+func (l liveThreadEnvelopeSource) LatestExecutionTurnID() string {
+	return l.session().LatestExecutionTurnID()
 }
 
 func (l liveThreadEnvelopeSource) VisionModel() string {

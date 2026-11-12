@@ -145,6 +145,29 @@ func EventTier(e HookEvent) string {
 	return hookEventTier[e]
 }
 
+// UnsupportedHookEventWarning is the load-time warning for a hook a plugin
+// declares under a recognized Claude event evener does not fire yet (an
+// Instance.UnsupportedHooks entry). Session load warnings and the hub's plugin
+// components read both use it, so the two surfaces describe one plugin
+// condition the same way. It names the plugin and the event only, never a
+// hook payload.
+func UnsupportedHookEventWarning(pluginName, event string) string {
+	return fmt.Sprintf(
+		"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
+		pluginName, event)
+}
+
+// UnknownHookEventWarning is the load-time warning for a hook a plugin
+// declares under an event name that is neither an evener event nor a
+// recognized Claude event, almost always a typo (an Instance.UnknownHooks
+// entry). Like UnsupportedHookEventWarning it is shared by the session and hub
+// surfaces and names the plugin and the event only.
+func UnknownHookEventWarning(pluginName, event string) string {
+	return fmt.Sprintf(
+		"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
+		pluginName, event)
+}
+
 // RegisteredHook describes a single hook action within a matcher group.
 type RegisteredHook struct {
 	Matcher    string // regex pattern, "*" = match all

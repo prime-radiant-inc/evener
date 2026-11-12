@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1709,8 +1710,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// the settle, so waiting on it proves the turn finished, not just that a
 	// drive launched it.
 	releaseOnce.Do(func() { close(release) })
-	// TRIPWIRE: the released turn settles within seconds once the model call returns; 30s only fires on a genuine hang. The deadline absorbs a loaded shard's scheduling delay between the release and the settle.
-	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -1889,11 +1889,9 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	lane.driveUntil(entered)
 	// The refusal is the scenario's proof of fire: the launch stamps the
 	// drain-abandoned mark exactly when it refuses the lane.
-	// TRIPWIRE: the refusal stamps within a couple of drive passes of the
-	// adoption — the flush above makes the report presentable on the first
-	// pass however its delivery was classified — so the bound only fires on a
-	// genuine hang, absorbing a loaded shard's spawn tail and git retries.
-	waitForCondition(t, 30*time.Second, "the presentation start to refuse the foreign-held lane", func() bool {
+	// The flush above makes the report presentable on the first drive pass
+	// however its delivery was classified.
+	testwait.Until(t, "the presentation start to refuse the foreign-held lane", func() bool {
 		return lane.root.childDrainAbandoned(lane.delegateSess.id)
 	})
 
@@ -1928,10 +1926,7 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 
 	// The wedged turn settles cleanly once released.
 	releaseOnce.Do(func() { close(release) })
-	// TRIPWIRE: the released turn settles within seconds once the model call
-	// returns; 30s only fires on a genuine hang, not a loaded shard's
-	// scheduling delay between the release and the settle.
-	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -2009,9 +2004,7 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	// The parked request finishes once released; the settle converts its
 	// clean end to context.Canceled because the stop asked for the cancel.
 	releaseOnce.Do(func() { close(release) })
-	// TRIPWIRE: the cancelled presentation settles within seconds of the
-	// wedge opening; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the stopped presentation turn to settle", func() bool {
+	testwait.Until(t, "the stopped presentation turn to settle", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -2033,9 +2026,7 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	}
 	// The stop owned the finish: the owner's row gate proves the generation
 	// settled as deliberately stopped, so the hook below ran for a stop.
-	// TRIPWIRE: the stopped generation reaches the owner's row gate within
-	// seconds of the settle; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the stopped generation to reach the owner's row gate", func() bool {
+	testwait.Until(t, "the stopped generation to reach the owner's row gate", func() bool {
 		return lane.root.childStopGated(lane.delegateSess.id)
 	})
 
@@ -2143,9 +2134,7 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 
 	// The wedged turn settles cleanly once released.
 	releaseOnce.Do(func() { close(release) })
-	// TRIPWIRE: the released turn settles within seconds once the model call
-	// returns; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -2319,9 +2308,7 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 
 	// The wedged turn settles cleanly once released.
 	releaseOnce.Do(func() { close(release) })
-	// TRIPWIRE: the released turn settles within seconds once the model call
-	// returns; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -2331,9 +2318,7 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	// Both rows delivered: the fold holds nothing pending, one generation is
 	// claimed by two distinct base rows — the takeover this test pins — and
 	// the first-consumed row's reopen resolved after riding the presentation.
-	// TRIPWIRE: the turn's markers land within seconds of the settle; the
-	// bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "both rows to resolve after the presentation", func() bool {
+	testwait.Until(t, "both rows to resolve after the presentation", func() bool {
 		fold, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && len(fold.pendingIDs()) == 0
 	})
@@ -2540,9 +2525,7 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 	// G2 settles with the hold still up, so its exchanges land after the held
 	// row's turn in the resident history.
 	g2ReleaseOnce.Do(func() { close(g2Release) })
-	// TRIPWIRE: the released turn settles within seconds once the model call
-	// returns; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the other row's presentation to settle", func() bool {
+	testwait.Until(t, "the other row's presentation to settle", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
 		lane.delegateSub.mu.Unlock()
@@ -2555,9 +2538,7 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 	if err := lane.delegateSess.armDelegateAttention(heldRowID); err != nil {
 		t.Fatalf("arm the held row: %v", err)
 	}
-	// TRIPWIRE: the arm's wake drives within seconds of the arm; 30s only
-	// fires on a genuine hang, absorbing a loaded shard's scheduling delay.
-	waitForCondition(t, 30*time.Second, "the held row's presentation to run", func() bool {
+	testwait.Until(t, "the held row's presentation to run", func() bool {
 		_, ok := g3Request.Load().(llm.Request)
 		return ok
 	})
@@ -2941,10 +2922,7 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	staleWakeProbe := make(chan struct{})
 	lane.driveUntil(staleWakeProbe)
 	defer close(staleWakeProbe)
-	// TRIPWIRE: the probe loop drives within a couple of 200ms passes of the
-	// stop's settle; the bound only fires on a genuine hang, not a loaded
-	// shard's scheduling delay.
-	waitForCondition(t, 30*time.Second, "the stale armed wake to present the other row", func() bool {
+	testwait.Until(t, "the stale armed wake to present the other row", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[otherID] != ""
 	})
@@ -2960,10 +2938,7 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	// attention — presents it on a generation of its own. The wait tolerates
 	// the recovery having fired before the other row's resolution was even
 	// observed; the generation comparison separates the two either way.
-	// TRIPWIRE: the reopened row resolves within a couple of drive passes of
-	// the other row's settle, whichever wake presents it; the bound only
-	// fires on a genuine hang, not a loaded shard's scheduling delay.
-	waitForCondition(t, 30*time.Second, "the reopened report to resolve", func() bool {
+	testwait.Until(t, "the reopened report to resolve", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[reopenedID] != ""
 	})
@@ -3068,10 +3043,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	// way the daemon's scheduled pass does.
 	reportProbe := make(chan struct{})
 	lane.driveUntil(reportProbe)
-	// TRIPWIRE: the report's presentation settles within a couple of drive
-	// passes of the window; the bound only fires on a genuine hang, not a
-	// loaded shard's scheduling delay.
-	waitForCondition(t, 30*time.Second, "the report's presentation to settle", func() bool {
+	testwait.Until(t, "the report's presentation to settle", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if err != nil || live.resolutions[reportID] == "" {
 			return false
@@ -3269,11 +3241,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		return fmt.Sprintf("pending=%d (%v) pendErr=%v delegateBusy=%t stoppedGen=%d latestFinishedGen=%d live: %s",
 			len(pending), pending, pendErr, delegateBusy, stoppedGen, gen, liveResolutions)
 	}
-	// TRIPWIRE: the rider's run settles within moments of its turn — a
-	// delegate that already presented resolves without further model work;
-	// the bound only fires on a drain that never exits, not a loaded shard's
-	// scheduling delay.
-	waitForCondition(t, 30*time.Second, "the rider's run to finish its finalization drain", func() bool {
+	testwait.Until(t, "the rider's run to finish its finalization drain", func() bool {
 		gen, ok := latestFinished()
 		return ok && gen > stoppedGen
 	})
@@ -3282,10 +3250,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	// attention, and that fresh arm — a wake from a new event — releases the
 	// hold and presents the held update on a generation of its own, never
 	// riding the rider's presentation.
-	// TRIPWIRE: the reopened update resolves within a couple of drive passes
-	// of the rider's settle, whichever wake presents it; the bound only fires
-	// on a genuine hang, not a loaded shard's scheduling delay.
-	waitForCondition(t, 30*time.Second, "the held reopened update to resolve", func() bool {
+	testwait.Until(t, "the held reopened update to resolve", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[reopenedID] != ""
 	})
@@ -3530,9 +3495,7 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	// rider resolves with no claim of its own generation. The pre-fix
 	// delayed shape instead gives each row its own claim, the released
 	// report's strictly the later.
-	// TRIPWIRE: the pass's presentation settles within seconds of the launch;
-	// the bound only fires on a genuine hang, not a loaded shard's delay.
-	waitForCondition(t, 30*time.Second, "the new event's row and the released report to present together", func() bool {
+	testwait.Until(t, "the new event's row and the released report to present together", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[newEventRowID] != "" && live.resolutions[reopenedID] != ""
 	})
@@ -4178,9 +4141,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// re-check resolved as discarded — and not merely the absence of a
 	// pending reopened row, which is vacuously true until the append lands
 	// and lets a loaded shard's scheduling race the fold read past it.
-	// TRIPWIRE: the re-check resolves the fresh row within seconds of the
-	// admission; the bound only fires on a hang.
-	waitForCondition(t, 30*time.Second, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
+	testwait.Until(t, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
 		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if foldErr != nil {
 			return false
@@ -4193,9 +4154,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 		return false
 	})
 	// With the hand-off recorded, nothing pending survives.
-	// TRIPWIRE: the discard clears the pending row in the same breath as
-	// the resolution; the bound only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the stop's hand-off to leave no reopened row pending", func() bool {
+	testwait.Until(t, "the stop's hand-off to leave no reopened row pending", func() bool {
 		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if foldErr != nil {
 			return false
@@ -4263,8 +4222,7 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 		sendOutcome <- outcome
 	}()
 	// The shell is live: it signaled its start and now waits silently.
-	// TRIPWIRE: the real shell touches its start file in milliseconds; 30s only fires on a genuine hang under a loaded suite.
-	waitForCondition(t, 30*time.Second, "the silent shell call to start", func() bool {
+	testwait.Until(t, "the silent shell call to start", func() bool {
 		_, err := os.Stat(entered)
 		return err == nil
 	})
@@ -4279,8 +4237,7 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 
 	// The turn's own machinery must keep the evidence fresh through the
 	// silent wait.
-	// TRIPWIRE: the turn ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the silent tool call to keep the lane owner's evidence fresh", func() bool {
+	testwait.Until(t, "the silent tool call to keep the lane owner's evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
 	})
@@ -4397,8 +4354,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 	// The descendant's shell is live and the coordinator's turn has finished:
 	// its generation now sits in the finalization drain, awaiting the
 	// descendant.
-	// TRIPWIRE: the scripted turns and the drain complete within seconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the coordinator to finish while the descendant works", func() bool {
+	testwait.Until(t, "the coordinator to finish while the descendant works", func() bool {
 		if _, err := os.Stat(enteredB); err != nil {
 			return false
 		}
@@ -4424,8 +4380,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 
 	// The finalization drain is active delegate work: its wait must keep
 	// the evidence fresh.
-	// TRIPWIRE: the drain ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the drain wait to keep the lane owner's evidence fresh", func() bool {
+	testwait.Until(t, "the drain wait to keep the lane owner's evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
 	})
@@ -4638,8 +4593,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if descendantSub == nil || descendantSub.sess == nil {
 		t.Fatalf("the descendant %s is not retained after its run", descendantChildID)
 	}
-	// TRIPWIRE: the quick scripted turn settles within seconds; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the descendant to settle after its quick turn", func() bool {
+	testwait.Until(t, "the descendant to settle after its quick turn", func() bool {
 		descendantSub.mu.Lock()
 		running, finalizing := descendantSub.running, descendantSub.finalizing
 		descendantSub.mu.Unlock()
@@ -4704,8 +4658,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 
 	// The woken descendant's activity is the tree's life now: it must keep
 	// the settled coordinator's lane evidence fresh.
-	// TRIPWIRE: the woken turn's ticker refreshes the ancestors' evidence within a second; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the woken descendant to keep the coordinator's lane evidence fresh", func() bool {
+	testwait.Until(t, "the woken descendant to keep the coordinator's lane evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
 	})
@@ -4736,8 +4689,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if err := os.WriteFile(releaseB, nil, 0o644); err != nil {
 		t.Fatalf("release the woken descendant: %v", err)
 	}
-	// TRIPWIRE: the released shell returns and the turn settles within seconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the woken turn to finish after release", func() bool {
+	testwait.Until(t, "the woken turn to finish after release", func() bool {
 		descendantSub.mu.Lock()
 		running := descendantSub.running
 		descendantSub.mu.Unlock()
@@ -4926,8 +4878,7 @@ func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the notification drive never reported its handoff")
 	}
-	// TRIPWIRE: the scripted drive turn settles within seconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the wake's drive turn to finish", func() bool {
+	testwait.Until(t, "the wake's drive turn to finish", func() bool {
 		sub.mu.Lock()
 		defer sub.mu.Unlock()
 		return !sub.driving
@@ -5063,8 +5014,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileSettledJobRuns(t *testing.T) {
 
 	// The job's own hold must keep the evidence fresh through the silent
 	// wait.
-	// TRIPWIRE: the job-held ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the settled background job to keep the lane owner's evidence fresh", func() bool {
+	testwait.Until(t, "the settled background job to keep the lane owner's evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
 	})
@@ -5136,8 +5086,7 @@ func TestDrainSkipsChildWhoseLaneRefusedDriveValidation(t *testing.T) {
 	go func() {
 		sendOutcome <- (delegateRuntime{owner: root}).send(sendCtx, fixture.delegateID, "background work", 60_000)
 	}()
-	// TRIPWIRE: the scripted turn and the job's start complete within seconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the background job to start and its turn to finish", func() bool {
+	testwait.Until(t, "the background job to start and its turn to finish", func() bool {
 		if _, err := os.Stat(entered); err != nil {
 			return false
 		}
@@ -5169,8 +5118,7 @@ func TestDrainSkipsChildWhoseLaneRefusedDriveValidation(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o644); err != nil {
 		t.Fatalf("release the background job: %v", err)
 	}
-	// TRIPWIRE: the job exits and its completion attention arms within seconds of release; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the finished job to arm its completion attention", func() bool {
+	testwait.Until(t, "the finished job to arm its completion attention", func() bool {
 		sub := root.subagents.get(fixture.childID)
 		if sub == nil || sub.sess == nil {
 			return false
@@ -5278,8 +5226,9 @@ func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
 	}
 
 	// The cadence delivers its side of the bound: a live tree's evidence,
-	// aged past the floor, is refreshed within the next ticks — never older
-	// than the cadence allows.
+	// aged past the floor, is refreshed on the next tick — never older than
+	// the cadence allows. The child's evidence ticker runs on a fake clock,
+	// so only one tick interval of fake time passes before the refresh.
 	r := newWorktreeRepo(t)
 	fixture, root, _ := spawnRetainedDelegateLane(t, r, "cadence-lane", "dlg_orphanactive000007", "034orphanactive0007")
 	sub := root.subagents.get(fixture.childID)
@@ -5287,15 +5236,21 @@ func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
 		t.Fatalf("delegate %s is not retained", fixture.childID)
 	}
 	child := sub.sess
+	// The clock is swapped only once the child's run and its detached namer
+	// have settled, so nothing reads it concurrently.
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	clk := agenttest.NewFakeClockAt(time.Now())
+	child.clock = clk
 	child.managedJobStarted()
 	defer child.managedJobFinished()
+	clk.BlockUntil(1)
 	transcript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
 	aged := time.Now().Add(-(activityEvidenceRefreshFloor + 2*delegateActivityPublishInterval))
 	if err := os.Chtimes(transcript, aged, aged); err != nil {
 		t.Fatalf("age the parent's transcript past the floor: %v", err)
 	}
-	// TRIPWIRE: the hold's ticker fires every second, so the first refresh past the floor lands within a couple of ticks; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "evidence aged past the floor to be refreshed by the next tick", func() bool {
+	clk.Advance(delegateActivityPublishInterval)
+	testwait.Until(t, "evidence aged past the floor to be refreshed by the next tick", func() bool {
 		info, err := os.Stat(transcript)
 		return err == nil && info.ModTime().After(aged)
 	})

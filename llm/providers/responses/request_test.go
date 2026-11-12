@@ -14,6 +14,9 @@ import (
 
 func resolved(mutate func(c *registry.Caps)) registry.Resolved {
 	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIResponses)}
+	// The Responses builder's image-wire tests model a row that accepts image
+	// input; request shaping sends tool-result media only to such a row (#4217).
+	caps.InputModalities = []string{"text", "image"}
 	if mutate != nil {
 		mutate(&caps)
 	}

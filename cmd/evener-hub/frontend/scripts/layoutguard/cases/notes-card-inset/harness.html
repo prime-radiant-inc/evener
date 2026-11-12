@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>notes-card-inset layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    font-family: var(--font-sans);
+  }
+  /* Scaffolding only: a fixed-width block standing in for the dockview pane
+     that hosts PaneScaffold. The pane body itself is the REAL
+     panescaffold.module.css .pane > .body - the padded scrollport the notes
+     card lives in, and the clipping ancestor whose top edge used to shave the
+     card. The card must stay INSIDE that body's padding. */
+  .paneHost {
+    width: 560px;
+    box-sizing: border-box;
+  }
+  .contentColumn {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 300px;
+    min-height: 0;
+  }
+  .transcriptFill {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+  .paneHost + .paneHost {
+    margin-top: var(--space-4);
+  }
+  /* The pane fills its host; PaneScaffold does the rest. */
+  .paneHost > .pane {
+    height: 300px;
+  }
+</style>
+</head>
+<body>
+<!-- TopNotesPanel.tsx, expanded: the card root with its header trigger and the
+     body content inside. -->
+<div class="paneHost">
+<div class="pane" id="expandedPane">
+  <div class="body" id="expandedBody" data-pane-scaffold="session:local:notes-card-inset">
+  <div class="contentColumn">
+    <div class="topNotesPanel" id="expandedPanel">
+      <button type="button" class="expandedHeader" aria-expanded="true">
+        <span class="summaryLeft">
+          <span class="chevron" data-open="true"><svg width="16" height="16" aria-hidden="true"></svg></span>
+          <span>Session notes</span>
+        </span>
+      </button>
+      <div class="expandedBody">
+        <div class="section">
+          <h3 class="eyebrow">Your note</h3>
+          <p class="prose">A saved note.</p>
+        </div>
+      </div>
+    </div>
+    <div class="transcriptFill"></div>
+  </div>
+  </div>
+</div>
+</div>
+
+<!-- TopNotesPanel.tsx, collapsed: the summary trigger alone. Its only boundary
+     is the card root's, so a root without a border reads as an edgeless strip. -->
+<div class="paneHost">
+<div class="pane" id="collapsedPane">
+  <div class="body" id="collapsedBody" data-pane-scaffold="session:local:notes-card-inset">
+  <div class="contentColumn">
+    <div class="topNotesPanel" id="collapsedPanel">
+      <button type="button" class="summary" aria-expanded="false">
+        <span class="summaryLeft">
+          <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
+          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+          <span class="clampedText">A saved note.</span>
+        </span>
+      </button>
+    </div>
+    <div class="transcriptFill"></div>
+  </div>
+  </div>
+</div>
+</div>
+
+<script>
+// Reads the geometry the bug lived in. The pane body is the clipping
+// ancestor; its padding-box top is the scrollport's clip line. A card whose
+// top sits on that line has its top border and both top corners painted
+// outside the visible area.
+function cardGeometry(bodyId, panelId) {
+  const body = document.querySelector(bodyId);
+  const panel = document.querySelector(panelId);
+  const bodyStyle = getComputedStyle(body);
+  const panelStyle = getComputedStyle(panel);
+  const bodyRect = body.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const clipTop = bodyRect.top;
+  const scrollPaddingTop = parseFloat(bodyStyle.paddingTop);
+  const paddingBoxTop = clipTop + scrollPaddingTop;
+  const triggerRect = panel.querySelector("button").getBoundingClientRect();
+  return {
+    // Positive: the card's top edge stands clear of the clip line, so its
+    // border and corners paint.
+    insetAboveClip: panelRect.top - clipTop,
+    // The card must not cancel the pane's own padding.
+    insetAbovePaddingBox: panelRect.top - paddingBoxTop,
+    scrollPaddingTop,
+    borderTop: parseFloat(panelStyle.borderTopWidth),
+    borderRight: parseFloat(panelStyle.borderRightWidth),
+    borderBottom: parseFloat(panelStyle.borderBottomWidth),
+    borderLeft: parseFloat(panelStyle.borderLeftWidth),
+    radiusTopLeft: parseFloat(panelStyle.borderTopLeftRadius),
+    radiusTopRight: parseFloat(panelStyle.borderTopRightRadius),
+    radiusBottomRight: parseFloat(panelStyle.borderBottomRightRadius),
+    radiusBottomLeft: parseFloat(panelStyle.borderBottomLeftRadius),
+    // The token's own value, so a token change is not reported as this card
+    // ignoring it.
+    expectedRadius: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--radius-panel")),
+    triggerVisibleHeight:
+      Math.min(triggerRect.bottom, bodyRect.bottom) - Math.max(triggerRect.top, clipTop),
+    triggerHeight: triggerRect.height,
+    // The header row must not double the card's own bottom edge in the
+    // collapsed state: the summary carries no edge of its own.
+    triggerBorderBottom: parseFloat(getComputedStyle(panel.querySelector("button")).borderBottomWidth),
+  };
+}
+
+window.measure = () => ({
+  expanded: cardGeometry("#expandedBody", "#expandedPanel"),
+  collapsed: cardGeometry("#collapsedBody", "#collapsedPanel"),
+});
+</script>
+</body>
+</html>

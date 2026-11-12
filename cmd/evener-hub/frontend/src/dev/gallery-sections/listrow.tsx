@@ -43,6 +43,20 @@ export default function ListRowGallerySection() {
               />
             </li>
             <li>
+              <ListRow
+                leading={<StatusDot state="idle" />}
+                label="refused split row"
+                meta="main area refuses, trailing control stays usable"
+                onSelect={() => {}}
+                aria-disabled="true"
+                trailingAction={
+                  <Button variant="secondary" size="sm">
+                    Install
+                  </Button>
+                }
+              />
+            </li>
+            <li>
               <ListRow label="OpenRouter (offline)" onSelect={() => {}} disabled />
             </li>
             <li>

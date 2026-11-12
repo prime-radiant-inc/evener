@@ -100,10 +100,11 @@ func (SandboxEscalationRequestedData) eventKind() EventKind {
 func (SandboxEscalationResolvedData) eventKind() EventKind {
 	return EventSandboxEscalationResolved
 }
-func (RoundStartedData) eventKind() EventKind     { return EventRoundStarted }
-func (RoundEndedData) eventKind() EventKind       { return EventRoundEnded }
-func (ExecutionStartedData) eventKind() EventKind { return EventExecutionStarted }
-func (ExecutionEndedData) eventKind() EventKind   { return EventExecutionEnded }
+func (RoundStartedData) eventKind() EventKind           { return EventRoundStarted }
+func (RoundEndedData) eventKind() EventKind             { return EventRoundEnded }
+func (ExecutionStartedData) eventKind() EventKind       { return EventExecutionStarted }
+func (ExecutionEndedData) eventKind() EventKind         { return EventExecutionEnded }
+func (ExecutionFirstRecordedData) eventKind() EventKind { return EventExecutionFirstRecorded }
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
 // added without a marker fails to build here.
@@ -164,4 +165,5 @@ var (
 	_ EventData = RoundEndedData{}
 	_ EventData = ExecutionStartedData{}
 	_ EventData = ExecutionEndedData{}
+	_ EventData = ExecutionFirstRecordedData{}
 )

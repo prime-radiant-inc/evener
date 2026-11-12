@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // Publication, discovery/health enrichment and atomic target repair are real.
@@ -29,10 +30,7 @@ func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
 	resolver := buildConfigIdentityResolver(t)
 	for _, mode := range []string{"deleted", "nonexecutable", "persisted-mismatch", "version-mismatch", "sha-mismatch", "persisted-at-write", "build-at-write"} {
 		t.Run(mode, func(t *testing.T) {
-			root, err := filepath.EvalSymlinks(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
+			root := testfs.CanonicalTempDir(t)
 			config, target := filepath.Join(root, "hub.toml"), filepath.Join(root, "evener")
 			if err := os.WriteFile(config, fmt.Appendf(nil, "addr = \"127.0.0.1:0\"\nhub_state_root = %q\n", root), 0o600); err != nil {
 				t.Fatal(err)

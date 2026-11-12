@@ -560,7 +560,7 @@ func FuzzSandboxEscalationLifecycleProgram(f *testing.F) {
 					if !ok {
 						return tool.ExecResult{ToolName: program.callName, IsError: true, Err: errors.New("missing invocation grant")}
 					}
-					return tool.ExecResult{ToolName: program.callName, Output: grant, FullOutput: grant}
+					return tool.ExecResult{ToolName: program.callName, Output: grant.path, FullOutput: grant.path}
 				})
 			}(run)
 			runs = append(runs, run)
@@ -621,11 +621,12 @@ func sefDeniedResult(program sefProgram, path string) tool.ExecResult {
 		err = errors.New("offline non-sandbox failure")
 	} else {
 		err = &sandbox.DeniedError{
-			Mode:       sandbox.ModeReadOnly,
-			Tool:       program.callName,
-			Path:       path,
-			Reason:     "offline sandbox denial",
-			ReasonKind: program.reason,
+			Mode:        sandbox.ModeReadOnly,
+			Tool:        program.callName,
+			Path:        path,
+			Reason:      "offline sandbox denial",
+			ReasonKind:  program.reason,
+			GrantTarget: path,
 		}
 	}
 	return tool.ExecResult{

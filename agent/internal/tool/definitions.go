@@ -421,7 +421,7 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
 			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your report, the one line naming the work you are waiting on, or a readiness line before a watch frame. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
-			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
+			"If the delegate is running, a send with max_wait_ms unset or 0 steers it and returns on delivery; a positive max_wait_ms is refused as target_busy, while a delegate that finishes before admission is started and the wait is honored. A delegate already being driven or otherwise busy is refused as target_busy. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -429,7 +429,7 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "The delegate_id (`dlg_...`) of a delegate this session created."},
 				"message":     map[string]any{"type": "string", "description": "The message to deliver to that delegate."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate returns once delivered."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received. A positive value on a still-running delegate is refused as target_busy; a delegate that becomes idle before admission is started and the wait is honored. Steer a running delegate with 0."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -1129,6 +1129,9 @@ func DefManageWorktree() llm.ToolDefinition {
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
 		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
 		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
+		"unlock (release a direct worktree-isolated delegate's lane lock by its delegate `id` without retiring it — the " +
+		"parent-only recovery path when that delegate can no longer be reached or revived; its resumability, worktree, " +
+		"branch and uncommitted work stay untouched, the lane becomes switchable, and a later send re-locks it); " +
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
@@ -1143,8 +1146,8 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, adopt, exit, remove, prune, or dispose.",
-					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "dispose"},
+					"description": "create, list, switch, adopt, exit, remove, prune, unlock, or dispose.",
+					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "unlock", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -1152,7 +1155,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "For dispose: the delegate id (dlg_…) whose isolation worktree lane to retire.",
+					"description": "For unlock: the delegate id (dlg_…) whose isolation lane lock to release without retiring it. For dispose: the delegate id whose isolation worktree lane to retire.",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",

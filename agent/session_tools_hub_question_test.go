@@ -174,9 +174,10 @@ func TestManagerAskFenceSendContract(t *testing.T) {
 func TestManagerPendingAskPageContract(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
-	client := &managerQuestionClient{response: appwire.SessionOperationResponse{Read: &appwire.ThreadReadResponse{
+	read := appwire.HistoryReadResponse(appwire.ThreadReadResponse{
 		PendingAskPage: &appwire.PendingAskPage{Composites: []appwire.PendingAskCall{{TurnID: "turn-sentinel", CallID: "call-sentinel"}}, Total: 5, NextOffset: new(3), CalllessCount: 2},
-	}}}
+	})
+	client := &managerQuestionClient{response: appwire.SessionOperationResponse{Read: &read}}
 	root.SetHubClient(client)
 	for _, tc := range []struct {
 		name string

@@ -2166,7 +2166,7 @@ func newSkillSelectionSession(t *testing.T, root string, adapter llm.ProviderAda
 	t.Helper()
 	markGitRoot(t, root)
 	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		withProfile(newAnthropicProfile("claude-test")))
 	return s
 }
 

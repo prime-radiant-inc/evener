@@ -104,6 +104,7 @@ func PreludeTurn(header transcript.Header) *appwire.Turn {
 			TurnID:      appwire.SystemPreludeTurnID,
 			Description: "System prompt",
 			Text:        systemPrompt,
+			Version:     preludeItemVersion,
 			Status:      appwire.TurnStatusCompleted,
 			EventKind:   appwire.ThreadItemEventKindSystemPrompt,
 		})
@@ -113,6 +114,13 @@ func PreludeTurn(header transcript.Header) *appwire.Turn {
 	}
 	return &appwire.Turn{ID: appwire.SystemPreludeTurnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 }
+
+// preludeItemVersion is the stable version of the synthesized prelude item. A
+// transcript incarnation's prelude never changes, so this version never moves;
+// it is nonzero so an item elided by a window budget settles instead of
+// reading as in flight forever. Only a settled item gets a fetch cursor, which
+// is how the caller reads back the exact bytes the budget withheld.
+const preludeItemVersion uint64 = 1
 
 // CompactionDescription returns the user-facing label for compaction turns.
 func CompactionDescription(kind string) string {

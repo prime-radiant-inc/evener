@@ -57,7 +57,7 @@ func TestRemoteSelectedLockRetryInjected(t *testing.T) {
 				{name: "zero cannot retry to success", owners: []string{"0", "4242"}, reads: 1},
 				{name: "negative cannot retry to success", owners: []string{"-1", "4242"}, reads: 1},
 				{name: "multiple cannot retry to success", owners: []string{"4242\n5151", "4242"}, reads: 1},
-				{name: "duplicate cannot manufacture uniqueness", owners: []string{"4242\n4242", "4242"}, reads: 1},
+				{name: "duplicate same owner is one owner", owners: []string{"4242\n4242", "4242"}, wantPID: "4242", reads: 1},
 				{name: "blank output is not empty", owners: []string{"blank", "4242"}, reads: 1},
 				{name: "replacement between attempts", owners: []string{"", "4242"}, reads: 1, replaceAt: 4, wantExitCode: 1},
 				{name: "replacement at acceptance", owners: []string{"4242"}, reads: 1, replaceAt: 3, wantExitCode: 1},

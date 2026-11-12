@@ -795,24 +795,25 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledWith("old");
   });
 
-  test("places identity and Settings before Search in the top row and preserves navigation", () => {
+  test("leads the top row with the wordmark, then Settings, Search and Hide in order, and preserves navigation", () => {
     installState();
-    connectionStore.setState({ serverInfo: { name: "evener-hub", version: "0.0.0" } });
     const onHide = vi.fn();
     render(<Rail onHide={onHide} />);
     const brand = within(screen.getByTestId("rail-brand"));
-    const identity = brand.getByText("evener-hub");
+    const wordmark = brand.getByTestId("rail-wordmark");
     const settings = brand.getByRole("button", { name: "Settings" });
     const search = brand.getByRole("button", { name: "Search" });
     const hide = brand.getByRole("button", { name: "Hide sidebar" });
     for (const [left, right] of [
-      [identity, settings],
+      [wordmark, settings],
       [settings, search],
       [search, hide],
     ] as const) {
       expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    expect(screen.getAllByText("evener-hub")).toHaveLength(1);
+    // The wordmark and the three actions are the row's whole content: the
+    // connected hub's own name is not a second identity line beside them.
+    expect(brand.getAllByRole("button")).toHaveLength(3);
     expect(screen.getAllByRole("button", { name: "Settings" })).toHaveLength(1);
     const previousPath = window.location.pathname;
     try {
@@ -878,7 +879,7 @@ describe("resource-backed Rail", () => {
       "",
     );
     const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
-    expect(rule).toContain("padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom))");
+    expect(rule).toContain("padding-bottom: calc(var(--space-2) + var(--dock-clearance))");
   });
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();

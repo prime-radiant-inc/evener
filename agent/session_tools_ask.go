@@ -102,8 +102,12 @@ func (s *Session) HasPendingAsk() bool {
 // SetBootGeneration installs the durably minted generation before serving input.
 func (s *Session) SetBootGeneration(generation string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.bootGeneration = generation
+	publish := s.transcriptFrontier.publish
+	s.mu.Unlock()
+	if publish != nil {
+		publish(generation)
+	}
 }
 
 // mintBootGeneration installs the session's durable boot generation. A session

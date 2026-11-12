@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -224,6 +225,7 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, policy r
 	if sess == nil {
 		return nil
 	}
+	sess.releaseTranscriptFrontier()
 	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
@@ -338,6 +340,7 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	// teardown below preserves. This runs before the teardown closes the event
 	// stream, so a cleanup failure can still be surfaced as a warning.
 	if sess != nil {
+		sess.releaseTranscriptFrontier()
 		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
 			sess.emit(events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
 		}
@@ -407,12 +410,14 @@ func isRootOnlySubagentTool(name string) bool {
 // protectedGrantTools lists tools that grant_tools may never add to a
 // subagent, independent of rootOnlySubagentTools. That list's removal is
 // allowance-gated (a coordinator with delegation_allowance keeps its
-// members), but ask_user's exclusion from every subagent is unconditional
-// (spec §7 point 1) — and the grant loop otherwise consults the PARENT's own
-// registry, where ask_user is legitimately registered on an interactive root
-// session. Without this check the loop has no reason to reject it.
+// members), but these exclusions are unconditional: ask_user cannot be asked
+// by a subagent (spec §7 point 1), and only the coordinator writes the session
+// URL list (#6080). The grant loop otherwise consults the PARENT's own
+// registry, where ask_user and the URL tools are legitimately registered on an
+// interactive root session. Without this check the loop has no reason to
+// reject them.
 func protectedGrantTools() []string {
-	return []string{"ask_user"}
+	return []string{"ask_user", "urls_add", "urls_remove"}
 }
 
 func isProtectedGrantTool(name string) bool {
@@ -450,6 +455,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
 		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
+		allowed = removeStrings(allowed, protectedGrantTools())
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
 		// path, exactly as the untyped surface does.
@@ -459,9 +465,11 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		return false, allowed, nil
 	default:
 		if canDelegate {
-			return false, nil, nil // untyped child with allowance: no deny-list → gets delegate+job_watch on default surface
+			// An untyped child with an allowance keeps delegate and job_watch,
+			// but the unconditionally forbidden tools are still denied.
+			return false, nil, protectedGrantTools()
 		}
-		return false, nil, rootOnlySubagentTools()
+		return false, nil, appendUniqueStrings(rootOnlySubagentTools(), protectedGrantTools()...)
 	}
 }
 
@@ -1196,7 +1204,7 @@ func (s *Session) applyChildToolPolicy(subCfg *SessionConfig, agent *plugin.Agen
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
 			if isProtectedGrantTool(toolName) {
-				return false, nil, nil, fmt.Errorf("%s is root-only and cannot be granted to subagents", toolName)
+				return false, nil, nil, fmt.Errorf("%s is root-only or coordinator-only and cannot be granted to subagents", toolName)
 			}
 			if isRootOnlySubagentTool(toolName) {
 				return false, nil, nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
@@ -2769,9 +2777,16 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 		return
 	}
 	packet.StructuredResultSource = delegatestore.StructuredResultSourceSchema
+	decodeExactJSON := func(data []byte, into any) error {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		return decoder.Decode(into)
+	}
 	var schemaValue any
 	var structuredValue any
-	if err := json.Unmarshal(inputs.descriptor.ResultSchema, &schemaValue); err != nil || json.Unmarshal(raw, &structuredValue) != nil || validateStructuredResult(structuredValue, schemaValue) != nil {
+	if err := decodeExactJSON(inputs.descriptor.ResultSchema, &schemaValue); err != nil ||
+		decodeExactJSON(raw, &structuredValue) != nil ||
+		validateStructuredResult(structuredValue, schemaValue) != nil {
 		valid = false
 		packet.StructuredResultValid = &valid
 		packet.StructuredResultReason = structuredResultReasonSchemaValidationFailed

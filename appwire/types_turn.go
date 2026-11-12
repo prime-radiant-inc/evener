@@ -414,10 +414,13 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread         Thread                `json:"thread"`
-	PendingAskPage *PendingAskPage       `json:"pendingAskPage,omitempty"`
-	Window         *ThreadWindowResult   `json:"window,omitempty"`
-	Fetch          *SessionFetchResponse `json:"fetch,omitempty"`
+	Thread         Thread          `json:"thread"`
+	PendingAskPage *PendingAskPage `json:"pendingAskPage,omitempty"`
+	// ServingFacts is internal transport metadata, published only by the
+	// versioned history methods. Legacy JSON stays unchanged.
+	ServingFacts *HistoryServingFacts  `json:"-"`
+	Window       *ThreadWindowResult   `json:"window,omitempty"`
+	Fetch        *SessionFetchResponse `json:"fetch,omitempty"`
 	// TargetSessionToolsSupported reports whether the daemon serving this thread
 	// negotiated session tools. Omission means the serving hub cannot attest it.
 	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
@@ -445,8 +448,9 @@ type ThreadReadResponse struct {
 	// Overlay carries the live, not-yet-recorded state (streams, previews,
 	// running tools, notices) alongside the recorded thread.
 	Overlay []OverlayItem `json:"overlay,omitempty"`
-	// Authoritative is true when this response can settle uncertain state
-	// (a live daemon read), false for a saved-transcript read that cannot.
+	// Authoritative is a frozen legacy merge stamp and may be true even for
+	// saved transcripts. ThreadHistoryReadResponse corrects it to true only for
+	// live-daemon serves; its serving facts own the new range merge policy.
 	Authoritative bool `json:"authoritative,omitempty"`
 	// Changes carries items and turns outside the client's held window whose
 	// version grew since HeldSnapshot, in place of a full re-read.
@@ -678,6 +682,9 @@ type ThreadTurnsListResponse struct {
 	Data       []Turn              `json:"data"`
 	NextCursor string              `json:"nextCursor,omitempty"`
 	Window     *ThreadWindowResult `json:"window,omitempty"`
+	// These carriers are published only by the versioned history method.
+	ServingFacts          *HistoryServingFacts `json:"-"`
+	LatestExecutionTurnID string               `json:"-"`
 	// BootGeneration is the serving daemon's boot generation for this thread,
 	// as on ThreadReadResponse. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
@@ -686,8 +693,8 @@ type ThreadTurnsListResponse struct {
 	Epoch uint64 `json:"epoch,omitempty"`
 	// Snapshot names what this page was projected from.
 	Snapshot *SnapshotIdentity `json:"snapshot,omitempty"`
-	// Authoritative is true when this page can settle uncertain state; see
-	// ThreadReadResponse.Authoritative.
+	// Authoritative retains the legacy page stamp, including true on saved
+	// pages. ThreadHistoryTurnsListResponse corrects it as on the versioned read.
 	Authoritative bool `json:"authoritative,omitempty"`
 }
 

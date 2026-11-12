@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -493,9 +494,7 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 
 	// The release runs on a timer after the (here tiny) follow-up grace, so
 	// poll for the child's MCP server to exit rather than assuming ordering.
-	// TRIPWIRE: the release normally fires well inside a second of the 100ms
-	// grace; 15s only bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "idle release of delegate "+delegateID+" to stop its stdio MCP server (marker "+marker+")", func() bool {
+	testwait.Until(t, "idle release of delegate "+delegateID+" to stop its stdio MCP server (marker "+marker+")", func() bool {
 		_, statErr := os.Stat(marker)
 		return statErr == nil
 	})
@@ -519,9 +518,7 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 		t.Fatalf("delegate_send after idle release: %+v", send)
 	}
 	var restored *subagent
-	// TRIPWIRE: the cold restore normally appears within milliseconds of the
-	// send; 15s only bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "cold-restored record for delegate "+delegateID, func() bool {
+	testwait.Until(t, "cold-restored record for delegate "+delegateID, func() bool {
 		restored = sess.subagents.get(childID)
 		return restored != nil && restored != child
 	})

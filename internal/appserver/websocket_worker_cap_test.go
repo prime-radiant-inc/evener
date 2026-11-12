@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // parkedSlowReadServer builds a captureLogf server whose thread/read handler
@@ -206,38 +207,67 @@ func TestServeWebSocketSlowReadCapAcquireExitsOnClose(t *testing.T) {
 // slot held, cancel the connection, release the hook — the slow read never
 // starts and the slot was released.
 func TestServeWebSocketSlowReadCapAcquireRaceNeverStartsAfterCancel(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	hookEntered := make(chan struct{})
-	hookRelease := make(chan struct{})
-	server.afterSlowReadAcquire = func() {
-		close(hookEntered)
-		<-hookRelease
-	}
-	var readCalls atomic.Int64
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		readCalls.Add(1)
-		return appwire.ThreadReadResponse{}, nil
-	})
-	httpServer := serveWebSocketHTTP(t, server)
-	transport := dialRawAppWire(t, httpServer)
-	initializeRaw(t, transport)
-	conn := registeredConnection(t, server)
+	for _, tc := range []struct {
+		method     string
+		admissions int
+	}{
+		{appwire.MethodThreadRead, 1},
+		{appwire.MethodThreadHistoryRead, 1},
+		{appwire.MethodThreadHistoryTurnsList, 0},
+	} {
+		method := tc.method
+		t.Run(method, func(t *testing.T) {
+			server := NewServer(ServerConfig{
+				ServerName: "test-server", Version: "test", SourceID: "local",
+				SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+					return SubscriptionAdmissionResolution{Key: "read-racing-cancel", Intent: SubscriptionAdmissionResolved}
+				},
+			})
+			hookEntered := make(chan struct{})
+			hookRelease := make(chan struct{})
+			server.afterSlowReadAcquire = func() {
+				close(hookEntered)
+				<-hookRelease
+			}
+			var readCalls atomic.Int64
+			HandleTyped(server.Router(), method, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				readCalls.Add(1)
+				return appwire.ThreadReadResponse{}, nil
+			})
+			httpServer := serveWebSocketHTTP(t, server)
+			transport := dialRawAppWire(t, httpServer)
+			initializeRaw(t, transport)
+			conn := registeredConnection(t, server)
 
-	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: "read-racing-cancel"}))
-	waitFor(t, "the worker to park in the after-acquire hook", hookEntered)
+			sendRaw(t, transport, rawRequest(t, 2, method, appwire.ThreadReadParams{ThreadID: "read-racing-cancel", Subscribe: true}))
+			waitFor(t, "the worker to park in the after-acquire hook", hookEntered)
+			conn.admissionMu.Lock()
+			pendingBeforeCancel := len(conn.pendingAdmissions)
+			conn.admissionMu.Unlock()
+			if pendingBeforeCancel != tc.admissions {
+				t.Fatalf("pending admissions at acquire = %d, want %d", pendingBeforeCancel, tc.admissions)
+			}
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("close transport: %v", err)
-	}
-	waitUnregistered(t, server)
-	close(hookRelease)
+			if err := transport.Close(); err != nil {
+				t.Fatalf("close transport: %v", err)
+			}
+			waitUnregistered(t, server)
+			close(hookRelease)
 
-	waitFor(t, "the worker to exit at the post-acquire re-check", conn.workerExited)
-	if got := readCalls.Load(); got != 0 {
-		t.Fatalf("slow read ran %d times after cancellation was observable at the acquire, want 0", got)
-	}
-	if held := len(conn.slowReadSlots); held != 0 {
-		t.Fatalf("cap slots still held after the canceled acquire = %d, want 0", held)
+			waitFor(t, "the worker to exit at the post-acquire re-check", conn.workerExited)
+			if got := readCalls.Load(); got != 0 {
+				t.Fatalf("slow read ran %d times after cancellation was observable at the acquire, want 0", got)
+			}
+			if held := len(conn.slowReadSlots); held != 0 {
+				t.Fatalf("cap slots still held after the canceled acquire = %d, want 0", held)
+			}
+			conn.admissionMu.Lock()
+			pending := len(conn.pendingAdmissions)
+			conn.admissionMu.Unlock()
+			if pending != 0 {
+				t.Fatalf("pending admissions after canceled acquire = %d, want 0", pending)
+			}
+		})
 	}
 }
 
@@ -265,7 +295,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 		t.Fatalf("frame = %+v, want ping response id 100", pong)
 	}
 
-	waitUntil(t, "the stall advisory reaches Logf", func() bool {
+	testwait.Until(t, "the stall advisory to reach Logf", func() bool {
 		return strings.Contains(logged(), "parked")
 	})
 	var stall string
@@ -306,7 +336,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryIsRateLimited(t *testing.T) {
 	server.slowReadStallThreshold = 100 * time.Millisecond
 	transport, _ := rawParkedCapConnection(t, server, started)
 
-	waitUntil(t, "the first stall advisory to reach Logf", func() bool {
+	testwait.Until(t, "the first stall advisory to reach Logf", func() bool {
 		return strings.Contains(logged(), "parked")
 	})
 	// Hold the wedge ~3.5 more advisory intervals, then count. A ready
@@ -472,7 +502,7 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	// The slot frees just after the response is queued, so the client can
 	// hear the answer a moment before the slot is back; wait for the slot.
 	conn := registeredConnection(t, server)
-	waitUntil(t, "the finished request's slot to free", func() bool {
+	testwait.Until(t, "the finished request's slot to free", func() bool {
 		conn.requestPoolsMu.Lock()
 		defer conn.requestPoolsMu.Unlock()
 		return conn.requestPools["lists"] < concurrentRequestCap
@@ -637,7 +667,7 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	// Ends either way: the second request either waits in the queue or runs.
 	// Seen in the queue, it stays there: the worker that would dequeue it is
 	// the one running the first request.
-	waitUntil(t, "the second request to queue or run", func() bool {
+	testwait.Until(t, "the second request to queue or run", func() bool {
 		return len(conn.requests) == 1 || len(entered) > 0
 	})
 	if len(entered) > 0 {
@@ -734,7 +764,7 @@ func TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool(t *testing.T) {
 				t.Fatalf("released request: %v", err)
 			}
 		}
-		waitUntil(t, "the drained pool to be forgotten", func() bool {
+		testwait.Until(t, "the drained pool to be forgotten", func() bool {
 			conn.requestPoolsMu.Lock()
 			defer conn.requestPoolsMu.Unlock()
 			return len(conn.requestPools) == 0 && len(conn.requestPoolSaturationAdvised) == 0

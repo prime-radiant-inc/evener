@@ -225,31 +225,31 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 
 	// A grant widens containment for exactly one leaf, not masking, git protection,
 	// root targeting, or parent creation. Exercise success and each refusal directly.
-	s.grant = filepath.Join(masked, "secret.txt")
-	if _, _, err := s.grantedWriteParent("edge", s.grant); !securePathEdgeDenied(err, sandbox.DenialMasked) {
+	s.grant = literalGrant(filepath.Join(masked, "secret.txt"))
+	if _, _, err := s.grantedWriteParent("edge", s.grant.path); !securePathEdgeDenied(err, sandbox.DenialMasked) {
 		t.Fatalf("granted masked write = %v, want masked denial", err)
 	}
-	s.grant = protected
-	if _, _, err := s.grantedWriteParent("edge", s.grant); !securePathEdgeDenied(err, sandbox.DenialGitProtected) {
+	s.grant = literalGrant(protected)
+	if _, _, err := s.grantedWriteParent("edge", s.grant.path); !securePathEdgeDenied(err, sandbox.DenialGitProtected) {
 		t.Fatalf("granted protected write = %v, want protected denial", err)
 	}
-	s.grant = string(filepath.Separator)
-	if _, _, err := s.grantedWriteParent("edge", s.grant); !securePathEdgeDenied(err, sandbox.DenialRootTarget) {
+	s.grant = literalGrant(string(filepath.Separator))
+	if _, _, err := s.grantedWriteParent("edge", s.grant.path); !securePathEdgeDenied(err, sandbox.DenialRootTarget) {
 		t.Fatalf("granted root write = %v, want root-target denial", err)
 	}
-	s.grant = filepath.Join(outside, "missing-parent", "leaf")
-	if _, _, err := s.grantedWriteParent("edge", s.grant); err == nil {
+	s.grant = literalGrant(filepath.Join(outside, "missing-parent", "leaf"))
+	if _, _, err := s.grantedWriteParent("edge", s.grant.path); err == nil {
 		t.Fatal("granted missing parent unexpectedly succeeded")
 	}
-	s.grant = filepath.Join(outside, "granted.txt")
-	grantFD, grantLeaf, err := s.grantedWriteParent("edge", s.grant)
+	s.grant = literalGrant(filepath.Join(outside, "granted.txt"))
+	grantFD, grantLeaf, err := s.grantedWriteParent("edge", s.grant.path)
 	if err != nil || grantLeaf != "granted.txt" {
 		t.Fatalf("granted existing parent = (fd=%d leaf=%q err=%v)", grantFD, grantLeaf, err)
 	}
 	if err := unix.Close(grantFD); err != nil {
 		t.Fatalf("close granted parent: %v", err)
 	}
-	s.grant = ""
+	s.grant = invocationGrant{}
 
 	missingRootPolicy := policy
 	missingRootPolicy.FileTool.WriteRoots = []string{missingRoot}

@@ -1,5 +1,7 @@
-// Host-scoped plugin workspace. Sources keeps launch directories available
-// independently of the plugin and marketplace inventory reads.
+// Host-scoped plugin workspace: Installed lists what this host has, and
+// Marketplaces is the one screen for both installing plugins and managing
+// marketplace sources (plugin directories stay available independently of
+// both reads).
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
@@ -7,23 +9,22 @@ import { useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
 import { HostScopedSurface } from "../hostScopedSurface";
+import { PluginsDirsSection } from "../pluginsDirs";
 import { useHostScopedLoad } from "../useConnectedEffect";
-import { BrowseSection } from "./BrowseSection";
-import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
-import { MarketplaceSheet } from "./MarketplaceSheet";
+import { MarketplacesSection } from "./MarketplacesSection";
 import styles from "./marketplacesPlugins.module.css";
-import { PluginDetailSheet, type PluginDetailTarget } from "./PluginDetailSheet";
-import { SourcesSection } from "./SourcesSection";
+import type { PluginDetailTarget } from "./PluginDetailBody";
 
 const CLASS = {
   page: requireClass(styles.page, "marketplacesPlugins.module.css", "page"),
   help: requireClass(styles.help, "marketplacesPlugins.module.css", "help"),
 };
 
-type SegmentId = "installed" | "browse" | "sources";
+type SegmentId = "installed" | "marketplaces" | "directories";
 
 type AppliedRemovalGuard = {
   host: string;
@@ -53,8 +54,10 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
-  const [selectedPlugin, setSelectedPlugin] = useState<PluginDetailTarget | null>(null);
-  const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
+  // The one row whose details are expanded, across every segment: a row tap
+  // expands its inline detail body, another row's tap swaps which one is
+  // open, and the same row's tap again collapses it.
+  const [expandedPair, setExpandedPair] = useState<PluginDetailTarget | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
   // The registry removal can finish after its sheet closes. Keep its
   // no-repeat marker at the page lifecycle, and tie
@@ -90,10 +93,11 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
     });
   }, [appliedRemovalGuard.client, appliedRemovalGuard.host, connectionClient, host, marketplacesPublicationVersion]);
 
-  // A sheet that closes over a completed install or remove reshapes the
-  // browse row that opened it, and the modal's own focus restore then loses
-  // the opener: the hook returns focus to the row when that happened.
-  useCatalogRowFocusRehome(selectedPlugin, sectionRef);
+  // A collapse over a completed install or remove reshapes the row whose
+  // details were open, unmounting the control that held the keyboard, and
+  // the modal confirm's own focus restore then loses its opener: the hook
+  // returns focus to the row when that happened.
+  usePluginRowFocusRehome(expandedPair, sectionRef);
 
   function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
@@ -122,27 +126,50 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
 
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
-    // Each sheet belongs to the segment whose row opened it - the plugin
-    // detail sheet to Installed, the marketplace editor to Sources.
-    // Navigating away closes both rather than leaving an editor floating
-    // over an unrelated list.
-    setSelectedPlugin(null);
-    setSelectedMarketplace(null);
+    // Each expansion belongs to the segment whose row opened it. Navigating
+    // away collapses the plugin details rather than leaving them floating
+    // over an unrelated list; marketplace expansions survive, keyed by name.
+    setExpandedPair(null);
   }
 
-  // The sheet's mode is decided by the row that opened it. An Installed
-  // row is installed by construction; a catalog row is resolved through the
-  // installed list - an already-installed catalog plugin opens its installed
-  // entry's editor (the same isInstalled predicate the browse rows render
-  // by), a fresh one the catalog sheet.
-  function handleSelectInstalled(target: { plugin: string; marketplace: string }): void {
-    setSelectedPlugin({ mode: "installed", plugin: target.plugin, marketplace: target.marketplace });
+  // Marketplace rows and the plugin rows inside them are keyed by name or
+  // pair. A marketplace that vanishes (its own remove, or another client's)
+  // takes its expansion - and any plugin details opened inside it - with it.
+  // Catalog membership only decides that inside the marketplaces segment: a
+  // plugin stays installed when its marketplace stops listing it, so the
+  // Installed list keeps its own details open by its own disappearance rule.
+  useEffect(() => {
+    if (marketplaces === null) return;
+    const marketplaceNames = new Set(marketplaces.map((m) => m.name));
+    setExpandedMarketplaces((current) => {
+      const next = new Set([...current].filter((name) => marketplaceNames.has(name)));
+      return next.size === current.size ? current : next;
+    });
+    if (activeSegment === "marketplaces") {
+      setExpandedPair((current) => (current !== null && !marketplaceNames.has(current.marketplace) ? null : current));
+    }
+  }, [marketplaces, activeSegment]);
+
+  /** A marketplace row collapsing takes any plugin details open inside it. */
+  function collapseMarketplace(name: string): void {
+    setExpandedPair((current) => (current !== null && current.marketplace === name ? null : current));
   }
 
-  function handleSelectCatalog(plugin: string, marketplace: string): void {
-    const installed = (plugins ?? []).some((p) => p.plugin === plugin && p.marketplace === marketplace);
-    setSelectedPlugin(
-      installed ? { mode: "installed", plugin, marketplace } : { mode: "catalog", plugin, marketplace },
+  /** A rename moves an open plugin detail's pair with its marketplace. */
+  function renameMarketplace(oldName: string, newName: string): void {
+    setExpandedPair((current) =>
+      current !== null && current.marketplace === oldName ? { plugin: current.plugin, marketplace: newName } : current,
+    );
+  }
+
+  // Both lists toggle the same accordion state: the tapped pair opens
+  // unless it is the pair already open, which collapses. The body derives
+  // its own mode from the installed list, so no resolution happens here.
+  function toggleDetail(pair: PluginDetailTarget): void {
+    setExpandedPair((current) =>
+      current !== null && samePluginTarget(current, pair)
+        ? null
+        : { plugin: pair.plugin, marketplace: pair.marketplace },
     );
   }
 
@@ -157,8 +184,8 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         onChange={(value) => handleSegmentChange(value as SegmentId)}
         options={[
           { value: "installed", label: `Installed (${pluginCount})` },
-          { value: "browse", label: "Browse" },
-          { value: "sources", label: `Sources (${marketplaceCount})` },
+          { value: "marketplaces", label: `Marketplaces (${marketplaceCount})` },
+          { value: "directories", label: "Directories" },
         ]}
         fullWidth
       />
@@ -180,7 +207,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
           Failed to load plugins: {pluginsError}
         </InlineNotice>
       )}
-      {marketplacesError !== null && activeSegment !== "sources" && (
+      {marketplacesError !== null && (
         <InlineNotice
           tone="danger"
           live="status"
@@ -194,43 +221,33 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
           Failed to load marketplaces: {marketplacesError}
         </InlineNotice>
       )}
-      {activeSegment === "sources" && (
-        <SourcesSection
-          host={host}
-          onSelectMarketplace={setSelectedMarketplace}
-          onBrowse={() => handleSegmentChange("browse")}
-        />
-      )}
+      {activeSegment === "directories" && <PluginsDirsSection host={host} />}
       {activeSegment === "installed" &&
         (plugins === null ? (
           pluginsError === null && <Skeleton />
         ) : (
-          <InstalledSection onSelect={handleSelectInstalled} onBrowse={() => handleSegmentChange("browse")} />
+          <InstalledSection
+            expanded={expandedPair}
+            onToggle={toggleDetail}
+            onBrowse={() => handleSegmentChange("marketplaces")}
+          />
         ))}
-      {activeSegment === "browse" &&
+      {activeSegment === "marketplaces" &&
         (marketplaces === null ? (
           marketplacesError === null && <Skeleton />
         ) : (
-          <BrowseSection
+          <MarketplacesSection
             expandedMarketplaces={expandedMarketplaces}
             setExpandedMarketplaces={setExpandedMarketplaces}
-            onSources={() => handleSegmentChange("sources")}
-            onOpen={handleSelectCatalog}
+            expanded={expandedPair}
+            onToggleRow={toggleDetail}
+            onCollapseMarketplace={collapseMarketplace}
+            onRenamedMarketplace={renameMarketplace}
+            appliedRemovalNames={appliedRemovalNames}
+            connectionClient={connectionClient}
+            onAppliedRemoval={markAppliedRemoval}
           />
         ))}
-      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
-      {marketplaces !== null && (
-        <MarketplaceSheet
-          name={selectedMarketplace}
-          onClose={() => setSelectedMarketplace(null)}
-          onRenamed={setSelectedMarketplace}
-          expandedMarketplaces={expandedMarketplaces}
-          setExpandedMarketplaces={setExpandedMarketplaces}
-          appliedRemovalNames={appliedRemovalNames}
-          connectionClient={connectionClient}
-          onAppliedRemoval={markAppliedRemoval}
-        />
-      )}
     </section>
   );
 }

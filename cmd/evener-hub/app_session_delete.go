@@ -40,6 +40,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	pe, ok := s.cfg.Past.Find(threadID)
 
 	target := hubcore.DeletionTarget{Ref: localAppRef(threadID), ThreadID: threadID}
+	projectID := projectKeyForStateDir(pe.StateDir)
 	record := hubcore.DeletionRecord{Targets: []hubcore.DeletionTarget{target}}
 	stateDirs := map[string]string{threadID: pe.StateDir}
 	release, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, stateDirs)
@@ -50,7 +51,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		if err := ctx.Err(); err != nil {
 			return appwire.SessionDeleteResponse{}, err
 		}
-		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{ownershipSkip(threadID, ownerErr)}, projectKeyForStateDir(pe.StateDir))
+		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{ownershipSkip(threadID, ownerErr)}, projectID)
 	}
 	defer func() {
 		if release != nil {
@@ -76,9 +77,34 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		return s.sessionDeleteResponse(ctx, nil, nil, "")
 	}
 
+	if s.cfg.DeletionStore == nil {
+		return appwire.SessionDeleteResponse{}, appwire.InternalError("deletion store is not configured")
+	}
+	if s.deletionStoreErr != nil {
+		return appwire.SessionDeleteResponse{}, appwire.InternalError("load deletion state: " + s.deletionStoreErr.Error())
+	}
+	// Fence the target durably before the destructive cleanup, exactly as the
+	// project-delete path does. A later read of this ref must settle as a
+	// terminal deletion instead of retrying an unavailable source; a failed
+	// cleanup leaves the fence in progress for the retry to finish.
+	fence, err := s.cfg.DeletionStore.BeginSession(projectID, target)
+	if err != nil {
+		return appwire.SessionDeleteResponse{}, appwire.InternalError("commit deletion fence: " + err.Error())
+	}
+
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
 	if !deleted {
-		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{*skip}, projectKeyForStateDir(pe.StateDir))
+		// The sweep may refuse after the metadata is already gone (a later
+		// rendezvous/log removal failed). Only a session whose metadata still
+		// exists is intact and resumable; that one must not stay fenced as a
+		// terminal deletion. Once the metadata is gone the deletion is
+		// effectively done, so its fence stays authoritative.
+		if sessionMetaFilePresent(pe.StateDir, threadID) {
+			if abandonErr := s.cfg.DeletionStore.Abandon(fence.ProjectID, fence.Generation); abandonErr != nil {
+				skip.Reason += "; abandon deletion fence: " + abandonErr.Error()
+			}
+		}
+		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{*skip}, projectID)
 	}
 
 	rebuilt, err := rebuildProjectDeletionPast(s.cfg.Past)
@@ -98,9 +124,12 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	if len(decisionErrors) > 0 {
 		return appwire.SessionDeleteResponse{}, appwire.InternalError(strings.Join(decisionErrors, "; "))
 	}
+	if err := s.cfg.DeletionStore.MarkDeleted(fence.ProjectID, fence.Generation); err != nil {
+		return appwire.SessionDeleteResponse{}, appwire.InternalError("commit deleted state: " + err.Error())
+	}
 	release()
 	release = nil
-	return s.sessionDeleteResponse(ctx, []string{threadID}, nil, projectKeyForStateDir(pe.StateDir))
+	return s.sessionDeleteResponse(ctx, []string{threadID}, nil, projectID)
 }
 
 func (s *WebServer) sessionDeleteResponse(

@@ -684,9 +684,6 @@ type sessionAPILogReleaser interface {
 // ReleaseSessionAPILog releases any routed API-log ownership held by the
 // client's middleware for sessionID.
 func (c *Client) ReleaseSessionAPILog(sessionID string) error {
-	if c == nil {
-		return nil
-	}
 	var result error
 	for _, middleware := range c.middlewareSnapshot() {
 		if releaser, ok := middleware.(sessionAPILogReleaser); ok {

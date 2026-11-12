@@ -441,6 +441,145 @@ func rejectedSignatureFixture(t *testing.T, turns []schema.Turn) (base, sid stri
 	return base, sid
 }
 
+func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retained_tail_metrics", func(t *testing.T) {
+		t.Parallel()
+		readCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "read_file", `{"path":"huge.log"}`),
+		}})
+		readRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "read_file", truncationBanner+" truncated body", false),
+		}})
+		loopSteer := steeringTurn("loop warning", events.SteeringKindLoopDetected)
+		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			communicateCall(true, ""),
+		}})
+		staleNotif := steeringTurn("job finished", events.SteeringKindNotification)
+		postDoneUser := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			assistantText("one more check"),
+		}})
+		shellCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c2", "shell", `{"cmd":"cat /root/secret"}`),
+		}})
+		shellRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c2", "shell", "permission denied: /root/secret", true),
+		}})
+
+		turns := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("start")}}),
+			readCall,     // 1
+			readRes,      // 2
+			loopSteer,    // 3
+			doneCall,     // 4
+			staleNotif,   // 5
+			postDoneUser, // 6
+			shellCall,    // 7
+			shellRes,     // 8
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
+			foldCopy(readCall, 1),
+			foldCopy(readRes, 2),
+			foldCopy(loopSteer, 3),
+			foldCopy(staleNotif, 5),
+			foldCopy(postDoneUser, 6),
+			foldCopy(shellCall, 7),
+			foldCopy(shellRes, 8),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if got := h.ToolCalls["read_file"]; got != 1 {
+			t.Errorf("ToolCalls[read_file] = %d, want 1", got)
+		}
+		if got := h.ToolCalls["shell"]; got != 1 {
+			t.Errorf("ToolCalls[shell] = %d, want 1", got)
+		}
+		if got := h.ToolErrors["shell"]["denied"]; got != 1 {
+			t.Errorf("ToolErrors[shell][denied] = %d, want 1", got)
+		}
+		if h.LongestIdenticalRun.Length != 1 {
+			t.Errorf("LongestIdenticalRun = %+v, want Length 1", h.LongestIdenticalRun)
+		}
+		if h.TruncationWarnings != 1 {
+			t.Errorf("TruncationWarnings = %d, want 1", h.TruncationWarnings)
+		}
+		if got := h.Steering[events.SteeringKindLoopDetected]; got != 1 {
+			t.Errorf("Steering[loop-detected] = %d, want 1", got)
+		}
+		if got := h.Steering[events.SteeringKindNotification]; got != 1 {
+			t.Errorf("Steering[notification] = %d, want 1", got)
+		}
+		if h.StaleNotifications != 1 {
+			t.Errorf("StaleNotifications = %d, want 1", h.StaleNotifications)
+		}
+		if h.UserCorrections != 2 {
+			t.Errorf("UserCorrections = %d, want 2", h.UserCorrections)
+		}
+	})
+
+	t.Run("pre_done_copy_after_done_not_counted_as_post_done", func(t *testing.T) {
+		t.Parallel()
+		userBeforeDone := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			assistantText("initial task"),
+		}})
+		notifBeforeDone := steeringTurn("delegate finished", events.SteeringKindNotification)
+		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			communicateCall(true, ""),
+		}})
+
+		turns := []schema.Turn{
+			userBeforeDone,
+			notifBeforeDone,
+			doneCall,
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			foldCopy(userBeforeDone, 0),
+			foldCopy(notifBeforeDone, 1),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if h.StaleNotifications != 0 {
+			t.Errorf("StaleNotifications = %d, want 0", h.StaleNotifications)
+		}
+		if h.UserCorrections != 0 {
+			t.Errorf("UserCorrections = %d, want 0", h.UserCorrections)
+		}
+	})
+
+	t.Run("single_replayed_call_is_not_identical_run_of_two", func(t *testing.T) {
+		t.Parallel()
+		shellCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "shell", `{"cmd":"false"}`),
+		}})
+		shellRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "shell", "exit 1", true),
+		}})
+
+		turns := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("run")}}),
+			shellCall,
+			shellRes,
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			foldCopy(shellCall, 1),
+			foldCopy(shellRes, 2),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if h.LongestIdenticalRun.Length != 1 {
+			t.Errorf("LongestIdenticalRun = %+v, want Length 1", h.LongestIdenticalRun)
+		}
+	})
+}
+
 // A result call's end_turn counts only when its arguments parse and say so.
 func TestCallArgsEndTurn(t *testing.T) {
 	if callArgsEndTurn(json.RawMessage(`{not json`)) {

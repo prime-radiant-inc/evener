@@ -45,7 +45,6 @@
               "durationMs": 30000,
               "packetKind": "terminal_error",
               "message": "provider returned 500\nretry-after: 30",
-              "turns": [],
               "branch": {
                 "error": "child session \"child-dlg_failed\" unavailable in state directory"
               }
@@ -79,7 +78,6 @@
               "durationMs": 30000,
               "packetKind": "reported",
               "message": "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
-              "turns": [],
               "branch": {
                 "error": "child session \"child-dlg_reported\" unavailable in state directory"
               }
@@ -114,7 +112,6 @@
               "durationMs": 30000,
               "packetKind": "terminal_error",
               "message": "Stopped by the user.",
-              "turns": [],
               "branch": {
                 "error": "child session \"child-dlg_stopped\" unavailable in state directory"
               }

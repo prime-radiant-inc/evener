@@ -291,7 +291,7 @@ func TestAgentNotesSelfEchoSuppressedInResponsesDeltaWithPriorHumanNote(t *testi
 			t.Fatalf("Responses delta retained self-echo TurnNotesContext in candidate.Delta: %+v", candidate.Delta)
 		}
 	}
-	deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta)
+	deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta, nil)
 	if !hasToolResultNamed(deltaMsgs, "notes_agent_set") {
 		t.Fatalf("Responses delta messages lost notes_agent_set tool result: %+v", deltaMsgs)
 	}
@@ -394,7 +394,7 @@ func TestConcurrentHumanNoteOrURLRemovalDuringAgentNotesRoundReachesModel(t *tes
 		if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 			t.Fatalf("Continuation decision = %+v, want HistoryModeResponsesDelta", decision)
 		}
-		deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta)
+		deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta, nil)
 		deltaUserMsgs := userRoleTextMessages(deltaMsgs)
 		if len(deltaUserMsgs) != 1 || !strings.Contains(deltaUserMsgs[0], u1.ID) || strings.Contains(deltaUserMsgs[0], u2.ID) {
 			t.Fatalf("delta user messages = %+v, want human URL removal projection carrying %s without %s", deltaUserMsgs, u1.ID, u2.ID)
@@ -443,7 +443,7 @@ func TestConcurrentHumanNoteOrURLRemovalDuringAgentNotesRoundReachesModel(t *tes
 		if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 			t.Fatalf("Continuation decision = %+v, want HistoryModeResponsesDelta", decision)
 		}
-		deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta)
+		deltaMsgs := responsesContinuationDeltaMessages([]llm.Message{llm.System("sys")}, candidate.Delta, nil)
 		deltaUserMsgs := userRoleTextMessages(deltaMsgs)
 		if len(deltaUserMsgs) != 1 || !strings.Contains(deltaUserMsgs[0], "opaque-agent-706b") || strings.Contains(deltaUserMsgs[0], sole.ID) {
 			t.Fatalf("delta user messages = %+v, want projection reflecting sole URL removal", deltaUserMsgs)

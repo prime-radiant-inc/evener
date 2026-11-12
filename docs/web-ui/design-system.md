@@ -6,13 +6,14 @@ The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in b
 
 **Platform scope.** This guide governs the web frontend, including its phone browser
 layout. The native iPhone app is governed by [mobile-native/DESIGN.md](../../mobile-native/DESIGN.md)
-and its [native tokens](../../mobile-native/src/design/tokens.ts). Evener shares semantic
-color meanings, identity, and the distinction between conversation, evidence, and controls.
-Typography, surface values, geometry, and navigation remain platform-native: do not copy
-this guide's desktop hex values, type sizes, radii, or breakpoint rules literally onto iOS.
-The native app uses neutral light/dark surfaces, SF interface text, optional Source Serif
-reading text, Menlo evidence, and native stacks and sheets. References to phone or mobile
-layout below mean the web frontend, not the React Native app.
+and its [native tokens](../../mobile-native/src/design/tokens.ts). Both clients render the
+one palette in [the shared palette source](../../appwire-client/typescript/palette.ts); the native tokens alias its
+roles onto the phone's surface vocabulary, so the palette and its semantic meanings are
+shared rather than transcribed twice. Typography, geometry, and navigation remain
+platform-native: do not copy this guide's type sizes, radii, or breakpoint rules literally
+onto iOS. The native app uses neutral light/dark surfaces, SF interface text, optional
+Source Serif reading text, Menlo evidence, and native stacks and sheets. References to
+phone or mobile layout below mean the web frontend, not the React Native app.
 
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
@@ -118,26 +119,35 @@ losing the conversation that made the evidence relevant.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
   Phones keep one bottom surface: the pane renders no separate footer strip below the
-  composer, so the composer's own control row carries the session's activity: Attach,
-  the model and reasoning chrome line, the activity chips, and Send or Stop. The
-  composer dock owns the home-indicator band; the inset yields when the on-screen
-  keyboard covers that area. The working-directory strip stays desktop-only: a phone
+  composer, so the composer's own control row carries Attach, the model and reasoning
+  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
+  where the desktop status bar puts them, and that line is the pane's bottom edge: on
+  the phone the chips fill the home-indicator band themselves, so the dock reserves no
+  space below them. The composer dock owns the home-indicator band, and that band is one
+  token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
+  var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
+  on-screen keyboard covers the band. The working-directory strip stays desktop-only: a phone
   reads the session's working directory and branch through the session menu's Overview
   (About) and never stacks a second strip below the composer. A phone chip shows its
-  glyph, its name when the width can carry it, and a single active count (settled for
-  Tasks); the full active/total fraction stays in its accessible name, tooltip and the
-  Overview. While the card rests, an empty unfocused editor with no send in flight,
-  the row sheds Attach and the chips and keeps the session menu and Send, so session
-  actions stay reachable without focusing first; focus, a draft or a send brings the
-  full row back, and a running turn keeps its Stop through the actions that never
-  shed. The exited follow-up keeps its full row at rest: it is the one place on a
-  phone the model picker is directly reachable without engaging the editor. At the
-  466px Duo cover width, the same control row uses tighter framing, and the existing
-  composer shrinks only its empty, unfocused field to one line; focus, drafts,
-  attachments, and question/approval docks keep their ordinary writing and response
-  space. The four activity counters stay in the app with their existing Overview
-  links. The OS-owned Duo system rail is not a public customization surface, so no
-  counters move there.
+  glyph and a single active count (settled for Tasks); its category name and the full
+  active/total fraction stay in its accessible name and tooltip. While the card rests —
+  empty, unfocused, no send in flight — a composer
+  with room folds to one row: the placeholder beside the model and effort, with the
+  session menu and Send at the right. The paperclip returns with the expanded card,
+  and focusing or typing grows it back through the spatial-motion budget. The space
+  around the card keeps its outgoing height until the animation starts, so a
+  transcript resting at its end stays there through the fold. A phone's
+  resting composer is one line too, but it keeps only the session menu and Send
+  there; engaging the editor restores the full row, including Attach and the model
+  picker. A desktop card under 620px keeps the stacked control row and the folded
+  one-line field. The phone's resting card sheds Attach, the model chrome and the
+  activity line: the folded card is the phone's smallest surface, and the counts come
+  back with the expanded card. At the 466px Duo cover width the control row
+  tightens; focus, drafts, attachments, and question/approval docks keep their writing
+  and response space. The
+  four activity counters stay in the
+  app with their existing Overview links. The OS-owned Duo system rail is not a public
+  customization surface, so no counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -329,7 +339,16 @@ navigation summaries carry no frame trace and every session row must stay one li
 is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red diamond = Failed, turning alive
 ring = Working. The shape difference keeps needs-you and failed distinct without hue, and the
 accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
-no indicator. The visible face is indicator, title, and age/actions only. Project,
+no indicator.
+
+**Rail header.** One row carries the `evener` wordmark at the left and the Settings, Search and
+Hide-sidebar icons hard right, so the app's name and its global actions share a line. The
+wordmark never truncates: the row is sized to fit at the 200px sidebar minimum. A needs-you chip
+sits in the same identity block, 4px under that row, rather than equidistant between it and the
+New-session button, which follows a run (8px) below. The rail names the product once; it does not
+also print the hub's advertised server name, which is the constant `evener-hub` on every hub.
+
+The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
@@ -357,14 +376,17 @@ viewport. Other HoverCards and tooltips keep their default placement.
 
 ## 2. Tokens as shipped
 
-`src/styles/tokens.css` is the single source of every color, type, space, radius, and motion
-value in the web app. Consumers only ever write `var(--name)` — no component CSS branches on
-theme; the light-theme block (`[data-theme="light"]`) redeclares every color token under the
-same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
-but not the other's.
+The one palette lives in [the shared palette source](../../appwire-client/typescript/palette.ts),
+which the phone aliases and which owns the shared OKLab mix. `src/styles/tokens.css` declares that palette
+as custom properties for the web, alongside the type, space, radius, and motion values the
+web app uses; consumers only ever write `var(--name)` — no component CSS branches on theme,
+the light-theme block (`[data-theme="light"]`) redeclares every color token under the same
+name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block but
+not the other's or if a value drifts from the shared palette.
 
 **Color** — the cool neutral roles below are implemented in both theme blocks. All existing
-token names are retained. The table is a reference; `tokens.css` is authoritative.
+token names are retained. The table is a reference; `tokens.css` is authoritative for the
+web's custom properties, and `@evener/appwire-client/palette` for the values themselves.
 
 | Role | Dark | Light |
 |---|---|---|
@@ -373,19 +395,20 @@ token names are retained. The table is a reference; `tokens.css` is authoritativ
 | Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
 | Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
 | Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
-| Hover / selected `--hover-1/2` | `#252931` / `#2E333C` | `#E7EAEF` / `#DCE0E7` |
+| Hover / selected `--hover-1/2` | `#252931` / `#303034` | `#E7EAEF` / `#DCDEE3` |
 | Editable field `--field` | `#23272E` | `#F1F3F6` |
 | Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
-| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#626873` |
+| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#5C626D` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.23/5.09.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.72/6.14.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
-companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
-`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own tinted grounds.
+companions. Text uses `-ink`, never the bare hue. Light attention/alive/danger/accent text
+colors are `#9C4908` / `#0F6E36` / `#BD1B21` / `#005FBA`, darkened to preserve AA on their
+own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
@@ -446,9 +469,15 @@ status row's percent/clock/queue figures, the rail's relative ages, and the turn
 Design System's own spacing progression, adopted because it's the only well-known scale that
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
 grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
-`--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
+`--radius-control` 4px, `--radius-pane` 4px, `--radius-panel` 8px for a floating
+disclosure card that sits inside a pane (the session notes card) and `--radius-pill`
+999px for switch tracks.
 Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
+`--dock-clearance` is the home-indicator band a bottom dock keeps its content
+clear of, `max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))`:
+0 off a phone, and it yields as the on-screen keyboard rises so a dock spends
+the band once rather than padding under it.
 
 **Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
 for how far apart two things sit: `--rhythm-line` (4px, inside one item, an intent line above
@@ -481,6 +510,12 @@ typed text input is louder than the palette wants. Hand-rolled ring geometry (ba
 outlines in any order/unit, the outline longhands, or the retired inset-ring `box-shadow` hack) is
 contract-banned; see §4. Dropzone's dashed drag-target outline is signage, not a focus ring, and
 holds the second (and last) contract exception.
+
+Every `:focus-visible` element also carries `--focus-ring-scroll-margin` (6px: the ring width plus
+the largest positive outline-offset, with a sub-pixel scroll-rounding allowance). A keyboard
+scroll-into-view aligns the focused box with the scrollport edge; this margin keeps the ring, which
+paints outside that box, from clipping. `global.css` owns the one rule, and token-contract checks
+every positive outline-offset in the tree against it.
 
 **Stacking order** — The app's own z-index values are tokenized to keep stacking context
 predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane),
@@ -546,7 +581,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
 | **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the passive page-ground section: `--space-4` padding, no outside border (its ring is `--shadow-card`). `variant="outlined"` is a bordered box for a block inside a denser flow (an `ask_user` question in the transcript, the spawn form's plugin and advanced-options panels, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--space-3` padding. `tone="attention"` is the "a human is needed right now" envelope (the pending AskDock batch, a parked sandbox approval): the outlined geometry in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
-| **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `hidden` also makes the card `inert`. |
+| **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; folded?: boolean; foldedCompact?: boolean; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `folded` puts the field and control row on one line when the card is at least 620px wide and animates the height between the folded and stacked shapes; a narrower card keeps the stacked shape. `foldedCompact` lets a caller that knows its control row is compact use the one-line shape below that threshold (the phone's menu-only resting row). `hidden` also makes the card `inert`. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; required?; autoComplete?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?; "aria-label"?; "aria-describedby"?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. `aria-label` names a field with no visible label (the settings filter, an env-add row) in place of a hand-made visually-hidden `<label>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; minLines?; id?; name?; onKeyDown?; onFocus?; onBlur?; onPaste?; "aria-label"?; seamless?: boolean; monospace?: boolean}` | `forwardRef<HTMLTextAreaElement>`. `autoGrow` measures the rendered `scrollHeight` after each value change (so wrapped lines grow it too), clamped to half the viewport height. `minLines` sets the resting height in lines. `seamless` drops the field's own box and focus ring for a card that draws one (PromptCard), which must then own the focus affordance. `monospace` sets the mono face for text edited as code or config (the AGENTS.md editor, a credential's JSON); only the face changes, so the field keeps its control-size floor on phones. |
 | **Select** | `{value: string; onChange; options: {value; label; disabled?: boolean}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (the richer pickers, PathField and ModelCatalog, own their own combobox panels). A `disabled` option is listed but cannot be picked (an offline host in Spawn's host picker); say why in its `label`, since a native option has room for nothing else. |
@@ -571,7 +606,7 @@ during implementation (noted inline); this table is the one to trust.
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
 | **Banner** | `{tone: "attention"\|"danger"; message: string; action?: {label; onClick; inFlight?}}` | An overlay status strip for "the connection needs a human" moments (ConnectionBanner composes it): absolutely positioned full-width at the top of its positioning ancestor, so it floats over content instead of shifting layout — the ancestor must establish a positioning context. A polite `role="status"` live region; `inFlight` disables the action and appends "…" to its label. |
-| **PaneScaffold** | `{title?; mobileTitle?; paneId?; publishTabTitle?; focused?; focusSelector?; scaffoldMarker?; cadence?; actions?; footer?; edgeFooter?; bodyScroll? (true); children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional padded footer + optional flush `edgeFooter`. `title` is omitted where the host already labels the pane (the cascade's tab); `mobileTitle ?? title` is published to the mobile top bar. `bodyScroll={false}` is for content that scrolls itself, and also drops the body's padding. Most-copied layout primitive in the app. |
+| **PaneScaffold** | `{title?; mobileTitle?; paneId?; publishTabTitle?; focused?; focusSelector?; scaffoldMarker?; cadence?; actions?; footer?; edgeFooter?; bodyScroll? (true); children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional padded footer + optional flush `edgeFooter`. `title` is omitted where the host already labels the pane (the cascade's tab); `mobileTitle ?? title` is published to the mobile top bar. `bodyScroll={false}` is for content that scrolls itself, and also drops the body's padding. The body's bottom inset is end-of-scroll clearance for the pane's own bottom edge, so a pane with any slot below its body (`footer`, or a flush `edgeFooter` alone) hands that edge to that surface's top hairline and the body drops its bottom inset to meet it (layoutguard `pane-body-composer-gap`); footer-less panes keep the inset to clear a phone's home indicator. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; copyText?; language?: string; ansi?: boolean; showLineNumbers?: boolean; copyLabel?; renderLine?(line, lineNumber); fold? (true)}` | Mono block with a CopyButton inset top-right (`copyLabel` names it, `copyText` overrides what it copies); no syntax highlighting (YAGNI this wave). Long lines wrap, never scroll sideways. Long content folds to its tail behind a "Show N earlier lines" control unless `fold={false}`, for a block that is the primary thing the reader opened. `ansi` renders SGR styling. |
 | **ShellCommandBlock** | `{command: string; copyText?: string}` | A shell command as a CodeBlock: formatted across lines with indentation and token-kind spans, never tail-folded, with a "Copy command" button that copies the raw `command` (or `copyText`, for a caller that displays a modified command). |
 | **Markdown** (+ **MarkdownBubble**) | `{source: string; live?: boolean; ref?: Ref<HTMLDivElement>}`; bubble: `{source; density?: "default"\|"compact"; dataTestId?}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access; mermaid fences render through MermaidDiagram. `live` closes constructs left open at a streaming tail so formatting renders mid-stream — settled renders must not pass it. MarkdownBubble wraps a Markdown in a bubble frame. |
@@ -588,7 +623,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Eyebrow** | `{as?: "div"\|"span"\|"h3"; children: ReactNode}` | The one eyebrow recipe (§2): `--font-size-caption`, `--font-weight-medium`, `--ink-mid`, uppercase, `--tracking-eyebrow`, at most two words, copy sentence-case in source. Titles a group inside a page, never a pane title. `as="h3"` when the label heads a section readers navigate by heading (cheatsheet groups, rail sections); `"span"` inline beside other text (a hover card's kind label). Layout around it (rules, margins, padding in a list) stays the caller's. |
 | **PropertyList** | `{layout?: "inline"; eyebrowLabels?: boolean; rows: {label: string; value: ReactNode; mono?: boolean; wrap?: boolean}[]} \| {layout: "stacked"; rows: {label: string; value: ReactNode; mono?: boolean; help?: ReactNode}[]}` | Read-only label/value facts: §10's meta table idiom as a semantic `<dl>` (one `<div>` per term and its definitions). Values `--font-size-ui` `--ink-hi` in the UI face, `mono` for machine-shaped values (versions, sources, paths). `label` is the row key and must be unique. **Inline** (default): fixed 96px caption `--ink-mid` label column beside the value; values truncate with an ellipsis, except a row with `wrap`, whose value shows in full, breaking anywhere — for a value the reader is confirming before acting (the hosts deploy plan, the rail's session context card). `eyebrowLabels` sets the label column in §2's eyebrow recipe — uppercase caption, `--tracking-eyebrow`, medium weight — for a fact list that reads as a card's rows (the provider card's access-review Was/Now). **Stacked**: label over value, each value wrapping on its own line, rows further apart, and an optional per-row `help` sentence (caption, `--ink-mid`) under the value as a second `<dd>` of the same term — for settings overview fields (SettingsField and its consumers) and the session DetailsPanel. `help` exists only on stacked rows, `wrap` and `eyebrowLabels` only on inline ones; the union type enforces it. |
 | **ShortcutList** | `{items: {keys: string[]; label: ReactNode}[]}` | Reference list of keyboard shortcuts: a `<dl>` whose terms are KeyHint chords (right-aligned in a max-content column) and whose definitions are the action, `--font-size-ui` `--ink-mid`. One chord per item; the same chord may repeat with different meanings. Not for editable bindings (keybindings settings) or rows with alternative/multi-press chords (cheatsheet). |
-| **ListRow** | `{label: ReactNode; leading?: ReactNode; chips?: ReactNode; meta?: ReactNode; variant?: "collection"\|"plain"} & ({onSelect: () => void; disabled?: boolean; trailingAction?: ReactNode; action?: never} \| {onSelect?: undefined; disabled?: never; action?: ReactNode; trailingAction?: never}) & Omit<HTMLAttributes, "children"\|"className"\|"onClick"\|"onSelect">` | The full-width list row. With `onSelect` the row is interactive, in two shapes: without `trailingAction` the whole row is one real `<button>` (§10: one target on desktop and touch); with `trailingAction` it is a container `<div>` that keeps the row frame and the `--hover-1` wash (hover and focus-within), whose main area (`leading`, `label`, `chips`, `meta`) is the `<button>` that runs `onSelect`, and whose trailing slot holds the `trailingAction` followed by the drill-in chevron — no nested buttons, a click on the control never fires `onSelect` (the container carries no click handler), and two tab stops (main, then control) is the accepted keyboard shape. Without `onSelect` the row is a passive `<div>` that may carry ONE trailing `action` (§10 caps a row there; a cluster of row buttons belongs in the item's detail sheet; the interactive arm takes `trailingAction` — `action` is `never` there). Layout: `leading` glyph on the label's line, `label` one truncating line followed by `chips`, `meta` one truncating line under the label. The chips never squeeze the label below a readable floor (12ch): when the label's floor and the chips do not fit on one line the chips wrap under the label (and among themselves), so a narrow phone row keeps its name legible; a short label keeps its chips right beside it (layoutguard `listrow-chips-keep-label`). `variant="collection"` (default) is §10's collection row: framed `--surface-1` row, mono `--ink-mid` meta, trailing drill-in Chevron when interactive (after the `trailingAction` slot when one is given). `variant="plain"` is a row inside another surface (a picker's choice, an activity-sidebar entry): no frame, no chevron, denser padding, sans `--ink-low` meta. An interactive row with `aria-disabled="true"` refuses activation the way Button does (`refuseClick`), keeps focus, and is styled like a disabled one. Both: `--hover-1` wash, inset focus ring, `--tap-min` floor on phones and coarse pointers (interactive rows and all collection rows); in the `trailingAction` shape the wash rides the container while the main button keeps the inset ring and the floor. `forwardRef` to the root (the whole-row `<button>` when interactive without `trailingAction`, the split container with it, for focus restore) and rest-spread of native attributes (aria-\*, data-\*, title) before its own type/className/onClick/disabled, mirroring Button. Callers own the `<ul>/<li>` and the gap between rows. |
+| **ListRow** | `{label: ReactNode; leading?: ReactNode; chips?: ReactNode; meta?: ReactNode; variant?: "collection"\|"plain"} & ({onSelect: () => void; disabled?: boolean; trailingAction?: ReactNode; action?: never} \| {onSelect?: undefined; disabled?: never; action?: ReactNode; trailingAction?: never}) & Omit<HTMLAttributes, "children"\|"className"\|"onClick"\|"onSelect">` | The full-width list row. With `onSelect` the row is interactive, in two shapes: without `trailingAction` the whole row is one real `<button>` (§10: one target on desktop and touch); with `trailingAction` it is a container `<div>` that keeps the row frame and the `--hover-1` wash (hover and focus-within), whose main area (`leading`, `label`, `chips`, `meta`) is the `<button>` that runs `onSelect`, and whose trailing slot holds the `trailingAction` followed by the drill-in chevron — no nested buttons, a click on the control never fires `onSelect` (the container carries no click handler), and two tab stops (main, then control) is the accepted keyboard shape. Without `onSelect` the row is a passive `<div>` that may carry ONE trailing `action` (§10 caps a row there; a cluster of row buttons belongs in the item's detail sheet; the interactive arm takes `trailingAction` — `action` is `never` there). Layout: `leading` glyph on the label's line, `label` one truncating line followed by `chips`, `meta` one truncating line under the label. The chips never squeeze the label below a readable floor (12ch): when the label's floor and the chips do not fit on one line the chips wrap under the label (and among themselves), so a narrow phone row keeps its name legible; a short label keeps its chips right beside it (layoutguard `listrow-chips-keep-label`). `variant="collection"` (default) is §10's collection row: framed `--surface-1` row, mono `--ink-mid` meta, trailing drill-in Chevron when interactive (after the `trailingAction` slot when one is given). `variant="plain"` is a row inside another surface (a picker's choice, an activity-sidebar entry): no frame, no chevron, denser padding, sans `--ink-low` meta. An interactive row with `aria-disabled="true"` refuses activation the way Button does (`refuseClick`), keeps focus, and is styled like a disabled one. Both: `--hover-1` wash, inset focus ring, `--tap-min` floor on phones and coarse pointers (interactive rows and all collection rows); in the `trailingAction` shape the wash rides the container while the main button keeps the inset ring and the floor, and the frame stays unwashed while that button is refused so the trailing control remains usable. `forwardRef` to the row's focusable control (the whole-row `<button>` when interactive without `trailingAction`, the split row's main `<button>` with it; a read-only row's ref names its container) and rest-spread of native attributes (data-\*, title, handlers) onto the root, with the control-describing ARIA (`aria-label`, `aria-labelledby`, `aria-describedby`, `aria-description`, `aria-disabled`, `aria-expanded`, `aria-controls`, `aria-haspopup`, `aria-current`) on that main button, before its own type/className/onClick/disabled, mirroring Button. Callers own the `<ul>/<li>` and the gap between rows. |
 | **CloseIcon** | none | The close ✕ glyph Dialog and Sheet draw in their close button (lives at `src/widgets/dialog/CloseIcon.tsx`), for any other icon-only close or dismiss control (the settings pane's close, Spawn's dismiss, an InlineNotice dismiss action). Decorative (`aria-hidden`), stroke in currentColor; the IconButton's `label` names the action. |
 | **DirectoryIcon** | none | The folder glyph DirectoryPicker draws beside folder rows (exported from `src/widgets/directorypicker`), for a control that opens or names a directory (Spawn's working-directory row). Decorative (`aria-hidden`), stroke in currentColor. |
 | **DisclosureHeading** | `{level: 2\|3\|4\|5\|6; label: string; open: boolean; onOpenChange(open: boolean); eyebrow?: boolean; action?: ReactNode}` | A heading that folds the group below it: an `<hN>` wrapping an `aria-expanded` button with a trailing Chevron, plus an optional `action` (a section's icon-only Menu) rendered beside the heading, never inside it. Controlled only; the caller renders the group, and only while `open`. The heading's name is the label (the chevron is `aria-hidden`). `eyebrow` sets the label as an Eyebrow group label; leave it off for an authored name that keeps its casing (a pinned section). Inset focus ring; phones and coarse pointers get the 44px tap floor. It is not a Disclosure variant because a heading inside `<summary>` loses its heading role and a summary may not hold the action. Used by the rail's Live, Hosts/Projects, pinned and Archived sections. |
@@ -1094,7 +1129,7 @@ query, so desktop sizing never changes; `src/styles/display-gates.test.ts`
 fails if a widget's `var(--tap-min)` sits under any other gate.
 
 When a form has one primary completion action, the mobile action band may be
-fixed above `env(safe-area-inset-bottom)`. It is a raised surface with a top
+fixed above `var(--dock-clearance)`. It is a raised surface with a top
 edge and no shadow; the primary control is at least 52px tall and adjacent
 secondary controls are at least 44px. The form body reserves the band's space
 so content is never covered, and the desktop action layout remains unchanged.

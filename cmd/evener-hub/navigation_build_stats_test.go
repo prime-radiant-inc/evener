@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,6 +35,25 @@ func (l *navigationStatsLog) buildLines() []string {
 		}
 	}
 	return out
+}
+
+// navigationLogCalls records the arguments of each log call, so a test can
+// check the structured values a line is built from instead of its wording.
+type navigationLogCalls struct {
+	mu    sync.Mutex
+	calls [][]any
+}
+
+func (l *navigationLogCalls) Logf(_ string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, args)
+}
+
+func (l *navigationLogCalls) all() [][]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][]any(nil), l.calls...)
 }
 
 // statsFields parses "navigation build: k=v k=v" into a map.
@@ -250,6 +270,85 @@ func TestNavigationBuildTimeoutNamesProjectionPhase(t *testing.T) {
 	lines := logs.buildLines()
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "navigation build timed out in projection: ") {
 		t.Fatalf("build lines = %q, want one timeout line naming projection", lines)
+	}
+}
+
+// A build that fails before its deadline logs the phase and the error, so a
+// navigation surface that stops updating has a cause in the hub log.
+func TestNavigationBuildFailureLogsPhaseAndError(t *testing.T) {
+	captureErr := errors.New("favorite store unreadable")
+	projectionErr := errors.New("projection refused")
+	for _, tc := range []struct {
+		name  string
+		phase string
+		want  error
+		setup func(t *testing.T, source *testNavigationSource)
+	}{
+		{
+			name:  "capture",
+			phase: "capture",
+			want:  captureErr,
+			setup: func(_ *testing.T, source *testNavigationSource) { source.err = captureErr },
+		},
+		{
+			name:  "projection",
+			phase: "projection",
+			want:  projectionErr,
+			setup: func(t *testing.T, _ *testNavigationSource) {
+				old := buildNavigationServiceProjectionContext
+				buildNavigationServiceProjectionContext = func(context.Context, navigationBuildInputs) (navigationProjection, error) {
+					return navigationProjection{}, projectionErr
+				}
+				t.Cleanup(func() { buildNavigationServiceProjectionContext = old })
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &navigationLogCalls{}
+			source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+			tc.setup(t, source)
+			service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+				cfg.Logf = logs.Logf
+				cfg.statsSlow = time.Hour
+			})
+			if _, err := service.Refresh(t.Context(), navigationChangeHint{}); !errors.Is(err, tc.want) {
+				t.Fatalf("refresh error = %v, want %v", err, tc.want)
+			}
+			calls := logs.all()
+			if len(calls) != 1 || len(calls[0]) != 3 {
+				t.Fatalf("log calls = %v, want one failure call carrying phase, stats and error", calls)
+			}
+			if got := calls[0][0]; got != tc.phase {
+				t.Errorf("logged phase = %v, want %q", got, tc.phase)
+			}
+			if got := calls[0][2]; got != tc.want.Error() {
+				t.Errorf("logged error = %v, want %q", got, tc.want.Error())
+			}
+		})
+	}
+}
+
+// A build canceled because the service is stopping is not a failure worth a
+// line: shutdown would otherwise log one per in-flight build.
+func TestNavigationBuildCanceledByStopDoesNotLog(t *testing.T) {
+	logs := &navigationLogCalls{}
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Logf = logs.Logf
+	})
+	refreshed := make(chan error, 1)
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{})
+		refreshed <- err
+	}()
+	<-source.entered
+	service.stopLifecycle()
+	if err := <-refreshed; err == nil {
+		t.Fatal("refresh of a build canceled by stop succeeded")
+	}
+	if calls := logs.all(); len(calls) != 0 {
+		t.Errorf("log calls = %v, want none", calls)
 	}
 }
 

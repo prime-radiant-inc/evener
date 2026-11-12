@@ -1,4 +1,4 @@
-// Package testfs holds filesystem fixtures shared by command tests.
+// Package testfs holds filesystem fixtures shared by tests across the module.
 package testfs
 
 import (

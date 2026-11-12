@@ -1,0 +1,26 @@
+{
+  "name": "pane-body-composer-gap",
+  "description": "A pane with any slot below its body closes its scrolling body on that surface's top hairline, with no dead band below the last content row (the session pane's composer footer, and a flush edge footer alone), while a footer-less pane keeps the body's end-of-scroll inset.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "viewport": {
+    "width": 1440,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    {
+      "width": 1440
+    }
+  ],
+  "mutation": {
+    "declaration": "panescaffold.module.css: (a) remove the `.body:not(:last-child)` / `.body:last-child` pair, or (b) on the phone case only, remove the phone block's `--pane-body-edge-inset` restatement",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Measured 2026-11-11 at 1440px. Removing the selector pair fails the docked-footer and flush-edge-footer fixtures with a 24.0px band above each surface (the flush fixture still passes: .body.bodyNoScroll zeroes it independently). Moving the pair after .bodyNoScroll instead reverses the tie and fails the flush fixture with 24.0px below its scroll surface. Restoring and restoring the order passes all four."
+  }
+}

@@ -64,7 +64,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	}
 	// A response can be lost after the replacement was applied. Replay that
 	// saved receipt before taking the exclusive gate: another client may already
-	// be running a turn on the replacement, which holds the gate's read side.
+	// be mutating the replacement, which holds the gate's read side.
 	if decision, ok := s.replayAppliedThreadClear(params, requestHash); ok {
 		return decision.response, decision.err
 	}
@@ -80,6 +80,15 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	case threadClearRecover:
 		return s.recoverThreadClear(params)
 	case threadClearProceed:
+		replace := decision.fn
+		decision.fn = func(ctx context.Context, params appwire.ThreadClearParams) error {
+			release, err := s.holdAutomaticInput(ctx)
+			if err != nil {
+				return err
+			}
+			defer release()
+			return replace(ctx, params)
+		}
 		return s.runThreadClear(ctx, params, decision)
 	default:
 		return appwire.ThreadClearResponse{}, decision.err

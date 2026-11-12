@@ -6,21 +6,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// toolResultContent extracts string content from a TurnTool.
-func toolResultContent(t schema.Turn) string {
-	for _, p := range t.Message.Content {
-		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-			if s, ok := p.ToolResult.Content.(string); ok {
-				return s
-			}
-		}
-	}
-	return ""
-}
 
 func TestContextManager_AddUsage_Accumulates(t *testing.T) {
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
@@ -68,8 +55,4 @@ func assistantWithToolCall(id, name, argsJSON string) llm.Message {
 			}},
 		},
 	}
-}
-
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

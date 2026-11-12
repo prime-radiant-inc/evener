@@ -121,8 +121,8 @@ func TestResolve_LookupSteps(t *testing.T) {
 		t.Fatalf("live: %+v", res.Provenance)
 	}
 	res = mustResolve(t, r, "ollama/qwen3:8b")
-	if *res.Caps.ContextWindow != 131072 || res.Provenance["ContextWindow"] != "overlay/provider" {
-		t.Fatalf("live row without a window keeps the provider default: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	if res.Caps.ContextWindow != nil {
+		t.Fatalf("a live row without a window leaves the window unknown: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
 	}
 	r = fixtureLoad(t, nil, "[providers.ollama.models.\"qwen3*\"]\ncontext_window = 40960\n")
 	r.ApplyLive("ollama", []Model{{ID: "qwen3:8b", Caps: Caps{ContextWindow: new(8192)}}})
@@ -210,8 +210,9 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"AZURE_RESOURCE_NAME": "contoso"}, "[providers.azure.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
 	res := mustResolve(t, r, "anthropic/claude-sonnet-4-5[1m]")
 	// The [1m] row is a pure alias: its 1M window arrives through the alias
-	// fold from the base row, not from an override on the row itself.
-	if *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "alias" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
+	// fold from its target, and its provenance names the layer of the target's
+	// figure rather than "alias".
+	if *res.Caps.ContextWindow != 1000000 || ContextWindowSource(res.Provenance["ContextWindow"]) == "" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
 		t.Fatalf("[1m]: %v %v", res.Caps.ContextWindow, res.Provenance)
 	}
 	// Sonnet 4.5's 1M window is GA, so the [1m] row resolves with no beta header.
@@ -1691,5 +1692,22 @@ func TestResolve_WebSearchCanonicalGateRowDefault(t *testing.T) {
 	}
 	if bp(res.Caps.WebSearch) != "true" || hasWarning(res, "web_search disabled") {
 		t.Fatalf("a row resolved from its curated default is first-party: web_search = %s, warnings %v", bp(res.Caps.WebSearch), res.Warnings)
+	}
+}
+
+// A model nothing vouches for has an unknown window: the pseudo-providers and
+// ollama carry no provider-level window, so a live-only or unlisted model
+// reaches the session's assumed-window path instead of a made-up size. A
+// listing that reports a window governs.
+func TestPseudoProviderModelWithoutListedWindowIsUnknown(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.gw]\nprotocol = \"openai-chat\"\nbase_url = \"http://gw.invalid/v1\"\n[providers.gw-anthropic]\nprotocol = \"anthropic\"\nbase_url = \"http://gw.invalid\"\n")
+	for _, ref := range []string{"openai-compatible/any-model", "anthropic-compatible/any-model", "google-compatible/any-model", "ollama/any-model", "gw/any-model", "gw-anthropic/any-model"} {
+		if res := mustResolve(t, r, ref); res.Caps.ContextWindow != nil {
+			t.Errorf("%s: window = %d, want unknown", ref, *res.Caps.ContextWindow)
+		}
+	}
+	r.ApplyLive("gw", []Model{{ID: "any-model", Caps: Caps{ContextWindow: new(1048576)}}})
+	if res := mustResolve(t, r, "gw/any-model"); res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1048576 || res.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("a listed window governs: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
 	}
 }

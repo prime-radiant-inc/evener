@@ -41,3 +41,16 @@ func OneLinePath(p string) string {
 	}
 	return p
 }
+
+// GrepPath is how a grep result names the path p. A colon in the path would
+// blur the boundary before ":line:text", so a colon-bearing path is quoted as
+// well as a control-character one (#4526). Glob, list_dir, and shell listings
+// keep OneLinePath: their output is a usable path on a line of its own, with
+// no following field that a colon could blur, and quoting a drive letter or a
+// colon in the search root would turn an ordinary path into non-path text.
+func GrepPath(p string) string {
+	if strings.Contains(p, ":") {
+		return QuoteControlPath(p)
+	}
+	return OneLinePath(p)
+}

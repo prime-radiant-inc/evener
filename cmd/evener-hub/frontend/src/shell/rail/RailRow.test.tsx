@@ -439,7 +439,6 @@ describe("signal gutter", () => {
 describe("compact session status", () => {
   test.each([
     ["active", "Working"],
-    ["awaiting", "Needs you"],
     ["warning", "Needs you"],
     ["errored", "Failed"],
   ] as const)("state %s renders the %s indicator", (state, label) => {
@@ -447,6 +446,20 @@ describe("compact session status", () => {
 
     const signal = screen.getByTestId("rail-row-signal");
     expect(within(signal).getByRole("img", { name: label })).toBeTruthy();
+  });
+
+  test("a finished awaiting turn has no signal dot and reads Idle", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: false }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Idle")).toBeTruthy();
   });
 
   test("failed descendants do not hide running work", () => {
@@ -465,7 +478,7 @@ describe("compact session status", () => {
   test.each([
     ["active", "Working"],
     ["idle", null],
-    ["awaiting", "Needs you"],
+    ["awaiting", null],
     ["warning", "Needs you"],
   ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
     render(
@@ -534,15 +547,13 @@ describe("compact session status", () => {
     expect(within(panel).getByText("Working")).toBeTruthy();
   });
 
-  // Awaiting without a question is a turn that ended on needs_response: it
-  // waits on a person as a question does, so it outranks work too (#4093).
-  test.each([
-    ["pending question", true, "Question waiting"],
-    ["needs_response rest", false, "Needs you"],
-  ] as const)("a %s outranks running work", (_name, askPending, expected) => {
+  // A pending question waits on a person and outranks work. A turn that merely
+  // ended on needs_response is finished, so running work reads as working
+  // (#2629).
+  test("a pending question outranks running work", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: askPending, running_job_count: 1 }))}
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
         info={info()}
         actions={actions()}
       />,
@@ -551,7 +562,20 @@ describe("compact session status", () => {
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText(expected)).toBeTruthy();
+    expect(within(panel).getByText("Question waiting")).toBeTruthy();
+  });
+
+  test("a needs_response rest yields to running work", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: false, running_job_count: 1 }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
   });
 
   test("a pending approval outranks running work", () => {
@@ -777,7 +801,7 @@ describe("compact session status", () => {
 
   test.each([
     ["warning", { state: "warning" }, "Warning"],
-    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Needs you"],
+    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Idle"],
     ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
     ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
   ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
@@ -1173,7 +1197,7 @@ describe("session row", () => {
   // The moment a dormant session is given something to do it is working, and
   // the row must say THAT. Dormancy is only ever the most useful thing to
   // report on a row that is otherwise quiet.
-  test.each(["active", "awaiting", "warning", "errored"] as const)(
+  test.each(["active", "warning", "errored"] as const)(
     "a signal state (%s) outranks dormancy in the right slot",
     (state) => {
       render(
@@ -1187,6 +1211,20 @@ describe("session row", () => {
       expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
     },
   );
+
+  test("a pending question outranks dormancy in the right slot", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(
+          apiNode({ state: "awaiting", ask_pending: true, updated_at: minutesAgo(0), dormant: true }),
+        )}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-not-started")).toBeNull();
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+  });
 
   test("shows no timestamp when the session carries no age", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);

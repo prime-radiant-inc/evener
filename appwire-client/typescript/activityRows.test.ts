@@ -46,8 +46,6 @@ function delegate(
     active?: boolean;
     failed?: boolean;
     child?: ActivitySessionNode;
-    type?: string;
-    turns?: ActivityJob[];
   } = {},
 ) {
   const status = opts.active ? "running" : "idle";
@@ -61,7 +59,7 @@ function delegate(
       childSessionId: `sess_${delegateId}`,
       childRef: `ref_${delegateId}`,
       transcriptRef: `ref_${delegateId}`,
-      type: opts.type ?? "delegate",
+      type: "delegate",
       lifecycle: opts.active ? "running" : "idle",
       phase: opts.active ? "running" : "idle",
       status,
@@ -74,25 +72,7 @@ function delegate(
       latestActivityAt: "2026-08-05T15:01:00Z",
       branch: {},
       child: opts.child,
-      turns: opts.turns,
     },
-  };
-}
-
-function turn(jobId: string, terminal: boolean, status: string, outcome?: string): ActivityJob {
-  return {
-    jobId,
-    ownerSessionId: "sess_root",
-    ownerRef: "ref_root",
-    type: "turn",
-    status,
-    outcome,
-    terminal,
-    background: false,
-    hasOutput: true,
-    description: jobId,
-    startedAt: "2026-08-05T15:00:00Z",
-    outputBytes: 0,
   };
 }
 
@@ -371,26 +351,18 @@ test.each(["error", "failed", "exhausted"])(
     const stable = delegate("dlg_stable", {});
     stable.delegate.status = status;
     stable.delegate.outcome = undefined;
-    const turns = delegate("dlg_turns", {
-      type: "agent",
-      turns: [turn("turn", true, status)],
-    });
-    turns.delegate.outcome = undefined;
-    const rows = buildActivityRows(tree([job, stable, turns]), new Set());
+    const rows = buildActivityRows(tree([job, stable]), new Set());
     expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-      inactiveCount: 3,
+      inactiveCount: 2,
     });
     expect(activityDelegateState(stable.delegate)).toMatchObject({
-      failed: false,
-    });
-    expect(activityDelegateState(turns.delegate)).toMatchObject({
       failed: false,
     });
   },
 );
 
-// The daemon derives a shell job's or turn's outcome from its status, so a
-// failure reaches the client as "failure"; a stable delegate carries its
+// The daemon derives a shell job's outcome from its status, so a failure
+// reaches the client as "failure"; a stable delegate carries its
 // delegatestore outcome verbatim, so a failure reaches it as "failed" or
 // "exhausted". Neither kind's word means failure in the other's vocabulary.
 test("terminal rows read each entry kind's own failure vocabulary", () => {
@@ -434,80 +406,6 @@ test("a failed terminal delegate folds when lifecycle status is idle", () => {
     defaultDetailOpen: false,
     delegate: { outcome: "failed" },
   });
-});
-
-test("turn-based activity derives completion from turns even when delegate fields disagree", () => {
-  const rows = buildActivityRows(
-    tree([
-      delegate("dlg_completed", {
-        active: true,
-        type: "agent",
-        turns: [turn("turn_done", true, "completed")],
-      }),
-      delegate("dlg_active", {
-        type: "agent",
-        turns: [turn("turn_live", false, "running")],
-      }),
-    ]),
-    new Set(),
-  );
-  expect(rows.map((row) => row.id)).toEqual([delegateID("dlg_active"), "session:ref_root:inactive-fold"]);
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-    inactiveCount: 1,
-  });
-});
-
-test("turn-based failure folds but retains failure status", () => {
-  const entry = delegate("dlg_failed", {
-    type: "agent",
-    turns: [turn("turn_failed", true, "completed", "failure")],
-  });
-  const rows = buildActivityRows(tree([entry]), new Set());
-  expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ kind: "fold", inactiveCount: 1 });
-  expect(indexActivityEntities(tree([entry])).get(delegateID("dlg_failed"))).toMatchObject({
-    live: false,
-    defaultDetailOpen: false,
-  });
-  expect(activityDelegateState(entry.delegate)).toMatchObject({
-    active: false,
-    failed: true,
-    status: "failed",
-  });
-});
-
-test("turn state gives active work precedence over earlier failures and later completion", () => {
-  const state = activityDelegateState(
-    delegate("dlg_mixed", {
-      active: true,
-      type: "agent",
-      turns: [turn("turn_failed", true, "completed", "failure"), turn("turn_done", true, "completed")],
-    }).delegate,
-  );
-  expect(state).toMatchObject({
-    active: false,
-    failed: true,
-    status: "failed",
-  });
-
-  const active = activityDelegateState(
-    delegate("dlg_active_last", {
-      type: "agent",
-      turns: [turn("turn_live", false, "running"), turn("turn_done", true, "completed")],
-    }).delegate,
-  );
-  expect(active).toMatchObject({ active: true, status: "running" });
-});
-
-test("turn-based activity remains live while its child session is active", () => {
-  const child = session([shell("child", false)], {
-    active: 1,
-    failed: 0,
-    completed: 0,
-    complete: false,
-  }) as ActivitySessionNode;
-  const state = activityDelegateState(delegate("dlg_child", { type: "agent", child }).delegate);
-  expect(state).toMatchObject({ active: true });
 });
 
 test("stable delegate keeps its resource status while an active child makes the row live", () => {
@@ -558,33 +456,7 @@ test("running stable delegate ignores stale failure outcome", () => {
   });
 });
 
-test("empty turn-container rows follow child activity rather than container metadata", () => {
-  const active = delegate("dlg_empty_active", { type: "agent" });
-  active.delegate.terminal = false;
-  active.delegate.status = "running";
-  active.delegate.outcome = undefined;
-  const failed = delegate("dlg_empty_failed", { type: "agent" });
-  failed.delegate.terminal = true;
-  failed.delegate.status = "completed";
-  failed.delegate.outcome = "failure";
-  const rows = buildActivityRows(tree([active, failed]), new Set());
-  expect(rows.map((row) => row.id)).toEqual(["session:ref_root:inactive-fold"]);
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-    inactiveCount: 2,
-  });
-  expect(activityDelegateState(active.delegate)).toMatchObject({
-    active: false,
-    failed: false,
-    status: "unknown",
-  });
-  expect(activityDelegateState(failed.delegate)).toMatchObject({
-    active: false,
-    failed: false,
-    status: "unknown",
-  });
-});
-
-test("child activity takes status precedence over prior own failures and child failures surface", () => {
+test("child activity and failures surface without rewriting the delegate's own status", () => {
   const activeChild = session([shell("child", false)], {
     active: 1,
     failed: 0,
@@ -594,12 +466,11 @@ test("child activity takes status precedence over prior own failures and child f
   expect(
     activityDelegateState(
       delegate("dlg_active_child", {
-        type: "agent",
-        turns: [turn("turn_failed", true, "completed", "failure")],
+        failed: true,
         child: activeChild,
       }).delegate,
     ),
-  ).toMatchObject({ active: true, failed: true, status: "working" });
+  ).toMatchObject({ active: true, failed: true, status: "failed" });
 
   const failedChild = session([], {
     active: 0,
@@ -610,12 +481,10 @@ test("child activity takes status precedence over prior own failures and child f
   expect(
     activityDelegateState(
       delegate("dlg_failed_child", {
-        type: "agent",
-        turns: [turn("turn_done", true, "completed")],
         child: failedChild,
       }).delegate,
     ),
-  ).toMatchObject({ active: false, failed: true, status: "failed" });
+  ).toMatchObject({ active: false, failed: true, status: "completed" });
 });
 
 test("set membership expands the fold and reveals terminal rows after the fold row", () => {

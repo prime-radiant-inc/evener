@@ -8,9 +8,15 @@ working procedure.
 
 ## Where the truth lives
 
-- **Tokens:** `src/styles/tokens.css`. Every color, space, radius, type
-  size, z-index, shadow, and motion duration the app uses is a custom
-  property declared there, in both themes.
+- **Palette:** `@evener/appwire-client/palette` (source:
+  `appwire-client/typescript/palette.ts`) is the one color source for the web
+  and the phone, and owns the shared OKLab mix. The web
+  declares those colors as custom properties in `src/styles/tokens.css`, in
+  both themes; `src/styles/token-contract.test.ts` fails when that file
+  drifts from the shared source. The phone aliases the same roles in
+  `mobile-native/src/design/tokens.ts`. Non-color tokens (space, radius,
+  type size, z-index, shadow, motion duration) are declared in `tokens.css`
+  alone.
 - **Widgets:** `src/widgets/`, imported only through the barrel
   `src/widgets/index.ts`. The props each widget accepts are listed in §3 of
   the design-system spec and typed in each widget's `index.tsx`.

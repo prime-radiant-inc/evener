@@ -40,7 +40,7 @@ func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Se
 	for _, configure := range configure {
 		configure(&cfg)
 	}
-	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(), withDir(stateDir), withConfig(cfg))
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(stateDir), withConfig(cfg))
 	return sess, main
 }
 

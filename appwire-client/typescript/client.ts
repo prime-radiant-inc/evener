@@ -4,7 +4,14 @@
 // reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
 // backs off exponentially up to a cap.
 
-import { CODE_INVALID_REQUEST, ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import {
+  CODE_INVALID_REQUEST,
+  ConnectionClosedError,
+  isMethodNotFound,
+  RequestTimeoutError,
+  WireError,
+} from "./errors";
+import { decodeHistoryServingResponse } from "./historyServing";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -247,6 +254,7 @@ export class AppwireClient {
   private readonly onSubscriberError?: (info: SubscriberErrorInfo) => void;
 
   private socket: WebSocketLike | null = null;
+  private historyUnsupported = false;
   private recoveryClient: AppwireClient | null = null;
   private resumePending = false;
   private connectionState: ConnectionState = "idle";
@@ -444,6 +452,46 @@ export class AppwireClient {
     params: MethodTypes[M]["params"],
     opts?: { timeoutMs?: number },
   ): Promise<MethodTypes[M]["result"]> {
+    if (
+      method === "thread/read" ||
+      method === "thread/turns/list" ||
+      method === "evener/thread/history/read" ||
+      method === "evener/thread/history/turns/list"
+    ) {
+      return this.requestHistory(
+        method === "thread/read" || method === "evener/thread/history/read" ? "thread/read" : "thread/turns/list",
+        params as MethodTypes["thread/read" | "thread/turns/list"]["params"],
+        opts,
+      ) as Promise<MethodTypes[M]["result"]>;
+    }
+    return this.requestWire(method, params, opts);
+  }
+
+  private async requestHistory(
+    method: "thread/read" | "thread/turns/list",
+    params: MethodTypes["thread/read" | "thread/turns/list"]["params"],
+    opts?: { timeoutMs?: number },
+  ): Promise<unknown> {
+    const socket = this.socket;
+    if (this.historyUnsupported) return this.requestWire(method, params, opts);
+    const versioned = method === "thread/read" ? "evener/thread/history/read" : "evener/thread/history/turns/list";
+    try {
+      const response = await this.requestWire(versioned, params, opts);
+      return decodeHistoryServingResponse(response, method === "thread/turns/list");
+    } catch (error) {
+      if (!isMethodNotFound(error) || socket !== this.socket) throw error;
+      // Cache one legacy-mode transition, not one in-flight probe. Each
+      // already-issued read still falls back for its own request.
+      this.historyUnsupported = true;
+      return this.requestWire(method, params, opts);
+    }
+  }
+
+  private requestWire<M extends MethodName>(
+    method: M,
+    params: MethodTypes[M]["params"],
+    opts?: { timeoutMs?: number },
+  ): Promise<MethodTypes[M]["result"]> {
     if (this.connectionState !== "ready" && !READY_EXEMPT_METHODS.has(method)) {
       return Promise.reject(
         new Error(`AppwireClient: cannot call "${method}" while state is "${this.connectionState}"`),
@@ -595,6 +643,7 @@ export class AppwireClient {
     }
     const socket = this.socketFactory(this.url);
     this.socket = socket;
+    this.historyUnsupported = false;
     socket.onmessage = (ev) => this.handleMessage(ev.data);
 
     await this.waitForOpen(socket);

@@ -25,6 +25,7 @@ var subcommands = map[string]func(args []string) int{
 	"repo-audit":         repoAuditMain,
 	"root-test-flags":    rootTestFlagsMain,
 	"test-cpu-exec":      testCPUExecMain,
+	"test-redundancy":    testRedundancyMain,
 	"timing-parse":       timingParseMain,
 	"timing-render":      timingRenderMain,
 	"web-checks":         runWebChecks,

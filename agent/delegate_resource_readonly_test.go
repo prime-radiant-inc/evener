@@ -32,7 +32,6 @@ func TestDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostic
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	descriptor := stableReadonlyDescriptor(s, "dlg_rich")
 	descriptor.Task = "inspect retained evidence"
@@ -118,7 +117,7 @@ func TestDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostic
 
 func TestDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolRunningDelegate(t, s, "dlg_clock_a", "", time.Unix(100, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_clock_b", "", time.Unix(200, 0).UTC())
 	now := time.Unix(1000, 0).UTC()
@@ -156,7 +155,6 @@ func TestDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	descriptor := stableReadonlyDescriptor(s, "dlg_parity")
 	startedAt := time.Unix(100, 0).UTC()
@@ -187,7 +185,6 @@ func TestDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *tes
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	settlingID := "dlg_activity_settling"
 	settlingDescriptor := stableReadonlyDescriptor(s, settlingID)
@@ -409,7 +406,6 @@ func TestJobActivityTree_CancelReachesDescendantScans(t *testing.T) {
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
-		withoutGitSnapshot(),
 	)
 	startedAt := time.Unix(10, 0).UTC()
 	for _, id := range []string{"dlg_a", "dlg_b"} {

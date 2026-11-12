@@ -380,6 +380,9 @@ func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*t
 // installContextStrategy selects the configured context strategy and registers
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
+	if percent := s.cfg.CompactAtPercent; percent > 0 {
+		s.contextMgr.SetCompactAt(float64(percent) / 100)
+	}
 	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 	strategy, err := selectStrategy(s.cfg, s.contextMgr, s)
@@ -408,6 +411,9 @@ func (s *Session) installContextStrategy() error {
 func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	idleTimeout, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout)
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateCompactAtPercent(cfg.CompactAtPercent); err != nil {
 		return nil, err
 	}
 	if err := requireSessionDeps(client, profile, env); err != nil {
@@ -519,6 +525,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		hubWatchSignal:                make(chan struct{}),
 		events:                        make(chan events.SessionEvent, 256),
 		history:                       []schema.Turn{},
+		frontierStartupPending:        true,
 		responsesContinuationDisabled: map[responsesContinuationDisabledKey]bool{},
 		readFiles:                     map[string]bool{},
 		sessionCtx:                    sessCtx,
@@ -529,6 +536,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
 	s.bindDescendantTranscriptPublication()
+	defer func() {
+		if !initComplete {
+			s.abortFrontierStartup()
+			s.releaseTranscriptFrontier()
+		}
+	}()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
@@ -694,7 +707,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			}
 		}
 	}
-	s.attachTranscript(tw)
+	s.attachTranscript(tw, nil)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
@@ -817,6 +830,8 @@ type RestoreSessionConfig struct {
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	ProviderIdleTimeout         string
+	// CompactAtPercent replaces the persisted trigger when non-zero.
+	CompactAtPercent int
 	// CommitProvenance replaces the persisted mode when non-empty. Empty keeps
 	// the session's saved value, which may itself be empty (default on).
 	CommitProvenance        string
@@ -995,6 +1010,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ProviderIdleTimeout = restoreCfg.ProviderIdleTimeout
 	}
 	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+		return nil, err
+	}
+	if restoreCfg.CompactAtPercent != 0 {
+		cfg.CompactAtPercent = restoreCfg.CompactAtPercent
+	}
+	if err := ValidateCompactAtPercent(cfg.CompactAtPercent); err != nil {
 		return nil, err
 	}
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
@@ -1183,6 +1204,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
+		frontierStartupPending:   true,
 		turns:                    meta.AcceptedInputTurns,
 		turnBudgetWarningEmitted: meta.TurnBudgetWarningEmitted || turnBudgetWarningInHistory(resumeHistory),
 		modelResponses:           meta.TurnCount,
@@ -1212,6 +1234,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.bindDescendantTranscriptPublication()
+	defer func() {
+		if !restoreComplete {
+			s.abortFrontierStartup()
+			s.releaseTranscriptFrontier()
+		}
+	}()
 	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
@@ -1449,7 +1477,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
 		}
 	}
-	s.attachTranscript(tw)
+	s.attachTranscript(tw, transcriptEntries)
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
 	// replay appended turns it did not decode: the retained entry list would
 	// otherwise end at the last pre-append entry, and serve (which projects
@@ -1822,6 +1850,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
+	// Only the coordinator writes the session URL list, and a subagent cannot
+	// ask the human (#6080, ask_user). This gate is the last removal, after the
+	// allowed/denied policy and the frozen ceiling, so an all-tools role or a
+	// restored descriptor cannot reintroduce a protected tool.
+	if s.isSubagentSession() {
+		for _, name := range protectedGrantTools() {
+			s.reg.Remove(name)
+		}
+	}
 	s.filterUnavailableMemoryTools()
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
@@ -2065,7 +2102,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unsupported hook event",
-				Message:    unsupportedHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnsupportedHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2083,7 +2120,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unknown hook event",
-				Message:    unknownHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnknownHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2505,25 +2542,6 @@ func (s *Session) restoreSideEffect(point string, run func() error) error {
 	return run()
 }
 
-// unknownHookEventWarning builds the load-time warning text for a hook declared
-// under an event name that is neither a evener event nor a recognized Claude
-// event — almost always a typo. It names the plugin and the offending event
-// only; no hook payload or secret is included.
-func unknownHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
-		pluginName, event)
-}
-
-// unsupportedHookEventWarning builds the load-time warning text for a hook
-// declared under a recognized Claude event that evener does not yet fire
-// (reserved-placeholder). It names the plugin and the reserved event only.
-func unsupportedHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
-		pluginName, event)
-}
-
 // supportedHookHandlerTypes is the set of handler "type" values evener actually
 // executes. Everything else (http, mcp_tool, agent, …) is reserved and skipped.
 // Must stay in sync with the dispatch-side hooks.supportedHandlerTypes / runHook
@@ -2593,6 +2611,9 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Code = events.WarningCodePluginCompatibility
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	case "unverified_cache_root":
+		warning.Title = "Skill cache fallback"
+		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."
 	}
 	return warning
 }

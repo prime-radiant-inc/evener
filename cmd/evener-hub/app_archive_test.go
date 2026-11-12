@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/testfs"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -598,10 +599,10 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-done })
 
 	reconciler.Kick()
-	waitFor(t, func() bool {
+	testwait.Until(t, "the kicked reconcile to remove the archived session's scratch tree", func() bool {
 		_, err := os.Lstat(tree)
 		return os.IsNotExist(err)
-	}, "the kicked reconcile never removed the archived session's scratch tree")
+	})
 }
 
 // A session archived while its daemon was still running keeps its scratch

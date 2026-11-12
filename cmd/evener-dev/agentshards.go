@@ -22,13 +22,20 @@ package dev
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
 //	AGENT_SHARD_CONCURRENCY  shards running at once (default 0 = all at once)
 //	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
-//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and to
-//	                       every shard's: a skipped test draws no cost line,
-//	                       so it lands in no shard, but a cached survey means
-//	                       no survey ran and the shards would otherwise run
-//	                       the test the operator asked to skip. Pinned by
+//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and
+//	                       applied to every shard: a top-level pattern drops
+//	                       the tests it names before packing (topLevelSkip),
+//	                       one with a subtest level is handed to each shard's
+//	                       -test.skip. A cached survey means no survey ran, so
+//	                       without that the shards would run the test the
+//	                       operator asked to skip. Pinned by
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
+//	AGENT_SHARD_PART       k/m = run only every m-th shard, starting at shard
+//	                       k-1, so m CI runners split one package between
+//	                       them. Every part packs the same shards, which
+//	                       needs AGENT_SHARD_NO_SURVEY: survey caches are
+//	                       per runner and would pack each part differently.
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
@@ -102,6 +109,8 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// part selects the shards this run starts; the zero value runs them all.
+	part shardPart
 	// liveStack builds ./cmd/evener once, before any child runs, and exports
 	// the directory to every process through shardrun.PrebuiltBinDirEnv. The
 	// hub package's TestMain warms the same binaries otherwise, once per shard
@@ -178,6 +187,11 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
+	part, err := envShardPart(env("PART"), count, envFlag(env("NO_SURVEY")), env("NO_SURVEY"))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
+		return 1
+	}
 	// Two deep, because a second signal must be waiting when the first is
 	// still being handled.
 	signals := make(chan os.Signal, 2)
@@ -195,6 +209,7 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool
 		skip:           os.Getenv(env("SKIP")),
 		noSurvey:       envFlag(env("NO_SURVEY")),
 		resurvey:       envFlag(env("RESURVEY")),
+		part:           part,
 		cacheDir:       os.Getenv(env("CACHE_DIR")),
 		flags:          args,
 		stdout:         os.Stdout,
@@ -301,6 +316,41 @@ func envNonNegativeInt(name string, def int) (int, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer (got %q)", name, raw)
 	}
 	return n, nil
+}
+
+// shardPart is one of several runs that split a single packing's shards:
+// part index of count, zero-based, runs shards index, index+count, and so on.
+// The zero value is the whole run.
+type shardPart struct {
+	index, count int
+}
+
+// runs reports whether the part starts shard i.
+func (p shardPart) runs(i int) bool {
+	return p.count == 0 || i%p.count == p.index
+}
+
+// envShardPart reads a k/m part (1 <= k <= m) from name. Unset is the whole
+// run. Each part must have a shard to run, and every part must pack the same
+// shards, which only the survey-free equal weighting guarantees.
+func envShardPart(name string, shards int, noSurvey bool, noSurveyName string) (shardPart, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return shardPart{}, nil
+	}
+	k, m, found := strings.Cut(raw, "/")
+	index, errK := strconv.Atoi(k)
+	count, errM := strconv.Atoi(m)
+	if !found || errK != nil || errM != nil || count < 1 || index < 1 || index > count {
+		return shardPart{}, fmt.Errorf("%s must be k/m with 1 <= k <= m (got %q)", name, raw)
+	}
+	if count > shards {
+		return shardPart{}, fmt.Errorf("%s=%s splits %d shards into more parts than there are shards", name, raw, shards)
+	}
+	if !noSurvey {
+		return shardPart{}, fmt.Errorf("%s needs %s=1: a survey is per-runner state, and parts packed from different surveys would run some tests twice and others never", name, noSurveyName)
+	}
+	return shardPart{index: index - 1, count: count}, nil
 }
 
 // envFlag reads the script's `-eq 0` convention: unset and "0" are off,
@@ -445,6 +495,7 @@ func runShards(cfg shardsConfig) int {
 		return 1
 	}
 	buildArgs = append(buildArgs, "-o", build, buildTarget)
+	buildStart := time.Now()
 	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
@@ -456,9 +507,13 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	buildSeconds := time.Since(buildStart).Seconds()
 
+	phases := []phaseTime{{"build", buildSeconds}}
 	if cfg.liveStack {
+		liveStackStart := time.Now()
 		env, err := cfg.prepareLiveStack(in, logdir)
+		phases = append(phases, phaseTime{"live-stack", time.Since(liveStackStart).Seconds()})
 		if err != nil {
 			if code := in.exitCode(); code != 0 {
 				return code
@@ -471,10 +526,13 @@ func runShards(cfg shardsConfig) int {
 
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
+	listStart := time.Now()
 	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	phases = append(phases, phaseTime{"list", time.Since(listStart).Seconds()})
+	planStart := time.Now()
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
@@ -541,6 +599,11 @@ func runShards(cfg shardsConfig) int {
 		// This still partitions correctly, it is just unbalanced.
 		costs = equalWeights(listOut)
 	}
+	shardSkip := cfg.skip
+	if skip, ok := topLevelSkip(cfg.skip); ok {
+		costs = slices.DeleteFunc(costs, func(c testCost) bool { return skip(c.name) })
+		shardSkip = ""
+	}
 	if len(costs) == 0 {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: found no tests to shard\n", cfg.label)
 		return 1
@@ -559,6 +622,15 @@ func runShards(cfg shardsConfig) int {
 		}
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: %d shards, -parallel %d each\n", cfg.label, len(bins), cfg.parallel)
+	selected := 0
+	for i := range bins {
+		if cfg.part.runs(i) {
+			selected++
+		}
+	}
+	if selected < len(bins) {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: part %d/%d runs %d of the %d shards\n", cfg.label, cfg.part.index+1, cfg.part.count, selected, len(bins))
+	}
 
 	// A shard is one OS process, so cfg.parallel bounds only the tests inside
 	// it. limit bounds the processes themselves: on a busy host or a
@@ -567,11 +639,11 @@ func runShards(cfg shardsConfig) int {
 	// or one at least the shard count, starts every shard at once: the
 	// historical behavior and what an idle run still gets.
 	limit := cfg.concurrency
-	if limit < 1 || limit > len(bins) {
-		limit = len(bins)
+	if limit < 1 || limit > selected {
+		limit = selected
 	}
-	if limit < len(bins) {
-		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, len(bins))
+	if limit < selected {
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, selected)
 	}
 	slots := make(chan struct{}, limit)
 
@@ -593,6 +665,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		return filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
 	}
+	phases = append(phases, phaseTime{"plan", time.Since(planStart).Seconds()})
 	phaseStart := time.Now()
 
 	// Launch shards, at most limit at a time. Slots are acquired before
@@ -611,6 +684,9 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
+		if !cfg.part.runs(i) {
+			continue
+		}
 		select {
 		case slots <- struct{}{}:
 		default:
@@ -639,9 +715,11 @@ func runShards(cfg shardsConfig) int {
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
 		// The skip reaches the shards, not just the survey: a cached survey
 		// means no survey runs at all, and the shards would then run the very
-		// test the operator asked to skip.
-		if cfg.skip != "" {
-			args = append(args, "-test.skip", cfg.skip)
+		// test the operator asked to skip. A top-level skip already reached
+		// them through the packing (topLevelSkip); only a subtest-level one is
+		// still handed to the binary.
+		if shardSkip != "" {
+			args = append(args, "-test.skip", shardSkip)
 		}
 		args = append(args, extraFlags...)
 		// The capture's -test.v goes AFTER the caller's flags so it wins: it is
@@ -689,12 +767,14 @@ func runShards(cfg shardsConfig) int {
 
 	var failed []int
 	shardCPU := 0.0
+	var shardTimes []string
 	for i, result := range results {
 		if result == nil {
 			continue
 		}
 		r := <-result
 		shardCPU += r.cpu
+		shardTimes = append(shardTimes, fmt.Sprintf("%d:%.2fs", i, r.seconds))
 		if r.err == nil {
 			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
@@ -706,6 +786,14 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
+	phase := time.Since(phaseStart).Seconds()
+	// The phase summary: a green CI run keeps only these lines of the module
+	// log, so they are the record of where a lane's time went. The plan phase
+	// is the survey, when one runs, and the packing.
+	for _, p := range phases {
+		_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:%s %.2fs\n", cfg.label, p.name, p.seconds)
+	}
+	_, _ = fmt.Fprintf(cfg.stdout, "TIME  %s:shards %.2fs %s\n", cfg.label, phase, strings.Join(shardTimes, " "))
 
 	// The package's own wall time under the sharded surface is the shard
 	// phase, not the sum of overlapping shards (issue #172's contention trap):
@@ -714,7 +802,6 @@ func runShards(cfg shardsConfig) int {
 	// package's work between them. A failed phase is no measurement, so it is
 	// not written.
 	if jsonShards && cfg.jsonPackage != "" && !fail {
-		phase := time.Since(phaseStart).Seconds()
 		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\nCPU\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase),
 			cfg.jsonPackage, formatSeconds(shardCPU))
 		if err := os.WriteFile(filepath.Join(cfg.jsonDir, cfg.label+".package.tsv"), []byte(row), 0o644); err != nil {
@@ -770,6 +857,70 @@ func runShards(cfg shardsConfig) int {
 	}
 	green = true
 	return 0
+}
+
+// phaseTime is one phase of a shards run and its wall seconds, for the TIME
+// lines the run prints.
+type phaseTime struct {
+	name    string
+	seconds float64
+}
+
+// topLevelSkip returns the test-name predicate for a skip pattern that names no
+// subtest level, the only kind the runner can apply to the test names it packs.
+// It matches as Go's -skip does (testing's splitRegexp): the pattern splits on
+// '|' outside brackets and parentheses, each alternative compiles alone (so a
+// flag group like (?i) stays with its own alternative), and a single-level
+// pattern skips a test exactly when an alternative matches its top-level name.
+// Dropping those names before packing therefore skips the same tests.
+//
+// It is applied here rather than handed to the shards because a shard binary
+// matching both its -test.run and a -test.skip recompiles the run pattern for
+// every test and subtest: testing's MatchString caches one compiled pattern,
+// and a shard's run pattern names a thousand tests. That work runs under a
+// lock every parallel test shares, and under -race it stretched the agent
+// shards 2-3x. A pattern with a '/' anywhere, or an alternative that does not
+// compile, is left for the binary to apply or reject.
+func topLevelSkip(skip string) (func(name string) bool, bool) {
+	if skip == "" || strings.Contains(skip, "/") {
+		return nil, false
+	}
+	var alternatives []*regexp.Regexp
+	brackets, parens, start := 0, 0, 0
+	split := func(end int) bool {
+		re, err := regexp.Compile(skip[start:end])
+		alternatives = append(alternatives, re)
+		start = end + 1
+		return err == nil
+	}
+	for i := 0; i < len(skip); i++ {
+		switch skip[i] {
+		case '[':
+			brackets++
+		case ']':
+			brackets = max(brackets-1, 0) // an unmatched ']' is a literal
+		case '(':
+			if brackets == 0 {
+				parens++
+			}
+		case ')':
+			if brackets == 0 {
+				parens--
+			}
+		case '\\':
+			i++
+		case '|':
+			if brackets == 0 && parens == 0 && !split(i) {
+				return nil, false
+			}
+		}
+	}
+	if !split(len(skip)) {
+		return nil, false
+	}
+	return func(name string) bool {
+		return slices.ContainsFunc(alternatives, func(re *regexp.Regexp) bool { return re.MatchString(name) })
+	}, true
 }
 
 // effectiveGoflags is what the toolchain will actually apply, which is the

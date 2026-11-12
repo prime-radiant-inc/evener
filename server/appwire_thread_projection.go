@@ -115,6 +115,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
+			LatestExecutionTurnID:  envelope.LatestExecutionTurnID,
 			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
 			PendingAsk:             projectPendingAsk(envelope.PendingAsk),
 			Ref:                    ref,
@@ -127,6 +128,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ContextWindow:          metrics.Window,
 			ContextRemaining:       metrics.Remaining,
 			ContextAssumed:         metrics.Assumed,
+			ContextWindowSource:    metrics.WindowSource,
 			Capabilities:           s.appCapabilitiesLocked(status.State, processing),
 			Diagnostics:            threadDiagnostics,
 			Queue:                  queue,

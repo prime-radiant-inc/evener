@@ -257,7 +257,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 		if ref != "anthropic/claude-opus-4-6" {
 			t.Fatalf("resolver ref = %q, want anthropic/claude-opus-4-6", ref)
 		}
-		return provider.WithContextWindow(newAnthropicProfile("claude-opus-4-6"), 987654), nil
+		return withContextWindow(newAnthropicProfile("claude-opus-4-6"), 987654), nil
 	}
 
 	meta := schema.SessionMeta{
@@ -703,7 +703,8 @@ func TestSetModel_CrossProvider(t *testing.T) {
 }
 
 // TestSetModel_CrossProvider_ToOllama_WithCatalog verifies that SetModel via
-// resolver to an ollama profile picks up the catalog-derived context window.
+// resolver to an ollama profile takes the context window from the registry's
+// record, which is unknown when nothing supplies one.
 func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -726,7 +727,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	}
 	// The window is the ollama record's, resolved through the resolver.
 	want := newOpenAICompatProfile("ollama", "llama3.1", 0).ContextWindowSize()
-	if got := sess.profile.ContextWindowSize(); got == 0 || got != want {
+	if got := sess.profile.ContextWindowSize(); got != want {
 		t.Fatalf("ContextWindowSize() = %d, want the registry's %d", got, want)
 	}
 }

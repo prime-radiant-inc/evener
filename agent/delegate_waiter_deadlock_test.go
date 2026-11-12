@@ -138,7 +138,7 @@ func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing
 	if err != nil {
 		t.Fatalf("create root transcript: %v", err)
 	}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = writer.Close() })
 
 	seedDelegateControllerIdle(t, controller, "dlg_target", "")

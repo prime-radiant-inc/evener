@@ -52,6 +52,11 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
+// A touch device the desktop layout still applies to (a tablet or a touch
+// laptop). The rail renders docked and resizable here, so its width floor is
+// the one that has to hold 44px tap targets.
+const TOUCH_DESKTOP_VIEWPORT = { width: 1180, height: 820, mobile: false, touch: true };
+
 // The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
 // change can kill the dev-server module burst mid-boot while the page still
 // fires its load event. shellguard.html boots through one entry module,
@@ -91,8 +96,8 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       const settings = document.querySelector('[data-testid="rail-settings"]');
       const search = document.querySelector('[data-testid="rail-search"]');
       const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
-      const identity = [...(brand?.querySelectorAll('span') ?? [])].find(el => el.textContent === 'fake-evener-hub');
-      return [identity, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
+      const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+      return [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
         if (!el || !brand?.contains(el)) return null;
         const r = el.getBoundingClientRect();
         return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
@@ -100,15 +105,48 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     })())`,
       ),
     );
+    // The rail's own right edge, and whether the wordmark is intact at the
+    // floor width: the header is a flex row, so content wider than the rail
+    // overflows it rather than widening it, and the brand box keeps the rail's
+    // width while its children spill past the edge. Comparing against the
+    // viewport (not the rail) is what hid a coarse-pointer overflow in #6153.
+    const railBox = JSON.parse(
+      await evaluate(
+        send,
+        `JSON.stringify((() => {
+      const rail = document.querySelector('[data-testid="rail"]');
+      const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+      const clamp = document.querySelector('[data-testid="rail-resize-handle"]');
+      if (!rail) return null;
+      const r = rail.getBoundingClientRect();
+      return {
+        left: r.left,
+        right: r.right,
+        width: r.width,
+        wordmarkClipped: wordmark ? wordmark.scrollWidth > wordmark.clientWidth + 1 : false,
+        ariaValueMin: clamp ? Number(clamp.getAttribute("aria-valuemin")) : null,
+      };
+    })())`,
+      ),
+    );
     for (let i = 0; i < header.length; i++) {
       const box = header[i];
       if (!box || box.width <= 0 || box.height <= 0) {
         throw new Error(
-          `rail header at ${viewport.width}px: missing visible ${["identity", "Settings", "Search", "Hide sidebar"][i]}`,
+          `rail header at ${viewport.width}px: missing visible ${["wordmark", "Settings", "Search", "Hide sidebar"][i]}`,
         );
       }
       if (box.left < 0 || box.right > viewport.width)
         throw new Error(`rail header escapes ${viewport.width}px viewport`);
+      // Per-element, not just the viewport: an item pushed past the rail's edge
+      // paints over the workspace beside it.
+      if (railBox && box.right > railBox.right + 0.5) {
+        throw new Error(
+          `rail header at ${viewport.width}px (rail ${railBox.width.toFixed(1)}px, min ${railBox.ariaValueMin}): ` +
+            `${["wordmark", "Settings", "Search", "Hide sidebar"][i]} ends at ${box.right.toFixed(1)}px, ` +
+            `past the rail's ${railBox.right.toFixed(1)}px edge`,
+        );
+      }
       if (i > 0) {
         const previous = header[i - 1];
         if (
@@ -116,9 +154,18 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
           Math.abs((previous.top + previous.bottom) / 2 - (box.top + box.bottom) / 2) > 1
         ) {
           throw new Error(
-            `rail header at ${viewport.width}px: identity, Settings, Search, Hide sidebar must align on one row in order`,
+            `rail header at ${viewport.width}px: wordmark, Settings, Search, Hide sidebar must align on one row in order`,
           );
         }
+      }
+    }
+    // At the width floor the header must fit exactly: the floor is derived from
+    // this content, so a clipped wordmark there means the two have drifted.
+    if (railBox && railBox.ariaValueMin !== null && Math.abs(railBox.width - railBox.ariaValueMin) <= 0.5) {
+      if (railBox.wordmarkClipped) {
+        throw new Error(
+          `rail header at its ${railBox.ariaValueMin}px minimum clips the wordmark (rail ${railBox.width.toFixed(1)}px)`,
+        );
       }
     }
     return typeof expression === "function" ? await expression(page) : JSON.parse(await evaluate(send, expression));
@@ -332,6 +379,35 @@ function assertFloatingDock(result) {
   }
   if (hits.filter((hit) => hit.trusted && hit.x < initial.host.left - 100).length !== 2) {
     failures.push(`native floating titlebar input outside the workspace was clipped: ${JSON.stringify(hits)}`);
+  }
+  return failures;
+}
+
+// The rail's width floor is derived from its header content (stores/prefs.ts),
+// and on a coarse pointer every icon button takes the 44px tap floor instead of
+// its 32px square. This pins the consequence: at that floor the row still fits
+// inside the rail and the wordmark is intact. #6153 shipped a floor that held
+// for a mouse and overflowed by 20px on touch, which the viewport-based header
+// check could not see.
+function assertTouchRailMinimum(result) {
+  const failures = [];
+  if (!result?.applied) {
+    failures.push("the rail's minimum width was not readable from the resize handle's aria-valuemin");
+    return failures;
+  }
+  if (!result.coarse) {
+    failures.push("the touch viewport did not report a coarse pointer, so the tap floor was never applied");
+  }
+  if (result.lastButtonRight === null) {
+    failures.push("the rail header's action buttons did not render at the minimum width");
+  } else if (result.lastButtonRight > result.railRight + 0.5) {
+    failures.push(
+      `at the ${result.min}px touch minimum the header's last action ends at ${result.lastButtonRight.toFixed(1)}px, ` +
+        `past the rail's ${result.railRight.toFixed(1)}px edge`,
+    );
+  }
+  if (result.wordmarkClipped) {
+    failures.push(`the wordmark is clipped at the ${result.min}px touch minimum`);
   }
   return failures;
 }
@@ -778,14 +854,16 @@ async function measureOverview(send) {
       const r = element.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
-    // The phone's activity counts live in the composer's own control row,
-    // which rests until the editor is engaged: focus the editor so the row
-    // carries its chips where this measurement can see them.
     const mobile = matchMedia('(max-width: 899px)').matches;
+    // A folded resting phone composer renders no activity line - the counts
+    // come back with the expanded card - so the phone measurement engages the
+    // editor first. That is the state whose chips this guard checks.
     if (mobile) {
       const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
-      editor?.focus();
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (editor && !document.querySelector('[data-testid="composer-activity-line"]')) {
+        editor.focus();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
     }
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
       text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
@@ -797,10 +875,11 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
-    // The activity surface: the pane's status bar on desktop, the engaged
-    // composer row on a phone (the phone pane renders no footer strip).
+    // The activity surface: the pane's status bar on desktop, the quiet line
+    // below the composer card on a phone (the phone pane renders no footer
+    // strip).
     const surface = mobile
-      ? document.querySelector('[data-testid="composer-form"]')
+      ? document.querySelector('[data-testid="composer-activity-line"]')
       : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
           .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
@@ -966,12 +1045,11 @@ function assertOverview(result, viewport, theme) {
     }
     const footer = result.footer;
     if (!footer) {
-      failures.push("phone composer activity row is not rendered");
+      failures.push("engaged phone composer does not render its activity line");
     } else {
-      // The phone pane renders no footer strip: the engaged composer row
-      // carries the same four activity tabs, each at the tap floor and
-      // never clipped - the strip wraps to another line rather than
-      // crushing the status chrome beside it.
+      // The phone pane renders no footer strip: the quiet line below the
+      // composer card carries the same four activity tabs, each at the tap
+      // floor and never clipped.
       if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
       for (const chip of footer.chips) {
         if (
@@ -1521,6 +1599,35 @@ async function main() {
       MOBILE_VIEWPORT,
       "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
     );
+    // The header at the rail's own width floor on a coarse pointer. measureOnPage
+    // already fails the whole case when the row overflows the rail, so this
+    // measurement's job is to put the rail AT that floor and report what the
+    // row and the wordmark did there.
+    const touchMin = await measureOnPage(
+      cdpEndpoint,
+      sharedTab.id,
+      vitePort,
+      TOUCH_DESKTOP_VIEWPORT,
+      `JSON.stringify((() => {
+        const clamp = document.querySelector('[data-testid="rail-resize-handle"]');
+        const rail = document.querySelector('[data-testid="rail"]');
+        const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+        const min = clamp ? Number(clamp.getAttribute("aria-valuemin")) : null;
+        if (min === null || !rail) return { min, applied: false };
+        rail.style.setProperty("--rail-width", min + "px");
+        const rb = rail.getBoundingClientRect();
+        const buttons = [...document.querySelectorAll('[data-testid="rail-brand"] button')];
+        return {
+          min,
+          applied: true,
+          coarse: matchMedia("(any-pointer: coarse)").matches,
+          railWidth: rb.width,
+          railRight: rb.right,
+          lastButtonRight: buttons.length ? buttons[buttons.length - 1].getBoundingClientRect().right : null,
+          wordmarkClipped: wordmark ? wordmark.scrollWidth > wordmark.clientWidth + 1 : null,
+        };
+      })())`,
+    );
     const failures = [
       ...assertResult(result),
       ...assertDeltaRenders(result),
@@ -1529,6 +1636,7 @@ async function main() {
       ...assertFloatingDock(floatingDock),
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
+      ...assertTouchRailMinimum(touchMin),
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {

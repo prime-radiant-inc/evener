@@ -5,6 +5,22 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-11 one palette for web and phone (#2439)
+
+The web and the iPhone app now render one palette,
+`@evener/appwire-client/palette`, and one OKLab mix. The phone's surface
+roles alias the shared values; `tokens.css` keeps the web's custom
+properties and is drift-checked against the shared source.
+
+The shared pressed/selected wash (`--hover-2`) is also the phone's pressed
+ground. Because the phone sets every ink on a pressed row, the light wash
+moved to `#DCDEE3` (dark: `#303034`) and the light `-ink` companions darkened to `#9C4908`
+(attention), `#0F6E36` (alive), `#BD1B21` (danger), `#005FBA` (accent) and
+`#5C626D` (low ink). Every pairing clears 4.5:1, and the wash stays at
+least as distinct from the page as the old phone press wash (1.256:1 vs
+1.255:1). This supersedes the `#AD5209` attention-ink value in the
+2026-08-16 entry.
+
 ## 2026-11-06 five structural UX fixes
 
 An Impeccable-based audit found the amateurish feel was structural, not

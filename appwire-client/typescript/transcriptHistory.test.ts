@@ -1,10 +1,12 @@
 import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { applyNotification } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
 import {
   applyHistory,
   CAPABILITIES,
   hydrateWithShaImage,
+  positionedFragmentTurn,
   SHA_IMAGE,
   testEscalation,
   testHydrate,
@@ -12,16 +14,20 @@ import {
   testThread,
 } from "./testing/reducerTestKit";
 import {
+  applyHistoryReadFailure,
   applyReadModel,
   applyReadResponse,
   frontierFromCursor,
   hydrateThread,
+  issueLatestWindowRead,
+  mergeOlderItemPage,
+  mergeSavedViewPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
-import type { ThreadReadResponse } from "./types.gen";
+import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
 
 // A v6 read response for the standard test thread. `olderCursor` absent is a
 // source read that named no older history; a value is the opaque continuation.
@@ -33,6 +39,519 @@ function historyRead(olderCursor?: string): ThreadReadResponse {
     snapshot: { incarnation: "inc-1", length: 1 },
     ...(olderCursor === undefined ? {} : { olderCursor }),
   } as ThreadReadResponse;
+}
+
+function normalHistoryPage(length: number, data: Turn[]): ThreadHistoryTurnsListResponse {
+  return {
+    data,
+    bootGeneration: "",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length },
+    servedFrom: "live-daemon",
+    instanceId: "daemon",
+    asOf: "2026-11-08T00:00:00Z",
+    nextCursor: "older-page",
+  };
+}
+
+function pageOrderingModel(): ThreadModel {
+  return hydrateThread(
+    {
+      ...historyRead("latest-cursor"),
+      thread: testThread({ turns: [positionedFragmentTurn("latest", [["latest", 90]])] }),
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+}
+
+test("reverse-order normal pages retain a newer tool result without advancing latest completeness", () => {
+  const toolTurn = (version: number): Turn => ({
+    id: "tool-turn",
+    status: "completed",
+    version,
+    itemsView: "fragment",
+    items: [
+      {
+        id: "tool",
+        turnId: "tool-turn",
+        type: "commandExecution",
+        callId: "call",
+        status: "completed",
+        output: `output-${version}`,
+        version,
+        position: { entry: 10, item: 0 },
+      },
+    ],
+  });
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, [toolTurn(120)]));
+  expect(held.history?.length).toBe(100);
+  expect(held.turns.flatMap((turn) => turn.items).find((item) => item.id === "tool")).toMatchObject({
+    version: 120,
+    output: "output-120",
+  });
+  const late = mergeOlderItemPage(held, normalHistoryPage(110, [toolTurn(110)]));
+  expect(late.history?.length).toBe(100);
+  expect(late.turns.flatMap((turn) => turn.items).find((item) => item.id === "tool")).toMatchObject({
+    version: 120,
+    output: "output-120",
+  });
+});
+
+test("an older overlapping page cannot resurrect an omission made by a newer normal page", () => {
+  const oldTurn = positionedFragmentTurn("paged", [
+    ["left", 10],
+    ["omitted", 15],
+    ["right", 20],
+  ]);
+  const newerTurn = positionedFragmentTurn("paged", [
+    ["left", 10],
+    ["right", 20],
+  ]);
+  const seeded = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(110, [oldTurn]));
+  expect(seeded.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("omitted");
+  const replaced = mergeOlderItemPage(seeded, normalHistoryPage(120, [newerTurn]));
+  expect(replaced.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  const late = mergeOlderItemPage(replaced, normalHistoryPage(110, [oldTurn]));
+  expect(late.history?.length).toBe(100);
+  expect(late.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+});
+
+test("a lower-snapshot disjoint normal page remains usable after a newer page", () => {
+  const newer = mergeOlderItemPage(
+    pageOrderingModel(),
+    normalHistoryPage(120, [positionedFragmentTurn("first-page", [["first", 10]])]),
+  );
+  const disjoint = mergeOlderItemPage(
+    newer,
+    normalHistoryPage(110, [positionedFragmentTurn("second-page", [["second", 30]])]),
+  );
+  expect(disjoint.history?.length).toBe(100);
+  expect(disjoint.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual(["first", "second", "latest"]);
+});
+
+// Item versions are entry ordinals; a response's snapshot length is transcript
+// bytes. A bounded read therefore states its own omission boundary with the
+// highest entry ordinal it returned, never with that byte count.
+function versionedFragmentTurn(entries: number[]): Turn {
+  const turn = positionedFragmentTurn(
+    "paged",
+    entries.map((entry) => [`entry-${entry}`, entry] as const),
+  );
+  return { ...turn, items: (turn.items ?? []).map((item) => ({ ...item, version: item.position?.entry })) };
+}
+
+function boundedTailRead(length: number, entries: number[]) {
+  return {
+    ...historyRead("read-cursor"),
+    thread: testThread({ turns: [versionedFragmentTurn(entries)] }),
+    snapshot: { incarnation: "inc-1", length },
+    servedFrom: "live-daemon",
+    asOf: "2026-11-08T00:00:00Z",
+  };
+}
+
+test("a bounded read preserves a held item recorded after the entries it returned", () => {
+  const held = mergeOlderItemPage(
+    pageOrderingModel(),
+    normalHistoryPage(100, [versionedFragmentTurn([5, 6, 7, 8, 12])]),
+  );
+  const next = applyReadResponse(held, boundedTailRead(4_000, [5, 7, 8]), 1001);
+  const ids = next.turns.flatMap((turn) => turn.items).map((item) => item.id);
+  expect(ids).toContain("entry-12");
+  // The control: entry 6 is inside the entries the read covered and was not
+  // returned, so it is a genuine omission and must stay removed.
+  expect(ids).not.toContain("entry-6");
+});
+
+// A saved fallback window speaks for the saved index, not for the live
+// continuation. When the held model still names a live cursor, a fallback that
+// reaches further back must not replace it with its own exhausted frontier.
+test("a disjoint fallback window keeps the held live continuation", () => {
+  const live = hydrateThread(
+    {
+      ...historyRead("before-5"),
+      thread: testThread({ turns: [versionedFragmentTurn([5, 6])] }),
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  expect(live.olderCursor).toBe("before-5");
+  const fallback = {
+    ...historyRead(undefined),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    snapshot: { incarnation: "inc-1", length: 100 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-08T00:00:00Z",
+  };
+  const next = applyReadModel(live, hydrateThread(fallback, "ref_t", 1001));
+  expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual(["entry-1", "entry-5", "entry-6"]);
+  expect(next.olderCursor).toBe("before-5");
+  expect(olderFrontierOf(next)).toBe("before-5");
+});
+
+for (const facts of ["legacy", "unavailable"] as const) {
+  for (const authoritative of [false, true]) {
+    test(`${facts} read preserves its existing authoritative policy: ${authoritative}`, () => {
+      const turn = (version: number): Turn => {
+        const value = positionedFragmentTurn("paged", [["value", 10]], { version });
+        return { ...value, items: value.items?.map((item) => ({ ...item, version })) };
+      };
+      const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, [turn(120)]));
+      expect(held.turns.flatMap((value) => value.items).find((item) => item.id === "value")?.version).toBe(120);
+      const read = {
+        ...historyRead("read-cursor"),
+        thread: testThread({ turns: [turn(110)] }),
+        snapshot: { incarnation: "inc-1", length: 110 },
+        authoritative,
+        ...(facts === "unavailable" ? { servingFactsUnavailableReason: "method-unavailable" } : {}),
+      };
+      const next = applyReadResponse(held, read, 1001);
+      expect(next.history?.length).toBe(110);
+      expect(next.turns.flatMap((value) => value.items).find((item) => item.id === "value")?.version).toBe(
+        authoritative ? 110 : 120,
+      );
+    });
+  }
+}
+
+// A notification can be projected after the page that omitted one of its
+// identities. The newer page's observation still wins: a recorded notification
+// cannot put an omitted identity back.
+test("a saved page cannot resurrect a newer page omission", () => {
+  const replaced = mergeOlderItemPage(
+    mergeOlderItemPage(
+      pageOrderingModel(),
+      normalHistoryPage(110, [
+        positionedFragmentTurn("paged", [
+          ["left", 10],
+          ["omitted", 15],
+          ["right", 20],
+        ]),
+      ]),
+    ),
+    normalHistoryPage(120, [
+      positionedFragmentTurn("paged", [
+        ["left", 10],
+        ["right", 20],
+      ]),
+    ]),
+  );
+  expect(replaced.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  const saved = mergeSavedViewPage(replaced, {
+    bootGeneration: "",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 110 },
+    data: [
+      positionedFragmentTurn("paged", [
+        ["left", 10],
+        ["omitted", 15],
+        ["right", 20],
+      ]),
+    ],
+    nextCursor: "saved-page",
+  } as ThreadHistoryTurnsListResponse);
+  expect(saved.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+});
+
+test("a delayed recorded notification cannot resurrect a newer page omission", () => {
+  const replaced = mergeOlderItemPage(
+    mergeOlderItemPage(
+      pageOrderingModel(),
+      normalHistoryPage(110, [
+        positionedFragmentTurn("paged", [
+          ["left", 10],
+          ["omitted", 15],
+          ["right", 20],
+        ]),
+      ]),
+    ),
+    normalHistoryPage(120, [
+      positionedFragmentTurn("paged", [
+        ["left", 10],
+        ["right", 20],
+      ]),
+    ]),
+  );
+  expect(replaced.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  const updated = applyNotification(
+    replaced,
+    {
+      method: "history/updated",
+      params: {
+        ref: "ref_t",
+        threadId: "thr_t",
+        bootGeneration: "",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 110 },
+        items: [
+          {
+            id: "omitted",
+            turnId: "paged",
+            type: "agentMessage",
+            text: "omitted",
+            position: { entry: 15, item: 0 },
+            version: 15,
+          },
+        ],
+      },
+    },
+    1002,
+  );
+  expect(updated.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+});
+
+// A delayed fallback carries whatever the saved index held when the live read
+// failed, including an item a newer live page has since omitted. The newer
+// page's observation still wins; the fallback cannot resurrect it.
+for (const entryPoint of ["response", "model"] as const) {
+  test(`${entryPoint} fallback containing an omitted key cannot resurrect it`, () => {
+    const omittedPage = normalHistoryPage(110, [
+      positionedFragmentTurn("paged", [
+        ["left", 10],
+        ["omitted", 15],
+        ["right", 20],
+      ]),
+    ]);
+    const replaced = mergeOlderItemPage(
+      mergeOlderItemPage(pageOrderingModel(), omittedPage),
+      normalHistoryPage(120, [
+        positionedFragmentTurn("paged", [
+          ["left", 10],
+          ["right", 20],
+        ]),
+      ]),
+    );
+    expect(replaced.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+    const read = {
+      ...historyRead("read-cursor"),
+      thread: testThread({
+        turns: [
+          positionedFragmentTurn("paged", [
+            ["left", 10],
+            ["omitted", 15],
+            ["right", 20],
+          ]),
+        ],
+      }),
+      snapshot: { incarnation: "inc-1", length: 110 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    const next =
+      entryPoint === "response"
+        ? applyReadResponse(replaced, read, 1001)
+        : applyReadModel(replaced, hydrateThread(read, "ref_t", 1001));
+    expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  });
+}
+
+for (const entryPoint of ["response", "model"] as const) {
+  for (const fallback of [false, true]) {
+    test(`${entryPoint} ${fallback ? "fallback" : "normal"} reads retain newer page omissions`, () => {
+      const oldPage = normalHistoryPage(110, [
+        positionedFragmentTurn("paged", [
+          ["left", 10],
+          ["omitted", 15],
+          ["right", 20],
+        ]),
+      ]);
+      const replaced = mergeOlderItemPage(
+        mergeOlderItemPage(pageOrderingModel(), oldPage),
+        normalHistoryPage(120, [
+          positionedFragmentTurn("paged", [
+            ["left", 10],
+            ["right", 20],
+          ]),
+        ]),
+      );
+      const read = {
+        ...historyRead("read-cursor"),
+        thread: testThread({ turns: [positionedFragmentTurn("latest", [["latest", 90]])] }),
+        snapshot: { incarnation: "inc-1", length: 110 },
+        servedFrom: fallback ? "saved-index" : "live-daemon",
+        ...(fallback ? { fallbackReason: "live-read-failed" } : {}),
+        asOf: "2026-11-08T00:00:00Z",
+      };
+      const refreshed =
+        entryPoint === "response"
+          ? applyReadResponse(replaced, read, 1001)
+          : applyReadModel(replaced, hydrateThread(read, "ref_t", 1001));
+      expect(refreshed.history?.length).toBe(fallback ? 100 : 110);
+      const late = mergeOlderItemPage(refreshed, oldPage);
+      expect(late.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+    });
+  }
+
+  test(`${entryPoint} normal read cannot undo a newer overlapping page observation`, () => {
+    const newer = mergeOlderItemPage(
+      pageOrderingModel(),
+      normalHistoryPage(120, [
+        positionedFragmentTurn("paged", [
+          ["left", 10],
+          ["right", 20],
+        ]),
+      ]),
+    );
+    const read = {
+      ...historyRead("read-cursor"),
+      thread: testThread({
+        turns: [
+          positionedFragmentTurn("paged", [
+            ["left", 10],
+            ["omitted", 15],
+            ["right", 20],
+          ]),
+        ],
+      }),
+      snapshot: { incarnation: "inc-1", length: 110 },
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    const refreshed =
+      entryPoint === "response"
+        ? applyReadResponse(newer, read, 1001)
+        : applyReadModel(newer, hydrateThread(read, "ref_t", 1001));
+    expect(refreshed.history?.length).toBe(110);
+    expect(refreshed.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  });
+}
+
+for (const recovery of ["invalidated", "failed"] as const) {
+  test(`accepted saved fallback recovers ${recovery} history and resumes live notifications`, () => {
+    const latest = positionedFragmentTurn("turn_latest", [["held-newer", 9]], { version: 9 });
+    const read = {
+      ...historyRead("latest-cursor"),
+      thread: testThread({ turns: [latest] }),
+      snapshot: { incarnation: "inc-1", length: 9 },
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    let held = hydrateThread(read, "ref_t", 1000);
+    held = mergeOlderItemPage(held, {
+      data: [positionedFragmentTurn("turn_older", [["held-older", 1]])],
+      bootGeneration: "",
+      epoch: 1,
+      snapshot: read.snapshot,
+      nextCursor: "held-older-cursor",
+    });
+    const originalIdentity = held.history;
+    const inFlight = issueLatestWindowRead(held);
+    held = applyNotification(
+      inFlight.model,
+      {
+        method: "history/updated",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          bootGeneration: "",
+          epoch: 1,
+          snapshot: { incarnation: "inc-pending", length: 10 },
+          items: [],
+        },
+      },
+      1001,
+    );
+    expect(held.history).toMatchObject({
+      invalidatedAtGeneration: inFlight.requestGeneration,
+      awaited: { bootGeneration: "", epoch: 1 },
+      pendingIncarnation: "inc-pending",
+    });
+    if (recovery === "failed") {
+      const failing = issueLatestWindowRead(held);
+      held = applyHistoryReadFailure(failing.model, "HISTORY_FAILURE_SENTINEL", failing.requestGeneration);
+      expect(held.history?.failed).toBeDefined();
+    }
+    const issued = issueLatestWindowRead(held);
+    const fallback = {
+      ...historyRead(),
+      thread: testThread({ turns: [positionedFragmentTurn("turn_latest", [["saved-only", 8]])] }),
+      bootGeneration: "",
+      epoch: 0,
+      snapshot: { incarnation: "saved-inc", length: 8 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:01Z",
+    };
+    expect(applyReadResponse(issued.model, { ...fallback, requestGeneration: inFlight.requestGeneration }, 1002)).toBe(
+      issued.model,
+    );
+    let recovered = applyReadResponse(issued.model, { ...fallback, requestGeneration: issued.requestGeneration }, 1003);
+    expect(recovered.history?.turns.flatMap((turn) => turn.items.map((item) => item.id))).toEqual([
+      "held-older",
+      "saved-only",
+      "held-newer",
+    ]);
+    expect(recovered.olderCursor).toBe("held-older-cursor");
+    expect(recovered.olderFrontier).toBe("held-older-cursor");
+    expect(recovered.history).toMatchObject({
+      bootGeneration: originalIdentity?.bootGeneration,
+      epoch: originalIdentity?.epoch,
+      incarnation: originalIdentity?.incarnation,
+      length: originalIdentity?.length,
+      appliedGeneration: issued.requestGeneration,
+      issuedGeneration: issued.requestGeneration,
+    });
+    recovered = applyHistory(
+      recovered,
+      {
+        snapshot: { incarnation: "inc-1", length: 10 },
+        items: [{ id: "live-recorded", turnId: "turn_latest", type: "agentMessage", version: 10 }],
+      },
+      1004,
+    );
+    expect(recovered.history?.turns.flatMap((turn) => turn.items.map((item) => item.id))).toContain("live-recorded");
+    const overlay: OverlayItem = {
+      key: "stream:recovered",
+      kind: "stream",
+      turnId: "turn_latest",
+      item: { id: "live-overlay", turnId: "turn_latest", type: "agentMessage", text: "OVERLAY_" },
+    };
+    recovered = applyNotification(
+      recovered,
+      { method: "overlay/upserted", params: { threadId: "thr_t", ref: "ref_t", item: overlay } },
+      1005,
+    );
+    recovered = applyNotification(
+      recovered,
+      {
+        method: "overlay/delta",
+        params: { threadId: "thr_t", ref: "ref_t", key: overlay.key, field: "text", delta: "DELTA" },
+      },
+      1006,
+    );
+    expect(recovered.turns.flatMap((turn) => turn.items).find((item) => item.id === "live-overlay")?.text).toBe(
+      "OVERLAY_DELTA",
+    );
+    for (const field of ["invalidatedAtGeneration", "awaited", "pendingIncarnation", "failed"]) {
+      expect(recovered.history).not.toHaveProperty(field);
+    }
+  });
+}
+
+test("hydration omits unavailable serving facts from the model shape", () => {
+  for (const response of [historyRead(), { thread: testThread() }]) {
+    expect(hydrateThread(response, "ref_t", 1000)).not.toHaveProperty("servingFacts");
+  }
+});
+
+for (const path of ["wire", "hydrated"] as const) {
+  test(`${path} refresh clears previous serving facts when the new read has none`, () => {
+    const live = { ...historyRead(), servedFrom: "live-daemon", asOf: "2026-11-08T00:00:00Z" };
+    const held = hydrateThread(live, "ref_t", 1000);
+    expect(held.servingFacts?.servedFrom).toBe("live-daemon");
+    const response = { ...historyRead(), epoch: 2, requestGeneration: 1 };
+    const refreshed =
+      path === "wire"
+        ? applyReadResponse(held, response, 1001)
+        : applyReadModel(held, hydrateThread(response, "ref_t", 1001));
+    expect(refreshed).not.toHaveProperty("servingFacts");
+    expect(held.servingFacts?.servedFrom).toBe("live-daemon");
+  });
 }
 
 test("hydrateThread records a real read's older-frontier provenance (#5585)", () => {

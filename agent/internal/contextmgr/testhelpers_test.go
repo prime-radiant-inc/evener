@@ -34,9 +34,21 @@ func testProfile(instance, model string, contextWindow int) *provider.Profile {
 		p = provider.FromResolved(registry.Resolved{Instance: instance, ModelID: model, WireID: model}, nil)
 	}
 	if contextWindow > 0 {
-		p = provider.WithContextWindow(p, contextWindow)
+		p = withContextWindow(p, contextWindow)
 	}
 	return p
+}
+
+// withContextWindow returns a copy of p whose record names an n-token window,
+// by replacing the window in its record (provenance is left as it was).
+// n <= 0 returns p unchanged.
+func withContextWindow(p *provider.Profile, n int) *provider.Profile {
+	if n <= 0 {
+		return p
+	}
+	res := p.Resolved()
+	res.Caps.ContextWindow = &n
+	return p.WithResolved(res)
 }
 
 // testOpenAIProfileWithContextWindow builds an OpenAI-tagged profile with the
@@ -46,13 +58,11 @@ func testOpenAIProfileWithContextWindow(contextWindow int) *provider.Profile {
 }
 
 // newCompactionManager builds a Manager over an OpenAI test profile with the
-// given context window and the four compaction thresholds, named here in
-// call order: observation mask, thinking clear, checkpoint, summarize. A
-// test names exactly which layers can fire; PreserveRecentTurns is 2.
-func newCompactionManager(client *llm.Client, contextWindow int, observationMask, thinkingClear, checkpoint, summarize float64) *Manager {
+// given context window and the two fold thresholds, named here in call
+// order: checkpoint, summarize. A test names exactly which layers can fire;
+// PreserveRecentTurns is 2.
+func newCompactionManager(client *llm.Client, contextWindow int, checkpoint, summarize float64) *Manager {
 	cm := NewManager(testOpenAIProfileWithContextWindow(contextWindow), client, cheapmodel.New(client))
-	cm.ObservationMaskThreshold = observationMask
-	cm.ThinkingClearThreshold = thinkingClear
 	cm.CheckpointThreshold = checkpoint
 	cm.SummarizeThreshold = summarize
 	cm.PreserveRecentTurns = 2

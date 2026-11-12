@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -63,8 +64,7 @@ func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agentt
 // namer, its timer parked on clk, and fails if it answered without waiting.
 func awaitManualClaimWaiting(t *testing.T, clk *agenttest.FakeClock, done <-chan manualClaimResult) {
 	t.Helper()
-	// TRIPWIRE: the retire parks its timer at once; 30s only fires on a hang.
-	waitForCondition(t, 30*time.Second, "the manual retire to wait on the namer", func() bool {
+	testwait.Until(t, "the manual retire to wait on the namer", func() bool {
 		select {
 		case got := <-done:
 			t.Fatalf("manual retire answered without waiting for the namer: claim %v, %+v, %v", got.claim, got.snapshot, got.err)
@@ -229,8 +229,7 @@ func TestManualRetireWaitsForEveryNamer(t *testing.T) {
 	done := startManualClaim(c)
 	awaitManualClaimWaiting(t, clk, done)
 	releaseFirst()
-	// TRIPWIRE: the first namer settles in microseconds; 30s only fires on a hang.
-	waitForCondition(t, 30*time.Second, "the first namer to settle", func() bool {
+	testwait.Until(t, "the first namer to settle", func() bool {
 		root.mu.Lock()
 		defer root.mu.Unlock()
 		return root.naming.pending == 1

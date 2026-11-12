@@ -42,7 +42,7 @@ func TestSummaryFailureWireFixtures(t *testing.T) {
 		return agenttest.FinalResponse("continued-41bc"), nil
 	}})
 	stateDir := t.TempDir()
-	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "summary-model-8af1")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "summary-model-8af1")), withDir(stateDir), withConfig(SessionConfig{
 		StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"),
 	}))
 	if err := sess.Rename("summary-wire-fixture"); err != nil {

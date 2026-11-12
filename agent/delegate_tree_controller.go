@@ -103,15 +103,21 @@ type delegateTreeController struct {
 	watchDeliveries   map[uint64]*delegateWatchReceipt
 	reclamations      map[uint64]*delegateRuntimeReclamationClaim
 	reclaiming        map[string]uint64
-	stop              *delegateStopState
-	stopDriver        *delegateStopDriver
-	evidenceVersion   uint64
-	retirementClaim   *RetirementClaim
-	closing           bool
-	reconcileOrder    []delegateLease
-	runStarts         map[delegateLease]delegatestore.RunTrigger
-	owedAdmission     bool
-	emitUpdate        func(delegateUpdatePlan)
+	// releasing records a non-terminal runtime release that has committed (its
+	// subagent record unhooked and its resident pointer cleared) but whose
+	// teardown has not finished. A lane handoff treats the subtree as busy
+	// until it ends: the runtime can still be winding down in the lane even
+	// though no live pointer names it.
+	releasing       map[string]*Session
+	stop            *delegateStopState
+	stopDriver      *delegateStopDriver
+	evidenceVersion uint64
+	retirementClaim *RetirementClaim
+	closing         bool
+	reconcileOrder  []delegateLease
+	runStarts       map[delegateLease]delegatestore.RunTrigger
+	owedAdmission   bool
+	emitUpdate      func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -479,6 +485,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
+		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,

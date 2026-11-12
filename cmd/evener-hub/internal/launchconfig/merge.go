@@ -99,6 +99,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			}
 		}
 		mergePtr(&m, &eff.SandboxNet, l.SandboxNet, "sandbox_net")
+		mergePtr(&m, &eff.CompactAtPercent, l.CompactAtPercent, "compact_at_percent")
 		mergePtr(&m, &eff.MaxRounds, l.MaxRounds, "max_rounds")
 		mergePtr(&m, &eff.MaxSubagentDepth, l.MaxSubagentDepth, "max_subagent_depth")
 		mergePtr(&m, &eff.MaxConcurrentDelegateTurns, l.MaxConcurrentDelegateTurns, "max_concurrent_delegate_turns")

@@ -544,3 +544,22 @@ func TestParsePluginHooks_DirectoryAddedIsReservedNotUnknown(t *testing.T) {
 		t.Errorf("unknown = %v, want none", unknown)
 	}
 }
+
+// The hook-event warnings carry the plugin and the event they are about, and a
+// reserved event does not read as an unknown one: session load and the hub's
+// plugin components read both build their notes from these.
+func TestHookEventWarningsNameThePluginAndTheEvent(t *testing.T) {
+	unsupported := UnsupportedHookEventWarning("demo-plugin", "Setup")
+	unknown := UnknownHookEventWarning("demo-plugin", "TotallyMadeUp")
+	for _, tc := range []struct{ warning, event string }{
+		{unsupported, "Setup"},
+		{unknown, "TotallyMadeUp"},
+	} {
+		if !strings.Contains(tc.warning, "demo-plugin") || !strings.Contains(tc.warning, tc.event) {
+			t.Errorf("warning %q does not name plugin demo-plugin and event %s", tc.warning, tc.event)
+		}
+	}
+	if UnsupportedHookEventWarning("demo-plugin", "Event") == UnknownHookEventWarning("demo-plugin", "Event") {
+		t.Error("a reserved event and an unknown event produce the same warning")
+	}
+}

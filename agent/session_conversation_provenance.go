@@ -3,6 +3,7 @@ package agent
 import (
 	"slices"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -206,12 +207,18 @@ func (s *Session) publishTranscriptLocked(length int64) {
 	}
 }
 
-// TranscriptPublicationHooks binds both publication phases to one producer
-// lifetime. Recorded retains Writer.OnRecorded's leaf-lock-only contract.
+// TranscriptPublicationHooks binds publication and frontier registration to one
+// producer lifetime. Recorded retains Writer.OnRecorded's leaf-lock contract.
 // Published runs after adoption with the immutable snapshot and byte boundary.
+// RegisterFrontier runs at attach, outside Session.mu. A nil register means no
+// registration and no release. PublishFrontier and ReleaseFrontier retain this
+// runtime's identity, so neither can alter a replacement's registration.
 type TranscriptPublicationHooks struct {
-	Recorded  func(transcript.Record)
-	Published func(int64, *appwire.ConversationProvenanceState)
+	Recorded         func(transcript.Record)
+	Published        func(int64, *appwire.ConversationProvenanceState)
+	RegisterFrontier func(func() events.ExecutionFrontier)
+	PublishFrontier  func(string)
+	ReleaseFrontier  func()
 }
 
 // SetDescendantTranscriptPublicationFunc installs a factory invoked once per
@@ -227,6 +234,9 @@ func (s *Session) bindDescendantTranscriptPublication() {
 	if fn := s.cfg.spawn.descendantPublication; fn != nil {
 		hooks := fn(s.id)
 		s.transcriptRecorded, s.transcriptPublished = hooks.Recorded, hooks.Published
+		if hooks.RegisterFrontier != nil {
+			s.transcriptFrontier = transcriptFrontierBinding{hooks.RegisterFrontier, hooks.PublishFrontier, hooks.ReleaseFrontier}
+		}
 	}
 }
 

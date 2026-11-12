@@ -4,10 +4,11 @@
 // imports threads.ts.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
+import { KeyedWaiters } from "./keyedWaiters";
 
 let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
-const readyGenerationRetirementWaiters = new Map<number, Set<() => void>>();
+const readyGenerationRetirementWaiters = new KeyedWaiters<number, () => void>();
 
 export function getWiredClient(): AppwireClientLike | null {
   return wiredClient;
@@ -23,9 +24,8 @@ export function getReadyEpoch(): number {
 
 /** Retires the current ready generation's waiters, then starts the next one. */
 export function advanceReadyEpoch(): number {
-  const waiters = readyGenerationRetirementWaiters.get(readyEpoch);
+  const waiters = readyGenerationRetirementWaiters.take(readyEpoch);
   if (waiters) {
-    readyGenerationRetirementWaiters.delete(readyEpoch);
     for (const waiter of waiters) waiter();
   }
   readyEpoch += 1;
@@ -33,16 +33,8 @@ export function advanceReadyEpoch(): number {
 }
 
 export function watchReadyGenerationRetirement(epoch: number, waiter: () => void): () => void {
-  let waiters = readyGenerationRetirementWaiters.get(epoch);
-  if (!waiters) {
-    waiters = new Set();
-    readyGenerationRetirementWaiters.set(epoch, waiters);
-  }
-  waiters.add(waiter);
-  return () => {
-    waiters?.delete(waiter);
-    if (waiters?.size === 0) readyGenerationRetirementWaiters.delete(epoch);
-  };
+  readyGenerationRetirementWaiters.add(epoch, waiter);
+  return () => readyGenerationRetirementWaiters.remove(epoch, waiter);
 }
 
 export function resetWiredClientForTests(): void {

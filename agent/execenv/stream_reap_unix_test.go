@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // The two tests below pin issue #5468: a background child that redirects its
@@ -36,16 +38,10 @@ func redirectingHeartbeatScript(heartbeat string) string {
 
 func awaitHeartbeat(t *testing.T, heartbeat string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if info, statErr := os.Stat(heartbeat); statErr == nil && info.Size() > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("redirecting background child never started writing")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the redirecting background child to start writing", func() bool {
+		info, statErr := os.Stat(heartbeat)
+		return statErr == nil && info.Size() > 0
+	})
 }
 
 // assertHeartbeatStopped fails the test if the heartbeat child is still

@@ -337,7 +337,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	if env.WorkingDirectory() != root || env.KernelWrapper() != nil || env.SandboxReRootError() != nil {
 		t.Fatalf("fresh command environment lifecycle state is wrong")
 	}
-	if got := env.WithSandboxInvocationGrant(filepath.Join(root, "grant")); got != env {
+	if got := env.WithSandboxInvocationGrant(filepath.Join(root, "grant"), filepath.Join(root, "grant")); got != env {
 		t.Fatal("off environment unexpectedly created a sandbox grant clone")
 	}
 	if err := env.UseControlPolicy(root); err != nil {

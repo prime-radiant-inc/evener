@@ -27,7 +27,7 @@ import (
 func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -114,7 +114,7 @@ func TestRetirementSettlesOwnEnvironmentScratch(t *testing.T) {
 func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())

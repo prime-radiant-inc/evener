@@ -47,13 +47,12 @@ func newReloadSession(t *testing.T, root string, window int, main, cheap func(ll
 	client.Register(cheapAdapter)
 	profile := WithCheapModel(newAnthropicProfile("claude-test"), "reload-cheap/sum")
 	if window > 0 {
-		profile = WithContextWindow(profile, window)
+		profile = withContextWindow(profile, window)
 	}
 	o := append([]sessionOpt{
 		withClient(client),
 		withProfile(profile),
 		withDir(root),
-		withoutGitSnapshot(),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
 	}, opts...)
 	s := newSession(t, o...)
@@ -702,7 +701,6 @@ func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 		}
 	}, reloadSummaryResponder("SUMMARY_reload_7", &summarizeCalls))
 	seedNumberedSessionHistory(t, s, 12)
-	forcePressureAbove(t, s, compactPressureFloor)
 	plantOrdinaryRecord(t, s, root, "skA", false)
 	plantOrdinaryRecord(t, s, root, "skB", false)
 	evs, stop := captureEvents(s)
@@ -1593,7 +1591,7 @@ func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
 	if got := skillReloadSafetyReserve(window); got != 1024 {
 		t.Fatalf("test setup: reserve at window %d = %d, want 1024", window, got)
 	}
-	s.profile = WithContextWindow(s.profile, window)
+	s.profile = withContextWindow(s.profile, window)
 	if !s.skillReloadReminderFits(content) {
 		t.Fatalf("test setup: the first reminder must fit window %d (used=%d tokens=%d)", window, used, tokens)
 	}
@@ -2092,7 +2090,6 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
 	s := newSession(t,
 		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
 	)
 	drainSessionEvents(s)
 	plantPreloadRecord(t, s, "opaque", "fixture description")
@@ -2142,7 +2139,7 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 // away with it — they are retired on their own schedule.
 func TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.mu.Lock()
 	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
 		{Phase: skillCompactionReceiptCancelled, Operation: schema.SkillCompactionOperation{Generation: 1}},
@@ -2171,7 +2168,6 @@ func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
 	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
 	s := newSession(t,
 		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
 	)
 	drainSessionEvents(s)
 	// A selection naming only a preload-only skill is consumed with no outcome

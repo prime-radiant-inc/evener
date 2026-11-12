@@ -140,8 +140,7 @@ function RowGutter({ className, testId, children }: { className: string; testId:
 // arithmetic): the dot hangs in the row's leading padding, left of the text,
 // so a dotted row's title and a quiet row's title start at exactly the same
 // x instead of state moving the title's position.
-function Signal({ wireState }: { wireState: string }) {
-  const state = cadenceStateFor(wireState);
+function Signal({ state }: { state: CadenceState }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
@@ -473,13 +472,15 @@ function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   if (presented === "errored") return "errored";
-  // Only attention that waits on a person outranks work: a question, a turn
-  // that ended on needs_response (awaiting without a question, #4093), an
+  // Only attention that waits on a person outranks work: a question, an
   // approval (which displayState presents as awaiting), or a restart. A
-  // warning shares the amber dot family, but running jobs remain what is
-  // happening.
+  // finished turn (awaiting without a question) is not attention: running
+  // work reads as working instead (#2629). A warning shares the amber dot
+  // family only when it also blocks on a question; otherwise running jobs
+  // remain what is happening.
   const attentionOutranksWork =
-    presented === "awaiting" ||
+    (presented === "awaiting" && session.ask_pending === true) ||
+    session.approval_pending === true ||
     presented === "restartRequired" ||
     (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
@@ -542,7 +543,10 @@ function SessionContextCard({
   const jobs = session.running_job_count ?? 0;
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
-  const state = cadenceStateFor(effectiveState);
+  const state = cadenceStateFor(effectiveState, {
+    askPending: session.ask_pending === true,
+    approvalPending: session.approval_pending === true,
+  });
   // Only a working row asks the hub what the session is doing: every other
   // state word is already settled by the row's own fields.
   const read = useSessionActivityRead(session.ref, state === "working");
@@ -629,7 +633,11 @@ function SessionTitle({
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   const effectiveState = effectiveSessionState(session);
-  const hasSignal = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
+  const signalState = cadenceStateFor(effectiveState, {
+    askPending: session.ask_pending === true,
+    approvalPending: session.approval_pending === true,
+  });
+  const hasSignal = SIGNAL_STATES.has(signalState);
   const notStarted = saysNotStarted(session, hasSignal);
   const rowRef = useRef<HTMLSpanElement>(null);
   const focusTarget = useCallback(() => rowRef.current?.closest<HTMLElement>('[role="treeitem"]') ?? null, []);
@@ -646,7 +654,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             does, since this text IS the treeitem's accessible name (no
             separate aria-label on the row). */}
         <span className={CLASS.titleLine}>
-          <Signal wireState={effectiveState} />
+          <Signal state={signalState} />
           <SessionTitle
             session={session}
             effectiveState={effectiveState}
@@ -716,7 +724,11 @@ function ProjectRow({
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={showsRollup ? (project.rollup_state ?? "idle") : "idle"} />
+          <Signal
+            state={cadenceStateFor(showsRollup ? (project.rollup_state ?? "idle") : "idle", {
+              askPending: showsRollup && project.rollup_state === "awaiting",
+            })}
+          />
           {/* Same reasoning as SessionRow's own label above. displayName is
               the UX-fix decoration railNodes.ts's projectDisplayLabels
               stamps on when this project's name collides with a sibling's

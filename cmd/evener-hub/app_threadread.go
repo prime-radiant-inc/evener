@@ -333,17 +333,33 @@ func pastEntryItemReadResponseOwned(
 	if query := params.AnswerContinuation; query != nil {
 		verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
 		var snapshot appwire.SnapshotIdentity
-		err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		var servingFacts *appwire.HistoryServingFacts
+		var frontier string
+		err := withPastServingView(ctx, entry, func(index pastTranscriptView, asOf string) error {
 			var err error
 			verdict.Matches, snapshot, err = index.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+			if err == nil && asOf != "" {
+				var window transcriptindex.Window
+				window, err = index.Latest(1)
+				frontier = window.LatestExecutionTurnID
+				servingFacts = savedServingFacts(asOf)
+			}
 			return err
 		})
 		if err != nil {
 			return appwire.ThreadReadResponse{}, true, err
 		}
-		return appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &snapshot, Authoritative: true, AnswerContinuation: &verdict}, true, nil
+		return appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &snapshot, Authoritative: true, AnswerContinuation: &verdict, ServingFacts: servingFacts, LatestExecutionTurnID: frontier}, true, nil
 	}
 	if !params.IncludeTurns {
+		if appwire.HistoryServingFactsRequested(ctx) {
+			page, err := pastEntryLatestItems(ctx, entry, 1, nil, false)
+			if err != nil {
+				return appwire.ThreadReadResponse{}, true, err
+			}
+			thread.Evener.LatestExecutionTurnID = page.LatestExecutionTurnID
+			return appwire.ThreadReadResponse{Thread: stampDerivedTotals(cfg, entry, thread), RequestGeneration: params.RequestGeneration, BootGeneration: appwire.DaemonlessBootGeneration, ServingFacts: savedServingFacts(page.AsOf)}, true, nil
+		}
 		return appwire.ThreadReadResponse{
 			Thread:            stampDerivedTotals(cfg, entry, thread),
 			RequestGeneration: params.RequestGeneration,
@@ -405,6 +421,7 @@ func pastEntryItemReadResponseOwned(
 	packed.Snapshot = &page.Snapshot
 	packed.Authoritative = true
 	packed.Changes = pastHistoryChanges(cfg, entry, page.Changes, packed.Thread.Turns)
+	packed.ServingFacts = savedServingFacts(page.AsOf)
 	return packed, true, nil
 }
 
@@ -422,6 +439,7 @@ type pastItemPage struct {
 	Candidates            []appitempaging.TranscriptItemCandidate
 	TurnIDs               []string
 	LatestExecutionTurnID string
+	AsOf                  string
 	Identity              appitempaging.CursorIdentity
 	Exhausted             bool
 	Snapshot              appwire.SnapshotIdentity
@@ -454,7 +472,7 @@ func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
 // history is what a daemonless page was read under: the daemonless
 // generation, epoch 0, and the index snapshot, authoritative for its range.
 func (p pastItemPage) history() appsource.HistoryIdentity {
-	return appsource.HistoryIdentity{BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &p.Snapshot, Authoritative: true}
+	return appsource.HistoryIdentity{BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &p.Snapshot, Authoritative: true, ServingFacts: savedServingFacts(p.AsOf), LatestExecutionTurnID: p.LatestExecutionTurnID}
 }
 
 func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Window) pastItemPage {
@@ -569,7 +587,7 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 // history page discards them and must not pay to derive them.
 func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity, includeTotals bool) (pastItemPage, error) {
 	var page pastItemPage
-	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+	err := withPastServingView(ctx, entry, func(index pastTranscriptView, asOf string) error {
 		var window transcriptindex.Window
 		var changes *transcriptindex.Changes
 		if held == nil {
@@ -588,6 +606,7 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 			}
 		}
 		page = pastItemPageFromWindow(entry, window)
+		page.AsOf = asOf
 		if includeTotals {
 			page.Derived = pastIndexDerivedTotals(index, entry)
 		}
@@ -599,7 +618,7 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 
 func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, selector appwire.ThreadTurnWindow, includeTotals bool) (pastItemPage, error) {
 	var page pastItemPage
-	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+	err := withPastServingView(ctx, entry, func(index pastTranscriptView, asOf string) error {
 		resolved, err := index.ResolveTurnWindow(selector)
 		if err != nil {
 			if missing, ok := errors.AsType[*transcriptindex.TurnNotFoundError](err); ok {
@@ -619,6 +638,7 @@ func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, sele
 			Exhausted:             true,
 			Snapshot:              appwire.SnapshotIdentity{Incarnation: resolved.Incarnation, Length: resolved.Length},
 		}
+		page.AsOf = asOf
 		if includeTotals {
 			page.Derived = pastIndexDerivedTotals(index, entry)
 		}
@@ -630,7 +650,7 @@ func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, sele
 // pastIndexDerivedTotals reads the session's own-span totals from the index, or
 // nil when the index cannot answer them (a quarantined line), leaving the
 // caller to fall back to the transcript scan.
-func pastIndexDerivedTotals(index *transcriptindex.Index, entry hubcore.PastEntry) *pastDerivedTotals {
+func pastIndexDerivedTotals(index pastTranscriptView, entry hubcore.PastEntry) *pastDerivedTotals {
 	usage, failures, err := index.DerivedTotals(entry.Meta.DivergenceTurn)
 	if err != nil {
 		return nil
@@ -647,7 +667,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params app
 		return pastEntryLatestItems(ctx, entry, limit, nil, false)
 	}
 	var page pastItemPage
-	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+	err := withPastServingView(ctx, entry, func(index pastTranscriptView, asOf string) error {
 		incarnation, err := index.Incarnation()
 		if err != nil {
 			return err
@@ -665,6 +685,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params app
 			return appwire.TranscriptItemCursorStale()
 		}
 		page = pastItemPageFromWindow(entry, window)
+		page.AsOf = asOf
 		return nil
 	})
 	return page, err

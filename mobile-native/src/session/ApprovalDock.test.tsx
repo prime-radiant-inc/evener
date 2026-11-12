@@ -110,6 +110,16 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(renderedText(alone)).not.toContain("waiting");
 	});
 
+	it("names the agent's spelling only when a symlink made it differ from the target", () => {
+		const { tree } = mount(
+			request({ deniedPath: "/private/tmp/real/out.txt", requestedPath: "/tmp/link/out.txt" }),
+			fakeControls(),
+		);
+		const [requestedAs] = withTestID(tree, "approval-requested-as");
+		expect(requestedAs && textOf(requestedAs).replaceAll("\u200b", "")).toContain("/tmp/link/out.txt");
+		expect(hasTestID(mount(request(), fakeControls()).tree.root, "approval-requested-as")).toBe(false);
+	});
+
 	it("allows once when the hub couldn't name the path, and says part of it ran", () => {
 		const { tree } = mount(request({ deniedPath: "<denied>", partiallyRan: true }), fakeControls());
 		const text = readable(tree);

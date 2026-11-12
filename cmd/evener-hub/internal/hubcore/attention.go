@@ -8,13 +8,17 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-// attentionLevel maps a normalized UI state to an attention level.
-func attentionLevel(normalized string) string {
+// attentionLevel maps a normalized UI state plus its pending facts to an
+// attention level. Only an actionable condition puts a session in needs_you: a
+// pending question or approval, a warning, or a restart. A turn that merely
+// ended on needs_response is finished and rests idle (#2629).
+func attentionLevel(normalized string, askPending, approvalPending bool) string {
+	if hubapi.NeedsAction(normalized, askPending, approvalPending) {
+		return "needs_you"
+	}
 	switch normalized {
 	case "active":
 		return "working"
-	case "awaiting", "warning", appwire.ThreadStatusRestartRequired:
-		return "needs_you"
 	case "errored":
 		return "error"
 	default:
@@ -32,8 +36,8 @@ func attentionLevel(normalized string) string {
 // below and BuildTree's needs-you tier (tree.go) both call this single
 // function for their inclusion decision, so a live session can never light
 // one without the other; see AttentionSummary's doc.
-func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
-	return attentionLevel(hubapi.AttentionState(normalized, pendingEscalation))
+func promotedAttentionLevel(normalized string, askPending, pendingEscalation bool) string {
+	return attentionLevel(normalized, askPending, pendingEscalation)
 }
 
 // tierEligible reports whether a session belongs to the tier-eligible
@@ -99,7 +103,7 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 			continue
 		}
 		state := NormalizeState(le.Status)
-		level := promotedAttentionLevel(state, le.PendingEscalation)
+		level := promotedAttentionLevel(state, le.PendingAsk, le.PendingEscalation)
 		e := appwire.AttentionEntry{
 			ID:              le.SessionID,
 			Level:           level,

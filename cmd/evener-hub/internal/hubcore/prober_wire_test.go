@@ -130,6 +130,7 @@ func TestStatusProberRejectsAnAnswerForAnotherSession(t *testing.T) {
 func (s wireProbeEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
 	return server.ContextMetrics{}, 0
 }
+func (s wireProbeEnvelopeSource) LatestExecutionTurnID() string         { return "" }
 func (s wireProbeEnvelopeSource) DetailedStatus() server.DetailedStatus { return s.detailed }
 func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
 	return appwire.QueueState{}, nil

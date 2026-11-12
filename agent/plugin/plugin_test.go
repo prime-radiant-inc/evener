@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/execsupport/valueexpr"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func TestValidatePluginName(t *testing.T) {
@@ -202,11 +203,7 @@ func TestExpandPluginRoot(t *testing.T) {
 // Returns the resolved (EvalSymlinks) path to the plugin dir.
 func makePluginDir(t *testing.T, name string) string {
 	t.Helper()
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	metaDir := filepath.Join(dir, ".claude-plugin")
 	if err := os.MkdirAll(metaDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)

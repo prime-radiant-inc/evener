@@ -1,0 +1,24 @@
+{
+  "name": "notes-card-inset",
+  "description": "The session notes card is an inset, fully bordered, rounded card in both states: its top edge and both top corners are separated from the pane body's scrollport clip line (rather than parked on it, where the border and corners were painted away), and the collapsed bar carries the same boundary instead of being a squared, edgeless strip.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/eyebrow/eyebrow.module.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "panes/session/chrome/notespanel.module.css",
+    "panes/session/chrome/topnotespanel.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "topnotespanel.module.css: .topNotesPanel { margin-top: calc(-1 * var(--space-5)) } re-added (the removed flush rule), and .topNotesPanel { border: 1px solid var(--edge-strong) } deleted",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Re-adding the negative top margin failed with 'card top is 0.0px below the clip line, not the pane's 24px padding' in both states; deleting the root border failed with 'card borders are 0/0/0/0px, expected a border on all four sides' in both states. Each was reverted and the case passed again."
+  }
+}

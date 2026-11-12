@@ -34,7 +34,13 @@ update replaces the whole note. The agent sets it with `notes_agent_set`
 once it understands the task, updates it when a phase finishes, the plan
 changes, or it is blocked, and brings it up to date before its final report.
 
+When the session can add links, the agent also adds each GitHub pull request
+it opens, updates, reviews or merges, and other links you should look at, to
+the session links list, each with a short label.
+
 Editing your note changes a shared draft for that session. Multiple open panels show the same draft. Leaving the editor schedules a save **10 seconds later**; focusing any editor for the same session cancels that delay. Saving also notifies the agent and may wake an idle agent.
+
+The expanded panel collapses from its header, from **Escape** while focus is inside it, or by pressing anywhere else in the pane. A press on the other notes panel for the same conversation leaves both open, and a selection dragged out of the panel does not collapse it. Escape closes without leaving the field, so it saves nothing; pressing elsewhere means you left the field, so the scheduled save below still runs.
 
 Closing a panel without leaving the field does not save. The draft remains available when you reopen it in the same browser session. If you already left the field, its scheduled save survives closing the panel.
 

@@ -26,12 +26,19 @@ import { tabbable } from "./tabbable";
  * themselves (jsdom), while Chrome has already moved it to `<body>`. Focus that
  * is anywhere else by now is the user's or another component's and is left where
  * it is.
+ *
+ * A root with no tabbable control left - a row a one-way expansion emptied, a
+ * block a retry swapped for loading - falls back to the root itself when the
+ * root can hold focus (an author-set tabindex, the same convention
+ * FocusScope's wrapper div set), so recovery never depends on a control
+ * surviving. A root that cannot hold focus stays a no-op: focusing it would
+ * silently do nothing anyway.
  */
 export function rehomeFocus(root: HTMLElement | null, lost: HTMLElement | null = null): void {
   if (root === null) return;
   const active = document.activeElement;
   if (active !== document.body && active !== lost) return;
-  const next = tabbable(root)[0];
+  const next = tabbable(root)[0] ?? (root.hasAttribute("tabindex") ? root : null);
   next?.focus();
 }
 
@@ -60,13 +67,17 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
     const remember = (target: EventTarget | null): void => {
       const node = root.current;
       if (!(target instanceof HTMLElement) || node === null || !node.contains(target)) return;
+      const dialog = target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]');
       lastFocused.current = {
         target,
-        // The innermost overlay the control sits in (a sheet, a dialog, a
-        // confirm opened over this surface), so the recovery lands inside the
-        // overlay the keyboard was actually in. Falling back to the surface
-        // itself would push focus out of a nested modal and break its trap.
-        container: target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]') ?? node,
+        // The innermost dialog this surface OWNS - a dialog nested inside the
+        // root (a confirm opened over this surface), where recovery has to
+        // land to keep the keyboard in the modal it was in. An ANCESTOR dialog
+        // (the mobile selection sheet wrapping a whole panel) never owns a
+        // nested surface's recovery: the surface's own catch root keeps the
+        // keyboard where the user was, so the next Escape dismisses the
+        // details instead of the sheet over the draft.
+        container: dialog !== null && node.contains(dialog) ? dialog : node,
       };
     };
     const onFocusIn = (event: FocusEvent): void => remember(event.target);

@@ -35,6 +35,42 @@ func (hx *historyHarness) recordAssistant(t *testing.T, roundID, model, text str
 	hx.recordTurn(t, turn)
 }
 
+// A continuation answer advertises the execution frontier of the snapshot it
+// answered from. An execution recorded after the caller's cut leaves the
+// captured row behind, so reporting the captured frontier would advertise a
+// serving view the response's own snapshot has already passed.
+func TestAnswerContinuationReportsItsOwnSnapshotFrontier(t *testing.T) {
+	hx := newHistoryHarness(t)
+	recordExecution := func(id string) {
+		t.Helper()
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(id))
+		turn.Format, turn.TurnID, turn.TurnKind = schema.TurnFormatIdentity, id, schema.TurnSpanExecution
+		hx.recordTurn(t, turn)
+	}
+	recordExecution("A")
+	_, _, _, captured, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if captured != "A" {
+		t.Fatalf("captured frontier = %q, want A", captured)
+	}
+	// The execution the answer's read will see, recorded after that capture.
+	recordExecution("B")
+	_, _, frontier, err := hx.history.answerContinuation(t.Context(), appwire.ThreadReadParams{
+		AnswerContinuation: &appwire.AnswerContinuationQuery{AncestorTurnID: "A", CandidateTurnID: "B"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frontier != "B" {
+		t.Fatalf("answer frontier = %q, want B", frontier)
+	}
+	if frontier == captured {
+		t.Fatalf("answer reported the captured frontier %q", captured)
+	}
+}
+
 // The latest window is the index's Latest regrouped into turn fragments, its
 // snapshot the recorded length at projection, its turns priced by their model.
 func TestHistoryReadLatestIsTheIndexWindowRegrouped(t *testing.T) {

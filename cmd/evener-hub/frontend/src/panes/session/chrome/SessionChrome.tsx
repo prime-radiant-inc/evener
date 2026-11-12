@@ -337,7 +337,7 @@ export function SessionChrome({
       >
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
-            <StatusRow sessionRef={sessionRef} model={model} now={now} />
+            <StatusRow sessionRef={sessionRef} model={model} now={now} align={compactRung ? "end" : undefined} />
             {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
                 "drop goal inline in the composer"): the composer row is
                 status and menu alone, and the goal objective stays visible
@@ -350,7 +350,14 @@ export function SessionChrome({
            .right - and with it the "..." menu - always shares this one line. */
           <div className={CLASS.body} data-testid="session-chrome-body">
             <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-              <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />
+              <Cadence
+                state={cadenceStateFor(model.status.type, {
+                  askPending: model.askPending,
+                  approvalPending: model.pendingEscalations.length > 0,
+                })}
+                frameTimes={frameTimes}
+                now={now}
+              />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
           </div>

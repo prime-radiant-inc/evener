@@ -17,7 +17,7 @@ func TestSessionActivityDelegateNameSurvivesRetainedRead(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"inspect-cache", strings.Repeat("界", 220), ""} {
 		t.Run(name[:min(len(name), 24)], func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
 			descriptor := stableReadonlyDescriptor(s, "dlg_named")
 			descriptor.Name = name
 			descriptor.Task = "Inspect the complete cache ownership and repair plan"
@@ -86,7 +86,7 @@ func contextNameFields(t *testing.T, value any) map[string]any {
 
 func TestSessionActivityContextDelegateNamesLiveAndRetained(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	parent := stableToolDescriptor(s, "dlg_parent", "")
 	parent.Name, parent.Description = "same name", "Parent description, not the name"
@@ -242,7 +242,7 @@ func TestSessionActivityContextDelegateNamesIncompleteThenRecovered(t *testing.T
 
 func TestSessionActivityContextDelegateNamesRejectInvalidLineage(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2}))
 	d := stableToolDescriptor(s, "dlg_invalid", "dlg_missing_parent")
 	d.Name = "Unproven name"
 	state := delegatestore.State{"dlg_invalid": &delegatestore.Aggregate{DelegateID: "dlg_invalid", Descriptor: d}}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
@@ -574,10 +575,9 @@ func TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt(t *
 	beforeToken := c.nextToken
 	result := make(chan shellResult, 1)
 	go func() {
-		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "timeout before commit", BlockTimeoutMS: 1})
+		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "timeout before commit", BlockTimeoutMS: shellReceiptBlockTimeoutMS})
 	}()
-	clock.BlockUntil(1)
-	clock.Advance(minShellBlockTimeoutMS * 1_000_000)
+	clock.Advance(clock.awaitBlockTimer(t))
 	got := <-result
 	if got.Reason != "start_failed" {
 		t.Fatalf("foreground timeout commit failure = %+v, want start_failed", got)
@@ -596,14 +596,25 @@ func TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt(t *
 
 func TestDelegateResourceStop_ForegroundShellTimeoutReportsCommittedShellOnce(t *testing.T) {
 	c, jm, _, clock := newStableShellReceiptHarness(t)
+	// The decoy is a sentry: it is a parked waiter of the class that stole the
+	// old count-based advance (#6003). The duration wait below cannot consume
+	// it; a revert to BlockUntil(1) can. See shellReceiptClock.
+	decoy := clock.AfterFunc(time.Hour, func() {})
+	defer decoy.Stop()
 	executor := newDelayedSuccessStreamingExecutor()
 	result := make(chan shellResult, 1)
 	go func() {
-		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "promote then finish", BlockTimeoutMS: 1})
+		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "promote then finish", BlockTimeoutMS: shellReceiptBlockTimeoutMS})
 	}()
-	clock.BlockUntil(1)
-	clock.Advance(minShellBlockTimeoutMS * 1_000_000)
-	got := <-result
+	clock.Advance(clock.awaitBlockTimer(t))
+	var got shellResult
+	select {
+	case got = <-result:
+	// TRIPWIRE: the block timer has already fired on the fake clock, so
+	// runShell returns promptly; this only fires if the advance missed it.
+	case <-time.After(30 * time.Second):
+		t.Fatal("runShell did not return after the block timer advanced")
+	}
 	if got.JobID == "" || got.Reason != "foreground_timeout" {
 		t.Fatalf("foreground timeout = %+v, want promoted shell", got)
 	}
@@ -671,9 +682,9 @@ func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) 
 	executor := newSignalCompletesStreamingExecutor()
 	result := make(chan shellResult, 1)
 	go func() {
-		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "timeout races stop", BlockTimeoutMS: 1})
+		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "timeout races stop", BlockTimeoutMS: shellReceiptBlockTimeoutMS})
 	}()
-	clock.BlockUntil(1)
+	clock.awaitBlockTimer(t)
 	// Capture the exact completion before cancellation. Finalization removes the
 	// job from jm.running before it resolves the stable-delegate receipt and
 	// closes done, so a lookup after the race can mistake "removed" for "done".
@@ -698,7 +709,7 @@ func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) 
 		t.Fatalf("stop captured %d foreground shell receipts, want one uncommitted receipt", workMembership)
 	}
 	executeDelegateCancelPlan(cancelPlan)
-	clock.Advance(minShellBlockTimeoutMS * 1_000_000)
+	clock.Advance(shellReceiptBlockTimeout)
 	got := <-result
 	if got.settle != nil {
 		got.JobID = got.settle(true)
@@ -729,13 +740,65 @@ func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) 
 	}
 }
 
-func newStableShellReceiptHarness(t *testing.T) (*delegateTreeController, *jobManager, delegateLease, *agenttest.FakeClock) {
+// shellReceiptClock signals every timer runShell arms. BlockUntil(n) accepts
+// any parked waiter — a reminder AfterFunc, a finalize backoff sleep — so a
+// test that advances the clock after it can fire before runShell arms its
+// block timer, leaving runShell parked in its select forever (#6003). These
+// fixtures wait on the block timer's own creation instead.
+type shellReceiptClock struct {
+	*agenttest.FakeClock
+	timers chan time.Duration
+}
+
+// shellReceiptBlockTimeoutMS is the foreground block request these fixtures
+// pass to runShell. The request is rounded up to minShellBlockTimeoutMS, and
+// that floor is the duration runShell arms.
+const shellReceiptBlockTimeoutMS = 1
+
+const shellReceiptBlockTimeout = time.Duration(minShellBlockTimeoutMS) * time.Millisecond
+
+func newShellReceiptClock() *shellReceiptClock {
+	return &shellReceiptClock{FakeClock: agenttest.NewFakeClock(), timers: make(chan time.Duration, 1)}
+}
+
+func (c *shellReceiptClock) NewTimer(d time.Duration) clock.Timer {
+	timer := c.FakeClock.NewTimer(d)
+	select {
+	case c.timers <- d:
+	default:
+		// One slot holds the only timer these fixtures arm. A dropped signal
+		// fails awaitBlockTimer loudly instead of parking runShell here.
+	}
+	return timer
+}
+
+// awaitBlockTimer waits until runShell arms its foreground block timer. These
+// fixtures pass MaxRuntimeMS zero, so runShell creates no other timer before
+// the block timeout; a different timer being armed first is reported rather
+// than silently advanced past.
+func (c *shellReceiptClock) awaitBlockTimer(t *testing.T) time.Duration {
+	t.Helper()
+	select {
+	case armed := <-c.timers:
+		if armed != shellReceiptBlockTimeout {
+			t.Fatalf("shell armed timer %s, want the %s block timeout", armed, shellReceiptBlockTimeout)
+		}
+		return armed
+	// TRIPWIRE: the fake clock arms this timer synchronously during runShell
+	// setup, so 30s only fires on a genuine hang, not on host load.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("runShell never armed its %s block timeout", shellReceiptBlockTimeout)
+		return 0
+	}
+}
+
+func newStableShellReceiptHarness(t *testing.T) (*delegateTreeController, *jobManager, delegateLease, *shellReceiptClock) {
 	t.Helper()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	jm := newTestJM(t)
-	clock := agenttest.NewFakeClock()
+	clock := newShellReceiptClock()
 	jm.clock = clock
 	jm.mu.Lock()
 	jm.parentJobID = ""

@@ -34,6 +34,7 @@ func newResultToolSessionOn(t *testing.T, profile *provider.Profile, cfg Session
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true
 	cfg.testOnly.noSyncJobStore = true
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	if profile.ConfiguredCheapModel() == "" {

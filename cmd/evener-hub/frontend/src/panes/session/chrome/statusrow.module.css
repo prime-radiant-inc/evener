@@ -21,6 +21,17 @@
   overflow: hidden;
 }
 
+/* The composer's inline mount packs its facts against the far end, beside
+ * the verbs. The footer row keeps its leading edge. The auto margin spends
+ * the free space before the identity, so the whole run - model, effort,
+ * context and queue - moves right as a group; when there is no free space
+ * the identity still shrinks and ellipsizes from its own end rather than
+ * clipping its start. */
+.rowEnd .identity {
+  flex: 0 1 auto;
+  margin-left: auto;
+}
+
 /* The model and vision-model switches hug their labels but may both shrink when
  * the status row runs narrow. The effort control is the other direct span in
  * this run and stays fixed-width; excluding it keeps its existing sizing. Both

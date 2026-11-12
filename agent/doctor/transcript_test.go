@@ -130,6 +130,48 @@ func TestCount_StructuralVsMentions(t *testing.T) {
 	}
 }
 
+func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	assistant := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		assistantText("Checking status without calling delegate_send."),
+		toolCall("update_goal", `{"status":"complete"}`),
+	}})
+	results := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		toolResult("update_goal", "ok", false),
+	}})
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		assistant,
+		results,
+		schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+		schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
+		foldCopy(assistant, 1),
+		foldCopy(results, 2),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	ug, err := Count(base, sid, "update_goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ug.Calls != 1 {
+		t.Errorf("update_goal calls = %d, want 1", ug.Calls)
+	}
+
+	ds, err := Count(base, sid, "delegate_send")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.MentionsAssistantText != 1 {
+		t.Errorf("delegate_send assistant-text mentions = %d, want 1", ds.MentionsAssistantText)
+	}
+}
+
 func TestCount_RenderDisambiguates(t *testing.T) {
 	base, sid := countFixture(t)
 	ds, _ := Count(base, sid, "delegate_send")

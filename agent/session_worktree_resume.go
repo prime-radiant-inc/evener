@@ -36,22 +36,16 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	if path == "" {
 		return nil
 	}
-	// A child session restores onto whatever environment its parent hands it,
-	// often the parent's own (a delegate with neither a working dir nor a box
-	// of its own), and the re-root below adopts that environment's scratch. No
-	// child ever persists a worktree — delegate lanes belong to the parent's
-	// lifecycle and a child cannot call manage_worktree — so a child meta naming
-	// one is a corrupted or hand-edited record. Refuse loudly: re-entering would
-	// take the parent's scratch out from under the parent. isSubagentSession
-	// reads the persisted flag as well as the live spawn carrier: a bare
-	// `serve --resume <child-id>` restores with an empty carrier.
-	if s.isSubagentSession() {
-		parentID := s.cfg.spawn.parentSessionID
-		if parentID == "" {
-			parentID = meta.ParentSessionID
-		}
-		return fmt.Errorf("worktree re-entry: child session %s of %s cannot re-enter %s: a child never persists a worktree", s.id, parentID, path)
-	}
+	// A child session may have created its own native worktree lane with
+	// manage_worktree, so a persisted child worktree path is legitimate. The
+	// normal project, existence and registration checks below decide whether
+	// this session may enter it; for a managed lane the lock check applies too,
+	// and a parent-owned delegate marker classifies Foreign and sends the child
+	// back to its restore root with a notice. An unmanaged path entered with
+	// the switch tool carries no evener lock, so it re-enters like a root
+	// session's path-entered lane. The delegate restore path hands a child with
+	// a persisted lane an owned environment, so this re-root cannot take the
+	// parent's scratch.
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return nil // worktree re-entry is a local-execution-environment-only feature

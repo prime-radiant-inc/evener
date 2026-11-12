@@ -437,7 +437,7 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 
 func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 	profile := namedInstanceProfile("ant", "anthropic", "claude-sonnet-4-5")
-	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
+	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -475,7 +475,7 @@ func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 // thinking from the outgoing request.
 func TestHeldAttentionDropShiftsTheInFlightBoundary(t *testing.T) {
 	profile := namedInstanceProfile("ant", "anthropic", "claude-sonnet-4-5")
-	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
+	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -531,7 +531,7 @@ func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *
 	}
 	cfg := SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}
 	cfg.testOnly.contextStrategyOverride = strategy
-	runtime := newSession(t, withConfig(cfg), withoutGitSnapshot())
+	runtime := newSession(t, withConfig(cfg))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -620,7 +620,7 @@ func attachDelegateSteerRuntime(t *testing.T, c *delegateTreeController, delegat
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	runtime := &Session{}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	c.mu.Lock()
 	live := c.live[delegateID]
 	live.runtime = runtime

@@ -22,6 +22,7 @@
 # (the runtime-appended Linux-only entries are NOT listed here — see run-fuzz.sh.)
 native:llm:.:FuzzParseSSE
 native:.:./cmd/evener-transcript-v2-upgrade:FuzzConvertHeader
+native:.:./cmd/evener-go-deps:FuzzDecodeModuleGraph
 native:.:./docs/examples/extensions/mcp-server:FuzzEchoProtocol
 native:.:./appwire:FuzzMessageDecode
 native:.:./appwire:FuzzMessageDecodeStructured
@@ -344,7 +345,6 @@ native:llm:./providers/internal/openaichat:FuzzToChatTools
 native:llm:./providers/anthropic:FuzzAnthropicImageRequestBuild
 native:llm:./providers/google:FuzzGeminiImageRequestBuild
 native:agent:./internal/jobstore:FuzzOutputMatcher
-native:agent:./internal/contextmgr:FuzzSummarizeToolResult
 native:agent:./internal/mcp:FuzzMergeEnv
 native:agent:./internal/mcp:FuzzMCPResultToString
 native:agent:./internal/hooks:FuzzMatchTarget
@@ -411,7 +411,6 @@ rapid:agent:.:TestJobsFc2DescendantMergeSeqFuzz
 native:agent:.:FuzzMcClassifyModelError
 native:agent:.:FuzzMcDecideNoToolCalls
 native:agent:.:FuzzMcEffectiveRecordedInputTokens
-native:agent:.:FuzzMcContextUsageWarning
 native:agent:.:FuzzWvValidateSendTarget
 native:agent:.:FuzzWvProgressTick
 native:agent:.:FuzzWvQuietWatchdogTick
@@ -426,7 +425,6 @@ native:agent:.:FuzzCtShellResultDisposition
 native:agent:.:FuzzCtClampJobBlockTimeout
 native:agent:.:FuzzCtCanonicalizeToolNames
 native:agent:.:FuzzCtProviderVisibleToolNames
-native:agent:./internal/contextmgr:FuzzCtMaskToolResult
 native:agent:./internal/contextmgr:FuzzGlobalContextmgrTails
 native:agent:.:FuzzLifecycleSequence
 native:.:./appwire/appwiretest:FuzzScriptedTransportLifecycle

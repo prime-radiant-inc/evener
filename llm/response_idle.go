@@ -81,7 +81,6 @@ func (t *idleResponseTransport) CloseIdleConnections() {
 		c.CloseIdleConnections()
 	}
 }
-func (t *idleResponseTransport) APILogTransportUsesStandardCompression() bool { return t.compression }
 
 type idleResponseBody struct {
 	body        io.ReadCloser

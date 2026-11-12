@@ -142,7 +142,7 @@ export function installRetryWireFault() {
         this.requestMethods.set(message.id, message.method);
         state.methodCounts[message.method] = (state.methodCounts[message.method] ?? 0) + 1;
       }
-      if (message.method === "thread/read") {
+      if (message.method === "thread/read" || message.method === "evener/thread/history/read") {
         this.retryReads.set(message.id, { ref: message.params.ref, subscribed: message.params.subscribe === true });
       }
       if (message.method === "turn/start" || message.method === "turn/queue") {

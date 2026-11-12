@@ -22,10 +22,15 @@ var (
 	secureRandRead     = rand.Read
 )
 
-// isGranted reports whether abs is exactly this fs's single per-invocation granted
-// path (never a sibling, never a subtree — precisely one leaf).
-func (s *sandboxFS) isGranted(abs string) bool {
-	return s.grant != "" && abs == s.grant
+// approvedTarget returns where the granted operation on abs lands: the target
+// the human approved. It refuses when abs no longer resolves there — a symlink
+// in its parent was retargeted after approval — so the operation never reaches
+// a location the human did not see.
+func (s *sandboxFS) approvedTarget(tool, abs string) (string, error) {
+	if target, ok := grantTarget(abs); !ok || target != s.grant.target {
+		return "", s.deny(tool, abs, denyReasonSymlink)
+	}
+	return s.grant.target, nil
 }
 
 // errEscapesRoot is the sentinel a component walk returns when a path would
@@ -41,12 +46,6 @@ var errEscapesRoot = errors.New("path escapes sandbox root")
 // without a second, race-prone lstat — the open already refused to follow, and
 // this only classifies the resulting error into a legible typed denial.
 var errSymlinkComponent = errors.New("sandbox: refused non-traversable path component")
-
-// underMasked reports whether the resolved policy masks abs (a secrets/pseudo-fs
-// path not inside a root carved out of the mask; see ResolvedPolicy.Masks).
-func (s *sandboxFS) underMasked(abs string) bool {
-	return s.policy.Masks(abs)
-}
 
 // isGrantedRoot reports whether abs is exactly one of the policy's granted roots
 // (file-tool read or write roots), whose parent may lie outside the policy.

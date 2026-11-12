@@ -198,6 +198,10 @@ export class SessionActivityStore {
   private delegatesRowSetFinal = false;
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
+  /** Escalations still pending for this scope, so resolving one of several
+   * keeps the approval state until the last one leaves. Seeded from the
+   * subscription metadata and updated by the requested/resolved frames. */
+  private readonly pendingEscalations = new Set<string>();
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
@@ -534,9 +538,10 @@ export class SessionActivityStore {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
           if (!unavailable) read.failures = 0;
+          const runtime = this.seedEscalations(this.runtimeFor(summary.context, statusRevision));
           this.publish({
             context: summary.context,
-            runtime: this.runtimeFor(summary.context, statusRevision),
+            runtime,
             summary,
             summaryState: {
               ...this.state.summaryState,
@@ -645,7 +650,10 @@ export class SessionActivityStore {
           });
           if (resource === "delegates") this.settleBufferedFrames(rowsFinal);
           if (dropped()) continue;
-          this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
+          this.publish({
+            context: page.context,
+            runtime: this.seedEscalations(this.runtimeFor(page.context, statusRevision)),
+          });
           if (dropped()) continue;
           this.noteContext(page.context);
           // Collection reads can warm retained count indexes without emitting
@@ -1152,7 +1160,26 @@ export class SessionActivityStore {
           notification.params.threadId === metadata.threadId &&
           this.state.context?.sessionId === metadata.sessionId
         )
-          this.publish({ runtime: { ...metadata, status: this.statusUpdate.status } });
+          this.publish({
+            runtime: this.seedEscalations({
+              ...metadata,
+              status: this.statusUpdate.status,
+              ...(notification.params.askPending === undefined ? {} : { askPending: notification.params.askPending }),
+            }),
+          });
+        return;
+      }
+      case "evener/sandbox/escalation/requested":
+      case "evener/sandbox/escalation/resolved": {
+        const runtime = this.state.runtime;
+        if (!runtime || notification.params.threadId !== runtime.threadId) return;
+        if (notification.method === "evener/sandbox/escalation/requested")
+          this.pendingEscalations.add(notification.params.escalationId);
+        else this.pendingEscalations.delete(notification.params.escalationId);
+        const ids = [...this.pendingEscalations].sort();
+        this.publish({
+          runtime: { ...runtime, approvalPending: ids.length > 0, pendingEscalationIds: ids },
+        });
         return;
       }
       case "evener/delegate/updated":
@@ -1171,7 +1198,7 @@ export class SessionActivityStore {
           return;
         changed = notification.params.resources;
         break;
-      case "evener/thread/resync":
+      case "evener/thread/resync": {
         for (const resource of resources) {
           this.reads[resource].refresh = null;
           this.cancelPace(this.reads[resource]);
@@ -1180,8 +1207,33 @@ export class SessionActivityStore {
         // cleared. It must not publish after this resync boundary.
         this.generation += 1;
         this.runtimeThreadId = notification.params.threadId;
-        if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
-        if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
+        // The recovery thread read is newer than any status cached before the
+        // interruption, even when it names the same thread.
+        this.statusUpdate = null;
+        // The previous source's summary failure cannot describe the recovered
+        // connection. Clearing it here also keeps a recovered runtime publish
+        // from carrying a stale error across the resync boundary.
+        if (this.state.summaryState.error !== null)
+          this.change("summary", { error: null, unavailable: false, permanent: false });
+        const knownThreadId = this.state.runtime?.threadId ?? this.lease?.metadata()?.threadId ?? null;
+        const replaced = knownThreadId !== null && knownThreadId !== this.runtimeThreadId;
+        if (replaced) this.publish({ runtime: null });
+        // A relay interruption can hide a resolution or a new question. For
+        // the same thread, the recovery thread read is authoritative even when
+        // activity reads are still failing; retry it rather than leaving
+        // metadata stale. An activity-only scope retries activity via
+        // lease.ensure() without refreshing metadata, so this read cannot
+        // depend on summary success. A resync naming a replacement thread
+        // retires the old runtime instead: that subscription describes the
+        // thread being left behind.
+        if (!replaced && this.lease) {
+          const lease = this.lease;
+          const generation = this.generation;
+          // Let every notification listener for this resync run first: the
+          // subscription registry advances its resync revision there, so the
+          // refresh read is issued against the new boundary.
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease, generation));
+        }
         // A resync re-establishes the source identity, so the pushed-frame merge
         // waits for the refreshed context as it does across a reconnect. Without
         // this a frame racing the resync's delegate read merges against the epoch
@@ -1192,6 +1244,7 @@ export class SessionActivityStore {
         for (const resource of resources) this.reads[resource].announcedEpoch = undefined;
         changed = resources;
         break;
+      }
       default:
         return;
     }
@@ -1209,6 +1262,54 @@ export class SessionActivityStore {
         void this.request(resource, "root", notification.method === "evener/thread/resync");
       }
     }
+  }
+
+  /** Keep the watcher's local escalation set aligned with the metadata a read
+   * or status frame supplies. A source that predates pendingEscalationIds
+   * cannot name them, so the frame-updated set is left alone. */
+  private seedEscalations(metadata: ThreadSubscriptionMetadata | null): ThreadSubscriptionMetadata | null {
+    if (!metadata) {
+      this.pendingEscalations.clear();
+      return null;
+    }
+    if (metadata.pendingEscalationIds === undefined) return metadata;
+    this.pendingEscalations.clear();
+    for (const id of metadata.pendingEscalationIds) this.pendingEscalations.add(id);
+    return metadata;
+  }
+
+  private refreshThreadMetadata(lease: ThreadSubscriptionLease, generation: number, attempt = 0): void {
+    if (this.disposed || this.lease !== lease) return;
+    if (generation !== this.generation) {
+      const next = this.generation;
+      void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+      return;
+    }
+    void lease
+      .read({ includeTurns: false })
+      .then(() => {
+        if (this.disposed || this.lease !== lease) return;
+        if (generation !== this.generation) {
+          const next = this.generation;
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+          return;
+        }
+        const metadata = lease.metadata();
+        if (!metadata) return;
+        if (this.state.context && this.state.context.sessionId !== metadata.sessionId) return;
+        if (this.runtimeThreadId !== null && metadata.threadId !== this.runtimeThreadId) return;
+        this.publish({ runtime: this.seedEscalations(metadata) });
+      })
+      .catch((error: unknown) => {
+        if (this.disposed || this.lease !== lease || permanentError(error)) return;
+        if (generation !== this.generation) {
+          const next = this.generation;
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+          return;
+        }
+        const delay = Math.min(1000 * 2 ** Math.min(attempt, 5), 30000);
+        this.clock.setTimeout(() => this.refreshThreadMetadata(lease, generation, attempt + 1), delay);
+      });
   }
   /** Whether this invalidation refreshes a resource other than delegates, so an
    * accepted response can carry a capability or availability change back to this

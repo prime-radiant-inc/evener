@@ -113,6 +113,7 @@ func newAskTestSession(t *testing.T, cfg SessionConfig) *Session {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -3288,7 +3289,7 @@ func TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning(t *te
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_order_pin")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	eventsDone := captureSessionEvents(s)
 
 	repair := breakSessionMetaPath(t, s)

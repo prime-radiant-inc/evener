@@ -105,7 +105,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 
 	// Tiny thresholds force the automatic checkpoint and summary layers, on
 	// the smallest window compaction summarizes on.
-	summaryProfile := provider.WithContextWindow(profile, minSummarizingWindow)
+	summaryProfile := withContextWindow(profile, minSummarizingWindow)
 	cm.SetProfile(summaryProfile)
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
@@ -215,12 +215,12 @@ func cmgpCheckThresholdScaling(t *testing.T, profile *provider.Profile) {
 		cm := NewManager(profile, nil, cheapmodel.New(nil))
 		ApplyThresholdScale(cm, scale)
 		if scale == 0 || scale == 1 {
-			if cm.ObservationMaskThreshold != 0.60 || cm.SummarizeThreshold != 0.95 {
+			if cm.CheckpointThreshold != DefaultCompactAt || cm.SummarizeThreshold != 0.95 {
 				t.Fatalf("scale %v changed defaults: %+v", scale, cm)
 			}
 			continue
 		}
-		if cm.ObservationMaskThreshold < 0.20 || cm.ThinkingClearThreshold < 0.20 || cm.WarnThreshold < 0.20 || cm.CheckpointThreshold < 0.20 || cm.SummarizeThreshold < 0.20 {
+		if cm.WarnThreshold < 0.20 || cm.CheckpointThreshold < 0.20 || cm.SummarizeThreshold < 0.20 {
 			t.Fatalf("scale %v violated threshold floor", scale)
 		}
 	}
@@ -300,43 +300,7 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 		t.Fatalf("steering turn rendered as %q", got)
 	}
 
-	mutated := cmgpHistory(token)
-	clearThinking(mutated, 2)
-	if !strings.Contains(mutated[4].Message.Content[1].Thinking.Text, "[thinking:") || mutated[4].Message.Content[2].Thinking.Text != "redacted evidence" {
-		t.Fatal("thinking clear did not preserve redacted blocks while masking visible blocks")
-	}
-	maskObservations(mutated, 2, "communicate")
-	if got := fmt.Sprint(mutated[3].Message.Content[0].ToolResult.Content); !strings.HasPrefix(got, "[read_file:") {
-		t.Fatalf("observation mask result = %q", got)
-	}
-	if got := fmt.Sprint(mutated[6].Message.Content[0].ToolResult.Content); got != "delivered "+token {
-		t.Fatalf("communicate result was masked: %q", got)
-	}
-
-	for _, tc := range []struct {
-		name    string
-		content string
-		args    string
-	}{
-		{"read_file", "line\nline", `{"file_path":"a.go"}`},
-		{"shell", "exit_code=0\npass", `{"command":"go test ./..."}`},
-		{"grep", "one\ntwo", `{"pattern":"needle"}`},
-		{"glob", "a.go\n\nb.go", `{"pattern":"*.go"}`},
-		{"edit_file", "ok", `{"file_path":"a.go"}`},
-		{"apply_patch", "ok", `{}`},
-		{"write_file", "ok", `{"file_path":"a.go"}`},
-		{"web_fetch", "body", `{"url":"https://example.test"}`},
-		{"delegate", `{"job_id":"job-1"}`, `{}`},
-		{"task_list", `[1,2]`, `{"action":"list"}`},
-		{"use_skill", "body", `{"skill_name":"testing"}`},
-		{"communicate", "body", `{}`},
-		{"other", "body", `{}`},
-	} {
-		if got := summarizeToolResult(tc.name, tc.content, false, json.RawMessage(tc.args)); got == "" {
-			t.Fatalf("empty summary for %s", tc.name)
-		}
-	}
-	if parseExitCode("exit 4") != "4" || parseExitCode("nothing") != "?" || extractJSONField(`{"x":"y"}`, "x") != "y" || extractJSONField("bad", "x") != "" || countJSONArrayElements(`[1,2]`) != 2 || countJSONArrayElements("bad") != 0 {
+	if parseExitCode("exit_code=4") != "4" || parseExitCode("nothing") != "?" {
 		t.Fatal("pure helper contracts diverged")
 	}
 }
@@ -345,7 +309,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	t.Helper()
 	// The summarizer sizes its history budget from the model's window (#4321);
 	// a window this large leaves the full 80k budget these renderings assume.
-	profile = provider.WithContextWindow(profile, 1_000_000)
+	profile = withContextWindow(profile, 1_000_000)
 	input := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("u", 5_100)+token)),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant evidence "+token)),

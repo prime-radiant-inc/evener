@@ -545,7 +545,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 		}
 	}
 	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	c.mu.Lock()
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,
@@ -584,7 +584,7 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	runtime.stateDir = c.stateDir
 	runtime.delegateController = c
 	runtime.owningDelegateID = delegateID
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
 	turn.AttentionID = attentionID
 	if err := writer.AppendDurable(turn); err != nil {
@@ -921,7 +921,7 @@ func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T
 		t.Fatalf("create transcript: %v", err)
 	}
 	runtime := &Session{id: sessionID, stateDir: stateDir}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
@@ -969,7 +969,7 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	writer.SyncInterval = time.Hour
 	writer.TrackFailures(nil, 0)
 	runtime := &Session{id: sessionID, stateDir: stateDir}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	failed := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("failed-call-1", "probe", "failed", true))
 	if err := writer.AppendDurable(failed); err != nil {
@@ -1190,7 +1190,7 @@ func TestDelegateAttention_LiveNotificationRetryReestablishesDurabilityBeforeSou
 	root.cfg.testOnly.delegateAttentionOpenWriter = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
 		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
 	}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	c.rootRuntime = root
 	t.Cleanup(func() { _ = root.attachedTranscript().Close() })
 
@@ -1255,7 +1255,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 	runtime.cfg.testOnly.delegateAttentionOpenWriter = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
 		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
 	}
-	runtime.attachTranscript(writer)
+	runtime.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = runtime.attachedTranscript().Close() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
@@ -1736,7 +1736,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
 	original := &Session{id: ownerSessionID, stateDir: stateDir, delegateController: c}
-	original.attachTranscript(writer)
+	original.attachTranscript(writer, nil)
 	c.rootRuntime = original
 	original.queueDelegateDeliveryCommit("delegate-send-N", commit)
 	fs.arm()
@@ -1810,7 +1810,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 		t.Fatalf("create root transcript: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	fresh.attachTranscript(reopened)
+	fresh.attachTranscript(reopened, nil)
 	if err := fresh.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("release N+1 after transcript attachment: %v", err)
 	}
@@ -2184,7 +2184,7 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 		t.Fatalf("create caller transcript: %v", err)
 	}
 	root := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = root.closeAttachedTranscript() })
 	c.rootRuntime = root
 
@@ -2564,7 +2564,7 @@ func TestDelegateAttention_BootstrapFlushRoutesNestedDeliveryToOwner(t *testing.
 	}
 	t.Cleanup(func() { _ = rootWriter.Close() })
 	root := &Session{id: rootSessionID, stateDir: c.stateDir, delegateController: c}
-	root.attachTranscript(rootWriter)
+	root.attachTranscript(rootWriter, nil)
 	c.rootRuntime = root
 
 	plans := c.ReplayDeliveries()
@@ -2644,7 +2644,7 @@ func TestDelegateAttention_RestoringOwnerDefersColdDeliveryUntilRuntimeAttach(t 
 	}
 	t.Cleanup(func() { _ = ownerWriter.Close() })
 	owner := &Session{id: "child-dlg_parent", stateDir: c.stateDir, delegateController: c}
-	owner.attachTranscript(ownerWriter)
+	owner.attachTranscript(ownerWriter, nil)
 	if err := c.AttachRuntime(started.lease, owner); err != nil {
 		t.Fatalf("AttachRuntime owner: %v", err)
 	}
@@ -2712,7 +2712,7 @@ func TestDelegateAttention_FailedFlushRetainsDeliveryForLiveRetry(t *testing.T) 
 		t.Fatalf("create root transcript: %v", err)
 	}
 	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	c.rootRuntime = root
 	plans := c.ReplayDeliveries()
 	if len(plans) != 1 {
@@ -2753,7 +2753,7 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 		t.Fatalf("create root transcript: %v", err)
 	}
 	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c}
-	root.attachTranscript(rootWriter)
+	root.attachTranscript(rootWriter, nil)
 	c.rootRuntime = root
 	ownerPath := transcriptPath(c.stateDir, "child-dlg_parent")
 	ownerWriter, err := transcript.NewWriter(ownerPath, transcript.Header{SessionID: "child-dlg_parent"})
@@ -2797,7 +2797,7 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 	root.contextMgr = contextmgr.NewManager(root.profile, nil, cheapmodel.New(nil))
 	root.sessionCtx, root.cancelFunc = context.WithCancel(context.Background())
 	t.Cleanup(root.cancelFunc)
-	root.attachTranscript(rootWriter)
+	root.attachTranscript(rootWriter, nil)
 	c.rootRuntime = root
 	wakes := make(chan struct{}, 4)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
@@ -2882,7 +2882,7 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c, state: SessionProcessing}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	c.rootRuntime = root
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
@@ -4348,7 +4348,7 @@ func newStrandedStopFixture(t *testing.T, opts strandedStopOptions) *strandedSto
 		}
 		t.Cleanup(func() { _ = writer.Close() })
 		root := &Session{id: c.rootSessionID, stateDir: c.stateDir, state: SessionIdle, delegateController: c}
-		root.attachTranscript(writer)
+		root.attachTranscript(writer, nil)
 		fixture.root = root
 		c.mu.Lock()
 		c.rootRuntime = root
@@ -4973,7 +4973,7 @@ func replaceChildTranscriptWithFS(t *testing.T, fs afero.Fs) func(*Session) {
 		if err != nil {
 			t.Fatalf("replace child transcript: %v", err)
 		}
-		child.attachTranscript(writer)
+		child.attachTranscript(writer, nil)
 	}
 }
 

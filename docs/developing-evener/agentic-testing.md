@@ -61,7 +61,8 @@ The evaluator captures and validates the compiling Go version before TestMain
 isolates HOME/XDG. When a trimpath build has no runtime GOROOT, Go's own exact
 version resolver selects an already installed/cached toolchain with GOPROXY=off,
 not a download or a machine-specific path. That root is reused for restricted
-read grants, fixture checkers, held-out tests and the ambient-read observer.
+read grants, fixture checkers and held-out tests. The ambient-read observer is
+the already-built test binary re-executed as a watcher, so it compiles nothing.
 Fixture execution keeps GOTOOLCHAIN=local and network access disabled.
 Both ordinary `go test` and direct installed-Go launchers are qualified offline.
 

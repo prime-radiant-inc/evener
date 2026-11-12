@@ -60,7 +60,12 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
-import { measureComposerPlacement, typeComposerDraft, verifyComposerGesture } from "./composer.mjs";
+import {
+  measureComposerPlacement,
+  typeComposerDraft,
+  verifyComposerGesture,
+  waitForComposerSettled,
+} from "./composer.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -231,6 +236,7 @@ async function measureAt(cdpEndpoint, url, width) {
         })()`,
       );
       if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      await waitForComposerSettled(send);
       const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
       engagedFooter = engaged.footer;
       engagedCurrentWork = engaged.currentWork;
@@ -440,6 +446,8 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             const submit = form?.querySelector('[data-testid="composer-submit"]');
             const stop = form?.querySelector('[data-testid="composer-stop"]');
             const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
+            const activityLine = pane?.querySelector('[data-testid="composer-activity-line"]');
+            const activityChips = activityLine ? [...activityLine.querySelectorAll('[data-activity-tab]')] : [];
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
@@ -478,6 +486,14 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               submitVisible: visible(submit),
               stopVisible: visible(stop),
               rowChipCount: rowChips.filter((chip) => visible(chip)).length,
+              activityChipCount: activityChips.filter((chip) => visible(chip)).length,
+              activityLine: rect(activityLine),
+              activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
+              // The resting field must keep most of the card's width. A leading
+              // slot reserving width it cannot fill starves the field while
+              // looking like a rendering quirk rather than a clipped control.
+              card: rect(cards[0]),
+              field: rect(form?.querySelector('[class*="field"]')),
               modelTrigger: modelTrigger
                 ? {
                     visible: visible(modelTrigger),
@@ -524,8 +540,11 @@ function assertComposerFooter(measurement, width) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge and owns the safe-area
-  // band in every focus state - resting, editing, or a control focused.
+  // composer's own dock is the pane's bottom edge. When its activity line
+  // renders, that line IS the bottom surface - the chips fill the safe-area
+  // band themselves, so the dock reserves nothing below them (Jesse,
+  // 2026-11-11: the band was eating the transcript). Without the line, the
+  // dock keeps owning the band.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -538,20 +557,52 @@ function assertComposerFooter(measurement, width) {
     ) {
       failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
+    const lineCarriesBand = measurement.focus === "editor" && measurement.activityLine !== null;
+    const expectedPadding = lineCarriesBand ? 0 : requiredClearance;
+    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, expectedPadding)) {
       failures.push(
-        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+        `composer dock padding=${measurement.paddingBottom}px, expected ${expectedPadding}px (${lineCarriesBand ? "activity line owns the band" : `safe-area clearance=${requiredClearance}px`})`,
       );
     }
-    // The resting row sheds attach and the activity chips but never its
-    // actions control - Send, or Stop while the harness session runs a turn;
-    // editor engagement brings the full row back, and a composer button's
-    // own focus must not expand the row out from under it.
+    // The resting row sheds attach but never its actions control - Send, or
+    // Stop while the harness session runs a turn. The activity counts live on
+    // their own line below the card, outside the form, in every focus state.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
+    if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
+    if (measurement.focus !== "editor" && measurement.card !== null && measurement.field !== null) {
+      const fieldShare = measurement.field.width / measurement.card.width;
+      if (fieldShare < 0.5) {
+        failures.push(
+          `resting field takes ${Math.round(fieldShare * 100)}% of the card (${JSON.stringify(measurement.field)} in ${JSON.stringify(measurement.card)})`,
+        );
+      }
+    }
+    // The folded resting card is the phone's smallest surface: it shows no
+    // activity line, and the counts come back with the expanded card.
+    if (measurement.focus === "editor") {
+      if (measurement.activityChipCount === 0) failures.push("engaged composer lost its activity chips");
+      if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+      if (measurement.activityLine !== null && measurement.card !== null) {
+        const lineBottom = measurement.activityLine.bottom;
+        if (measurement.paneBottom !== null && lineBottom < measurement.paneBottom - 1) {
+          failures.push(
+            `activity line leaves ${Math.round(measurement.paneBottom - lineBottom)}px below itself at the pane's bottom edge`,
+          );
+        }
+      }
+    } else if (measurement.activityLine !== null) {
+      failures.push("resting composer still renders its activity line");
+    }
+    if (
+      measurement.activityLine !== null &&
+      measurement.lastBottom !== null &&
+      measurement.activityLine.top < measurement.lastBottom - 1
+    ) {
+      failures.push("activity line is not below the card");
+    }
     if (measurement.focus === "editor") {
       if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
-      if (measurement.rowChipCount === 0) failures.push("focused editor did not bring the activity chips back");
       // The model picker must stay a real control in the engaged row at
       // every width: the status chrome's basis (its compact rung) keeps the
       // row honest beside the chips, so the trigger never renders clipped
@@ -564,9 +615,9 @@ function assertComposerFooter(measurement, width) {
           `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
         );
       }
-    } else if (measurement.attachVisible || measurement.rowChipCount > 0) {
+    } else if (measurement.attachVisible) {
       failures.push(
-        `phone row must shed attach and chips while resting (${measurement.focus} focus, attach=${measurement.attachVisible}, chips=${measurement.rowChipCount})`,
+        `phone row must shed attach while resting (${measurement.focus} focus, attach=${measurement.attachVisible})`,
       );
     }
     return failures;
@@ -742,10 +793,10 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The phone's resting row sheds the activity chips (the collapsed-row
-    // contract): only the empty, unfocused card mounts none. Every other
-    // state - engaged, drafting, attached, ask-pending, approval - keeps
-    // its four counters, the ask states inside their hidden card.
+    // The activity counts live on their own line below the card. The folded
+    // resting card renders no line, so the empty state mounts none; every
+    // expanded state - engaged, drafting, attached, ask-pending, approval -
+    // mounts all four.
     const expectedCount = state.state === "empty" ? 0 : 4;
     if (state.counters.length !== expectedCount)
       failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
@@ -977,6 +1028,84 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     }
     return out.result.result.value;
   } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+// The phone's Overview is a local session's only branch surface: the footer
+// RepoLocation line is desktop-only, so About resolves the branch through
+// evener/git/head. This page mounts that Overview as the phone's full-screen
+// overlay, on the local: fixture whose scoped git/head answer the harness
+// registers only for this mode, and pins the branch row's geometry.
+// Kept in step with the fixture's ABOUT_BRANCH in
+// src/dev/overflowharness-entry.tsx; it is deliberately long enough to press
+// the row's truncation.
+const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
+async function verifyAboutOverview(cdpEndpoint, url, width) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width, height: 900, mobile: true });
+    await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await navigateTo(page, url, BOOT);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    const out = await send("Runtime.evaluate", {
+      expression: `(async () => {
+        const until = async (read, label) => {
+          for (let i = 0; i < 240; i++) {
+            const value = read();
+            if (value) return value;
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          throw new Error('About Overview fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 400));
+        };
+        const sidebar = await until(
+          () => document.querySelector('[data-testid="activity-sidebar"]'),
+          'activity sidebar',
+        );
+        await until(
+          () => [...sidebar.querySelectorAll('[role="radio"]')].find(
+            (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('About'),
+          ),
+          'selected About tab',
+        );
+        const branch = await until(
+          () => document.querySelector('[data-testid="session-details-branch"]'),
+          'About branch row',
+        );
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const sidebarBox = sidebar.getBoundingClientRect();
+        const branchBox = branch.getBoundingClientRect();
+        const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
+            (style.overflowX === 'auto' || style.overflowX === 'scroll');
+        });
+        return {
+          viewportWidth: window.innerWidth,
+          sidebarLeft: sidebarBox.left,
+          sidebarRight: sidebarBox.right,
+          sidebarWidth: sidebarBox.width,
+          branchText: branch.textContent?.trim() ?? '',
+          branchVisible: branch.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+          branchContained: branchBox.left >= sidebarBox.left - 1 && branchBox.right <= sidebarBox.right + 1,
+          horizontalOverflowCount: horizontallyOverflowing.length,
+          overflowing: horizontallyOverflowing.slice(0, 5).map((element) => element.className || element.tagName),
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+        };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (out.result.exceptionDetails) {
+      throw new Error(`About Overview eval threw: ${JSON.stringify(out.result.exceptionDetails)}`);
+    }
+    return out.result.result.value;
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await clearViewportOverride(send);
     page.close();
   }
@@ -1599,12 +1728,61 @@ async function runDuoCompactGuard(cdpEndpoint, vitePort, profileDir, verbose = f
   return true;
 }
 
+// The phone's Overview is a local session's only branch surface (the footer
+// RepoLocation line is desktop-only), so this page pins the About tab's
+// resolved branch row and the overlay's phone geometry. It is its own function
+// so the mutation recipe in MUTATIONS.md can run just this page with
+// --about-only instead of the whole sweep.
+async function runAboutOverviewGuard(cdpEndpoint, vitePort) {
+  const aboutOverview = await verifyAboutOverview(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=390&panels=1&activity=about`,
+    390,
+  );
+  const failures = [];
+  if (aboutOverview.viewportWidth !== 390) {
+    failures.push(`viewport=${aboutOverview.viewportWidth}, expected 390`);
+  }
+  if (aboutOverview.branchText !== ABOUT_BRANCH) {
+    failures.push(`branch row=${JSON.stringify(aboutOverview.branchText)}, expected ${ABOUT_BRANCH}`);
+  }
+  if (!aboutOverview.branchVisible) failures.push("branch row is not visible");
+  if (Math.abs(aboutOverview.sidebarWidth - 390) > GEOMETRY_TOLERANCE) {
+    failures.push(`sidebar=${aboutOverview.sidebarWidth}px wide, expected the 390px overlay`);
+  }
+  if (aboutOverview.sidebarLeft < -1 || aboutOverview.sidebarRight > 390 + 1) {
+    failures.push(
+      `sidebar spans ${aboutOverview.sidebarLeft}-${aboutOverview.sidebarRight}, outside the 390px viewport`,
+    );
+  }
+  if (aboutOverview.documentScrollWidth > 390 + 1 || aboutOverview.bodyScrollWidth > 390 + 1) {
+    failures.push(
+      `page scrolls horizontally: document=${aboutOverview.documentScrollWidth}, body=${aboutOverview.bodyScrollWidth}`,
+    );
+  }
+  if (!aboutOverview.branchContained) {
+    failures.push("branch row escapes the sidebar's horizontal bounds");
+  }
+  if (aboutOverview.horizontalOverflowCount !== 0) {
+    failures.push(`horizontal scroll container(s) inside the pane: ${JSON.stringify(aboutOverview.overflowing)}`);
+  }
+  if (failures.length > 0) {
+    console.log(`390px About Overview ... FAIL - ${failures.join("; ")}; ${JSON.stringify(aboutOverview)}`);
+    return false;
+  }
+  console.log(
+    `390px About Overview ... PASS - ${aboutOverview.branchText} resolved and contained in the ${aboutOverview.sidebarWidth}px overlay`,
+  );
+  return true;
+}
+
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
   const composerOnly = process.argv.includes("--composer-only");
   const composerDelayOnly = process.argv.includes("--composer-delay-only");
   const duoOnly = process.argv.includes("--duo-only");
-  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly].filter(Boolean).length > 1)
+  const aboutOnly = process.argv.includes("--about-only");
+  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly, aboutOnly].filter(Boolean).length > 1)
     throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
@@ -1645,6 +1823,7 @@ async function main() {
     cdpEndpoint = await waitForBrowserReady(guard);
 
     if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir, true)) ? 0 : 1;
+    if (aboutOnly) return (await runAboutOverviewGuard(cdpEndpoint, vitePort)) ? 0 : 1;
 
     const delayedComposer = async () => {
       // One adversarial transport case per input type, not another theme matrix.
@@ -1952,6 +2131,8 @@ async function main() {
           `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }
+
+    if (!(await runAboutOverviewGuard(cdpEndpoint, vitePort))) failed++;
 
     for (const width of sweep) {
       const result = await measureAt(

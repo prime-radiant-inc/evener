@@ -1048,7 +1048,7 @@ func TestForceCompact_CutOffCheapBatchFallsBackToTheSessionModel(t *testing.T) {
 	var models []string
 	client := llm.NewClient()
 	client.Register(cutOffCheapModel(&models))
-	profile := provider.WithContextWindow(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 100_000)
+	profile := withContextWindow(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 100_000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	cm.Meta = *persistentMeta
@@ -1148,7 +1148,7 @@ func TestForceCompact_NoSummaryBelowTheMinimumWindow(t *testing.T) {
 	window, maxInput := 200_000, 32_768
 	profiles := map[string]*provider.Profile{
 		"small window": testProfile("openai", "test", 32_768),
-		"small session window behind a large cheap model": provider.WithContextWindow(
+		"small session window behind a large cheap model": withContextWindow(
 			provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 32_768),
 		"small input cap": provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "capped", WireID: "capped",
 			Caps: registry.Caps{ContextWindow: &window, MaxInputTokens: &maxInput}}, nil),

@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // skillFixtureRoot is t.TempDir() with symlinks resolved, for fixtures whose
@@ -23,9 +24,5 @@ import (
 // a no-op, which is why CI never saw it.
 func skillFixtureRoot(t *testing.T) string {
 	t.Helper()
-	resolved, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	return resolved
+	return testfs.CanonicalTempDir(t)
 }

@@ -29,7 +29,7 @@ func TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure(t 
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_steering_reconcile")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 	repair := breakSessionMetaPath(t, s)
 	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
@@ -132,7 +132,7 @@ func TestSkillActivation_AdmittedSelectionIsNotReReconciled(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_no_re_reconcile")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
@@ -175,7 +175,7 @@ func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T
 	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 	// No skill.md is written for this name, so preparation cannot resolve it.
 	if s.consumeSteeringMessage(steeringMessage{Text: "steer with an unresolvable skill", SkillNames: []string{"no-such-skill"}}) == steeringAppendFailed {
@@ -242,7 +242,7 @@ func TestSkillActivation_PreparedSelectionPinsRecordedSource(t *testing.T) {
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_pinned_source")
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 	repair := breakSessionMetaPath(t, s)
 	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
@@ -308,7 +308,7 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 		stateDir := t.TempDir()
 		body := "BODY_staged_gate"
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
-		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 		repair := breakSessionMetaPath(t, s)
 		if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
@@ -342,7 +342,7 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 		root := t.TempDir()
 		stateDir := t.TempDir()
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_retryable_gate")
-		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 		repair := breakSessionMetaPath(t, s)
 		if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
@@ -391,7 +391,7 @@ func TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch(t *testing.
 	stateDir := t.TempDir()
 	body := "BODY_restored_gate"
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 
 	repair := breakSessionMetaPath(t, s)
 	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {

@@ -112,10 +112,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					CWD:           data.WorkingDir,
 					Status:        appwire.ThreadStatus{Type: status},
 					Evener: appwire.EvenerThread{
-						Ref:     p.ref,
-						Profile: data.Profile,
-						Tasks:   tasks,
-						Goal:    goal,
+						Ref:                   p.ref,
+						Profile:               data.Profile,
+						Tasks:                 tasks,
+						Goal:                  goal,
+						LatestExecutionTurnID: data.LatestExecutionTurnID,
 					},
 				},
 			}),
@@ -240,22 +241,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
 		// stream ONLY — it is never appended to the transcript, so the model can
-		// neither observe nor replay it. DeniedPath is the FULL path for informed
-		// consent (only non-sensitive containment denials escalate; a sensitive path,
-		// which never escalates, would degrade to "<denied>"); file contents never
-		// appear. The shell fields are reserved and empty in v1.
+		// neither observe nor replay it. DeniedPath is the FULL location an approval
+		// reaches, for informed consent (only non-sensitive containment denials
+		// escalate; a sensitive path, which never escalates, would degrade to
+		// "<denied>"), and RequestedPath the spelling the tool call used when a
+		// symlink made it differ; file contents never appear. The shell fields are
+		// reserved and empty in v1.
 		data := eventData[events.SandboxEscalationRequestedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyEvenerSandboxEscalationRequested, appwire.SandboxEscalationRequested{
-			ThreadID:     p.threadID,
-			Ref:          p.ref,
-			EscalationID: data.EscalationID,
-			Mode:         data.Mode,
-			Tool:         data.Tool,
-			Kind:         data.Kind,
-			DeniedPath:   data.DeniedPath,
-			Command:      data.Command,
-			OutputSoFar:  data.OutputSoFar,
-			PartiallyRan: data.PartiallyRan,
+			ThreadID:      p.threadID,
+			Ref:           p.ref,
+			EscalationID:  data.EscalationID,
+			Mode:          data.Mode,
+			Tool:          data.Tool,
+			Kind:          data.Kind,
+			DeniedPath:    data.DeniedPath,
+			RequestedPath: data.RequestedPath,
+			Command:       data.Command,
+			OutputSoFar:   data.OutputSoFar,
+			PartiallyRan:  data.PartiallyRan,
 		})}
 	case events.EventSandboxEscalationResolved:
 		// The pair to EventSandboxEscalationRequested above: a previously-raised

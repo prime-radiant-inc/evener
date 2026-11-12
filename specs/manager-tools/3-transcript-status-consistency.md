@@ -397,7 +397,15 @@ that tonight.
      uninstalled. The listener runs under the hook's leaf
      contract (`:113-118` — no appends, no lock an appender
      may hold), so it takes ONLY its own mutex, stamps the
-     frontier field with the committed first entry's turn id,
+     frontier field with the committed first entry's turn
+     id and a monotonically increasing stamp SEQUENCE
+     minted under the same mutex (the field family's value
+     is the pair (turn id, sequence): the attach seed
+     stamps the pair under the only-if-empty discipline,
+     every later first-record stamp takes the next
+     sequence, every consumer of the field projects the
+     pair's turn-id half, and only the descendant install
+     path consumes the sequence),
      and queues the refresh event — then wakes the session's
      emitter, which runs OUTSIDE the append lock on its own
      goroutine, RELEASES the listener's leaf before
@@ -460,6 +468,7 @@ that tonight.
      caller's adoption of a retained error — the pair helper's
      documented contract (`agent/session.go:2567-2588`) —
      changes nothing about the signal.
+     Construction-time first-record publication is ordered after SessionStart.
      THE FIELD IS SEEDED AT ATTACH: a restored session has
      recorded executions but no in-process commit — the
      reopen entry carries no execution kind
@@ -747,7 +756,22 @@ that tonight.
      field's leaf, re-reads the row under the
      re-acquired `s.mu`, rechecks the owner identity,
      and writes `projection.thread` as a plain row
-     write — no commit arm, nothing under the gate.
+     write — no commit arm, nothing under the gate. The
+     write is NEWEST-WINS within one registration: the
+     sample the route carries is the pair, and the row
+     write drops a same-registration sample whose
+     sequence is not newer than the sequence the
+     registry entry records as its last install — the
+     identity fence stops other registrations, the
+     sequence orders this one, so an older in-flight
+     sample of the SAME registration cannot regress a
+     newer installed frontier (the implementation-
+     phase reviewers' witness reproduced the regression
+     through the retained-runtime reclamation and
+     cold-restore seams in both generation modes before
+     this amendment); equal sequence is the same stamp
+     and writes idempotently; the SessionStart payload's
+     additive bootstrap field carries the pair in step.
      The lock order
      stands in its own terms: the sampler takes only
      the child's two locks, no server lock is held
@@ -965,6 +989,15 @@ that tonight.
      replacement on identity alone); the generation is
      the DURABLE CORROBORATION, compared when present,
      never the sole gate, never current-vs-current.
+     The entry also records the (turn id, sequence) pair
+     of its LAST SUCCESSFUL INSTALL — immutable-replaced
+     at each install, the same copy-on-write discipline
+     the publication arm uses — so the newest-wins
+     comparison at the row write is a plain field read
+     under `Server.mu`, held in the registry entry
+     rather than the row: a fresh registration's first
+     install must pass even while the row still holds
+     the previous registration's bootstrap value.
      Release removes an entry by its registration
      identity only — the identity the released
      runtime holds through its retained release
@@ -1017,7 +1050,10 @@ that tonight.
      installed the replacement's frontier,
      `regression=false`). The guaranteed property
      is that a callback already carrying a released
-     runtime's entry can never install it — not
+     runtime's entry can never install it, and a stale
+     sample of a live registration can never displace
+     its newer installed frontier (the newest-wins
+     sequence guard) — not
      that every late callback drops. The install is deliberately
      NOTIFICATION-LESS: no commit arm means no sequenced
      notification for the row change. The bounded-loss
@@ -1561,6 +1597,20 @@ The spike reproduced the defect through both seams with existing fakes
    runtime's value lands or the row regresses;
    green prints the replacement's frontier — the
    round-28 drive measured exactly this schedule).
+   The SAME-REGISTRATION STALE-INSTALL case pins the
+   ordering guard: one live child records two
+   executions; the first execution's route is held
+   after its sample (the reachable delay between the
+   leaf sample and the `Server.mu` acquisition), the
+   second execution records and installs its newer
+   frontier, then the held route releases and installs
+   its older held sample: the row must keep the newer
+   frontier — metadata equals history (red if the row
+   regresses to the older sample; the
+   implementation-phase witness drove exactly this
+   through the retained-runtime reclamation and
+   cold-restore seams in both generation modes,
+   regressed before the guard).
    The read-back failure paths keep today's
    content-verification behavior and assert NO signal
    interaction: the failed read-back removes the

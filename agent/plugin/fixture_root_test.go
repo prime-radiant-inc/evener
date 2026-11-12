@@ -1,8 +1,9 @@
 package plugin
 
 import (
-	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // fixtureRoot is t.TempDir() with symlinks resolved, for a fixture whose
@@ -17,13 +18,9 @@ import (
 // and fails on that machine alone. On Linux the two spellings are already
 // identical and this is a no-op, which is why CI never saw it.
 //
-// Package agent has the same helper under the name skillFixtureRoot: a test
-// helper cannot be shared across packages.
+// The step itself is internal/testfs.CanonicalTempDir; this name only keeps
+// the package's existing fixtures readable.
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
-	resolved, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	return resolved
+	return testfs.CanonicalTempDir(t)
 }

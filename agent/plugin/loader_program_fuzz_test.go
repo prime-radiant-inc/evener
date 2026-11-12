@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // FuzzPluginLoaderProgram builds a bounded set of real plugin trees and drives
@@ -215,10 +216,7 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 
 func buildPluginLoaderProgramFixture(t *testing.T, mode byte, token string) pluginLoaderProgramFixture {
 	t.Helper()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks(temp root): %v", err)
-	}
+	root := testfs.CanonicalTempDir(t)
 	fx := pluginLoaderProgramFixture{
 		root:          root,
 		alpha:         filepath.Join(root, "alpha"),

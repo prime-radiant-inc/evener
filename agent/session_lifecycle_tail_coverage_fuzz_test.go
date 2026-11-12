@@ -221,7 +221,7 @@ func FuzzSessionLifecycleTeardownCoverage(f *testing.F) {
 func FuzzSessionLifecyclePhaseFaultCoverage(f *testing.F) {
 	points := []string{
 		"panic", "slash", "round_cancel", "abort_after_model", "abort_after_log",
-		"warn", "abort_after_usage", "emit_assistant", "abort_before_tools",
+		"abort_after_usage", "emit_assistant", "abort_before_tools",
 		"abort_before_tools_cancel", "exec_tools", "persist_tools", "after_action",
 		"post_tool_steer", "yield_observer",
 	}
@@ -250,7 +250,7 @@ func FuzzSessionLifecyclePhaseFaultCoverage(f *testing.F) {
 		if point == "panic" {
 			return
 		}
-		if point != "slash" && point != "warn" && point != "yield_observer" && err == nil {
+		if point != "slash" && point != "yield_observer" && err == nil {
 			t.Fatalf("phase %q returned nil error", point)
 		}
 	})

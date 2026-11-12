@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -45,6 +48,101 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 	}
 	if got := c.live["dlg_blocked"].runtime; got != blocked {
 		t.Fatalf("blocked subtree runtime changed during claim: got %p want %p", got, blocked)
+	}
+}
+
+func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 2
+	seedDelegateReclaimRuntime(t, c, "dlg_fenced", "", time.Unix(10, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_free", "", time.Unix(9, 0).UTC(), false, false)
+	if admission := c.beginSubtreeLaneHandoff("dlg_fenced"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired", admission)
+	}
+	defer c.endSubtreeLaneHandoff("dlg_fenced")
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("capacity reclamation claimed nothing with one free candidate")
+	}
+	defer func() { _ = c.AbortRuntimeReclamation(claim) }()
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, []string{"dlg_free"}) {
+		t.Fatalf("claimed runtimes = %v, want only the unfenced dlg_free", got)
+	}
+}
+
+// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: a
+// capacity reclamation keeps c.reclaiming set across its terminal teardowns,
+// and the evicted coordinator's own close-time lane cleanup must still acquire
+// the handoff for its child lanes. Independent handoffs are refused later by
+// the quiescence snapshot, which still sees the claim as active.
+func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	seedDelegateReclaimRuntime(t, c, "dlg_coordinator", "", time.Unix(10, 0).UTC(), false, false)
+	c.mu.Lock()
+	c.reclaiming["dlg_coordinator"] = 1
+	active := c.runtimeReclamationIntersectsProcessWorkLocked(c.subtreeMembersLocked("dlg_coordinator"))
+	c.mu.Unlock()
+	if !active {
+		t.Fatal("reclaiming subtree does not read as active")
+	}
+	if admission := c.beginSubtreeLaneHandoff("dlg_coordinator"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired for the reclaiming close", admission)
+	}
+	c.endSubtreeLaneHandoff("dlg_coordinator")
+	c.mu.Lock()
+	delete(c.reclaiming, "dlg_coordinator")
+	c.mu.Unlock()
+}
+
+// TestCapacityReclaimUnlocksKeptChildLane covers the full path the fence
+// exception exists for: capacity eviction tears down a coordinator whose
+// close-time lane cleanup must still unlock a dirty child lane while the
+// subtree is marked reclaiming.
+func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
+	r := newWorktreeRepo(t)
+	childID, lanePath, _ := r.seedIsolationLane(t)
+	const parentID = "dlg_parent_reclaim"
+	parentSess := newSession(t)
+	childSess := newSession(t)
+	c := r.s.delegateController
+	parentSess.delegateController = c
+	parentSess.owningDelegateID = parentID
+	childSess.delegateController = c
+
+	c.mu.Lock()
+	childAggregate := c.durable[childID]
+	if childAggregate == nil {
+		c.mu.Unlock()
+		t.Fatalf("child aggregate %s is missing", childID)
+	}
+	childAggregate.Descriptor.ParentDelegateID = parentID
+	childAggregate.Phase = delegatestore.PhaseIdle
+	if c.delegateChildren[parentID] == nil {
+		c.delegateChildren[parentID] = make(map[string]struct{})
+	}
+	c.delegateChildren[parentID][childID] = struct{}{}
+	childLive := c.live[childID]
+	childLive.binding = nil
+	childLive.runtime = childSess
+	c.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(lanePath, "keep-me.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty child lane: %v", err)
+	}
+	seedDelegateReclaimRuntimeSession(t, c, parentID, "", time.Unix(20, 0).UTC(), false, false, parentSess)
+	c.maxRetainedTerminal = 1
+
+	if err := r.s.reclaimDelegateRuntimeCapacity(1); err != nil {
+		t.Fatalf("reclaim capacity: %v", err)
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); locked {
+		t.Fatalf("kept child lane stayed locked with %q after the coordinator's close-time cleanup", reason)
+	}
+	if _, err := os.Stat(lanePath); err != nil {
+		t.Fatalf("dirty child lane was removed instead of kept: %v", err)
 	}
 }
 
@@ -535,9 +633,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
-	// TRIPWIRE: the owed generations and the finalize tails settle in well
-	// under a second; 15s only bounds a deadlock.
-	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+	testwait.Until(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
@@ -646,7 +742,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		// batch the last child arrives within milliseconds, so the wait
 		// costs nothing; a capped or serial release burns parkDeadline per
 		// batch instead, and the callers read the observed concurrency off
-		// maxInFlight either way. waitForCondition cannot run here: the
+		// maxInFlight either way. testwait.Until cannot run here: the
 		// probe fires on a teardown goroutine, not the test's.
 		deadline := time.Now().Add(parkDeadline)
 		for {
@@ -1124,10 +1220,7 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: the retry re-arms with the same grace, so the release
-	// fires here in real time only as a goroutine handoff; 15s only bounds
-	// a genuine hang.
-	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after residue settled", func() bool {
+	testwait.Until(t, "re-armed retry to release the runtime after residue settled", func() bool {
 		tree.mu.Lock()
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 		tree.mu.Unlock()
@@ -1188,9 +1281,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 		t.Fatal("delegate runner did not finish")
 	}
 	// The finalize tail arms the grace timer after the done handshake.
-	// TRIPWIRE: the arm follows the handshake by a goroutine handoff; 15s only
-	// bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "finalize tail to arm the grace timer", func() bool {
+	testwait.Until(t, "finalize tail to arm the grace timer", func() bool {
 		return fake.PendingCallbacks()-callbacksBefore == 1
 	})
 	tree := sess.delegateController
@@ -1221,10 +1312,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: the surviving timer already fired during the advance, so the
-	// release lands here in real time only as a goroutine handoff; 15s only
-	// bounds a genuine hang.
-	waitForCondition(t, 15*time.Second, "surviving grace timer to release the runtime after residue settled", func() bool {
+	testwait.Until(t, "surviving grace timer to release the runtime after residue settled", func() bool {
 		tree.mu.Lock()
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 		tree.mu.Unlock()
@@ -1534,10 +1622,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	// single outstanding retry the re-arms converged on, and it releases the
 	// now-quiescent runtime.
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: every residue plant is cleared and the grace timers have all
-	// fired, so the release only needs a goroutine handoff; 15s bounds a
-	// genuine hang.
-	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after local retirement residue settled", func() bool {
+	testwait.Until(t, "re-armed retry to release the runtime after local retirement residue settled", func() bool {
 		tree.mu.Lock()
 		defer tree.mu.Unlock()
 		return tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil

@@ -430,7 +430,7 @@ func newDelegateShellTree(t *testing.T) *delegateShellTree {
 		if err != nil {
 			t.Fatalf("create %s transcript: %v", session.ID(), err)
 		}
-		session.attachTranscript(writer)
+		session.attachTranscript(writer, nil)
 		t.Cleanup(func() { _ = session.closeAttachedTranscript() })
 	}
 	rootJM.enqueue = root.enqueueJobNotificationAndNotify

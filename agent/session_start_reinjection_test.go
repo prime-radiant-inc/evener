@@ -262,7 +262,7 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 // a re-injection.
 func TestSessionStartDispatchOnMemoryContextOnlyHistoryIsNotFlaggedAsReinjection(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	// The real producer appends the boundary's memory news as one MEMORY_CONTEXT
@@ -292,7 +292,7 @@ func TestSessionStartDispatchOnMemoryContextOnlyHistoryIsNotFlaggedAsReinjection
 // conversation.
 func TestSessionStartDispatchOnRealHistoryStillFlaggedAsReinjection(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 	s.appendTurn(schema.TurnUserInput, llm.User("prior user task"))
 	s.appendTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer"))

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -116,7 +117,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	// its own call frame, never on the request, so rebuild it here from the
 	// history as it stood when the delta round was planned — the delta's own
 	// system prefix plus every turn up to the last user input.
-	fullHistory := responsesContinuationDeltaMessages(deltaReq.Messages, phase12HistoryThroughLastUserInput(sess.history))
+	fullHistory := responsesContinuationDeltaMessages(deltaReq.Messages, phase12HistoryThroughLastUserInput(sess.history), nil)
 	if !requestMessagesContainText(fullHistory, priorMarker) ||
 		!requestMessagesContainText(fullHistory, currentMarker) {
 		t.Fatalf("rebuilt full history missing proof markers: %+v", fullHistory)
@@ -218,6 +219,10 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	if len(deltaResponseBody) == 0 {
 		t.Fatal("delta canonical response body is empty")
 	}
+	providerInputTokens := "unknown"
+	if tokens := deltaAttempt.Response.Usage.InputTokens; tokens != nil {
+		providerInputTokens = strconv.Itoa(*tokens)
+	}
 
 	omittedInputItemBytes := phase12OmittedInputItemBytes(t, shadowBody, deltaBody)
 	continuationOverheadBytes := phase12ContinuationOverheadBytes(t, deltaBody)
@@ -225,14 +230,14 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	if omittedInputItemBytes <= continuationOverheadBytes {
 		t.Fatalf("omitted input item bytes = %d, want greater than continuation overhead bytes %d", omittedInputItemBytes, continuationOverheadBytes)
 	}
-	t.Logf("phase12_public_live model=%s delta_bytes=%d full_history_shadow_bytes=%d omitted_input_item_bytes=%d continuation_overhead_bytes=%d net_body_byte_saving=%d provider_input_tokens=%d full_history_shadow_tokens=%d",
+	t.Logf("phase12_public_live model=%s delta_bytes=%d full_history_shadow_bytes=%d omitted_input_item_bytes=%d continuation_overhead_bytes=%d net_body_byte_saving=%d provider_input_tokens=%s full_history_shadow_tokens=%d",
 		model,
 		len(deltaBody),
 		len(shadowBody),
 		omittedInputItemBytes,
 		continuationOverheadBytes,
 		netBodyByteSaving,
-		deltaAttempt.Response.Usage.InputTokens,
+		providerInputTokens,
 		deltaReq.FullHistoryInputTokensEstimate,
 	)
 }

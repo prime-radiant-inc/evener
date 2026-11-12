@@ -158,12 +158,14 @@
  * disabled look and tap floor; the frame's wash stays the container's. */
 .split {
   align-items: stretch;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-/* Keyboard focus anywhere in the split row washes the whole frame: the
- * main button's inset ring names the target, the wash keeps the row
- * reading as one item. Pointer hover comes from .interactive:hover above. */
-.split:focus-within:not([aria-disabled="true"]) {
+/* Pointer hover, and keyboard focus anywhere in the split row, washes the
+ * whole frame: the main button's inset ring names the target and the wash
+ * keeps the row reading as one item. A refused main button owns the
+ * refusal, so the frame stays unwashed. */
+.split:is(:hover, :focus-within):not(:has(> .splitMain:is(:disabled, [aria-disabled="true"]))) {
   background: var(--hover-1);
 }
 
@@ -172,13 +174,6 @@
 .splitMain {
   padding: 0;
   border: 0;
-  background: transparent;
-}
-
-/* A refused row's main area never lights up on hover: .interactive's hover
- * wash skips [aria-disabled="true"], but that attribute rides the
- * container, so the button is excluded here instead. */
-.split[aria-disabled="true"] .splitMain:hover {
   background: transparent;
 }
 

@@ -210,7 +210,7 @@ func attachEnvironmentFailureFS(t *testing.T, sess *Session) *environmentSyncFai
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.attachTranscript(writer)
+	sess.attachTranscript(writer, nil)
 	return fs
 }
 

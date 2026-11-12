@@ -415,7 +415,16 @@ function LiveConversationBody({
 
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
-  const cadence = <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />;
+  const cadence = (
+    <Cadence
+      state={cadenceStateFor(model.status.type, {
+        askPending: model.askPending,
+        approvalPending,
+      })}
+      frameTimes={frameTimes}
+      now={now}
+    />
+  );
 
   const transcriptContent = (
     <div className={styles.transcript} ref={transcriptContainerRef}>
@@ -442,6 +451,7 @@ function LiveConversationBody({
         viewId={seat.readView?.id}
         initialViewCapture={seat.readView?.getCapture()}
         readView={seat.readView ?? undefined}
+        followingBottom={flow.isFollowingBottom}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

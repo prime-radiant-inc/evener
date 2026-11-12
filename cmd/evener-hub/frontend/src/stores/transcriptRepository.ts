@@ -8,11 +8,15 @@ import {
   comparePositions,
   decodeTranscriptItem,
   encodeTranscriptItem,
+  type HistoryState,
+  historyFallback,
+  historyReplacesWindow,
   hydrateThread,
   type ItemModel,
   invalidateHistory,
   itemTextPresence,
   mergeOlderItemPage,
+  mergeSavedViewPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
@@ -404,6 +408,28 @@ interface ForegroundFloor {
 }
 
 /** Owns real wire acceptance, publication, local writes and attached readers for one binding. */
+// The intervals a coalesced replacement already covers, each with the
+// boundary its own observation reported.
+function inheritedReplacementIntervals(
+  replacement: unknown,
+): Array<{ from: ThreadItemPosition; to: ThreadItemPosition; representedOrdinal?: number }> {
+  return (
+    (
+      replacement as
+        | {
+            inherited?: Array<{ from: ThreadItemPosition; to: ThreadItemPosition; representedOrdinal?: number }>;
+          }
+        | undefined
+    )?.inherited ?? []
+  );
+}
+
+// A view the saved index served after an attempted live read. Its own
+// continuation is the only evidence that older saved history exists.
+function savedFallbackView(facts: { servedFrom?: string; fallbackReason?: string } | undefined): boolean {
+  return facts?.servedFrom === "saved-index" && facts.fallbackReason !== undefined;
+}
+
 export class TranscriptRepository {
   readonly #cache: SessionEntryCache;
   readonly #admission: EntryWriteAdmission;
@@ -461,7 +487,19 @@ export class TranscriptRepository {
   #recordedRangeOwed = false;
   #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
+  // The saved view this repository is showing has handed back an empty page.
+  #savedViewExhausted = false;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
+  // The boundary the uncommitted replacement's own observation reported.
+  #uncommittedReplacementOrdinal: number | undefined;
+  // The intervals an uncommitted replacement already covers, each with the
+  // boundary the observation that produced it reported. Widening appends one
+  // rather than rewriting the range, so every observation keeps its own say.
+  #uncommittedReplacementIntervals: Array<{
+    from: ThreadItemPosition;
+    to: ThreadItemPosition;
+    representedOrdinal?: number;
+  }> = [];
   #baselineIdentity = "";
   #readerCount = 0;
   #coverageBoundary: string | undefined;
@@ -842,9 +880,19 @@ export class TranscriptRepository {
       }
     }
     this.#model = candidate;
+    // A read installs the view the repository now serves, so a previous view's
+    // exhaustion does not survive it. A saved fallback that names no
+    // continuation is the whole saved transcript: the view starts exhausted,
+    // or paging demand would retry against a read that can never page.
+    const savedFallbackRead =
+      "servedFrom" in response &&
+      response.servedFrom === "saved-index" &&
+      "fallbackReason" in response &&
+      response.fallbackReason !== undefined;
+    this.#savedViewExhausted = savedFallbackRead && response.olderCursor === undefined;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
-    // An authoritative window may remove held items without changing source
+    // A replacing window may remove held items without changing source
     // identity, so an opening captured before it must not merge those items back.
     if (
       !previousHistory ||
@@ -854,7 +902,7 @@ export class TranscriptRepository {
       previousHistory.incarnation !== acceptedHistory.incarnation ||
       previousHistory.invalidatedAtGeneration !== undefined ||
       previousHistory.failed !== undefined ||
-      response.authoritative === true
+      historyReplacesWindow(response)
     ) {
       this.#advanceSourceRevision();
     }
@@ -888,14 +936,17 @@ export class TranscriptRepository {
       // the debt the replace created (the record below the wire window is
       // still owed), and a repository whose first read is windowed owes the
       // same debt even though no previous history was replaced.
-      this.#windowedBaseline = !response.authoritative && response.olderCursor !== undefined;
+      // Versioned authority covers the returned window, not its omitted older range.
+      this.#windowedBaseline =
+        response.olderCursor !== undefined &&
+        (!response.authoritative || ("servedFrom" in response && response.servedFrom !== undefined));
       if (this.#windowedBaseline) {
         // A windowed shape keeps whatever demand the route noted and
         // whatever identities a fill resolved: a merge-shaped read arriving
         // later preserves both. No durable pull runs here — the accepted
         // read's own pipeline must not be reordered behind capture work.
       } else {
-        // An authoritative window and a cursorless whole-history replace are
+        // A legacy authoritative read and a cursorless whole-history replace are
         // the source's own reconciliation of everything below: no recorded
         // range stays owed and nothing restored can be unreconciled against a
         // baseline that speaks for it.
@@ -908,9 +959,14 @@ export class TranscriptRepository {
     // range it covered is reconciled against the current baseline, whatever
     // cached version an earlier restore displayed for it.
     this.#reconcileRows(rows);
-    const replacement =
-      replacesHistory || response.authoritative
+    // The refresh's own reported entries bound what it can have omitted; a
+    // response that reported none names no boundary and exempts nothing.
+    const reported = this.#reportedOrdinal(response.thread.turns);
+    const boundary = reported > 0 ? reported : undefined;
+    const replacement: Parameters<SessionEntryCache["commitBatch"]>[0]["replacement"] =
+      replacesHistory || historyReplacesWindow(response)
         ? {
+            ...(boundary === undefined ? {} : { representedOrdinal: boundary }),
             from: replacesHistory
               ? // A fresh-baseline replace of a WINDOWED answer must stop at
                 // the window: the response carries an older cursor for
@@ -962,13 +1018,43 @@ export class TranscriptRepository {
           ...rows,
         ];
         turns = [...inherited.filter((turn) => !turns.some((current) => current.id === turn.id)), ...turns];
+        // Each earlier observation keeps its own boundary: the intervals
+        // already accumulated, then the one this widening retires.
+        replacement.inherited = [
+          ...this.#uncommittedReplacementIntervals,
+          {
+            from: outstanding,
+            to: replacement.from,
+            ...(this.#uncommittedReplacementOrdinal === undefined
+              ? {}
+              : { representedOrdinal: this.#uncommittedReplacementOrdinal }),
+          },
+        ];
+        this.#uncommittedReplacementIntervals = replacement.inherited;
         replacement.from = outstanding;
       }
       this.#uncommittedReplacementFrom = replacement.from;
+      this.#uncommittedReplacementOrdinal = replacement.representedOrdinal;
       this.#replacementRevision = this.#sourceRevision;
-      // Pending opening bodies must obey the same removal as durable rows.
+      // Pending opening bodies must obey the same removal as durable rows,
+      // except a body recorded after the refresh's own reported entries: the
+      // reducer keeps it, so its write must survive the replacement too.
+      const carried: typeof rows = [];
       for (const [key, row] of this.#pending) {
-        if (comparePosition(row.position, replacement.from) >= 0) this.#pending.delete(key);
+        if (comparePosition(row.position, replacement.from) < 0) continue;
+        if (boundary !== undefined && (row.version ?? 0) > boundary) {
+          carried.push(row);
+          continue;
+        }
+        this.#pending.delete(key);
+      }
+      if (carried.length > 0) {
+        const named = new Set(rows.map((row) => row.transcriptKey));
+        rows = [...rows, ...carried.filter((row) => !named.has(row.transcriptKey))];
+        for (const row of carried) {
+          const turn = candidate.history?.turns.find((value) => value.id === row.item.turnId);
+          if (turn && !turns.some((value) => value.id === turn.id)) turns = [...turns, { ...turn, items: [] }];
+        }
       }
     }
     const positions = coverageRows.map((row) => row.position);
@@ -1147,11 +1233,29 @@ export class TranscriptRepository {
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime)) return false;
     if (request.authority !== this.#baselineIdentity) return false;
-    if (response.snapshot && response.snapshot.incarnation !== this.#binding.identity.incarnation) return false;
     const current = this.#model;
     if (!current) return false;
+    // While a saved fallback is being shown, a page from the saved projection
+    // is the one that can extend it: its incarnation is the held history's, not
+    // the live binding's, and it may only add content.
+    const savedView =
+      current.servingFacts?.servedFrom === "saved-index" && current.servingFacts.fallbackReason !== undefined;
+    // The saved projection names itself; its incarnation belongs to the saved
+    // index, not to the live history the model retained.
+    const savedPage = savedView && "servedFrom" in response && response.servedFrom === "saved-index";
+    if (response.snapshot && response.snapshot.incarnation !== this.#binding.identity.incarnation && !savedPage)
+      return false;
     const before = request.before ?? this.#oldestPosition(current);
-    const candidate = mergeOlderItemPage(current, response);
+    // A saved view's exhaustion is its own fact: an empty page ends it, any
+    // other page (or a read that installs a new view) starts it again.
+    this.#savedViewExhausted = savedPage && (response.data ?? []).length === 0;
+    const merged = savedPage ? mergeSavedViewPage(current, response) : mergeOlderItemPage(current, response);
+    // A saved fallback page belongs to the saved projection: it cannot speak
+    // for the live continuation, which stays available for recovery.
+    const candidate =
+      savedView && merged !== current
+        ? { ...merged, olderCursor: current.olderCursor, olderFrontier: current.olderFrontier }
+        : merged;
     // A discarded page leaves the model in place.
     if (candidate === current) return false;
     // An invalidating/deferring page establishes no certified returned range,
@@ -1184,6 +1288,32 @@ export class TranscriptRepository {
     this.#reconcileRows(rows);
     for (const row of rows) this.#pending.set(row.transcriptKey, row);
     const positions = rows.map((row) => row.position).sort(comparePosition);
+    const returnedPositions = this.#pagePositions(response);
+    const from = returnedPositions[0];
+    const to = returnedPositions.at(-1);
+    // A saved page may only add content: it cannot carry a durable
+    // replacement, which would delete the live rows it is not authoritative for.
+    const replacement =
+      !savedPage &&
+      "servedFrom" in response &&
+      response.servedFrom !== undefined &&
+      historyReplacesWindow(response) &&
+      from &&
+      to
+        ? { from, to, representedOrdinal: this.#reportedOrdinal(response.data) }
+        : undefined;
+    if (replacement) {
+      const keys = new Set(candidate.history?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey)));
+      for (const [key, row] of this.#pending) {
+        if (
+          comparePosition(row.position, replacement.from) >= 0 &&
+          replacement.to &&
+          comparePosition(row.position, replacement.to) <= 0 &&
+          !keys.has(key)
+        )
+          this.#pending.delete(key);
+      }
+    }
     if (candidate !== current) this.#publish();
     this.#queueWrite({
       historyKey: this.#binding.historyKey,
@@ -1191,6 +1321,7 @@ export class TranscriptRepository {
       historyGeneration: this.#binding.historyGeneration,
       items: rows,
       turns,
+      replacement,
       coverage: {
         kind: "page",
         readId: request.readId,
@@ -1239,6 +1370,8 @@ export class TranscriptRepository {
     const current = this.#model;
     if (!current) return { kind: "server" };
     const revisionAtStart = this.#sourceRevision;
+    const pageScopesAtStart = current.history?.replacementScopes;
+    const authorityCurrent = () => this.#restoreAuthorityCurrent(revisionAtStart, pageScopesAtStart);
     // Restore omitted bodies only inside the interval the opening already
     // represented. Read/suffix coverage is not page-baseline coverage, so these
     // raw rows merge compatibly without certifying a range or changing cursors.
@@ -1248,11 +1381,15 @@ export class TranscriptRepository {
       // guard keeps its own deadline and must still reconcile uncertainty.
       let lookupActive = true;
       const lookup = async () => {
+        const scopes = pageScopesAtStart?.length ? await this.#committedReplacementScopes(current.history) : [];
+        if (!lookupActive || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) return undefined;
         const stored = await this.#cache.getBefore(this.#binding.historyKey, local.before, limit);
-        if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+        if (!lookupActive || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
           return undefined;
         }
-        const rows = stored.filter((row) => comparePosition(row.position, local.floor) >= 0);
+        const rows = this.#restorableRows(current, stored, scopes).filter(
+          (row) => comparePosition(row.position, local.floor) >= 0,
+        );
         const turns = await this.#readTurnMetadata(this.#turnIDsForRows(rows, []));
         return { rows, turns };
       };
@@ -1267,12 +1404,12 @@ export class TranscriptRepository {
         lookupActive = false;
       }
       if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-      if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+      if (!authorityCurrent()) return { kind: "reconcile" };
       if (!payload) return { kind: "reconcile" };
       const { rows, turns } = payload;
       if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
       if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-      if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+      if (!authorityCurrent()) return { kind: "reconcile" };
       const oldest = rows[0]?.position;
       const nextBefore =
         oldest && rows.length === limit && comparePosition(oldest, local.floor) > 0 ? oldest : undefined;
@@ -1317,8 +1454,10 @@ export class TranscriptRepository {
     // The raced work only returns data, so late results can never publish.
     let lookupActive = true;
     const lookup = async () => {
+      const scopes = pageScopesAtStart?.length ? await this.#committedReplacementScopes(current.history) : [];
+      if (!lookupActive || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) return undefined;
       let window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
-      if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+      if (!lookupActive || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
         return undefined;
       }
       if (
@@ -1331,7 +1470,7 @@ export class TranscriptRepository {
         // rejects competing authorities, and the normal revision/deadline
         // guards below still fence both lookups and the eventual publication.
         const readWindow = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit);
-        if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+        if (!lookupActive || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
           return undefined;
         }
         if (
@@ -1342,6 +1481,7 @@ export class TranscriptRepository {
         )
           window = readWindow;
       }
+      window = { ...window, rows: this.#restorableRows(current, window.rows, scopes) };
       const turnIds = window.stale ? [] : this.#turnIDsForRows(window.rows, []);
       const turnMetadata = await this.#readTurnMetadata(turnIds);
       return { window, turnMetadata };
@@ -1357,7 +1497,7 @@ export class TranscriptRepository {
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     // An authoritative reconciliation during the lookup retires this window's
     // authority; never publish it into the new baseline.
-    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    if (!authorityCurrent()) return { kind: "reconcile" };
     if (!payload) return { kind: "server" };
     const { window, turnMetadata } = payload;
     // A committed Clear during the lookup retires this window's authority even
@@ -1365,7 +1505,7 @@ export class TranscriptRepository {
     // cleared epoch no longer owns.
     if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    if (!authorityCurrent()) return { kind: "reconcile" };
     // Only a connected-but-unverified chain is genuine uncertainty. Empty
     // coverage below the oldest row is an ordinary network continuation.
     if (window.stale) {
@@ -1375,7 +1515,11 @@ export class TranscriptRepository {
       // named it "none" (#5585). A cache seed's frontier is unknown, so the
       // server decides; the olderCursor-alone test could not tell the two
       // apart and had to re-derive them from read admission.
-      return olderHistoryExhausted(newest) ? { kind: "exhausted", model: newest } : { kind: "server" };
+      if (olderHistoryExhausted(newest)) {
+        if (savedFallbackView(newest.servingFacts)) this.#savedViewExhausted = true;
+        return { kind: "exhausted", model: newest };
+      }
+      return { kind: "server" };
     }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
@@ -1384,7 +1528,9 @@ export class TranscriptRepository {
       if (window.complete && window.serverCursor === undefined) {
         this.#localReadContinuation = undefined;
         // The certified chain ended: a source-named "no more history".
-        return { kind: "exhausted", model: withOlderFrontier(this.#model ?? current, undefined) };
+        const model = withOlderFrontier(this.#model ?? current, undefined);
+        if (savedFallbackView(model.servingFacts)) this.#savedViewExhausted = true;
+        return { kind: "exhausted", model };
       }
       return { kind: "server" };
     }
@@ -1730,7 +1876,8 @@ export class TranscriptRepository {
               .map((item) => ({ key: item.transcriptKey ?? item.id, version: item.version ?? 0 }))
           : [];
         const sourceRevisionAtOpen = cut.sourceRevision;
-        const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
+        const pageScopesAtOpen = cut.model?.history?.replacementScopes;
+        const authorityCurrent = () => this.#restoreAuthorityCurrent(sourceRevisionAtOpen, pageScopesAtOpen);
         const openingCurrent = () => active && this.#acceptsLifetime(lifetime) && authorityCurrent();
         const checkRetainedRange = (model: ThreadModel | undefined): boolean | undefined => {
           // An exception may follow cancellation or source replacement. Those
@@ -1747,6 +1894,11 @@ export class TranscriptRepository {
           });
         };
         try {
+          const scopes = pageScopesAtOpen?.length
+            ? await this.#readLocalAuthority(() => this.#committedReplacementScopes(cut.model?.history))
+            : [];
+          const restoreRows = (rows: TranscriptItemRow<unknown>[]) =>
+            this.#restorableRows(cut.model, rows, scopes ?? []);
           // The limit bounds first promotion. Reopening a still-owned range
           // must not silently turn it back into that initial latest window.
           if (limit > 0) limit = Math.max(limit, requestedForeground.length);
@@ -1773,6 +1925,7 @@ export class TranscriptRepository {
             window = { ...window, rows: [] };
             window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
           }
+          window = { ...window, rows: restoreRows(window.rows) };
           // A committed page boundary is not a latest-window certificate. The
           // fallback above selects only the latest read, so join certified
           // older rows from this baseline to restore the window already loaded
@@ -1833,9 +1986,9 @@ export class TranscriptRepository {
                 limit - window.rows.length,
                 this.#baselineIdentity,
               );
-              if (!older.stale) olderRows = older.rows;
+              if (!older.stale) olderRows = restoreRows(older.rows);
             }
-            const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            const durableOlder = restoreRows(await this.#cache.getLatest(this.#binding.historyKey, limit));
             // The owed fill's connectivity, on recorded coverage: the
             // component of certificates linked to the window's own
             // certificate by what the record states — extents that overlap,
@@ -2073,6 +2226,7 @@ export class TranscriptRepository {
             pendingCutCovered &&
             cut.authorityValid &&
             durableAuthorities === "unchanged" &&
+            scopes !== undefined &&
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded
               ? "current"
@@ -2451,9 +2605,7 @@ export class TranscriptRepository {
       )
         throw new Error("end disposition page was discarded");
       cover(page.data.flatMap((turn) => turn.items ?? []));
-      const positions = page.data
-        .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
-        .sort(comparePosition);
+      const positions = this.#pagePositions(page);
       before = positions[0] ?? before;
       cursor = page.nextCursor;
     }
@@ -2503,18 +2655,99 @@ export class TranscriptRepository {
    * oldest recorded rows body-less — a user-visible blank transcript.
    */
   async #durableAuthoritiesState(): Promise<"unchanged" | "changed" | "unestablished"> {
+    const authorities = await this.#readLocalAuthority(() =>
+      Promise.all([this.#cache.getClearEpoch(), this.#cache.getHistoryGeneration(this.#binding.historyKey)]),
+    );
+    if (authorities === undefined) return "unestablished";
+    return authorities[0] === this.#binding.clearEpoch && authorities[1] === (this.#binding.historyGeneration ?? 0)
+      ? "unchanged"
+      : "changed";
+  }
+
+  async #readLocalAuthority<T>(read: () => Promise<T>): Promise<T | undefined> {
     try {
-      const authorities = await withDeadline(
-        Promise.all([this.#cache.getClearEpoch(), this.#cache.getHistoryGeneration(this.#binding.historyKey)]),
-        SESSION_CACHE_LOOKUP_DEADLINE_MS,
-      );
-      if (authorities === undefined) return "unestablished";
-      return authorities[0] === this.#binding.clearEpoch && authorities[1] === (this.#binding.historyGeneration ?? 0)
-        ? "unchanged"
-        : "changed";
+      return await withDeadline(read(), SESSION_CACHE_LOOKUP_DEADLINE_MS);
     } catch {
-      return "unestablished";
+      return undefined;
     }
+  }
+
+  /** Whether the saved view this repository shows has nothing older behind it. */
+  savedViewExhausted(): boolean {
+    return this.#savedViewExhausted;
+  }
+
+  #restoreAuthorityCurrent(revision: number, scopes: HistoryState["replacementScopes"]): boolean {
+    return revision === this.#sourceRevision && scopes === this.#model?.history?.replacementScopes;
+  }
+
+  #retainsPageWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): boolean {
+    const replacement = batch.replacement;
+    const to = replacement?.to;
+    const authority = batch.sourceAuthority;
+    const history = this.#model?.history;
+    if (
+      !replacement ||
+      !to ||
+      batch.coverage?.kind !== "page" ||
+      !authority ||
+      !history ||
+      history.invalidatedAtGeneration !== undefined ||
+      history.bootGeneration !== authority.bootGeneration ||
+      history.epoch !== authority.epoch ||
+      history.incarnation !== authority.incarnation
+    )
+      return false;
+    return (
+      history.replacementScopes?.some(
+        (scope) =>
+          scope.representedSnapshot === authority.representedSnapshot &&
+          comparePosition(scope.from, replacement.from) === 0 &&
+          comparePosition(scope.to, to) === 0,
+      ) ?? false
+    );
+  }
+
+  async #committedReplacementScopes(history: HistoryState | undefined) {
+    const scopes = await this.#cache.getReplacementScopes(this.#binding.historyKey);
+    return scopes.filter(
+      (scope) =>
+        scope.authority.bootGeneration === history?.bootGeneration &&
+        scope.authority.epoch === history?.epoch &&
+        scope.authority.incarnation === history?.incarnation,
+    );
+  }
+
+  #restorableRows(
+    model: ThreadModel | undefined,
+    rows: TranscriptItemRow<unknown>[],
+    committed: Awaited<ReturnType<SessionEntryCache["getReplacementScopes"]>>,
+  ): TranscriptItemRow<unknown>[] {
+    const observations = model?.history?.replacementScopes;
+    if (!observations?.length) return rows;
+    const known = new Set(
+      model?.history?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey ?? item.id)),
+    );
+    return rows.filter(
+      (row) =>
+        known.has(row.transcriptKey) ||
+        !observations.some(
+          (scope) =>
+            // Row versions and the highest ordinal the observation reported
+            // share one scale, so a row it covered is omitted unless it is
+            // newer than that boundary. An observation recorded before the
+            // boundary was stored names none, so it exempts nothing.
+            (scope.representedOrdinal === undefined || row.version <= scope.representedOrdinal) &&
+            comparePosition(row.position, scope.from) >= 0 &&
+            comparePosition(row.position, scope.to) <= 0 &&
+            !committed.some(
+              (durable) =>
+                durable.authority.representedSnapshot >= scope.representedSnapshot &&
+                comparePosition(row.position, durable.from) >= 0 &&
+                (!durable.to || comparePosition(row.position, durable.to) <= 0),
+            ),
+        ),
+    );
   }
 
   #advanceSourceRevision(): void {
@@ -2528,7 +2761,9 @@ export class TranscriptRepository {
       response.thread.id === this.#binding.threadId &&
       response.thread.sessionId === this.#binding.identity.sessionId &&
       response.thread.evener.ref === this.#binding.ref &&
-      (!response.snapshot || response.snapshot.incarnation === this.#binding.identity.incarnation)
+      (historyFallback(response) ||
+        !response.snapshot ||
+        response.snapshot.incarnation === this.#binding.identity.incarnation)
     );
   }
 
@@ -2567,6 +2802,25 @@ export class TranscriptRepository {
         (turn.items ?? []).map((item) => ({ ...item, turnId: item.turnId ?? turn.id })),
       ),
     ];
+  }
+
+  // The highest entry ordinal a response reported, in the same scale as item
+  // and turn versions. A replacement can omit only what lies beyond it.
+  #reportedOrdinal(
+    turns: readonly { version?: number; items?: readonly { version?: number }[] }[] | undefined,
+  ): number {
+    let highest = 0;
+    for (const turn of turns ?? []) {
+      highest = Math.max(highest, turn.version ?? 0);
+      for (const item of turn.items ?? []) highest = Math.max(highest, item.version ?? 0);
+    }
+    return highest;
+  }
+
+  #pagePositions(response: ThreadTurnsListResponse): ThreadItemPosition[] {
+    return (response.data ?? [])
+      .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
+      .sort(comparePosition);
   }
 
   #pageItemRows(response: ThreadTurnsListResponse, model: ThreadModel): TranscriptItemRow<CachedSessionItem>[] {
@@ -2862,16 +3116,46 @@ export class TranscriptRepository {
             (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix") &&
             inheritableReplacement(prior),
         )
-        .map(([prior]) => prior);
+        .map(([prior]) => prior as Parameters<SessionEntryCache["commitBatch"]>[0]);
       if (inherited.length > 0) {
         // Replacement deletion is part of the payload operation, not its old
         // coverage certificate. Union suffix scopes at their earliest boundary.
         const replacementFrom = inherited
           .flatMap((prior) => (prior.replacement ? [prior.replacement.from] : []))
           .sort(comparePosition)[0];
+        // The coalesced replacement speaks for every observation it carries,
+        // so its omission boundary is the furthest ordinal any of them
+        // reported. Dropping it would let the cache delete rows newer than the
+        // original read reported.
+        const inheritedOrdinal = [batch.replacement, ...inherited.map((prior) => prior.replacement)]
+          .flatMap((replacement) =>
+            replacement?.representedOrdinal === undefined ? [] : [replacement.representedOrdinal],
+          )
+          .reduce<number | undefined>(
+            (highest, value) => (highest === undefined || value > highest ? value : highest),
+            undefined,
+          );
+        // Each coalesced prior keeps the intervals and boundaries its own
+        // observations reported; the union is theirs, deduplicated by range.
+        const inheritedIntervals = [
+          ...inherited.flatMap((prior) => inheritedReplacementIntervals(prior.replacement)),
+          ...inheritedReplacementIntervals(batch.replacement),
+        ].filter(
+          (interval, index, all) =>
+            all.findIndex(
+              (other) =>
+                comparePosition(other.from, interval.from) === 0 && comparePosition(other.to, interval.to) === 0,
+            ) === index,
+        );
         batch = {
           ...batch,
-          replacement: replacementFrom ? { from: replacementFrom } : undefined,
+          replacement: replacementFrom
+            ? {
+                from: replacementFrom,
+                ...(inheritedOrdinal === undefined ? {} : { representedOrdinal: inheritedOrdinal }),
+                ...(inheritedIntervals.length === 0 ? {} : { inherited: inheritedIntervals }),
+              }
+            : undefined,
           items: [
             ...new Map(
               [...inherited.flatMap((prior) => prior.items), ...batch.items].map((row) => [row.transcriptKey, row]),
@@ -2899,9 +3183,12 @@ export class TranscriptRepository {
           bootGeneration: history.bootGeneration,
           epoch: history.epoch,
           incarnation: history.incarnation,
-          // Recorded appends leave the reducer's read watermark unchanged.
-          // Their durable authority is the snapshot this suffix certifies.
-          representedSnapshot: batch.coverage?.kind === "suffix" ? batch.coverage.representedSnapshot : history.length,
+          // Suffixes and bounded pages observe snapshots without advancing the
+          // reducer's latest-window completeness watermark.
+          representedSnapshot:
+            batch.coverage && (batch.coverage.kind === "suffix" || batch.replacement?.to !== undefined)
+              ? batch.coverage.representedSnapshot
+              : history.length,
         },
         sessionMetadata: {
           historyKey: this.#binding.historyKey,
@@ -2978,10 +3265,11 @@ export class TranscriptRepository {
         // Pages have independent request IDs and belong to the page authority,
         // not to the baseline read ID.
         if (
-          issuedRevision !== this.#sourceRevision ||
-          ((batch.coverage?.kind === "read" || batch.coverage?.kind === "suffix") &&
-            batch.coverage.readId !== this.#coverageReadId) ||
-          (batch.coverage?.kind === "page" && batch.coverage.authority !== this.#baselineIdentity)
+          !this.#retainsPageWrite(batch) &&
+          (issuedRevision !== this.#sourceRevision ||
+            ((batch.coverage?.kind === "read" || batch.coverage?.kind === "suffix") &&
+              batch.coverage.readId !== this.#coverageReadId) ||
+            (batch.coverage?.kind === "page" && batch.coverage.authority !== this.#baselineIdentity))
         ) {
           for (const row of batch.items) {
             if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
@@ -3084,7 +3372,7 @@ export class TranscriptRepository {
     isRetry: boolean,
     isExempt: boolean,
   ): Promise<void> {
-    if (issuedRevision < this.#replacementRevision) {
+    if (issuedRevision < this.#replacementRevision && !this.#retainsPageWrite(batch)) {
       this.#admission.release(bodies, this);
       if (isExempt) this.#admission.releaseExempt(this);
       for (const row of batch.items) {
@@ -3106,8 +3394,8 @@ export class TranscriptRepository {
       if (
         this.#disposed ||
         this.#invalidated ||
-        issuedRevision < this.#replacementRevision ||
-        (isRetry && issuedRevision !== this.#sourceRevision)
+        (!this.#retainsPageWrite(batch) &&
+          (issuedRevision < this.#replacementRevision || (isRetry && issuedRevision !== this.#sourceRevision)))
       ) {
         return undefined;
       }
@@ -3119,7 +3407,8 @@ export class TranscriptRepository {
     };
     const write = commit().then((outcome) => {
       const superseded =
-        issuedRevision < this.#replacementRevision || (isRetry && issuedRevision !== this.#sourceRevision);
+        !this.#retainsPageWrite(batch) &&
+        (issuedRevision < this.#replacementRevision || (isRetry && issuedRevision !== this.#sourceRevision));
       if (outcome && batch.coverage?.boundary === this.#retirementWrite?.boundary && this.#retirementWrite) {
         this.#retirementWrite.persisted = outcome.outcome === "committed" && outcome.coverage !== "not-extended";
       }
@@ -3129,7 +3418,13 @@ export class TranscriptRepository {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
       } else if (outcome.outcome === "committed") {
-        if (batch.replacement && !superseded) this.#uncommittedReplacementFrom = undefined;
+        // Only the replacement that owns this state clears it; an unrelated
+        // commit must not strip a pending observation of its boundary.
+        if (batch.replacement && batch.replacement.to === undefined && !superseded) {
+          this.#uncommittedReplacementFrom = undefined;
+          this.#uncommittedReplacementOrdinal = undefined;
+          this.#uncommittedReplacementIntervals = [];
+        }
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered
         // input: only an `extended` certificate actually repairs the chain (an
@@ -3157,7 +3452,8 @@ export class TranscriptRepository {
             batch.replacement &&
             reach.start &&
             snapshot >= reach.snapshot &&
-            comparePosition(batch.replacement.from, reach.start) <= 0;
+            comparePosition(batch.replacement.from, reach.start) <= 0 &&
+            (!batch.replacement.to || (reach.end !== null && comparePosition(batch.replacement.to, reach.end) >= 0));
           if (refused && (replacesReach(refused) || commitCarriesCoverage(batch.coverage, refused))) {
             this.#capacityRefusedReach = undefined;
           }
@@ -3175,7 +3471,12 @@ export class TranscriptRepository {
             this.#reconciledReach = undefined;
           }
         }
-        if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
+        if (
+          !superseded &&
+          batch.coverage &&
+          outcome.coverage !== "not-extended" &&
+          (batch.coverage.kind !== "page" || batch.coverage.authority === this.#baselineIdentity)
+        ) {
           this.#committedCoverage = { coverage: batch.coverage, revision: issuedRevision };
           this.#committedCoverageBoundary = batch.coverage.boundary;
           // A page certificate certifies an older range under its baseline
@@ -3208,7 +3509,8 @@ export class TranscriptRepository {
           const alreadyCovered =
             !this.#cacheContinuityLost &&
             committed?.revision === this.#sourceRevision &&
-            committed.coverage.readId === this.#coverageReadId &&
+            ((committed.coverage.kind === "page" && committed.coverage.authority === this.#baselineIdentity) ||
+              (committed.coverage.kind !== "page" && committed.coverage.readId === this.#coverageReadId)) &&
             committed.coverage.readId !== batch.coverage.readId &&
             commitCarriesCoverage(committed.coverage, coverageReach(batch.coverage));
           if (!alreadyCovered) {
@@ -3543,7 +3845,7 @@ export class TranscriptRepository {
       // A boundary since this batch was issued retires its persistence claim:
       // re-committing it could only write the old baseline's bookkeeping over
       // the new one. Drop it and continue with the rest of the queue.
-      if (retry.revision !== this.#sourceRevision) {
+      if (retry.revision !== this.#sourceRevision && !this.#retainsPageWrite(retry.batch)) {
         this.#admission.release(retry.bodies, this);
         this.#admission.releaseBackground(this);
         this.#drainBackground();

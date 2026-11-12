@@ -112,13 +112,13 @@ func TestSharedWorkspaceDelegateWarning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			parentDir := t.TempDir()
-			parent := newSession(t, withDir(parentDir), withoutGitSnapshot())
+			parent := newSession(t, withDir(parentDir))
 			if tc.existingDelegate {
 				childDir := parentDir
 				if tc.existingElsewhere {
 					childDir = t.TempDir()
 				}
-				child := newSession(t, withDir(childDir), withoutGitSnapshot())
+				child := newSession(t, withDir(childDir))
 				parent.subagents.track(&subagent{
 					id:               child.id,
 					sess:             child,
@@ -150,8 +150,8 @@ func TestSharedWorkspaceDelegateWarning(t *testing.T) {
 func TestSharedWorkspaceDelegateWarning_ClosedDelegateIsNotRunning(t *testing.T) {
 	t.Parallel()
 	parentDir := t.TempDir()
-	parent := newSession(t, withDir(parentDir), withoutGitSnapshot())
-	child := newSession(t, withDir(parentDir), withoutGitSnapshot())
+	parent := newSession(t, withDir(parentDir))
+	child := newSession(t, withDir(parentDir))
 	parent.subagents.track(&subagent{id: child.id, sess: child, running: true, closed: true})
 
 	if warning := parent.sharedWorkspaceDelegateWarning(""); warning != "" {

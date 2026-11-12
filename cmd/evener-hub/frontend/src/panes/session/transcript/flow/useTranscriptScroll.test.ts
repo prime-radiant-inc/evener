@@ -1,5 +1,5 @@
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../../shell/paneLifetime";
@@ -421,6 +421,38 @@ test("Jump to live confirms its landing while viewport measurement is pending an
     await act(async () => scene.frames.release());
     expect(scene.port().scrollTop).toBe(3200);
     expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("following-bottom intent survives a passive measurement correction and clears on reader movement", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-following-intent", [6000, 40], { estimate: 6000, viewportHeight: 718 }),
+  );
+  try {
+    await scene.start(1400);
+    expect(scene.flow().isFollowingBottom()).toBe(false);
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+
+    // A passive measurement frame changes the port height and writes the
+    // offset backwards. The reader did not gesture, so intent survives.
+    scene.geometry.viewportHeight = 714;
+    scene.geometry.rowHeights[0] = (scene.geometry.rowHeights[0] ?? 0) + 1;
+    await act(async () => {
+      scene.port().scrollTop = 5303;
+      fireEvent.scroll(scene.port());
+    });
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+
+    // A scrollbar drag moves the reader away while geometry holds.
+    await act(async () => {
+      scene.port().scrollTop = 0;
+      fireEvent.scroll(scene.port());
+    });
+    expect(scene.flow().isFollowingBottom()).toBe(false);
   } finally {
     scene.dispose();
   }
@@ -3059,7 +3091,12 @@ describe("the needs-you upgrade", () => {
       expect(result.current.pillNeedsYou).toBe(false);
 
       // Same content, later render: status alone requires attention.
-      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: statusType } }) });
+      rerender({
+        m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], {
+          status: { type: statusType },
+          askPending: statusType === "awaiting",
+        }),
+      });
 
       expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
       expect(result.current.pillNeedsYou).toBe(true);
@@ -4252,8 +4289,9 @@ test.each([
 });
 
 async function renderRegistrationList() {
+  const geometry = { width: 500, viewportHeight: 300, rowHeights: [600, 600] };
   const external = installTranscriptGeometry(
-    () => ({ width: 500, viewportHeight: 300, rowHeights: [600, 600] }),
+    () => geometry,
     (element) => {
       const port = element.closest("[data-test-registration-list]")?.firstElementChild;
       return port instanceof HTMLElement ? port : undefined;
@@ -4286,6 +4324,7 @@ async function renderRegistrationList() {
   return {
     ref,
     el,
+    geometry,
     scrollToIndex,
     commit(registration: ReturnType<typeof useTranscriptViewRegistration>) {
       external.notify();
@@ -4300,6 +4339,34 @@ async function renderRegistrationList() {
 }
 
 describe("registered transcript view preservation", () => {
+  test("a viewport reflow preserves following-bottom intent from the reader", async () => {
+    const list = await renderRegistrationList();
+    try {
+      const positions = [{ id: "row-0", sourceIndex: 0, index: 0, offset: -100, height: 600, isMessage: true }];
+      const { result } = renderHook(() =>
+        useTranscriptViewRegistration({
+          enabled: true,
+          id: "following-reflow",
+          listRef: list.ref,
+          measureAnchors: () => positions,
+          anchorEntries: [{ id: "row-0", sourceIndex: 0, index: 0, isMessage: true }],
+          renderedRowCount: 2,
+          followingBottom: () => true,
+        }),
+      );
+      list.el.scrollTop = 500;
+      await act(async () => list.commit(result.current));
+      expect(captureElementView(list.el).followingBottom).toBe(false);
+
+      list.geometry.width = 352;
+      await act(async () => list.commit(result.current));
+      expect(list.el.scrollTop).toBe(list.el.scrollHeight - list.el.clientHeight);
+    } finally {
+      cleanup();
+      list.dispose();
+    }
+  });
+
   test("captures the visible anchor, bottom state, and focused entry", () => {
     const el = document.createElement("div");
     const anchor = document.createElement("div");

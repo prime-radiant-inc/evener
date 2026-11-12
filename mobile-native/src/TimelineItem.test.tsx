@@ -56,7 +56,7 @@ it("fills your message bubble with the accent tint in both themes", () => {
 	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DFEEFF" });
 
 	mode.scheme = "dark";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#232D3B" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#243141" });
 });
 
 it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {
@@ -76,9 +76,9 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 	expect(dark.style).toMatchObject({ color: "#E3E3E8" });
 });
 
-const INK_LOW = "#62626D";
-const INK_MID = "#55555E";
-const EDGE_STRONG = "#B8B8C1";
+const INK_LOW = "#5C626D";
+const INK_MID = "#555B66";
+const EDGE_STRONG = "#A7AEBA";
 const ATTENTION_INK = "#9C4908";
 
 beforeEach(() => {
@@ -922,7 +922,7 @@ describe("a settled thought", () => {
 describe("a subagent", () => {
 	const ALIVE = "#189A4D";
 	const DANGER = "#E3474C";
-	const EDGE_STRONG = "#B8B8C1";
+	const EDGE_STRONG = "#A7AEBA";
 	const row = (state: "running" | "failed" | "completed"): TimelineRow => ({
 		kind: "activity",
 		id: "item-1",

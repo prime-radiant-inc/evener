@@ -8,6 +8,10 @@
  * palette. Every consumer just writes var(--name) and never branches on
  * theme.
  *
+ * The palette values are shared with the phone: @evener/appwire-client/palette
+ * is the one source, and token-contract.test.ts fails when a color declared
+ * here drifts from it.
+ *
  * Editorial instrument (2026-09-09): neutral paper/ink, reading serif and flat
  * structural surfaces. Supersedes Beautiful UI's aesthetic mandate, not its
  * interaction contracts or attribution: MIT, Copyright (c) 2026 Shane Levine,
@@ -30,7 +34,7 @@
   --surface-2: #1D2025; /* raised: menus, dialogs — depth comes from shadow */
   --surface-inset: #191C21; /* evidence insets, gutters */
   --hover-1: #252931; /* resting hover wash */
-  --hover-2: #2E333C; /* pressed / selected */
+  --hover-2: #303034; /* pressed / selected */
   --field: #23272E; /* form-control background (sunken fields) */
   --edge: #333842; /* hairline borders */
   --edge-strong: #4C535F; /* control borders, overlay rings */
@@ -147,6 +151,14 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* The home-indicator band a docked surface must keep its content clear of.
+   * Zero off a phone. It yields as the on-screen keyboard rises over that
+   * band (useKeyboardInset writes --keyboard-inset on the root), so a dock
+   * spends the band once instead of twice. Declared here so every dock reads
+   * one value: calc(var(--space-N) + var(--dock-clearance)), or the token
+   * alone where the band is the whole inset. */
+  --dock-clearance: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+
   /* Vertical rhythm, named by what sits on either side (docs/web-ui/
    * typography-spacing-critique-2026-09-06.md R3). */
   --rhythm-line: var(--space-1); /* 4: inside one item (intent -> call) */
@@ -166,6 +178,7 @@
   --radius-chip: 3px; /* chips, badges, small tags */
   --radius-control: 4px; /* buttons, inputs */
   --radius-pane: 4px; /* panes, cards, dialogs */
+  --radius-panel: 8px; /* a floating disclosure card sitting INSIDE a pane */
   --radius-pill: 999px; /* pill geometry: switch track */
 
   /* --- focus ring ------------------------------------------------------
@@ -176,9 +189,19 @@
    * destructive controls whose resting chrome is already danger-colored.
    * Sole deviation: the command palette input's quiet accent-edge typing
    * ring (see token-contract's FOCUS_RING_EXCEPTIONS).
+   *
+   * --focus-ring-scroll-margin is the room a keyboard scroll-into-view must
+   * leave around the focused box so the ring is not clipped at the
+   * scrollport edge. It covers the ring width plus the largest positive
+   * outline-offset (2px), with a small allowance for sub-pixel scroll
+   * rounding: an exact-reach margin still clipped by a measured 1/64px
+   * (issue #5578). global.css applies it to every :focus-visible element;
+   * token-contract checks every positive offset against it.
    */
-  --focus-ring: 2px solid var(--accent);
-  --focus-ring-danger: 2px solid var(--danger);
+  --focus-ring-width: 2px;
+  --focus-ring: var(--focus-ring-width) solid var(--accent);
+  --focus-ring-danger: var(--focus-ring-width) solid var(--danger);
+  --focus-ring-scroll-margin: 6px;
 
   /* --- stacking order --------------------------------------------------
    * The only z-index values in this app's own CSS (see token-contract).
@@ -243,21 +266,21 @@
   --surface-2: #FFFFFF;
   --surface-inset: #F2F4F7;
   --hover-1: #E7EAEF;
-  --hover-2: #DCE0E7;
+  --hover-2: #DCDEE3;
   --field: #F1F3F6;
   --edge: #D5D9E0;
   --edge-strong: #A7AEBA;
   --ink-hi: #1A1D23;
   --ink-mid: #555B66;
   /* Quiet text still clears AA on both page and structural surface. */
-  --ink-low: #626873;
+  --ink-low: #5C626D;
 
   /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
    * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
    * system's own vocabulary for this hue is "amber" (design-system.md §4).
-   * #F59E0B (hue ~70deg) tints to a true amber; --attention-ink #AD5209 still
-   * clears AA (4.75:1) on the new tint. Dark keeps #F68F3C, which already
-   * reads amber on dark surfaces. See decisions.md's 2026-08-16 entry. */
+   * #F59E0B (hue ~70deg) tints to a true amber; --attention-ink #9C4908 still
+   * clears AA (5.62:1) on the new tint. Dark keeps #F68F3C, which already
+   * reads amber on dark surfaces. See decisions.md's 2026-11-11 entry. */
   --attention: #F59E0B;
   --alive: #189A4D;
   --danger: #E3474C;
@@ -274,12 +297,13 @@
   --selection-bg: color-mix(in oklab, var(--accent) 40%, var(--surface-1));
 
   /* AA-darkened text forms of the four hues, derived to clear 4.5:1 on
-   * both light surfaces and each hue's own near-white -bg tint (the
-   * strictest ground -ink text actually sits on). */
-  --attention-ink: #AD5209;
-  --alive-ink: #12763B;
-  --danger-ink: #C51D23;
-  --accent-ink: #0064C2;
+   * both light surfaces, each hue's own near-white -bg tint (the strictest
+   * ground -ink text actually sits on), and --hover-2 (the phone's pressed
+   * ground, which carries every ink). */
+  --attention-ink: #9C4908;
+  --alive-ink: #0F6E36;
+  --danger-ink: #BD1B21;
+  --accent-ink: #005FBA;
 
   /* Tooltip stays inverted (near-black) in the light theme too. */
   --tooltip-bg: #25272B;

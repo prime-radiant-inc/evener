@@ -69,20 +69,27 @@ func TestLiteral(t *testing.T) {
 			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableDerivesAnotherOption", "TestGatedVariableFieldInsideUngatedLiteral"},
 		},
 		{
-			// Helpers: one gates unconditionally in its own body, one only on
-			// an option (the newSession fixture's shape).
-			name: "helpers gate by body or by option",
+			// Helpers: one gates unconditionally in its own body, one by the
+			// literal config it is passed; the session fixture gates unless
+			// the call opts in, and a wrapper that forwards the opt-in is not
+			// gated either.
+			name: "helpers gate by body or by default",
 			src: `
 func gatedSession(t *testing.T) *Session {
 	s, _ := NewSession(nil, nil, nil, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	return s
 }
-func optionalSession(t *testing.T, opts ...sessionOpt) *Session {
+func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	var o sessionOpts
 	cfg := o.cfg
-	if o.skipGitSnapshot {
-		cfg.testOnly.skipGitSnapshot = true
-	}
+	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
+	s, _ := NewSession(nil, nil, nil, cfg)
+	return s
+}
+func wrappedSession(t *testing.T, opts ...sessionOpt) *Session {
+	return newSession(t, opts...)
+}
+func configuredSession(t *testing.T, cfg SessionConfig) *Session {
 	s, _ := NewSession(nil, nil, nil, cfg)
 	return s
 }
@@ -90,23 +97,35 @@ func TestGatedHelper(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	_ = gatedSession(t)
 }
-func TestOptionalHelperWithOption(t *testing.T) {
+func TestFixtureBare(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withoutGitSnapshot())
+	_ = newSession(t)
 }
-func TestOptionalHelperWithGatedConfig(t *testing.T) {
+func TestFixtureWithUngatedConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}))
+	_ = newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
 }
-func TestOptionalHelperBare(t *testing.T) {
+func TestFixtureWithSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t)
+	_ = newSession(t, withEnvironmentSnapshot())
 }
-func TestOptionalHelperWithUngatedConfig(t *testing.T) {
+func TestWrapperBare(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
+	_ = wrappedSession(t)
+}
+func TestWrapperWithSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = wrappedSession(t, withEnvironmentSnapshot())
+}
+func TestConfigHelperWithGatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
+}
+func TestConfigHelperWithUngatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{MaxSubagentDepth: 1})
 }`,
-			flagged: []string{"TestOptionalHelperBare", "TestOptionalHelperWithUngatedConfig"},
+			flagged: []string{"TestConfigHelperWithUngatedConfig", "TestFixtureWithSnapshot", "TestWrapperWithSnapshot"},
 		},
 		{
 			// The restore entry points: the config-bearing one is gated by

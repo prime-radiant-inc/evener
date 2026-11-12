@@ -98,7 +98,7 @@ linters:
         # The codex/appwire wire protocol forces camelCase JSON tags in these
         # packages (formerly evener-namingcheck's path carve-outs).
         # pkg values are module-relative package paths, not import paths
-        # (verified empirically against golangci-lint v2.12.2).
+        # (verified empirically against golangci-lint v2.15.0).
         overrides:
           - pkg: appwire
             rules:
@@ -206,6 +206,15 @@ linters:
       # composite literal. The nested form stays.
       - path: agent/retained_output_size_acc_test\.go
         text: 'embedlit: embedded field type can be removed'
+        linters:
+          - modernize
+
+      # The versioned history fixture constructs the embedded response and then
+      # assigns its promoted fields, the form this repository's review accepts.
+      # modernize wants either keyed promoted fields in the outer literal (which
+      # the review rejects) or a nested embedded literal; this form stays.
+      - path: appwire/client_history_test\.go
+        text: 'embedlit: embedded field assignment can be moved to struct literal'
         linters:
           - modernize
 

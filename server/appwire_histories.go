@@ -56,6 +56,10 @@ func (s *Server) WireTranscriptHistory(sess *agent.Session) {
 			return agent.TranscriptPublicationHooks{}
 		}
 		hooks, _ := s.transcriptPublicationHooks(childID)
+		frontier := s.descendantFrontierHooks(threadID, childID)
+		hooks.RegisterFrontier = frontier.RegisterFrontier
+		hooks.PublishFrontier = frontier.PublishFrontier
+		hooks.ReleaseFrontier = frontier.ReleaseFrontier
 		return hooks
 	})
 }
@@ -92,7 +96,11 @@ func (s *Server) recordTranscriptEntry(threadID string, rec transcript.Record) {
 // it is safe from a recorded-entry hook and inside a projection commit.
 func (s *Server) ensureDescendantHistory(ownerThreadID, threadID string) *threadHistory {
 	if h := s.appHistories.get(threadID); h != nil {
-		return h
+		if producer, ok := s.appHistories.publications.Load(threadID); !ok || producer == h.historyPublication {
+			return h
+		}
+		// A cold restore has its own producer. The registry retains the old
+		// history until that producer completes, then replaces it atomically.
 	}
 	source := s.appDescendantHistorySource.Load()
 	if source == nil || source.ownerThreadID != ownerThreadID || source.pathFunc == nil {

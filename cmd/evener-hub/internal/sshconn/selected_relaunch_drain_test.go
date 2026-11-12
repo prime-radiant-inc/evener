@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // Config inspection and pathname resolution execute production commands against
@@ -26,7 +27,7 @@ func TestAdhocRelaunchRevalidatesAfterDrain(t *testing.T) {
 	resolver := buildConfigIdentityResolver(t)
 	for _, drift := range []string{"unchanged", "root", "cwd", "executable"} {
 		t.Run(drift, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testfs.CanonicalTempDir(t)
 			physical, other := filepath.Join(dir, "physical"), filepath.Join(dir, "other")
 			cwd, launch := physical, filepath.Join(dir, "evener")
 			target, otherTarget := filepath.Join(dir, "original"), filepath.Join(dir, "replacement")

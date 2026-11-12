@@ -28,6 +28,7 @@ import type {
   TaskListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
+  ThreadItemPosition,
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
@@ -45,6 +46,7 @@ import {
   collectAuthoritativeMutationIds,
   errorText,
   frontierFromCursor,
+  historyFallback,
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
@@ -128,6 +130,7 @@ import {
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
+import { KeyedWaiters } from "./keyedWaiters";
 import {
   type MutationAttachment,
   type MutationCommit,
@@ -901,6 +904,18 @@ async function acceptEntryTranscriptHydration(
     identity.hostId = separator < 0 ? "local" : resolvedRef.slice(0, separator);
     fixture.hostId = identity.hostId;
   }
+  // Saved fallback provenance can name a different snapshot without replacing
+  // the held live history. Keep its binding only within the same resolved owner,
+  // so the repository's reducer can accumulate the fallback into that history.
+  const heldIdentity = fixture.identity;
+  const accumulatesHeldHistory =
+    historyFallback(response) &&
+    fixture.repository?.getSnapshot()?.threadId === response.thread.id &&
+    response.thread.evener.ref === ref &&
+    heldIdentity?.clientId === identity.clientId &&
+    heldIdentity.hostId === identity.hostId &&
+    heldIdentity.sessionId === identity.sessionId;
+  if (accumulatesHeldHistory) identity.incarnation = heldIdentity.incarnation;
   const historyKey = entryHistoryKey(identity);
   fixture.identity = identity;
   const historyChanged = fixture.historyKey !== undefined && fixture.historyKey !== historyKey;
@@ -981,7 +996,7 @@ async function acceptEntryTranscriptHydration(
   const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
   if (
     !fixture.repository ||
-    hydration.discardHeldHistory ||
+    (hydration.discardHeldHistory && !accumulatesHeldHistory) ||
     threadChanged ||
     historyChanged ||
     fixture.clearEpoch !== clearEpoch ||
@@ -1063,7 +1078,7 @@ const hydrationRegistrations = new WeakMap<object, Promise<void>>();
 // that is still current settles; settlement means settled-either-way: a
 // published heal and a failed read both end the local wait, because from
 // either outcome the source lifecycle owns the display's convergence.
-const hydrationSettlementWaiters = new Map<string, Set<HydrationSettlementWaiter>>();
+const hydrationSettlementWaiters = new KeyedWaiters<string, HydrationSettlementWaiter>();
 
 // The wake identity for an open-superseding establishment: distinct from
 // every registration completion a waiter could except, so the establishment
@@ -1106,20 +1121,12 @@ function nextTrackedHydrationSettlement(ref: string, except?: unknown): Hydratio
   let waiter!: HydrationSettlementWaiter;
   const settled = new Promise<void>((resolve) => {
     waiter = { wake: resolve, except };
-    let waiters = hydrationSettlementWaiters.get(ref);
-    if (!waiters) {
-      waiters = new Set();
-      hydrationSettlementWaiters.set(ref, waiters);
-    }
-    waiters.add(waiter);
+    hydrationSettlementWaiters.add(ref, waiter);
   });
   return {
     settled,
     cancel: () => {
-      const waiters = hydrationSettlementWaiters.get(ref);
-      if (!waiters) return;
-      waiters.delete(waiter);
-      if (waiters.size === 0) hydrationSettlementWaiters.delete(ref);
+      hydrationSettlementWaiters.remove(ref, waiter);
     },
   };
 }
@@ -1235,18 +1242,15 @@ function retireTrackedHydrationRegistration(ref: string): void {
 }
 
 function wakeHydrationSettlementWaiters(ref: string, settled: unknown): void {
-  const waiters = hydrationSettlementWaiters.get(ref);
+  const waiters = hydrationSettlementWaiters.take(ref);
   if (!waiters) return;
-  const remaining = new Set<HydrationSettlementWaiter>();
   for (const waiter of waiters) {
-    if (waiter.except === settled) {
-      remaining.add(waiter);
-      continue;
-    }
+    if (waiter.except === settled) continue;
     waiter.wake();
   }
-  if (remaining.size === 0) hydrationSettlementWaiters.delete(ref);
-  else hydrationSettlementWaiters.set(ref, remaining);
+  for (const waiter of waiters) {
+    if (waiter.except === settled) hydrationSettlementWaiters.add(ref, waiter);
+  }
 }
 
 // The identity a pending hydration accepts frames for. Both facts come from an
@@ -2972,12 +2976,11 @@ const inFlightResumes = new Map<string, ResumeDrive>();
 // ends. A resolver is not a store subscription: the only write that can end a
 // drain is markStopping's, so the waiters belong to that writer instead of
 // riding every unrelated store change for the drain's whole length.
-const drainWaiters = new Map<string, Set<() => void>>();
+const drainWaiters = new KeyedWaiters<string, () => void>();
 
 function settleDrainWaiters(ref: string): void {
-  const waiters = drainWaiters.get(ref);
+  const waiters = drainWaiters.take(ref);
   if (waiters === undefined) return;
-  drainWaiters.delete(ref);
   for (const resolve of waiters) resolve();
 }
 
@@ -2987,9 +2990,7 @@ function settleDrainWaiters(ref: string): void {
 function waitForStopDrain(ref: string): Promise<void> {
   if (!threadsStore.getState().stoppingRefs.has(ref)) return Promise.resolve();
   return new Promise((resolve) => {
-    const waiters = drainWaiters.get(ref);
-    if (waiters === undefined) drainWaiters.set(ref, new Set([resolve]));
-    else waiters.add(resolve);
+    drainWaiters.add(ref, resolve);
   });
 }
 
@@ -4423,6 +4424,21 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   // than at the next discovery scan. The discard paths carry the same
   // zero-included rule.
   notifyMutationPersistence([ref]);
+}
+
+// While the model serves a saved fallback, its live cursor names a different
+// projection: paging with it would be rejected as stale. The saved view pages
+// cursor-free from the oldest held row instead, and the live continuation is
+// left untouched for recovery.
+function savedFallbackPageParams(
+  model: ThreadModel | undefined,
+  ref: string,
+  before: ThreadItemPosition | undefined,
+): { ref: string; itemsView: "full"; itemLimit: number; before: ThreadItemPosition } | undefined {
+  if (model?.servingFacts?.servedFrom !== "saved-index" || model.servingFacts.fallbackReason === undefined)
+    return undefined;
+  if (before === undefined) return undefined;
+  return { ref, itemsView: "full", itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE, before };
 }
 
 function olderItemsParams(ref: string, cursor: string) {
@@ -8373,8 +8389,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     };
     if (!stillOwned()) return "discarded";
     let resp: ThreadTurnsListResponse;
+    let savedPageRequest: ReturnType<typeof savedFallbackPageParams>;
     try {
-      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+      savedPageRequest = savedFallbackPageParams(model, ref, capturedBefore);
+      resp = await client.request("thread/turns/list", savedPageRequest ?? olderItemsParams(ref, capturedCursor));
     } catch {
       return "unissued";
     }
@@ -8384,7 +8402,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ...nextTranscriptReadIdentity(),
       authority: capturedAuthority,
       ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
-      requestCursor: capturedCursor,
+      // Only a request that actually sent the cursor records it as consumed.
+      ...(savedPageRequest === undefined ? { requestCursor: capturedCursor } : {}),
     });
     if (accepted) {
       // A late reconciliation page can settle after its pane closed, while a
@@ -8530,8 +8549,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // first, and never manufacture a wire cursor from its local boundary.
       if (!capturedCursor) return;
       let resp: ThreadTurnsListResponse;
+      let savedPageRequest: ReturnType<typeof savedFallbackPageParams>;
       try {
-        resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+        savedPageRequest = savedFallbackPageParams(model, ref, capturedBefore);
+        resp = await client.request("thread/turns/list", savedPageRequest ?? olderItemsParams(ref, capturedCursor));
       } catch (error) {
         if (isStaleCursorError(error)) {
           const current = threadsStore.getState().threads.get(ref);
@@ -8578,7 +8599,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           ...nextTranscriptReadIdentity(),
           authority: capturedAuthority,
           ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
-          requestCursor: capturedCursor,
+          ...(savedPageRequest === undefined ? { requestCursor: capturedCursor } : {}),
         });
       }
       if (accepted) {

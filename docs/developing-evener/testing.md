@@ -178,6 +178,42 @@ never polls it against a deadline.
 Every flake family root-caused here (a vite-cache digest, an auth stopwatch, a
 composer projection refresh) was an awaitable completion nobody was awaiting.
 
+### Waiting in Go tests
+
+Pick the first of these that fits:
+
+1. **Await the completion.** Block on the channel, callback, process exit or
+   milestone pipe that says the work is done.
+2. **Run the test under `testing/synctest`** when everything it waits on lives
+   in the test process: goroutines, timers, tickers, in-memory pipes. Inside
+   the bubble the clock is fake, so a `time.Sleep` or a timeout costs nothing
+   and fires exactly, and `synctest.Wait` returns once every goroutine in the
+   bubble is blocked.
+3. **Poll with `internal/testwait`** when the test drives something a bubble
+   cannot hold: a real subprocess, a socket, a file another process writes.
+   `testwait.Until(t, "what you are waiting for", cond)` polls `cond` until it
+   holds. `testwait.UntilSeen` takes a check that also returns what it saw, so
+   a hang fails as "still waiting for X (last seen: Y)". Neither takes a
+   timeout argument: one shared 30s ceiling bounds every wait, about ten
+   times the 3s per-test ceiling the timing ratchet holds tests to, so only a
+   stall far beyond observed load reaches it and a broken wait fails within
+   30s. When the test binary's own deadline (`go test -timeout`) is nearer,
+   the helper gives up a few seconds before it, so the failure names the
+   condition instead of arriving as a goroutine dump. Do not write a package-local poll
+   loop or a helper with its own timeout; use this one. It lives in the root
+   module, so the root and `agent` modules can import it; `llm`, `auth` and
+   the other leaf modules cannot without a new module edge.
+
+Never use a fixed `time.Sleep` to wait for work to happen. `make lint`'s
+`test-sleeps-within-baseline` check (in `make lint-repo-audit`) counts the
+`time.Sleep` calls in tracked Go tests and fails when the count rises above
+`testSleepBaseline` in `internal/devtool/repoaudit/testsleeps.go`. When a
+change brings the count down, the check passes and prints a `NOTE` with the new
+count; set the constant to that number in the same change. The count leaves out every
+file that imports `testing/synctest`, since a sleep in a bubble is free, and
+files under `testdata`. It reads imports rather than following calls, so a
+sleep outside the bubble in a synctest file goes uncounted.
+
 ## Agent Tests Run in Parallel by Default
 
 A top-level Go test without `t.Parallel()` runs alone, one at a time, and a
@@ -590,6 +626,48 @@ run because another job runs it, and `ROOT_REST=0` skips the root `go test`
 itself: the CI race lanes use them to run the hub on one runner and the rest of
 the root module on another (scripts/lib/gate-root-shards.sh, `RACE_ROOT_PART`).
 
+The agent module's race run is split across runners too, through
+`<PREFIX>_SHARD_PART=k/m`: every runner packs the same shards and runs every
+m-th one, starting at shard k-1, so the parts together run each test once. A
+part needs `<PREFIX>_SHARD_NO_SURVEY=1`, because a survey is per-runner cache
+state and two runners packing from different surveys would run some tests
+twice and others never. `make test-race RACE_SCOPE=agent RACE_AGENT_PART=k/m`
+runs one part of the agent package's eight shards, and the last part also
+runs the module's unsharded subpackages, since equal-weight packing gives
+the lowest-numbered shards any remainder tests. CI's `race-modules / agent-1` and `agent-2`
+cells are the two parts; with `RACE_AGENT_PART` left at `all`, a local
+`make test-race` still runs the agent module as one `go test`.
+
+A shard runner applies a skip pattern with no `/` level itself, by leaving
+the matching tests out of the shards, and hands the shard binaries no
+`-test.skip`. Go's test binary caches one compiled pattern, so a binary given
+both a shard's thousand-name `-test.run` and a `-test.skip` recompiles the run
+pattern for every test and subtest, under a lock its parallel tests share.
+Under `-race` that made the agent shards two to three times slower. A skip that
+names a subtest level still reaches the binary and pays that cost.
+
+Every `scripts/gate/run-module-tests.sh` run (`make test`, `make test-race`)
+that reaches its module waves ends with a phase summary, green or red, because
+a green run deletes its module logs and CI keeps only this output. Each line is
+`TIME  <label>:<phase> <seconds>s`:
+
+- `gate:check-flags`, `gate:wave1`, `gate:wave2`: the flag validation and each
+  module wave's wall time.
+- `<label>:build`, `list`, `plan`, `shards`: a shard runner's (`agent`, `hub`,
+  `cli`) test-binary compile, test listing, survey and packing, and shard
+  phase. The `shards` line also lists each shard's own wall time as
+  `<shard>:<seconds>s`. The hub runner adds `hub:live-stack`, its prebuild of
+  `./cmd/evener`.
+- `agent:runner-build`, `agent:runner`: building the agent shard runner and its
+  whole run, so runner overhead outside the phases above shows as the
+  difference.
+- `agent:list-flags`, `agent:enumeration`, `agent:subpkgs`: the agent module's
+  package enumeration and its unsharded subpackages, compile included.
+  `root:list-flags` and `root:enumeration` time the root module's enumeration.
+
+Under bash 5 the gate's own phases are timed to the hundredth of a second; under
+macOS's bash 3.2 they are whole seconds, printed as `N.00s`.
+
 A sharded package runs under the same test timeout an unsharded one does. `go
 test` gives each package's test binary a ten-minute `-timeout` by default, but
 the shard runner builds the binary once with `go test -c` and runs it itself,
@@ -770,11 +848,21 @@ one file with `--maxWorkers=1` is fine. Workers are recycled at `vmMemoryLimit`
 A test that has to get past a real debounce or timer uses Vitest's fake timers
 rather than waiting it out, with two pieces of wiring so Testing Library keeps
 working: `vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime })`,
-because `waitFor` and `findBy*` only advance a faked clock when they find a
-`jest` global, and `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`,
-so typing delays advance it too. Fake only the timer functions (`toFake:
-["setTimeout", "clearTimeout", "setInterval", "clearInterval"]`);
-src/panes/spawn/Spawn.test.tsx is the worked example. To read a Tooltip from a
+because user-event's drain after each action, `waitFor` and `findBy*` wait on a
+`setTimeout` and only advance a faked one when they find a `jest` global, and
+`userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`, so typing delays
+advance it too. `useTestDrivenFakeTimers` (src/testing/fakeTimers.ts) installs
+the fake timers and that stub, and removes the stub when the test finishes.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`) unless the test pins `Date` with
+`vi.setSystemTime`, which needs the default set; src/panes/spawn/Spawn.test.tsx
+is the worked example. The fake clock moves only when the test moves it:
+advance it with `vi.advanceTimersByTimeAsync`, or `vi.runOnlyPendingTimersAsync`,
+and assert the state right after. Never pass `shouldAdvanceTime`, which lets the
+fake clock follow wall time and so makes a debounce or countdown fire earlier
+on a loaded host; `make lint-repo-audit`'s `fake-timers-no-wall-clock-drift`
+check fails on it anywhere tracked in the frontend, `appwire-client/typescript`
+and `mobile-native`, Vitest configs included. To read a Tooltip from a
 test that otherwise runs on real timers, use `hoverForTooltip`
 (src/widgets/tooltip/tooltipTestUtils.ts): it crosses the show delay on a fake
 clock scoped to the hover, so it needs none of that wiring, and it must be called
@@ -975,14 +1063,32 @@ Each changed path is one of four kinds:
 
 A package whose tests read the whole repository is reached by every change,
 because no name says which files they read. The classifier recognizes such a
-test by a `ls-files` literal or a `..` chain that climbs from its package to
-the repository root. The hub's and the agent module's tests both do, so
-the Go test lanes, `static-build` and `web-browser` (which runs the hub's
-tests) run for every change. The skips that remain are `native` and
-`api-package` on a Go-only change that no TypeScript names, `web-unit` too
-when that change also misses the dev binary the web gate runs on, and the
-Go lint lanes (`lint-golangci`, `lint-tagged`, `fuzz-checks`) on a
-TypeScript-only change.
+test file by two things together: it names the repository root, and it lists
+or walks a directory. A file names the root when it is in the root package (whose
+tests run at the root), when it names a `..` chain that climbs from its
+package to the root, or when it asks git for `--show-toplevel`; it lists or
+walks when it names `ls-files` or calls a `Walk` or `WalkDir`. A climb alone
+only says where the paths a test names start, so a test that builds
+`./cmd/evener` from the root depends on that command and nothing else, and a
+`..` handed to code as input names nothing. The rule is per file and does
+not follow what a walk starts from: a file that names the root and walks a
+temporary directory counts as a whole-tree read, which runs more lanes, and a
+root named in one file and walked by a helper in another is not seen, which
+the merge group's full run catches. A rule about the repository's own text
+belongs in `make lint-repo-audit` rather than in a test that walks the tree
+([linting.md](linting.md)).
+
+The root package's tests count as whole-tree reads (`TestInstallTarget`
+copies every tracked file), and so do the hub's tutorial tests, which name
+the root to build binaries and walk session state. The root module's lanes
+therefore run for every change; a change in the
+TypeScript trees reaches the hub anyway, which embeds the frontend. The agent
+and other modules' lanes run only for a change that reaches their packages,
+so a TypeScript-only change skips `race-module-shards` and `tests / nonroot`.
+`native` and `api-package` skip on a Go-only change that no TypeScript names,
+`web-unit` too when that change also misses the dev binary the web gate runs
+on, and the Go lint lanes (`lint-golangci`, `lint-tagged`, `fuzz-checks`)
+skip on a TypeScript-only change.
 
 Preview what a branch will skip, with the path that runs each lane:
 
@@ -1848,6 +1954,47 @@ Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, an
 it goes in the PR description beside the proof. A test folded into a table as
 a subtest appears in that diff as removed; name the subtest that replaces it.
 
+### Finding candidates and building the proof
+
+`go run ./cmd/evener-dev/bin dev test-redundancy` (run with no command for the
+full help) finds the candidates and produces that proof for one package. It
+builds the package's cover test binary, runs each named test alone with
+`-test.coverprofile`, and caches every profile by the binary's content, so a
+rerun on an unchanged package profiles nothing. The key is the binary alone:
+after changing testdata or the environment the tests read, pass a fresh
+`-cache`. Export `GOFLAGS=-trimpath` so worktrees share build-cache entries,
+and set `GOMAXPROCS` to bound the load.
+
+```sh
+export GOFLAGS=-trimpath
+dev="go run ./cmd/evener-dev/bin dev test-redundancy"
+$dev unique -pkg agent -tests batch.txt   # statements only each test reaches
+$dev pairs  -pkg agent -tests batch.txt   # duplicate pairs: containment, then assertions
+$dev cover  -pkg agent -o before.cov      # before the batch
+# ...delete or fold the tests...
+$dev cover  -pkg agent -o after.cov
+$dev mutate -pkg agent -spec mutations.json -o mutations.out.json
+$dev proof  -pkg agent -before before.cov -after after.cov -mutations mutations.out.json
+```
+
+- `unique` runs the package once without the named tests and reports, for each
+  one, the statements neither that run nor another named test reaches, and the
+  statements only other named tests also reach. Deleting every named test
+  loses both kinds, so a batch can delete all of its tests without lowering
+  coverage only when every row is zero in both columns.
+- `mutate` applies each seeded mutation alone, runs the tests its `run` pattern
+  selects, and restores the file with a file-scoped `git restore`. It refuses a
+  file git does not track or reports modified, which the restore could not put
+  back. A mutation the selected tests fail on is `caught`. One that does not
+  apply or build, selects no test or every test, or whose tests already fail
+  on the unmutated source is `invalid`, never caught.
+- `proof` prints the coverage table, every statement lost or gained, and the
+  mutation results as Markdown for the PR description. It exits 1 when the
+  batch lost more statements than `-noise` (default 4, the agent package's
+  run-to-run variation). Measure the band with two `cover` runs into separate
+  `-cache` directories, since a second run into the same cache returns the
+  first profile.
+
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
@@ -1865,7 +2012,7 @@ a subtest appears in that diff as removed; name the subtest that replaces it.
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-hub-integration, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; a named per-test ceiling breach is nonzero there, while an unnamed test over the flat ceiling only warns (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
-| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 (unless RACE_AGENT_PART splits it) and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus two agent parts and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). RACE_AGENT_PART (agent scope only) splits the agent module the same way: all (default, one unsharded go test) or k/m, which runs part k of m of 8 equally weighted agent shards, the module's subpackages riding with the last part. | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test CPU time, with a wall-time backstop, against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in CPU budget, warn at 1.1x, fail at 2.5x the wall budget (a package slowed by waiting), plus a per-test ceiling: a test named in the map is compared strictly against its ceiling (a breach is nonzero under CHECK=1 in a CI-shaped environment), while a test named nowhere keeps the flat perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so the unnamed backlog cannot red the gate (#4601). The checked-in budget carries the package-cpu-seconds metric marker, so per-package ratios are enforced; the frontend "web" row, which has no CPU measurement, keeps 1.5x/1.1x of its wall budget. A budget file without the marker downgrades every ratio failure to a warning. | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, a go list package with no terminal event in the stream, or a Go package that ran tests with no CPU row — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its CPU budget or 2.5x its wall budget is nonzero once the budget file carries the CPU metric marker; while the marker is absent those ratios warn, the "web" row among them. A named per-test ceiling breach is nonzero under CHECK=1; a test named nowhere that is over the flat ceiling is reported but nonzero in no mode. A missing budget file, or one whose packages and wallPackages maps are both empty, always exits zero; a malformed budget file (a top-level value that is not an object, invalid JSON, a packages or wallPackages value that is present but not an object, a package budget value that is not a finite number, a perTestCeilingSeconds that is present but not a finite number, a perTestCeiling that is present but not an object, or a per-test ceiling that is not a finite, float-convertible number including an integer too large to convert) is a broken config and is nonzero in every mode, naming the file and the entry (#4609, #4614, #4618, #4622, #4629). |
 

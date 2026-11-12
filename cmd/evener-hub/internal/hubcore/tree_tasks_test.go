@@ -26,7 +26,7 @@ func fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow(t *testing.T) {
 		{ID: "01UNPLANNED", CreatedAt: now, UpdatedAt: now, EnvInfo: workingDir},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01PLANNED", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01HELPER"}, Tasks: progress("Fix the settle/drain race")},
+		{PID: 1, SessionID: "01PLANNED", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, RunningSubagentIDs: []string{"01HELPER"}, Tasks: progress("Fix the settle/drain race")},
 		{PID: 2, SessionID: "01UNINDEXED", Status: appwire.ThreadStatusActive, Tasks: progress("Land the fix")},
 		{PID: 3, SessionID: "01UNPLANNED", Status: appwire.ThreadStatusActive},
 	}

@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { createConsumerDir } from "./consumer-fixture.mjs";
 import { consumerPackageUsage, entrySurface } from "./consumer-value-imports.mjs";
 import { reachableModules } from "./declaration-reachability.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
+const consumerDir = createConsumerDir();
 const run = (command, args, cwd) =>
   execFileSync(command, args, {
     cwd,
@@ -75,6 +75,13 @@ async function qualify() {
   // each module actually evaluates and runs inside a bare Node consumer.
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.deepEqual(client.mergeTurnHistory([], []).turns, []);
+assert.equal(client.historyFallback({ servedFrom: "saved-index", fallbackReason: "live-read-failed" }), true);
+assert.equal(client.historyFallback({ servedFrom: "live-daemon" }), false);
+assert.equal(client.historyReplacesWindow({ servedFrom: "saved-index", authoritative: false }), true);
+assert.equal(client.historyReplacesWindow({ servedFrom: "live-daemon", authoritative: false }), true);
+assert.equal(client.historyReplacesWindow({ servedFrom: "saved-index", fallbackReason: "live-read-failed", authoritative: true }), false);
+assert.equal(client.historyReplacesWindow({ authoritative: true }), true);
+assert.equal(client.historyReplacesWindow({ authoritative: false }), false);
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 const askItem = {
@@ -239,7 +246,7 @@ assert.equal(client.canWriteSharedNotes(undefined), false);
 assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
 assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
-assert.equal(client.humanizeState("awaiting", false), "needs you");
+assert.equal(client.humanizeState("awaiting", false), "idle");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.deepEqual(client.decodeActivityRead({ sessions: [{ ref: "local:a", minutes: [0, 1], runningSubagents: 0, quietForMs: 200000 }] }).map((session) => session.ref), ["local:a"]);
 assert.equal(client.quietState({ ref: "local:a", minutes: [0], runningSubagents: 0, quietForMs: 200000 }, 0).state, "quiet");
@@ -478,9 +485,25 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
       // A typed construction for the specifiers that offer one, so the
       // declaration checks prove more than that the names resolve.
       esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+import { historyReplacesWindow as replacesHistoryWindow } from "@evener/appwire-client";
+const servingFacts: HistoryServingFacts = { servedFrom: "saved-index" };
+const replacesWindow: boolean = replacesHistoryWindow(servingFacts); void replacesWindow;
 const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
-      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
+      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
+const servingFacts: client.HistoryServingFacts = { servedFrom: "saved-index" };
+const replacesWindow: boolean = client.historyReplacesWindow(servingFacts); void replacesWindow;`,
       smoke: rootSmokeCalls,
+    },
+    // The one color palette both apps render, and the OKLab mix their tints
+    // derive with.
+    "./palette": {
+      esmTypeUses: `const light: ThemePalette = palettes.light;
+const ink: string = light["ink-hi"];
+const mixed: string = mix("#000000", "#FFFFFF", 0.5); void ink; void mixed;`,
+      cjsTypeUses: `const mixed: string = client.mix("#000000", "#FFFFFF", 0.5);
+const ink: string = client.palettes.light["ink-hi"]; void ink; void mixed;`,
+      smoke: `assert.equal(client.mix("#000000", "#FFFFFF", 0.5), "#636363");
+assert.equal(client.palettes.light["surface-0"], "#F6F7F9");`,
     },
     // The doc-pane data layer, published as its own specifier because
     // readDocFile is not a root export: it needs a fetch, and a consumer that

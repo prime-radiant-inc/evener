@@ -2,56 +2,56 @@
 name: Evener Native
 description: "The native iPhone app: the Board orders live sessions by who needs you, and the Session is one conversation with its agent."
 colors:
-  light-background: "#FFFFFF"
-  light-surface: "#EDEDF2"
-  light-text: "#1C1C1E"
-  light-secondary: "#55555E"
-  light-border: "#D8D8DF"
-  light-accent: "#0064C2"
+  light-background: "#F6F7F9"
+  light-surface: "#F2F4F7"
+  light-text: "#1A1D23"
+  light-secondary: "#555B66"
+  light-border: "#D5D9E0"
+  light-accent: "#005FBA"
   light-accent-fill: "#0070E0"
-  light-error: "#C51D23"
+  light-error: "#BD1B21"
   light-raised: "#FFFFFF"
-  light-canvas: "#F2F2F7"
+  light-canvas: "#EEF0F3"
   light-attention-ink: "#9C4908"
-  light-quiet-ink: "#62626D"
+  light-quiet-ink: "#5C626D"
   light-prose: "#1C1C1E"
-  light-pressed: "#E5E5EA"
-  light-strong-border: "#B8B8C1"
+  light-pressed: "#DCDEE3"
+  light-strong-border: "#A7AEBA"
   light-on-fill: "#FFFFFF"
   light-attention: "#F59E0B"
   light-attention-bg: "#FFF1E2"
-  light-attention-edge: "#E6C3A0"
+  light-attention-edge: "#E4C4A1"
   light-alive: "#189A4D"
-  light-alive-ink: "#12763B"
+  light-alive-ink: "#0F6E36"
   light-danger: "#E3474C"
   light-accent-mark: "#0285FF"
   light-accent-bg: "#DFEEFF"
-  light-accent-edge: "#94BAEF"
-  dark-background: "#111113"
-  dark-surface: "#252528"
-  dark-text: "#F5F5F7"
-  dark-secondary: "#B8B8C1"
-  dark-border: "#38383D"
+  light-accent-edge: "#92BBF0"
+  dark-background: "#111214"
+  dark-surface: "#191C21"
+  dark-text: "#F1F3F6"
+  dark-secondary: "#B2B7C0"
+  dark-border: "#333842"
   dark-accent: "#459EFF"
   dark-accent-fill: "#0070E0"
   dark-error: "#F17478"
-  dark-raised: "#1C1C1E"
-  dark-canvas: "#08080A"
+  dark-raised: "#1D2025"
+  dark-canvas: "#16181C"
   dark-attention-ink: "#F68F3C"
-  dark-quiet-ink: "#A5A5B0"
+  dark-quiet-ink: "#9AA1AC"
   dark-prose: "#E3E3E8"
   dark-pressed: "#303034"
-  dark-strong-border: "#56565F"
+  dark-strong-border: "#4C535F"
   dark-on-fill: "#FFFFFF"
   dark-attention: "#F68F3C"
-  dark-attention-bg: "#382C26"
-  dark-attention-edge: "#805B45"
+  dark-attention-bg: "#3A302C"
+  dark-attention-edge: "#7D5B49"
   dark-alive: "#3DBB72"
   dark-alive-ink: "#3DBB72"
   dark-danger: "#EE5C61"
   dark-accent-mark: "#3D9AFF"
-  dark-accent-bg: "#232D3B"
-  dark-accent-edge: "#405E86"
+  dark-accent-bg: "#243141"
+  dark-accent-edge: "#3C5E89"
 typography:
   your-message:
     fontFamily: "Source Serif 4, Georgia, serif"
@@ -194,16 +194,16 @@ A row opens the Session, one conversation with its agent, recorded in "The Sessi
 
 ## Colors
 
-The implementation follows the phone’s appearance unless Display selects Light or Dark. `src/design/tokens.ts` owns the native palette; the frontmatter records its values. Shared web/native identity means the same semantic roles, not identical surface hex values. `useColors()` in `src/ui.tsx` retains compatibility aliases: its `surface` is `palette.inset`, and its `accent` is `palette.accentInk`; the guide’s `raised` tokens are `palette.surface`.
+The implementation follows the phone’s appearance unless Display selects Light or Dark. `@evener/appwire-client/palette` is the one palette the web and the phone render, and owns the one OKLab mix the tints are derived with. `src/design/tokens.ts` aliases its roles onto the phone’s surface vocabulary; the frontmatter records the resulting values. The platform surfaces (page, grouped canvas, raised surface, inset field, pressed wash) take the shared values rather than a second transcription of iOS system colors. The pressed wash is the shared pressed/selected ground (`hover-2`); its light value and the light ink companions are tuned together so every ink clears 4.5:1 on it and the wash stays visibly distinct from the page. Only the reading ink and the filled-action pair are native-only roles. `useColors()` in `src/ui.tsx` retains compatibility aliases: its `surface` is `palette.inset`, and its `accent` is `palette.accentInk`; the guide’s `raised` tokens are `palette.surface`.
 
 ### Primary
 - **Accent ink:** Links, actions and checks. Accent-fill with on-fill text is the primary button pair; the brighter accent mark identifies interactive or unread state.
 
 ### Neutral
-- **Page:** White in light appearance, near-black in dark; the reading and Board ground.
+- **Page:** Near-white in light appearance, near-black in dark; the reading and Board ground.
 - **Inset surface:** A neutral gray well for fields and compact controls, distinct from the grouped canvas.
 - **Raised surface:** White in light appearance and charcoal in dark; grouped rows, the composer and ask dock.
-- **Grouped canvas:** Pale gray in light appearance and the darkest neutral in dark; behind sheet groups and their headers.
+- **Grouped canvas:** Pale gray in light appearance and one step above the page in dark; behind sheet groups and their headers.
 - **Primary, secondary and quiet ink:** Content, supporting explanations, then metadata. Long-form prose has its own softer dark ink.
 - **Edges and pressed surface:** Sparse separators, stronger field/ghost outlines, and a neutral pressed state; not decoration.
 
@@ -211,7 +211,7 @@ The implementation follows the phone’s appearance unless Display selects Light
 - **Attention:** Amber marks a need for the person. Attention ink carries state words, offline hosts and expired sign-in; attention-bg and attention-edge tint the surfaces that need them.
 - **Alive:** Green marks real work, including the activity meter; it is not the switch tint.
 - **Danger:** Red marks failure and destructive action; danger ink is the readable text variant.
-- **Accent tint:** Blue selection and message backgrounds come from the native palette’s OKLab mix, not a web color copied by hand. Semantic backgrounds mix the hue at 15% over the native raised surface; semantic edges mix it at 40% over the native edge.
+- **Accent tint:** Blue selection and message backgrounds come from the shared OKLab mix in `@evener/appwire-client/palette`, the same computation the web’s `color-mix()` uses. Semantic backgrounds mix the hue at 15% over the shared raised surface; semantic edges mix it at 40% over the shared edge.
 
 ### Named Rules
 **The Quiet Idle Rule.** Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.
@@ -414,7 +414,7 @@ The Session is one conversation, what the agent is doing now, and the place you 
 
 ## The Sheets: New session and the Hub
 
-New session sets up and starts a session; the Hub looks after the hub and this phone. Their interaction foundation is `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, sections 11, 12 and 14. Both use the shared native palette, type and grouped controls; what follows is what they add.
+New session sets up and starts a session; the Hub looks after the hub and this phone. Their interaction foundation is `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, sections 11, 12 and 14. Both use the shared palette, type and grouped controls; what follows is what they add.
 
 **Key Characteristics:**
 - Each is a full-height page sheet (a `presentation: "modal"` route) holding its own native stack, so pickers and detail pages push inside it with a Back to where you were. Swiping the sheet down closes it.

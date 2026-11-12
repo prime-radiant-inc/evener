@@ -30,6 +30,9 @@ type Client struct {
 	sessionTools *clientSessionTools
 	transport    Transport
 	nextID       atomic.Int64
+	// Concurrent initial reads may each probe. The first typed method-not-found
+	// caches legacy mode for later calls on this connection.
+	historyUnsupported atomic.Bool
 	// sendSlot is the client's single frame-write slot: a one-token channel
 	// semaphore taken before transport.Send and released after it returns, so
 	// exactly one goroutine is ever inside Send. A channel rather than a mutex
@@ -424,6 +427,22 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 }
 
 func (c *Client) Request(ctx context.Context, method string, params any, out any) error {
+	if HistoryServingFactsRequested(ctx) {
+		switch response := out.(type) {
+		case *ThreadReadResponse:
+			if p, ok := params.(ThreadReadParams); ok && method == MethodThreadRead {
+				v, err := c.ThreadRead(ctx, p)
+				*response = v
+				return err
+			}
+		case *ThreadTurnsListResponse:
+			if p, ok := params.(ThreadTurnsListParams); ok && method == MethodThreadTurnsList {
+				v, err := c.ThreadTurnsList(ctx, p)
+				*response = v
+				return err
+			}
+		}
+	}
 	return c.request(ctx, method, params, out)
 }
 
@@ -557,6 +576,10 @@ func (c *Client) ThreadList(ctx context.Context, params ThreadListParams) (Threa
 }
 
 func (c *Client) ThreadRead(ctx context.Context, params ThreadReadParams) (ThreadReadResponse, error) {
+	if HistoryServingFactsRequested(ctx) {
+		out, err := c.ThreadHistoryRead(ctx, params)
+		return out.Internal(), err
+	}
 	var out ThreadReadResponse
 	err := c.request(ctx, MethodThreadRead, params, &out)
 	return out, err
@@ -569,6 +592,10 @@ func (c *Client) ThreadUnsubscribe(ctx context.Context, params ThreadUnsubscribe
 }
 
 func (c *Client) ThreadTurnsList(ctx context.Context, params ThreadTurnsListParams) (ThreadTurnsListResponse, error) {
+	if HistoryServingFactsRequested(ctx) {
+		out, err := c.ThreadHistoryTurnsList(ctx, params)
+		return out.Internal(), err
+	}
 	var out ThreadTurnsListResponse
 	err := c.request(ctx, MethodThreadTurnsList, params, &out)
 	return out, err

@@ -13,10 +13,9 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// SessionLogStrategy combines compact layers 1+2 (observation masking and
-// thinking clearing) with a session-log-based checkpoint (replacing the
-// deterministic layer 3), LLM summarization fallback (layer 4), and forked
-// summarization in AfterAction.
+// SessionLogStrategy folds history into a session-log-based checkpoint (in
+// place of the deterministic one), falls back to LLM summarization, and forks
+// a summarization in AfterAction.
 type SessionLogStrategy struct {
 	cm      *Manager
 	session Host
@@ -46,10 +45,8 @@ func (s *SessionLogStrategy) Name() string { return "session-log" }
 func (s *SessionLogStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // ManageContext applies compaction layers selectively:
-//   - Layer 1: observation masking
-//   - Layer 2: thinking clearing
-//   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
-//   - Layer 4: LLM summarization fallback
+//   - Layer 1: session-log checkpoint instead of deterministic checkpoint
+//   - Layer 2: LLM summarization fallback
 func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
@@ -70,46 +67,24 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := estimatePressure()
-	// Captured before any layer invalidates the measurement: the tripwire
-	// (issue #4564) forces the checkpoint layer below whatever the pressure
-	// estimate says. It carries the profile it was captured under and governs
-	// only while that profile is still the gate's assumption
-	// (assumptionStillGoverns).
-	tripwire := s.cm.unknownWindowTripwireFires(prof)
-	tripwireProf := prof
+	// Window-independent tripwire (issue #4564): force at least checkpoint
+	// pressure when it fires; see unknownWindowTripwireFires.
+	if s.cm.unknownWindowTripwireFires(prof) && p < s.cm.CheckpointThreshold {
+		p = s.cm.CheckpointThreshold
+	}
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
 	// between-layer pressure() calls use char/4 (reflects in-place mutations).
-	if p >= s.cm.ObservationMaskThreshold {
+	if p >= s.cm.CheckpointThreshold {
 		s.cm.resetMeasurement()
 	}
 
-	// Layer 1: Observation masking.
-	if p >= s.cm.ObservationMaskThreshold {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "observation_mask", "", func(h []schema.Turn) ([]schema.Turn, error) {
-			maskObservations(h, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-	}
-
-	// Layer 2: Thinking clearing.
-	if p >= s.cm.ThinkingClearThreshold {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "thinking_clear", "", func(h []schema.Turn) ([]schema.Turn, error) {
-			clearThinking(h, s.cm.PreserveRecentTurns)
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-	}
-
-	// Layer 3 (replaced): Session-log checkpoint. checkpointed is what this
+	// Layer 1: Session-log checkpoint. checkpointed is what this
 	// pass's checkpoint folded, which a summary completing the same fold reads
 	// the partner's messages from.
 	var checkpointed []schema.Turn
-	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
+	if p >= s.cm.CheckpointThreshold {
 		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
 			var folded []schema.Turn
 			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
@@ -120,7 +95,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		p, prof = estimatePressure()
 	}
 
-	// Layer 4: LLM summarization fallback.
+	// Layer 2: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)

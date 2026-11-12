@@ -272,17 +272,6 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
-	// The failure the fixture injects must reach the hub's diagnostic sink, and
-	// nothing else may be written to that sink. These are the completed
-	// lifecycle stages that report an error for each fault; "request" repeats
-	// the outcome of the fault that refuses the resume.
-	wantErrorStages := map[string][]string{
-		"status":    {},
-		"listing":   {"post_launch_discovery"},
-		"confirmed": {"post_launch_discovery"},
-		"read":      {"daemon_read", "request"},
-		"identity":  {"daemon_read", "request"},
-	}
 	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
 		t.Run(fault, func(t *testing.T) {
 			capture := captureHubDiagnostics(t)
@@ -339,14 +328,6 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			if spawns != 1 {
 				t.Fatalf("spawns=%d", spawns)
 			}
-			checkDiagnostics := func() {
-				t.Helper()
-				records, other := capture.lifecycleDiagnostics(t)
-				if len(other) != 0 {
-					t.Fatalf("unexpected diagnostic lines: %q", other)
-				}
-				requireErrorStages(t, records, wantErrorStages[fault])
-			}
 			if fault == "status" && lists == 0 {
 				t.Fatal("injected status probe fault did not run")
 			}
@@ -357,7 +338,11 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 				if reads == 0 {
 					t.Fatal("injected owner read fault did not run")
 				}
-				checkDiagnostics()
+				for _, line := range capture.recorded() {
+					if strings.HasPrefix(line, "[hub] lifecycle ") {
+						t.Fatalf("explicit resume still emits the removed lifecycle diagnostic stream: %q", line)
+					}
+				}
 				return
 			}
 			if fault == "listing" || fault == "confirmed" {
@@ -371,6 +356,11 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			if response.Thread.ID != sessionID || !roster.HasConfirmedEntry(entry) {
 				t.Fatalf("resume did not publish owner: %+v", response.Thread)
 			}
+			for _, line := range capture.recorded() {
+				if strings.HasPrefix(line, "[hub] lifecycle ") {
+					t.Fatalf("explicit resume still emits the removed lifecycle diagnostic stream: %q", line)
+				}
+			}
 			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID}); err != nil {
 				t.Fatal(err)
 			}
@@ -378,7 +368,6 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			if err != nil || turn.Turn.ID != "delivered" {
 				t.Fatalf("followup=%+v error=%v", turn, err)
 			}
-			checkDiagnostics()
 		})
 	}
 }

@@ -8,7 +8,6 @@ import {
   refreshArchivedList,
   useArchivedLists,
 } from "../../stores/archivedList";
-import { useConnectionStore } from "../../stores/connection";
 import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
@@ -98,9 +97,9 @@ import { useRailReveal } from "./useRailReveal";
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
+  identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
-  brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -483,7 +482,6 @@ function NavigationRail({
   const displaySources = useNavigationStore(selectDisplaySources);
   const hostGrouping = displaySources.some((source) => source.id !== LOCAL_HOST);
   const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
-  const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
   // The session the workspace is showing, if any, marks its row as the selected
   // item. One subscription here, not one inside every section's Tree: a rail
@@ -1003,45 +1001,48 @@ function NavigationRail({
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
       <div className={CLASS.header}>
-        <span className={CLASS.wordmark}>evener</span>
-        <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "hub"}</span>
-          <IconButton
-            data-testid="rail-settings"
-            label="Settings"
-            icon={<GearIcon />}
-            variant="quiet"
-            size="md"
-            onClick={() => navigate("/settings")}
-          />
-          <Tooltip label="Search sessions and commands">
+        <div className={CLASS.identity}>
+          <div data-testid="rail-brand" className={CLASS.brand}>
+            <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+              evener
+            </span>
             <IconButton
-              data-testid="rail-search"
-              data-search-trigger="true"
-              label="Search"
-              icon={<SearchIcon />}
+              data-testid="rail-settings"
+              label="Settings"
+              icon={<GearIcon />}
               variant="quiet"
               size="md"
+              onClick={() => navigate("/settings")}
             />
-          </Tooltip>
-          {onHide && (
-            <IconButton
-              data-rail-toggle=""
-              label="Hide sidebar"
-              icon={<SidebarIcon />}
-              variant="quiet"
-              size="md"
-              onClick={onHide}
-            />
+            <Tooltip label="Search sessions and commands">
+              <IconButton
+                data-testid="rail-search"
+                data-search-trigger="true"
+                label="Search"
+                icon={<SearchIcon />}
+                variant="quiet"
+                size="md"
+              />
+            </Tooltip>
+            {onHide && (
+              <IconButton
+                data-rail-toggle=""
+                label="Hide sidebar"
+                icon={<SidebarIcon />}
+                variant="quiet"
+                size="md"
+                onClick={onHide}
+              />
+            )}
+          </div>
+          {needsYou > 0 && (
+            <span className={CLASS.needsYou} data-testid="rail-needs-you">
+              <Chip tone="attention" kind="needs-you">
+                {needsYou} needs you
+              </Chip>
+            </span>
           )}
         </div>
-        {needsYou > 0 && (
-          <span className={CLASS.needsYou} data-testid="rail-needs-you">
-            <Chip tone="attention" kind="needs-you">
-              {needsYou} needs you
-            </Chip>
-          </span>
-        )}
         <div className={CLASS.newSession}>
           <Button variant="secondary" onClick={() => navigate("/new")}>
             + New session

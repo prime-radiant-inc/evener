@@ -593,6 +593,8 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/thread/activity/read":             false,
 		"evener/thread/delegates/list":            false,
 		"evener/thread/forceStop":                 false,
+		"evener/thread/history/read":              false,
+		"evener/thread/history/turns/list":        false,
 		"evener/thread/jobs/list":                 false,
 		"evener/thread/name/set":                  false,
 		"evener/thread/transcripts/list":          false,

@@ -80,11 +80,14 @@ const VARIANT_CLASS: Record<ListRowVariant, string> = {
  * trailing `action`. Wrapping rows in <ul>/<li> and spacing them is the
  * caller's layout.
  *
- * Forwards its ref to the root (the whole-row button when interactive
- * without `trailingAction`, the split container with it - a sheet that
- * restores focus to the row that opened it needs it) and spreads other
- * native attributes onto it, before its own type/className/onClick/disabled
- * so those stay the widget's, the same merge order as Button.
+ * Forwards its ref to the row's focusable control when it has one - the
+ * whole-row button, or the split row's main button - because that is what a
+ * sheet restoring focus to the row that opened it must focus; a read-only row
+ * has no such control, so its ref names the container. Other native
+ * attributes spread onto the root, before its own type/className/onClick/
+ * disabled so those stay the widget's, the same merge order as Button; the
+ * ARIA that names, describes, refuses or relates the interaction rides the
+ * control that owns it, not the roleless container around it.
  */
 export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
   { label, leading, chips, meta, variant = "collection", onSelect, disabled, action, trailingAction, ...rest },
@@ -96,7 +99,10 @@ export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
     CLASS.row,
     VARIANT_CLASS[variant],
     leading !== undefined && !split ? CLASS.withLeading : "",
-    interactive ? CLASS.interactive : "",
+    // A split row's interaction belongs to its main button; the container
+    // must not wear .interactive, or its own hover/disabled styling would
+    // contradict the button's refusal state.
+    interactive && !split ? CLASS.interactive : "",
     split ? CLASS.split : "",
   ]
     .filter(Boolean)
@@ -119,12 +125,39 @@ export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
       // Invariant: the container is never a button and carries no click
       // handler - the main area owns the row's onSelect, so the trailing
       // control swallows its own clicks and never selects the row.
+      // Expansion state belongs on that main button (the opener), not the
+      // container: assistive tech announces it from the control that toggles.
+      // Every ARIA attribute that names, describes, refuses or relates the
+      // interaction rides the control that owns it; the container only
+      // carries the remaining native attributes.
+      const {
+        "aria-disabled": ariaDisabled,
+        "aria-label": ariaLabel,
+        "aria-labelledby": ariaLabelledby,
+        "aria-describedby": ariaDescribedby,
+        "aria-description": ariaDescription,
+        "aria-expanded": ariaExpanded,
+        "aria-controls": ariaControls,
+        "aria-haspopup": ariaHaspopup,
+        "aria-current": ariaCurrent,
+        ...containerRest
+      } = rest;
       return (
-        <div ref={ref as Ref<HTMLDivElement>} {...rest} className={className}>
+        <div {...containerRest} className={className}>
           <button
+            ref={ref as Ref<HTMLButtonElement>}
             type="button"
             className={mainClassName}
-            onClick={isAriaRefusal(rest["aria-disabled"]) ? refuseClick : onSelect}
+            aria-label={ariaLabel}
+            aria-labelledby={ariaLabelledby}
+            aria-describedby={ariaDescribedby}
+            aria-description={ariaDescription}
+            aria-disabled={ariaDisabled}
+            aria-expanded={ariaExpanded}
+            aria-controls={ariaControls}
+            aria-haspopup={ariaHaspopup}
+            aria-current={ariaCurrent}
+            onClick={isAriaRefusal(ariaDisabled) ? refuseClick : onSelect}
             disabled={disabled}
           >
             {content}

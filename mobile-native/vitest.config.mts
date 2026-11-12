@@ -27,6 +27,9 @@ export default defineConfig({
 		// `<key>/<subpath>`, so the specific entries have to come first or the
 		// root entry swallows them.
 		alias: {
+			"@evener/appwire-client/palette": fileURLToPath(
+				new URL("../appwire-client/typescript/palette.ts", import.meta.url),
+			),
 			"@evener/appwire-client/hubOrigin": fileURLToPath(
 				new URL("../appwire-client/typescript/hubOrigin.ts", import.meta.url),
 			),

@@ -13,7 +13,7 @@ import (
 // source is touched, and default an unset scope to the session.
 func TestSessionActivityListEntryPointsShareRequestContract(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir()}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}))
 	ref := encodeRef("", s.ID())
 	stateDir := t.TempDir()
 

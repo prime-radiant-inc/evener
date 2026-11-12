@@ -21,7 +21,6 @@ export {
   isActivityFailure,
   isFailedDelegateOutcome,
   isFailedJobOutcome,
-  isTurnContainer,
   jobCommandLabel,
   jobStatusDisplay,
   parseActivityJob,
@@ -290,6 +289,8 @@ export {
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
+export type { HistoryServingFacts } from "./historyServing";
+export { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 export type {
   EditableHostField,
   HostMutationPair,
@@ -866,6 +867,7 @@ export {
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
+  mergeSavedViewPage,
   mergeTailTurns,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,

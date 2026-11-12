@@ -3,6 +3,7 @@ import type {
   CachedSessionItem,
   CachedSessionRecord,
   HistoryUpdatedParams,
+  ThreadHistoryReadResponse,
   ThreadItem,
 } from "@evener/appwire-client";
 import {
@@ -176,6 +177,142 @@ function unrelatedOverlay(client: FakeClient): void {
   });
   expect(threadsStore.getState().threads.get("local:a")?.overlay?.unrelated).toBeDefined();
 }
+
+it.each(["stale-snapshot-retry", "distinct-saved-incarnation"] as const)(
+  "saved fallback preserves the live browser history through %s",
+  async (scenario) => {
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const ref = "local:a";
+    const live: ThreadHistoryReadResponse = response(ref, [turn("live-window", 30)]);
+    live.servedFrom = "live-daemon";
+    live.authoritative = true;
+    live.snapshot = { incarnation: "inc-a", length: 40 };
+    live.olderCursor = "live-older";
+    const client = connect(live);
+    let pages = 0;
+    client.on("thread/turns/list", (params) => {
+      expect(params.cursor).toBe("live-older");
+      pages++;
+      return {
+        data: [turn("live-older-page", 10)],
+        nextCursor: "live-oldest",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: live.snapshot,
+        servedFrom: "live-daemon",
+      };
+    });
+    try {
+      await threadsStore.getState().ensureThread(ref);
+      await threadsStore.getState().loadOlderTurns(ref);
+      emitHistoryUpdated(client, {
+        snapshot: { incarnation: "inc-a", length: 41 },
+        items: turn("live-newer", 40).items,
+      });
+      await settleEntryTranscriptForTests(ref);
+      const model = () => threadsStore.getState().threads.get(ref)!;
+      const keys = () => model().turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey));
+      expect(pages).toBe(1);
+      expect(keys()).toEqual(["live-older-page", "live-window", "live-newer"]);
+      const heldHistory = model().history!;
+      const heldCursor = model().olderCursor;
+      const repository = productionEntryTranscriptForTests(ref).repository;
+      const fallback: ThreadHistoryReadResponse = response(ref, [turn("saved-window", 30)]);
+      fallback.servedFrom = "saved-index";
+      fallback.fallbackReason = "live-read-failed";
+      fallback.authoritative = false;
+      fallback.bootGeneration = "99";
+      fallback.epoch = 99;
+      fallback.snapshot = {
+        incarnation: scenario === "distinct-saved-incarnation" ? "saved-inc" : "inc-a",
+        length: 31,
+      };
+      fallback.olderCursor = "saved-older";
+      fallback.thread.evener.capabilities.send = false;
+      const attempts: boolean[] = [];
+      client.on("thread/read", (params) => {
+        const held = params.heldSnapshot !== undefined;
+        attempts.push(held);
+        if (scenario === "stale-snapshot-retry" && held)
+          throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+        return { ...fallback, requestGeneration: params.requestGeneration };
+      });
+      await threadsStore.getState().refreshThread(ref);
+      await settleEntryTranscriptForTests(ref);
+      // The transport retry and accepted fallback's controls establish the trigger
+      // before the retained-content assertions can report the regression.
+      expect(attempts).toEqual(scenario === "stale-snapshot-retry" ? [true, false] : [true]);
+      expect(model().servingFacts).toMatchObject({ servedFrom: "saved-index", fallbackReason: "live-read-failed" });
+      expect(model().capabilities.send).toBe(false);
+      expect(keys()).toEqual(["live-older-page", "live-window", "saved-window", "live-newer"]);
+      expect(model().history).toMatchObject({
+        bootGeneration: heldHistory.bootGeneration,
+        epoch: heldHistory.epoch,
+        incarnation: heldHistory.incarnation,
+        length: heldHistory.length,
+      });
+      expect(model().olderCursor).toBe(heldCursor);
+      expect(productionEntryTranscriptForTests(ref).repository).toBe(repository);
+      emitHistoryUpdated(client, {
+        snapshot: { incarnation: "inc-a", length: 42 },
+        items: turn("live-after-fallback", 41).items,
+      });
+      client.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId: "thread-a",
+          item: {
+            key: "after-fallback",
+            kind: "notice",
+            anchor: { entry: 42, item: 0 },
+            turnId: "live-after-fallback",
+            item: { id: "overlay-after-fallback", type: "agentMessage", text: "overlay-start" },
+          },
+        },
+      });
+      client.emitNotification({
+        method: "overlay/delta",
+        params: { ref, threadId: "thread-a", key: "after-fallback", field: "text", delta: "-end" },
+      });
+      await settleEntryTranscriptForTests(ref);
+      expect(keys()).toContain("live-after-fallback");
+      expect(model().overlay?.["after-fallback"]?.item.text).toBe("overlay-start-end");
+    } finally {
+      await threadsStore.getState().releaseThreadAndWait(ref);
+    }
+  },
+);
+
+it.each(
+  (["saved", "live", "legacy"] as const).flatMap((source) =>
+    (["incarnation", "session"] as const).map((changed) => ({ source, changed })),
+  ),
+)("nonfallback $source refresh replaces a changed $changed browser history", async ({ source, changed }) => {
+  setProductionEntryCacheForTests(cache());
+  const ref = "local:a";
+  const client = connect();
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    const previous = productionEntryTranscriptForTests(ref).repository;
+    const fresh: ThreadHistoryReadResponse = response(ref, [turn("replacement-only", 2)]);
+    fresh.snapshot = { incarnation: changed === "incarnation" ? "replacement-inc" : "inc-a", length: 3 };
+    if (changed === "session") fresh.thread.sessionId = "replacement-session";
+    if (source !== "legacy") fresh.servedFrom = source === "saved" ? "saved-index" : "live-daemon";
+    fresh.authoritative = false;
+    client.on("thread/read", (params) => ({ ...fresh, requestGeneration: params.requestGeneration }));
+    await threadsStore.getState().refreshThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    const model = threadsStore.getState().threads.get(ref)!;
+    expect(model.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey))).toEqual(["replacement-only"]);
+    expect(model.history?.incarnation).toBe(fresh.snapshot.incarnation);
+    expect(productionEntryTranscriptForTests(ref).repository).not.toBe(previous);
+  } finally {
+    await threadsStore.getState().releaseThreadAndWait(ref);
+  }
+});
 
 it.each([false, true])("response ownership preserves goal after overlay, newer notification=%s", async (newer) => {
   const client = connect();
@@ -2654,19 +2791,60 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
   withheldWindowReads = misses;
   // The acquisition's own openings miss at the pinned 40ms backstop; a
   // recovery attempt races the stalled-open window instead, pinned to 250
-  // so each withheld attempt also misses quickly.
+  // so each withheld attempt also misses quickly. Both windows are far under
+  // a healthy IndexedDB read on a loaded host (a measured recovery attempt's
+  // own 200-row read settled at 686ms), so on wall time the healthy read
+  // loses the 250ms race, openLocal discards its rows behind the disposed
+  // reader, and the chain exhausts without ever promoting the recorded
+  // display. Freeze the deadline clock instead: timers expire only when this
+  // test advances the clock, while each fake millisecond is spent beside one
+  // real storage round trip, so fake-indexeddb's real macrotasks keep running
+  // and the withheld reads still miss exactly at their bounds.
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opened = threadsStore.getState().ensureThread(ref);
+    const expected = Array.from({ length: 200 }, (_, index) => `row-${index + 26}`);
+    // A withheld read never answers, so the 40ms backstops and the 250ms
+    // stalled windows fire exactly when the pump's clock reaches them; a
+    // healthy read faces no wall-clock race at all. The pump stops as soon as
+    // the display presents the expected window.
+    const converged = await pumpIndexedDBUntil({
+      turns: 800,
+      until: () => {
+        const seen = bodies();
+        return (
+          seen !== undefined && seen.length === expected.length && seen.every((text, index) => text === expected[index])
+        );
+      },
+      onTurn: async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      },
+    });
+    // On the failing path the open may still be parked on a clock that never
+    // reached its deadline; the convergence assertion below is the failure
+    // this test reports, so mark the open handled rather than awaiting a
+    // state the clock never reached.
+    if (!converged) opened.catch(() => undefined);
+    expect(
+      converged,
+      `pane did not converge within 800 fake milliseconds: ${JSON.stringify({
+        openStatus: productionEntryTranscriptForTests(ref).lastLocalOpenStatus ?? "unset",
+        bodies: bodies()?.length ?? 0,
+        withheldWindowReads,
+      })}`,
+    ).toBe(true);
+    await opened;
+    await settleEntryTranscriptForTests(ref);
     // The foreground acquisition returns with the display still body-suppressed;
     // its bounded recovery must then converge the recorded window, no matter
     // how many times the deadline missed while the pane stayed held, exposing
     // local demand exactly as an ordinary 200-row local opening does.
-    await settleEntryTranscriptForTests(ref);
-    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    expect(bodies()).toEqual(expected);
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    vi.useRealTimers();
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);

@@ -66,7 +66,7 @@ func TestSessionActivityDelegateReadCarriesNeedsAttention(t *testing.T) {
 // so the read and the pushed frame agree for every row state.
 func TestSessionActivityDelegateReadJoinsLiveOverFolded(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1}))
 	at := time.Unix(100, 0).UTC()
 	id := "dlg_intent"
 	s.delegateController.mu.Lock()

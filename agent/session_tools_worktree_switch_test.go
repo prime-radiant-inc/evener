@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // These are integration tests for the manage_worktree switch and exit arms
@@ -69,10 +70,7 @@ func (r *wtRepo) canonicalMain(t *testing.T) string {
 // canonicalMain applies to the main repo root.
 func (r *wtRepo) addSiblingWorktree(t *testing.T, dirName, branch string) string {
 	t.Helper()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks sibling root: %v", err)
-	}
+	root := testfs.CanonicalTempDir(t)
 	path := filepath.Join(root, dirName)
 	wtGit(t, r.mainRoot, "worktree", "add", "-b", branch, path, r.head)
 	return path
@@ -129,7 +127,7 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 			minimalWorktreeToolRegistry: true,
 			noSyncJobStore:              true,
 		},
-	})
+	}, withEnvironmentSnapshot())
 	resA, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)
