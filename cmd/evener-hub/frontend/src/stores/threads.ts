@@ -2460,6 +2460,20 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
     }
     const pending = pendingThreadHydrations.get(targetRef);
     if (pending?.client === client && pending.epoch === epoch) continue;
+    // A ref whose only durable rows are accepted display copies stays
+    // discoverable for as long as they wait, but it has no dispatchable work
+    // and nothing to reconcile. When its model is present and a current
+    // authoritative snapshot already named it, another read would re-transfer
+    // the transcript every discovery pass for state this client holds. Only a
+    // ref this pass actually has reason to distrust goes to the wire.
+    const hydrated = refState.threads.has(targetRef) || refState.watchedThreads.has(targetRef);
+    if (
+      hydrated &&
+      refState.mutationSnapshotRefs.has(targetRef) &&
+      !refState.mutationReconciliationFailures.has(targetRef) &&
+      !refState.mutationReconciliationStorageBlocked.has(targetRef)
+    )
+      continue;
     void handleReady(client, epoch, targetRef);
   }
 }

@@ -764,6 +764,54 @@ test("periodic discovery recovers reconciliation after the final durable record 
   }
 });
 
+// A waiting message keeps its ref discoverable for as long as it waits, by
+// design: that is how the next pass finds its work. Once the ref is hydrated
+// and its authoritative mutation snapshot is current there is no work for a
+// read to find, so re-reading the transcript every pass would transfer the
+// session over and over for state the client already holds.
+test("periodic discovery does not re-read a healthy ref whose message is still waiting", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "waiting-send" });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...CAPABILITIES, queue: false },
+          mutationStateAuthoritative: true,
+          queue: { revision: 1, clientMutationIds: [] },
+        } as never,
+      }),
+    );
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    // A message waiting behind the running turn: accepted, so its optimistic
+    // copy is the only durable record and no dispatchable row remains, while
+    // listTargetRefs keeps naming the ref.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", clientMutationId: "waiting-send", input: [{ type: "text", text: "waiting" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "waiting" }] },
+    });
+    await storage.markAttempted("waiting-send");
+    await storage.settleReceipt("waiting-send", "pending", ["entry-waiting"]);
+    expect(await storage.listTargetRefs()).toEqual(["ref_a"]);
+    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+    await vi.advanceTimersByTimeAsync(2000);
+    await settleCallerContinuations();
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test.each(["active", "idle"])(
   "recovered %s descendant without uncertain messages permits new sends",
   async (status) => {
