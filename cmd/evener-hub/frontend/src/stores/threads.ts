@@ -2460,51 +2460,8 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
     }
     const pending = pendingThreadHydrations.get(targetRef);
     if (pending?.client === client && pending.epoch === epoch) continue;
-    // A retained display copy keeps its ref discoverable for as long as it
-    // waits, and refreshMutationPins clears the dispatch arm once only
-    // optimistic copies remain. Read here, such a ref would re-transfer its
-    // transcript every pass for state the client already holds. Only a fresh
-    // storage read may say there is nothing left to reconcile; a row another
-    // tab enqueued, or a send this tab armed after the pass began, still
-    // hydrates. A ref with no model yet always hydrates: that is how it gets
-    // one.
-    // A blocked or failed reconciliation is exactly what this pass must retry,
-    // and its retry is a read: never skip those.
-    const reconciling =
-      refState.mutationReconciliationStorageBlocked.has(targetRef) ||
-      refState.mutationReconciliationFailures.has(targetRef);
-    if ((refState.threads.has(targetRef) || refState.watchedThreads.has(targetRef)) && !reconciling) {
-      void hydrateDiscoveryRefWhenWorkRemains(runtime, client, epoch, targetRef);
-      continue;
-    }
     void handleReady(client, epoch, targetRef);
   }
-}
-
-// Discovery hydration for a ref this client already renders. A failed or
-// unreadable outbox proves nothing, so it hydrates rather than leaving the ref
-// unreconciled.
-async function hydrateDiscoveryRefWhenWorkRemains(
-  runtime: MutationRuntime,
-  client: AppwireClientLike,
-  epoch: number,
-  targetRef: string,
-): Promise<void> {
-  const hasWork = await runtime.storage
-    .listOutbox(targetRef)
-    .then((records) => records.some((record) => record.state !== "canceled" && record.state !== "superseded"))
-    .catch(() => true);
-  if (!hasWork) return;
-  if (
-    !isCurrentMutationRuntime(runtime) ||
-    getWiredClient() !== client ||
-    getReadyEpoch() !== epoch ||
-    client.state !== "ready"
-  )
-    return;
-  const pending = pendingThreadHydrations.get(targetRef);
-  if (pending?.client === client && pending.epoch === epoch) return;
-  void handleReady(client, epoch, targetRef);
 }
 
 async function refreshUncertainMutationAuthority(
