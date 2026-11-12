@@ -336,3 +336,43 @@ func TestParseJSONDocumentKeepsObjectOrderAndDuplicates(t *testing.T) {
 		t.Fatalf("member(a) = %+v, want the last value 3", got)
 	}
 }
+
+// TestParseJSONDocumentReadsNestedValuesAndEscapes pins the parser's other
+// value shapes, and the writer's Python-compatible rendering of them.
+func TestParseJSONDocumentReadsNestedValuesAndEscapes(t *testing.T) {
+	v, err := parseJSONDocument([]byte(`{"s":"a\tb\u00e9\ud83d\ude00","a":[1,true,null,"x"],"n":-2.5e-3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{
+ "s": "a\tb\u00e9\ud83d\ude00",
+ "a": [
+  1,
+  true,
+  null,
+  "x"
+ ],
+ "n": -0.0025
+}`
+	if got := v.jsonString(); got != want {
+		t.Fatalf("rendered value:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestParseJSONDocumentRejectsMalformedInput pins the syntax failures that must
+// make the budget a malformed config rather than an empty one.
+func TestParseJSONDocumentRejectsMalformedInput(t *testing.T) {
+	for name, doc := range map[string]string{
+		"empty":            ``,
+		"unterminated":     `{"a":`,
+		"unterminated str": `"abc`,
+		"invalid escape":   `"\q"`,
+		"leading zero":     `01`,
+		"trailing comma":   `[1,]`,
+		"extra data":       `{"a":1} garbage`,
+	} {
+		if _, err := parseJSONDocument([]byte(doc)); err == nil {
+			t.Errorf("%s: parseJSONDocument accepted malformed JSON", name)
+		}
+	}
+}
