@@ -103,7 +103,7 @@ func TestCheckoutRefChoosesHeadOrMerge(t *testing.T) {
 			t.Fatalf("checkout-ref %s %s: %v\n%s", head, merge, err, out)
 		}
 		ref, reason := "", ""
-		for _, line := range strings.Split(string(out), "\n") {
+		for line := range strings.SplitSeq(string(out), "\n") {
 			switch {
 			case strings.HasPrefix(line, "ref="):
 				ref = strings.TrimPrefix(line, "ref=")
