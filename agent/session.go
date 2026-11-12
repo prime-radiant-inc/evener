@@ -2163,8 +2163,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// profile (contextMgr.SetProfile above) may already exceed its
 	// compaction threshold. Blocking the switch would strand users on
 	// expensive models; the marker just warns.
-		var usage ContextMetrics
-		var contextPressure float64
+	var usage ContextMetrics
+	var contextPressure float64
 	contextWarningPct := 0
 	contextWarning := false
 	contextWindowAssumed := false
@@ -2174,12 +2174,12 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		// is measured against is the unknown-window assumption, so the marker
 		// can name the assumption instead of presenting a percentage of 128K as
 		// a fact about the new model's real window (#4598 follow-up).
-			usage = s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
+		usage = s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
 		if usage.Window > 0 {
-				contextPressure = float64(usage.Used) / float64(usage.Window)
-				if contextPressure >= s.contextMgr.CheckpointThresholdFor(nextProfile) {
+			contextPressure = float64(usage.Used) / float64(usage.Window)
+			if contextPressure >= s.contextMgr.CheckpointThresholdFor(nextProfile) {
 				contextWarning = true
-					contextWarningPct = int(contextPressure*100 + 0.5)
+				contextWarningPct = int(contextPressure*100 + 0.5)
 				contextWindowAssumed = usage.Assumed
 				assumedWindowTokens = usage.Window
 			}
@@ -2192,16 +2192,16 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	droppedFallbacks := append([]string(nil), s.lastDroppedModelFallbacks...)
 	s.mu.Unlock()
 	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-			oldProfile:                commitPrev,
-			nextProfile:               nextProfile,
-			contextWarning:            contextWarning,
-			contextWarningPct:         contextWarningPct,
-			contextUsedTokens:         usage.Used,
-			compactionThresholdTokens: usage.CompactionThreshold,
-			contextWindowAssumed:      contextWindowAssumed,
-			assumedWindowTokens:       assumedWindowTokens,
-			droppedFallbacks:          droppedFallbacks,
-			orphanedToolResultMedia:   orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
+		oldProfile:                commitPrev,
+		nextProfile:               nextProfile,
+		contextWarning:            contextWarning,
+		contextWarningPct:         contextWarningPct,
+		contextUsedTokens:         usage.Used,
+		compactionThresholdTokens: usage.CompactionThreshold,
+		contextWindowAssumed:      contextWindowAssumed,
+		assumedWindowTokens:       assumedWindowTokens,
+		droppedFallbacks:          droppedFallbacks,
+		orphanedToolResultMedia:   orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
 	})
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
@@ -2226,11 +2226,11 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
 		SupportsReasoning:     nextProfile.SupportsReasoning(),
 		MarkerText:            markerText,
-			ContextUsed:           usage.Used,
-			ContextWindow:         usage.Window,
-			ContextPressure:       contextPressure,
-			ContextAssumed:        usage.Assumed,
-			CompactionThreshold:   usage.CompactionThreshold,
+		ContextUsed:           usage.Used,
+		ContextWindow:         usage.Window,
+		ContextPressure:       contextPressure,
+		ContextAssumed:        usage.Assumed,
+		CompactionThreshold:   usage.CompactionThreshold,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave

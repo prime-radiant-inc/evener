@@ -327,6 +327,56 @@ drain1:
 	}
 }
 
+func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
+	t.Parallel()
+	unthresholded := withModelCompactionThreshold(NewOpenAIProfile("gpt-5.4"), 1_000_000, 0)
+	thresholded := withModelCompactionThreshold(NewOpenAIProfile("gpt-5.2"), 1_000_000, 250_000)
+
+	// Case 1: unthresholded primary (s.profile), thresholded fallback on s.contextMgr.
+	s1 := newSession(t,
+		withProfile(unthresholded),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
+	)
+	seedNumberedSessionHistory(t, s1, 12)
+	s1.contextMgr.SetProfile(thresholded)
+	s1.contextMgr.RecordInputTokensFor(thresholded, 200_000, len(currentHistory(t, s1)))
+	if !s1.maybeNudgeSelfCompact(0) {
+		t.Fatal("expected nudge at 200,000 tokens when contextMgr holds thresholded fallback profile")
+	}
+
+	elicited1 := 0
+	s1.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		elicited1++
+		return "fallback note", nil
+	}
+	s1.contextMgr.RecordInputTokensFor(thresholded, 250_000, len(currentHistory(t, s1)))
+	s1.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s1), 0)
+	if elicited1 != 1 {
+		t.Fatalf("elicited %d times at 250,000 tokens under thresholded fallback, want 1", elicited1)
+	}
+
+	// Case 2: thresholded primary (s.profile), unthresholded fallback on s.contextMgr.
+	s2 := newSession(t,
+		withProfile(thresholded),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
+	)
+	seedNumberedSessionHistory(t, s2, 12)
+	s2.contextMgr.SetProfile(unthresholded)
+	s2.contextMgr.RecordInputTokensFor(unthresholded, 260_000, len(currentHistory(t, s2)))
+	if s2.maybeNudgeSelfCompact(0) {
+		t.Fatal("unexpected premature nudge at 260,000 tokens when contextMgr holds unthresholded fallback profile")
+	}
+	elicited2 := 0
+	s2.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		elicited2++
+		return "premature note", nil
+	}
+	s2.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s2), 0)
+	if elicited2 != 0 {
+		t.Fatalf("elicited %d times at 260,000 tokens under unthresholded fallback, want 0", elicited2)
+	}
+}
+
 func TestCompactAt_ConfiguredPercentMovesTheTrigger(t *testing.T) {
 	t.Parallel()
 	s := compactAtSession(t, 70)
