@@ -1342,19 +1342,16 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				close(entered)
-				<-release
-				return llm.Response{}, fatalErr
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("unexpected continuation after fatal failure"), nil
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			close(entered)
+			<-release
+			return llm.Response{}, fatalErr
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("unexpected continuation after fatal failure"), nil
+		},
+	})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -1747,28 +1744,25 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal nudge turn", nil, nil)
 	enteredFatalNudge := make(chan struct{})
 	releaseFatalNudge := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				close(enteredFatalNudge)
-				<-releaseFatalNudge
-				return llm.Response{}, fatalErr
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			close(enteredFatalNudge)
+			<-releaseFatalNudge
+			return llm.Response{}, fatalErr
+		},
+	})
 	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
@@ -1873,14 +1867,11 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal cleanup failure turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
-			close(entered)
-			<-release
-			return llm.Response{}, fatalErr
-		}},
-	}
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+		close(entered)
+		<-release
+		return llm.Response{}, fatalErr
+	}})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -1945,14 +1936,11 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal close-abandon turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
-			close(entered)
-			<-release
-			return llm.Response{}, fatalErr
-		}},
-	}
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+		close(entered)
+		<-release
+		return llm.Response{}, fatalErr
+	}})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)

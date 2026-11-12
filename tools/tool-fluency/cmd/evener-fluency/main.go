@@ -401,7 +401,11 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
-	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
+	// workspace-write is the default because an unconfined probe can write
+	// anywhere the operator can: one wrote a CSV into the directory holding the
+	// operator's repositories (#3724). Pass --sandbox off for a task that needs
+	// the whole host.
+	fs.StringVar(&cfg.sandbox, "sandbox", defaultSandboxMode, "sandbox `mode`: workspace-write (default), off, read-only, or restricted (applies to both harnesses; off lets probes write anywhere the operator can)")
 	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
 }
@@ -452,6 +456,10 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
 	}
+	// An empty --sandbox value (--sandbox "$MODE" with MODE unset) keeps the
+	// safe default. Normalize here, where every run and matrix config lands, so
+	// a programmatic caller that skips flag parsing is safe too.
+	cfg.sandbox = sandboxModeOrDefault(cfg.sandbox)
 	// Validate the sandbox flags once, up front, so a typo fails before any
 	// probe launches instead of surfacing late from the spawned evener.
 	if _, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil {
@@ -459,6 +467,9 @@ func runSuiteWithConfig(cfg runConfig) error {
 	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
+	}
+	if err := resolveProbePaths(&cfg); err != nil {
+		return err
 	}
 	if holdsResults(cfg.outDir) {
 		return fmt.Errorf("--out %s already holds results; a second run there would mix with them, so name a new directory", cfg.outDir)
@@ -916,6 +927,16 @@ func envModeLabel(inheritOperatorEnv bool) string {
 
 func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
+	if err := resolveProbePaths(&cfg); err != nil {
+		return probeResult{
+			Status:     "failed",
+			Probe:      probe.ID,
+			Model:      cfg.model,
+			Error:      err.Error(),
+			Findings:   []finding{{Category: "infra", Title: "resolve probe paths", Detail: err.Error()}},
+			DurationMS: time.Since(start).Milliseconds(),
+		}
+	}
 	slug := safeName(probe.ID)
 	base := filepath.Join(cfg.outDir, slug, fmt.Sprintf("rep-%02d", rep))
 	workDir := filepath.Join(base, "work")
@@ -1006,18 +1027,31 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	args, err := cliProbeArgs(cfg, probe, res)
+	cmd, err := cliProbeCommand(ctx, cfg, probe, res)
 	if err != nil {
 		return err
-	}
-	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
-	cmd.Env = fixtureEnv(res.WorkDir)
-	if cfg.clearOpenAIAPIKey {
-		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
+}
+
+// cliProbeCommand is the CLI harness's worker launch. It starts in the probe's
+// WorkDir, and fixtureEnv names that directory's parent as a git ceiling, so a
+// WorkDir nested inside the checkout is its own writable workspace rather than
+// inheriting the whole enclosing repository (#3724).
+func cliProbeCommand(ctx context.Context, cfg runConfig, probe probeFile, res probeResult) (*exec.Cmd, error) {
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
+	cmd.Dir = res.WorkDir
+	cmd.Env = fixtureEnv(res.WorkDir)
+	if cfg.clearOpenAIAPIKey {
+		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
+	}
+	return cmd, nil
 }
 
 func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, error) {
@@ -1087,6 +1121,18 @@ var runnerAttachAPILogger = cmdutil.AttachAPILogger
 var runnerMarshalEvent = json.Marshal
 var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProber{}.Probe() }
 
+// liveProbeSandboxHost scopes the live harness's sandbox to the probe's WorkDir:
+// its parent is a GIT_CEILING_DIRECTORIES boundary, so a WorkDir nested inside
+// another repository is classified as its own non-Git workspace (#3724).
+func liveProbeSandboxHost(workDir string) sandbox.HostFacts {
+	host := runnerProbeSandboxHost()
+	host.GitCeilingDirs = append([]string{}, host.GitCeilingDirs...)
+	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+		host.GitCeilingDirs = append(host.GitCeilingDirs, parent)
+	}
+	return host
+}
+
 // parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
 // for both harnesses, and returns the normalized wire mode and the resolved
 // network decision. Off (empty or "off") is mode off; the net value parses with
@@ -1110,6 +1156,59 @@ func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 		return sandbox.ModeOff, false, err
 	}
 	return mode, net, nil
+}
+
+// defaultSandboxMode confines probe workers to their work dir unless the
+// operator opts out with --sandbox off (#3724).
+const defaultSandboxMode = "workspace-write"
+
+// sandboxModeOrDefault keeps the safe default when --sandbox was given an empty
+// value: `--sandbox "$SANDBOX_MODE"` with the variable unset must not read as
+// off. An explicit "off" is still the opt-out.
+func sandboxModeOrDefault(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return defaultSandboxMode
+	}
+	return mode
+}
+
+// resolveProbePaths anchors the run's file arguments to the launcher's cwd.
+// The CLI worker starts in res.WorkDir, so a relative executable, output/state
+// directory or --system-prompt-append path would otherwise resolve beneath
+// WorkDir instead of where the operator named it. A bare executable name stays
+// bare so exec.Command keeps its PATH lookup (#6227).
+func resolveProbePaths(cfg *runConfig) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve the launcher working directory: %w", err)
+	}
+	return resolveProbePathsFrom(cfg, cwd)
+}
+
+// resolveProbePathsFrom is resolveProbePaths with the launcher directory
+// supplied, so a test can prove the anchoring without changing the process cwd.
+func resolveProbePathsFrom(cfg *runConfig, base string) error {
+	if cfg.outDir != "" {
+		cfg.outDir = anchoredPath(base, cfg.outDir)
+	}
+	if cfg.evenerBin != "" && strings.ContainsAny(cfg.evenerBin, `/\`) {
+		cfg.evenerBin = anchoredPath(base, cfg.evenerBin)
+	}
+	for i, path := range cfg.systemPromptAppend {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		cfg.systemPromptAppend[i] = anchoredPath(base, path)
+	}
+	return nil
+}
+
+// anchoredPath returns path resolved against base when path is relative.
+func anchoredPath(base, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(base, path)
 }
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
@@ -1160,7 +1259,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	// a declared mode the host cannot serve fails closed here, before any
 	// provider call, rather than silently running the worker native and
 	// unsandboxed.
-	if err := cmdutil.ProvisionSandbox(env, &sessCfg, res.WorkDir, runnerProbeSandboxHost); err != nil {
+	if err := cmdutil.ProvisionSandboxWithHost(env, &sessCfg, res.WorkDir, liveProbeSandboxHost(res.WorkDir)); err != nil {
 		return err
 	}
 	sess, err := runnerNewSession(client, profile, env, sessCfg)

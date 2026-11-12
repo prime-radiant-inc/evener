@@ -69,11 +69,10 @@ func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
 		Archive:       store,
 		PokeAttention: func() { attentionPokes++ },
 	})
-	source := &churningNavigationSource{testNavigationSource: newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())}
-	navigation := newTestNavigationService(t, source.testNavigationSource, func(cfg *navigationServiceConfig) {
-		cfg.Source = source
-		cfg.BuildTimeout = 20 * time.Millisecond
-	})
+	navigation := newChurningNavigationService(t)
+	// Production wires this hook in hub_startup: the durable decision arms the
+	// rebuild that publishes the deferred receipt.
+	store.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 
 	response, err := archiveSet(context.Background(), cfg, nil, navigation, appwire.ArchiveParams{
 		Kind:     appwire.ArchiveTargetSession,
@@ -89,12 +88,7 @@ func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
 	if !response.NavigationDeferred {
 		t.Fatalf("response = %+v, want NavigationDeferred for a timed-out receipt", response)
 	}
-	if got, want := response.Navigation.GenerationID, navigation.Capability().GenerationID; got != want {
-		t.Fatalf("deferred navigation generation = %q, want the live %q", got, want)
-	}
-	if len(response.Navigation.Targets) != 0 {
-		t.Fatalf("deferred navigation targets = %+v, want none", response.Navigation.Targets)
-	}
+	assertDeferredNavigationReceipt(t, navigation, response.Navigation)
 	wire, err := json.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +120,32 @@ func (s *churningNavigationSource) Capture(ctx context.Context, generation strin
 	s.passes++
 	s.changeTitle(fmt.Sprintf("churn %d", s.passes))
 	return s.testNavigationSource.Capture(ctx, generation, now)
+}
+
+// newChurningNavigationService builds a navigation service whose source moves
+// on every capture, so a forced build restarts until its deadline.
+func newChurningNavigationService(t *testing.T) *NavigationService {
+	t.Helper()
+	source := &churningNavigationSource{testNavigationSource: newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())}
+	return newTestNavigationService(t, source.testNavigationSource, func(cfg *navigationServiceConfig) {
+		cfg.Source = source
+		cfg.BuildTimeout = 20 * time.Millisecond
+	})
+}
+
+// assertDeferredNavigationReceipt pins the shared deferred-receipt contract:
+// the live generation with no targets, and the deferred flag set.
+func assertDeferredNavigationReceipt(t *testing.T, navigation *NavigationService, mutation appwire.NavigationMutation) {
+	t.Helper()
+	if !mutation.Deferred {
+		t.Fatalf("mutation = %+v, want a deferred receipt", mutation)
+	}
+	if got, want := mutation.GenerationID, navigation.Capability().GenerationID; got != want {
+		t.Fatalf("deferred navigation generation = %q, want the live %q", got, want)
+	}
+	if len(mutation.Targets) != 0 {
+		t.Fatalf("deferred navigation targets = %+v, want none", mutation.Targets)
+	}
 }
 
 func TestHubArchiveSetAppWireValidatesAndUnarchivesProject(t *testing.T) {
@@ -1254,5 +1274,43 @@ func TestValidateDecisionSourcePrefersLiveRegistry(t *testing.T) {
 	}
 	if err := validateDecisionSource(hubcore.WebConfig{}, "m4"); err == nil {
 		t.Fatal("validateDecisionSource(m4, no client) accepted, want refusal: no remote source can exist")
+	}
+}
+
+// A hub without a navigation service (an embedder or a test wiring) still
+// persists its decisions. The handler must acknowledge the durable archive
+// rather than returning Unavailable after the write; with no navigation
+// surface there is also no rebuild to claim as deferred.
+func TestArchiveSetAcknowledgesAPersistedDecisionWithoutNavigation(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	attentionPokes := 0
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		Archive:       store,
+		PokeAttention: func() { attentionPokes++ },
+	})
+
+	response, err := archiveSet(context.Background(), cfg, nil, nil, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "session-1",
+		Archived: true,
+	})
+	if err != nil {
+		t.Fatalf("archive of a persisted decision failed without navigation: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response = %+v, want OK for a persisted decision", response)
+	}
+	if response.Navigation.Deferred || response.NavigationDeferred {
+		t.Fatalf("response = %+v, want no deferred claim without a navigation service", response)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
+		t.Fatalf("session archive decision not persisted: %v", decisions)
+	}
+	if attentionPokes != 1 {
+		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)
 	}
 }

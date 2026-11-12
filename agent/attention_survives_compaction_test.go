@@ -673,3 +673,390 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		}
 	})
 }
+
+// Once a settled round of the active turn has presented a delegate attention
+// turn, a mid-turn compaction must fold it away rather than re-injecting it
+// after the summary, while still preserving any later attention item that
+// arrived before compaction without being presented yet, and consuming both
+// durably when the turn finishes.
+func TestRootDelegateAttentionCoveredMidTurnFoldsAwayWhileUncoveredSurvives(t *testing.T) {
+	t.Parallel()
+	const (
+		coveredID     = "delegate:dlg_worker/delivery/1"
+		coveredText   = `<delegate-notification delegate_id="dlg_worker" kind="report">EARLY_COVERED_ITEM</delegate-notification>`
+		uncoveredID   = "delegate:dlg_worker/delivery/2"
+		uncoveredText = `<delegate-notification delegate_id="dlg_worker" kind="report">LATE_UNCOVERED_ITEM</delegate-notification>`
+	)
+	sess, main := newCompactableSession(t)
+	muteNoteElicitation(sess)
+	if _, err := sess.appendDelegateNotificationDurably(coveredID, coveredText); err != nil {
+		t.Fatalf("append covered attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(coveredID); err != nil {
+		t.Fatalf("arm covered attention: %v", err)
+	}
+
+	var round1SawCovered, round2SawSummary, round2SawCovered, round2SawUncovered bool
+	main.steps = []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			round1SawCovered = requestMessagesContainText(req.Messages, "EARLY_COVERED_ITEM")
+			if _, err := sess.appendDelegateNotificationDurably(uncoveredID, uncoveredText); err != nil {
+				t.Errorf("append uncovered attention: %v", err)
+			}
+			if err := sess.armDelegateAttention(uncoveredID); err != nil {
+				t.Errorf("arm uncovered attention: %v", err)
+			}
+			seedNumberedSessionHistory(t, sess, 12)
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "compact-mid-turn",
+				Name:      "compact_context",
+				Arguments: []byte(`{"note_to_self":"keep going"}`),
+				Type:      "function",
+			})
+		},
+		func(req llm.Request) llm.Response {
+			round2SawSummary = requestMessagesContainText(req.Messages, "[CONTEXT SUMMARY]")
+			round2SawCovered = requestMessagesContainText(req.Messages, "EARLY_COVERED_ITEM")
+			round2SawUncovered = requestMessagesContainText(req.Messages, "LATE_UNCOVERED_ITEM")
+			return agenttest.ToolCallResponse(communicateCall("finish-turn", "all caught up"))
+		},
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if !round1SawCovered {
+		t.Fatal("round 1 did not present EARLY_COVERED_ITEM")
+	}
+	if !round2SawSummary {
+		t.Fatal("round 2 did not carry the mid-turn compaction summary")
+	}
+	if round2SawCovered {
+		t.Fatal("mid-turn compaction re-injected EARLY_COVERED_ITEM after round 1 already presented it")
+	}
+	if !round2SawUncovered {
+		t.Fatal("mid-turn compaction dropped LATE_UNCOVERED_ITEM before any settled round presented it")
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after turn completion = %v (err %v), want both items consumed", pending, err)
+	}
+}
+
+// If a mid-turn compaction folds away a covered attention turn and a later
+// round of that same turn fails before durable consumption, finishAttentionTurn
+// must restore the still-pending turn back into resident history so the
+// follow-up retry turn still presents and consumes it.
+func TestRootDelegateAttentionCoveredAndFoldedMidTurnRestoresWhenTurnFails(t *testing.T) {
+	t.Parallel()
+	const (
+		coveredID   = "delegate:dlg_worker/delivery/1"
+		coveredText = `<delegate-notification delegate_id="dlg_worker" kind="report">EARLY_COVERED_ON_FAIL</delegate-notification>`
+	)
+	var sess *Session
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	defer cancelTurn()
+	step := 0
+	var round2SawCovered, retryTurnSawCovered bool
+	main := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			step++
+			switch step {
+			case 1:
+				seedNumberedSessionHistory(t, sess, 12)
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "compact-before-fail",
+					Name:      "compact_context",
+					Arguments: []byte(`{"note_to_self":"about to fail"}`),
+					Type:      "function",
+				}), nil
+			case 2:
+				round2SawCovered = requestMessagesContainText(req.Messages, "EARLY_COVERED_ON_FAIL")
+				cancelTurn()
+				return llm.Response{}, context.Canceled
+			default:
+				retryTurnSawCovered = requestMessagesContainText(req.Messages, "EARLY_COVERED_ON_FAIL")
+				return agenttest.ToolCallResponse(communicateCall("retry-done", "recovered")), nil
+			}
+		},
+	}
+	sess, _ = newCompactableSession(t)
+	sess.client.Register(main)
+	muteNoteElicitation(sess)
+
+	if _, err := sess.appendDelegateNotificationDurably(coveredID, coveredText); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(coveredID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+
+	if _, err := sess.ProcessInputKind(turnCtx, "", nil, EntryNotification); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessInputKind on cancelled round 2 = %v, want context.Canceled", err)
+	}
+	if round2SawCovered {
+		t.Fatal("round 2 saw EARLY_COVERED_ON_FAIL re-injected after mid-turn compaction")
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || !slices.Equal(pending, []string{coveredID}) {
+		t.Fatalf("pending after failed turn = %v (err %v), want [%s]", pending, err, coveredID)
+	}
+	if indexOfTurnText(currentHistory(t, sess), coveredText) < 0 {
+		t.Fatal("failed turn did not restore the folded covered attention turn back into resident history")
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("recovery notification turn: %v", err)
+	}
+	if !retryTurnSawCovered {
+		t.Fatal("recovery notification turn did not see restored EARLY_COVERED_ON_FAIL")
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after recovery turn = %v (err %v), want consumed", pending, err)
+	}
+}
+
+// Stale attentionCoveredIDs from a failed turn must not suppress a still-pending
+// attention item during an idle Compact() before the recovery turn runs.
+func TestRootDelegateAttentionFailedTurnDoesNotSuppressIdleCompact(t *testing.T) {
+	t.Parallel()
+	const (
+		coveredID   = "delegate:dlg_worker/delivery/1"
+		coveredText = `<delegate-notification delegate_id="dlg_worker" kind="report">IDLE_COMPACT_AFTER_FAIL</delegate-notification>`
+	)
+	var sess *Session
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	defer cancelTurn()
+	step := 0
+	var recoverySawCovered bool
+	main := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			step++
+			switch step {
+			case 1:
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "round-one-tool",
+					Name:      "task_list",
+					Arguments: []byte(`{}`),
+					Type:      "function",
+				}), nil
+			case 2:
+				cancelTurn()
+				return llm.Response{}, context.Canceled
+			default:
+				recoverySawCovered = requestMessagesContainText(req.Messages, "IDLE_COMPACT_AFTER_FAIL")
+				return agenttest.ToolCallResponse(communicateCall("recovered", "done")), nil
+			}
+		},
+	}
+	sess, _ = newCompactableSession(t)
+	sess.client.Register(main)
+	muteNoteElicitation(sess)
+
+	if _, err := sess.appendDelegateNotificationDurably(coveredID, coveredText); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(coveredID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(turnCtx, "", nil, EntryNotification); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled turn err = %v, want context.Canceled", err)
+	}
+
+	compactAfterAttention(t, sess)
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("recovery turn after idle Compact: %v", err)
+	}
+	if !recoverySawCovered {
+		t.Fatal("idle Compact after a failed turn dropped IDLE_COMPACT_AFTER_FAIL before the recovery turn saw it")
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after recovery = %v (err %v), want consumed", pending, err)
+	}
+}
+
+// When unionCoveredAttention degrades on a transient fold-read failure at turn
+// exit, any covered attention turn folded out of resident history mid-turn was
+// not durably resolved and must be restored for the wake retry.
+func TestRootDelegateAttentionMidTurnFoldRestoresWhenUnionFoldReadFails(t *testing.T) {
+	t.Parallel()
+	const (
+		coveredID   = "delegate:dlg_worker/delivery/1"
+		coveredText = `<delegate-notification delegate_id="dlg_worker" kind="report">MID_TURN_UNION_READ_FAIL</delegate-notification>`
+	)
+	var failUnionRead atomic.Bool
+	var sess *Session
+	var wakeSawCovered bool
+	sess, main := newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failUnionRead.CompareAndSwap(true, false) {
+				return delegateAttentionFold{}, errors.New("transient union fold read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	muteNoteElicitation(sess)
+	if _, err := sess.appendDelegateNotificationDurably(coveredID, coveredText); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(coveredID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+
+	main.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			seedNumberedSessionHistory(t, sess, 12)
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "compact-user-turn",
+				Name:      "compact_context",
+				Arguments: []byte(`{"note_to_self":"fold mid-turn"}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response {
+			failUnionRead.Store(true)
+			return agenttest.ToolCallResponse(communicateCall("user-turn-done", "finished user turn"))
+		},
+		func(req llm.Request) llm.Response {
+			wakeSawCovered = requestMessagesContainText(req.Messages, "MID_TURN_UNION_READ_FAIL")
+			return agenttest.ToolCallResponse(communicateCall("wake-done", "consumed on wake"))
+		},
+	}
+
+	if _, err := sess.ProcessInput(context.Background(), "run user turn", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !wakeSawCovered {
+		t.Fatal("wake turn after degraded unionCoveredAttention did not present MID_TURN_UNION_READ_FAIL")
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after wake = %v (err %v), want consumed", pending, err)
+	}
+}
+
+// Restoring an older uncovered attention turn during mid-turn compaction (and
+// restoring an older covered turn on fallback when a newer uncovered turn sits
+// in history) must preserve arrival order ahead of newer resident attention
+// turns.
+func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *testing.T) {
+	t.Parallel()
+	const (
+		firstID    = "delegate:dlg_worker/delivery/1"
+		firstText  = `<delegate-notification delegate_id="dlg_worker" kind="update">ORDER_FIRST_HELD</delegate-notification>`
+		secondID   = "delegate:dlg_worker/delivery/2"
+		secondText = `<delegate-notification delegate_id="dlg_worker" kind="update">ORDER_SECOND_RECENT</delegate-notification>`
+	)
+	var failRestoreRead atomic.Bool
+	var sess *Session
+	sess, _ = newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failRestoreRead.Load() {
+				return delegateAttentionFold{}, errors.New("transient restore fold read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	muteNoteElicitation(sess)
+
+	// Path A: firstID is uncovered (e.g., held from presentation) and folded
+	// away, while secondID is covered in the recent tail and survives in folded.
+	if _, err := sess.appendDelegateNotificationDurably(firstID, firstText); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	seedNumberedSessionHistory(t, sess, 12)
+	if _, err := sess.appendDelegateNotificationDurably(secondID, secondText); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	sess.beginAttentionCoverageRounds()
+	sess.attentionMu.Lock()
+	sess.attentionCoveredIDs = map[string]struct{}{secondID: {}}
+	sess.attentionMu.Unlock()
+
+	if err := sess.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess.applyPendingForceCompact(context.Background())
+	sess.endAttentionCoverageRounds()
+
+	post := currentHistory(t, sess)
+	firstIdx, secondIdx := indexOfTurnText(post, firstText), indexOfTurnText(post, secondText)
+	if firstIdx < 0 || secondIdx < 0 || firstIdx > secondIdx {
+		t.Fatalf("Path A history indices = (first=%d, second=%d), want both present with first < second", firstIdx, secondIdx)
+	}
+
+	// Path B: firstID is covered and folded away while secondID is uncovered in
+	// resident history, and pendingAttentionTurnsLocked fails during failure
+	// unwind.
+	sess2, _ := newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failRestoreRead.Load() {
+				return delegateAttentionFold{}, errors.New("transient restore fold read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	muteNoteElicitation(sess2)
+	if _, err := sess2.appendDelegateNotificationDurably(firstID, firstText); err != nil {
+		t.Fatalf("append first on sess2: %v", err)
+	}
+	seedNumberedSessionHistory(t, sess2, 12)
+	if _, err := sess2.appendDelegateNotificationDurably(secondID, secondText); err != nil {
+		t.Fatalf("append second on sess2: %v", err)
+	}
+	sess2.beginAttentionCoverageRounds()
+	sess2.attentionMu.Lock()
+	sess2.attentionCoveredIDs = map[string]struct{}{firstID: {}}
+	sess2.attentionMu.Unlock()
+	if err := sess2.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess2.applyPendingForceCompact(context.Background())
+	failRestoreRead.Store(true)
+	_ = sess2.finishRootDelegateAttentionTurn([]string{firstID}, errors.New("turn failed"))
+	sess2.endAttentionCoverageRounds()
+	failRestoreRead.Store(false)
+
+	post2 := currentHistory(t, sess2)
+	firstIdx2, secondIdx2 := indexOfTurnText(post2, firstText), indexOfTurnText(post2, secondText)
+	if firstIdx2 < 0 || secondIdx2 < 0 || firstIdx2 > secondIdx2 {
+		t.Fatalf("Path B fallback history indices = (first=%d, second=%d), want both present with first < second", firstIdx2, secondIdx2)
+	}
+
+	// Path C: firstID is uncovered (kept in history) while secondID is covered
+	// and folded away, and pendingAttentionTurnsLocked fails during unwind.
+	sess3, _ := newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failRestoreRead.Load() {
+				return delegateAttentionFold{}, errors.New("transient restore fold read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	muteNoteElicitation(sess3)
+	if _, err := sess3.appendDelegateNotificationDurably(firstID, firstText); err != nil {
+		t.Fatalf("append first on sess3: %v", err)
+	}
+	if _, err := sess3.appendDelegateNotificationDurably(secondID, secondText); err != nil {
+		t.Fatalf("append second on sess3: %v", err)
+	}
+	seedNumberedSessionHistory(t, sess3, 12)
+	sess3.beginAttentionCoverageRounds()
+	sess3.attentionMu.Lock()
+	sess3.attentionCoveredIDs = map[string]struct{}{secondID: {}}
+	sess3.attentionMu.Unlock()
+	if err := sess3.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess3.applyPendingForceCompact(context.Background())
+	failRestoreRead.Store(true)
+	_ = sess3.finishRootDelegateAttentionTurn([]string{secondID}, errors.New("turn failed"))
+	sess3.endAttentionCoverageRounds()
+	failRestoreRead.Store(false)
+
+	post3 := currentHistory(t, sess3)
+	firstIdx3, secondIdx3 := indexOfTurnText(post3, firstText), indexOfTurnText(post3, secondText)
+	if firstIdx3 < 0 || secondIdx3 < 0 || firstIdx3 > secondIdx3 {
+		t.Fatalf("Path C fallback history indices = (first=%d, second=%d), want both present with first < second", firstIdx3, secondIdx3)
+	}
+}

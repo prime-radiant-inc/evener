@@ -142,9 +142,15 @@ install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
-	@set -e; for bin in $(EVENER_INSTALL_BINS); do \
-		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
-		ln -sfn "$(EVENER_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
+	@set -e; trap 'rm -f "$${stage_bin:-}" "$${stage_link:-}"' EXIT HUP INT TERM; \
+	for bin in $(EVENER_INSTALL_BINS); do \
+		stage_bin="$(EVENER_SHARE_BINDIR)/.$$bin.install.$$$$"; \
+		stage_link="$(BINDIR)/.$$bin.install.$$$$"; \
+		rm -f "$$stage_bin" "$$stage_link"; \
+		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$$stage_bin"; \
+		mv -f "$$stage_bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
+		ln -s "$(EVENER_SHARE_BINDIR)/$$bin" "$$stage_link"; \
+		mv -f "$$stage_link" "$(BINDIR)/$$bin"; \
 	done
 
 install-home: PREFIX := $(HOME)/.local

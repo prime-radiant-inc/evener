@@ -38,9 +38,7 @@ import (
 // error nothing is left running.
 func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTrace, func(), error) {
 	log := componentlog.NewWriter("hub", stderr)
-	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		log.Info(fmt.Sprintf(format, args...))
-	})
+	_, stopPprof, err := cmdutil.StartLivePprof(log)
 	if err != nil {
 		log.Info(fmt.Sprintf("%v", err))
 		return nil, nil, err

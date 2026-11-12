@@ -640,10 +640,13 @@ func TestDelegateFinalizationTurnWaitsForQuota(t *testing.T) {
 	})
 
 	// The job finishes; its completion's notification turn meets the limit.
+	// Enqueue the completion before the job leaves the running map, the order
+	// armFinalizedJob uses: a drain pass that lands between the two must see
+	// the pending notification, never neither signal.
+	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	jm.mu.Lock()
 	delete(jm.running, running.JobID)
 	jm.mu.Unlock()
-	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	s.notify()
 	testwait.Until(t, "the finalization turn waits for quota", func() bool {
 		select {
@@ -1136,7 +1139,7 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 	limit := usageLimitError(t, "anthropic", quotaResetAt)
 	progress := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
 	done := communicateCall("finished", "back at work")
-	adapter := &fakeErrAdapter{name: "anthropic", steps: []func(llm.Request) (llm.Response, error){
+	steps := []func(llm.Request) (llm.Response, error){
 		// The old model's first round thinks (signed) and makes progress.
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -1146,16 +1149,17 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 		},
 		// Its next round meets the usage limit.
 		func(llm.Request) (llm.Response, error) { return llm.Response{}, limit },
-	}}
+	}
 	// The new model answers this and every later request (the goal's
 	// continuations included).
 	for range 20 {
-		adapter.steps = append(adapter.steps, func(req llm.Request) (llm.Response, error) {
+		steps = append(steps, func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &done},
 			}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
 		})
 	}
+	adapter := newFakeErrAdapter("anthropic", steps)
 	dir := t.TempDir()
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	clk := agenttest.NewFakeClock()

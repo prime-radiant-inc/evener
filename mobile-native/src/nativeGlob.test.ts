@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,12 @@ const expectedFiles = [
 ];
 
 function fixture(): string {
-	const root = mkdtempSync(join(tmpdir(), "evener-glob-"));
+	// tmpdir() is under /var on macOS, which is a symlink to /private/var. The
+	// Apple-target plugin resolves the paths it registers while the fixture
+	// root otherwise stays unresolved, so path.relative climbs to the
+	// filesystem root instead of producing ../targets/... (#6049). Realpath
+	// the root so both sides of that computation agree on every host.
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "evener-glob-")));
 	onTestFinished(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, "folder.ts"));
 	for (const file of [...expectedFiles, "root.txt"]) {

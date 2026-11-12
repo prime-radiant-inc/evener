@@ -5,10 +5,14 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // An approval for an out-of-roots path targets the resolved location: the
@@ -205,4 +209,162 @@ func sbWrite(s *sandboxFS, abs string) error {
 func sbRead(s *sandboxFS, abs string) error {
 	_, err := s.readFile("read_file", abs)
 	return err
+}
+
+// TestDenial_ApprovalCardMatchesFdCanonicalRefusal covers #6115: a spelling
+// that passes the textual masked/protected checks but whose kernel canonical
+// path names a protected or masked surface must not offer an approval card,
+// because the grant refuses it after Allow. The alternate-spelling volumes
+// (case-insensitive APFS, macOS's /System/Volumes/Data firmlink) are not
+// reproducible on every test host, so the canonical seam itself is varied.
+func TestDenial_ApprovalCardMatchesFdCanonicalRefusal(t *testing.T) {
+	outDir := realTempDir(t)
+	worktree := filepath.Join(outDir, "wt")
+	plain := filepath.Join(outDir, "plain")
+	repoGit := filepath.Join(outDir, "repo", ".git")
+	masked := filepath.Join(outDir, "creds")
+	for _, dir := range []string{worktree, plain, repoGit, masked} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	protected := filepath.Join(repoGit, "config")
+	ordinary := filepath.Join(plain, "ordinary.txt")
+	plainKey := filepath.Join(plain, "key")
+	for _, file := range []string{protected, ordinary, plainKey} {
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rp := &sandbox.ResolvedPolicy{
+		Mode:        sandbox.ModeRestricted,
+		FileTool:    sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}, WriteRoots: []string{worktree}},
+		MaskedPaths: []string{masked},
+		Git:         sandbox.GitLayout{ProtectedPaths: []string{protected}},
+	}
+	orig := canonicalPathForFd
+	t.Cleanup(func() { canonicalPathForFd = orig })
+
+	cases := []struct {
+		name     string
+		write    bool
+		abs      string
+		canonDir string
+		wantCard bool
+	}{
+		{"write to a git-protected alias", true, filepath.Join(plain, "config"), repoGit, false},
+		{"write to a plain file", true, filepath.Join(plain, "new.txt"), plain, true},
+		{"read of a masked alias", false, plainKey, masked, false},
+		{"read of a plain file", false, ordinary, plain, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			canonicalPathForFd = func(int) (string, error) { return tc.canonDir, nil }
+			s := newSandboxFS(rp, "")
+			defer s.close()
+
+			var err error
+			if tc.write {
+				err = sbWrite(s, tc.abs)
+			} else {
+				err = sbRead(s, tc.abs)
+			}
+			var d *sandbox.DeniedError
+			if !asDenied(err, &d) {
+				t.Fatalf("expected an out-of-roots denial, got %v", err)
+			}
+			gotCard := d.GrantTarget != ""
+			if gotCard != tc.wantCard {
+				t.Fatalf("approval card offered = %v (target %q), want %v", gotCard, d.GrantTarget, tc.wantCard)
+			}
+		})
+	}
+}
+
+// TestDenial_OutsideRootFIFONotOpenedForApproval covers #6226: building a
+// restricted-mode read denial must not open an outside-root FIFO. A nonblocking
+// reader open connects the FIFO and releases a producer blocked in open(2),
+// losing its output; the Lstat preflight refuses the card before that open.
+func TestDenial_OutsideRootFIFONotOpenedForApproval(t *testing.T) {
+	outDir := realTempDir(t)
+	worktree := filepath.Join(outDir, "wt")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(outDir, "outside.fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	rp := &sandbox.ResolvedPolicy{
+		Mode:     sandbox.ModeRestricted,
+		FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}, WriteRoots: []string{worktree}},
+	}
+	s := newSandboxFS(rp, "")
+	t.Cleanup(s.close)
+
+	// A producer blocked in open(2) until a reader connects, then writing.
+	done := make(chan struct{})
+	go blockOnFIFOOpen(fifo, done)
+	testwait.Until(t, "the producer to block in open(2)", producerBlockedInOpen)
+	t.Cleanup(func() {
+		// Release and reap the producer even when an assertion fails early.
+		if r, err := os.OpenFile(fifo, os.O_RDONLY|unix.O_NONBLOCK, 0); err == nil {
+			_ = r.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	var d *sandbox.DeniedError
+	if err := sbRead(s, fifo); !asDenied(err, &d) {
+		t.Fatalf("expected an out-of-roots denial, got %v", err)
+	}
+	if d.GrantTarget != "" {
+		t.Fatalf("the denial offered a grant for a FIFO: %q", d.GrantTarget)
+	}
+	select {
+	case <-done:
+		t.Fatalf("constructing the denial opened the FIFO and released the waiting producer")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	reader, err := os.OpenFile(fifo, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("open the FIFO to release the producer: %v", err)
+	}
+	defer reader.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the producer did not finish after a reader opened the FIFO")
+	}
+}
+
+// blockOnFIFOOpen blocks in open(2) until a reader connects, then writes one
+// line. Its name is what producerBlockedInOpen looks for.
+func blockOnFIFOOpen(fifo string, done chan<- struct{}) {
+	defer close(done)
+	f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString("one line\n")
+	_ = f.Close()
+}
+
+// producerBlockedInOpen reports whether blockOnFIFOOpen is currently in a
+// syscall. For a reader-less FIFO, open(2) blocks there until a reader
+// connects, which is the state the denial must not disturb.
+func producerBlockedInOpen() bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for block := range strings.SplitSeq(string(buf[:n]), "\n\n") {
+		if strings.Contains(block, "blockOnFIFOOpen") && strings.Contains(block, "[syscall") {
+			return true
+		}
+	}
+	return false
 }

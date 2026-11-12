@@ -196,68 +196,75 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
 			accepted_at INTEGER NOT NULL DEFAULT 0,
 			recovery_kind TEXT, recovery_reason TEXT)`;
-		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
-		this.db.execSync(
-			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_outbox_target_sequence
-			 ON ${TABLES.outbox} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_optimistic_target_sequence
-			 ON ${TABLES.optimistic} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE INDEX IF NOT EXISTS mutation_recovery_target_sequence
-			 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
-			 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
-		);
-		// Each additive column below is the whole migration for databases from
-		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
-		// addColumnIfMissing checks the table's columns first, and rows written
-		// earlier read as the column's default.
-		//
-		// The ref's durable stop epoch (§4's stop barrier) rides the sequence
-		// row - the same seat the web adapter's sequences store gives it;
-		// existing rows read as "never stopped".
-		this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
-		this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
-		for (const table of Object.values(TABLES)) {
-			// The enqueue-time instance (the web's fused identity fix,
-			// 4059723ab4): cleanup and Retry compare the identity the daemon
-			// actually fences with (instanceId ?? threadId). Rows written before
-			// it read as instanceId-undefined, falling back to the threadId.
-			this.addColumnIfMissing(table, "instance_id", "TEXT");
-			this.addColumnIfMissing(table, "composer_mentions", "TEXT");
-			this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
-			// #4342: the ref's stop epoch at enqueue time - the barrier's own
-			// read, stored, so a refusal can fence its rollback: a Stop whose
-			// cancel scan skipped the attempted row must not be outrun by the
-			// refusal's redelivery. Part of the shared insert shape, so every
-			// record table needs it. Rows written before it read as
-			// captured-at-zero, the conservative direction.
-			this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
-			// When a record was accepted. The prune asks "accepted before this
-			// read began", which enqueue time cannot answer: a replacement
-			// client's read can be out when an earlier request's receipt lands.
-			// A row written before the column existed is backfilled from its
-			// enqueue time (it was accepted before the upgrade, and leaving it
-			// at 0 would exclude exactly the records the prune exists to heal).
-			// The ALTER and its backfill commit together: a process that died
-			// between them would leave the column present and the rows
-			// unstamped, and no later start would retry the backfill.
-			this.addColumnIfMissing(
-				table,
-				"accepted_at",
-				"INTEGER NOT NULL DEFAULT 0",
-				`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+		// One transaction for the whole bootstrap: a fresh database used to
+		// commit each CREATE and migration separately, so every app start (and
+		// every test fixture) paid one durable write per statement. On a host
+		// with a slow or contended disk that burst is what a 5s test timeout
+		// sees first (#5917); one savepoint makes the schema cost one commit.
+		withSavepoint(this.db, "mutation_outbox_schema", () => {
+			for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
+			this.db.execSync(
+				`CREATE UNIQUE INDEX IF NOT EXISTS mutation_outbox_target_sequence
+				 ON ${TABLES.outbox} (target_ref, intent_sequence)`,
 			);
-		}
-		// #4342: unresolved attempt counts live beside the attempted flag on
-		// the outbox table; rows written before it read as zero unresolved
-		// attempts.
-		this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+			this.db.execSync(
+				`CREATE UNIQUE INDEX IF NOT EXISTS mutation_optimistic_target_sequence
+				 ON ${TABLES.optimistic} (target_ref, intent_sequence)`,
+			);
+			this.db.execSync(
+				`CREATE INDEX IF NOT EXISTS mutation_recovery_target_sequence
+				 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
+			);
+			this.db.execSync(
+				`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
+				 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
+			);
+			// Each additive column below is the whole migration for databases from
+			// before it existed: ALTER TABLE has no IF NOT EXISTS, so
+			// addColumnIfMissing checks the table's columns first, and rows written
+			// earlier read as the column's default.
+			//
+			// The ref's durable stop epoch (§4's stop barrier) rides the sequence
+			// row - the same seat the web adapter's sequences store gives it;
+			// existing rows read as "never stopped".
+			this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
+			this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
+			for (const table of Object.values(TABLES)) {
+				// The enqueue-time instance (the web's fused identity fix,
+				// 4059723ab4): cleanup and Retry compare the identity the daemon
+				// actually fences with (instanceId ?? threadId). Rows written before
+				// it read as instanceId-undefined, falling back to the threadId.
+				this.addColumnIfMissing(table, "instance_id", "TEXT");
+				this.addColumnIfMissing(table, "composer_mentions", "TEXT");
+				this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
+				// #4342: the ref's stop epoch at enqueue time - the barrier's own
+				// read, stored, so a refusal can fence its rollback: a Stop whose
+				// cancel scan skipped the attempted row must not be outrun by the
+				// refusal's redelivery. Part of the shared insert shape, so every
+				// record table needs it. Rows written before it read as
+				// captured-at-zero, the conservative direction.
+				this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
+				// When a record was accepted. The prune asks "accepted before this
+				// read began", which enqueue time cannot answer: a replacement
+				// client's read can be out when an earlier request's receipt lands.
+				// A row written before the column existed is backfilled from its
+				// enqueue time (it was accepted before the upgrade, and leaving it
+				// at 0 would exclude exactly the records the prune exists to heal).
+				// The ALTER and its backfill commit together: a process that died
+				// between them would leave the column present and the rows
+				// unstamped, and no later start would retry the backfill.
+				this.addColumnIfMissing(
+					table,
+					"accepted_at",
+					"INTEGER NOT NULL DEFAULT 0",
+					`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+				);
+			}
+			// #4342: unresolved attempt counts live beside the attempted flag on
+			// the outbox table; rows written before it read as zero unresolved
+			// attempts.
+			this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+		});
 	}
 
 	// Adds `column` to `table` when a database from before it existed lacks it.

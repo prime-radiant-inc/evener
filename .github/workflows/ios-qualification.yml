@@ -41,11 +41,31 @@ jobs:
     steps:
       - name: Set the run-owned diagnostic output path
         run: printf 'QUALIFICATION_OUTPUT=%s/ios-qualification-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Check out the tested head without persisted credentials
+      - name: Check out the merge ref with the PR head in its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # A pull_request run takes this workflow file from the merge ref.
+          # Fetch that same tree with full history so the PR head (one of the
+          # merge commit's parents) is local, then let the next step choose
+          # which tree to test.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Choose the tested tree
+        id: tree
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          MERGE: ${{ github.sha }}
+        run: |
+          bash scripts/native/ios/qualification/checkout-ref.sh \
+            "$PR_HEAD" "$MERGE" \
+            scripts/native/ios/build-simulator.sh \
+            scripts/native/ios/qualification \
+            scripts/native/ios/run-ui-tests.sh >> "$GITHUB_OUTPUT"
+      - name: Check out the chosen tree
+        env:
+          CHOSEN_REF: ${{ steps.tree.outputs.ref }}
+        run: git checkout --force "$CHOSEN_REF"
       - name: Select Xcode 26.6
         run: sudo xcode-select --switch /Applications/Xcode_26.6.app
       - name: Set up Go from repository policy

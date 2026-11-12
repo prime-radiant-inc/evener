@@ -11,7 +11,7 @@ import (
 )
 
 func TestWebDebugSubscriptionsRequiresAuthentication(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{AuthToken: "debug-secret"})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{AuthToken: "debug-secret"})
 	req := httptest.NewRequest(http.MethodGet, "/api/debug/subscriptions", nil)
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -21,7 +21,7 @@ func TestWebDebugSubscriptionsRequiresAuthentication(t *testing.T) {
 }
 
 func TestWebDebugSubscriptionsReturnsLiveRegistrySnapshot(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{AuthToken: "debug-secret"})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{AuthToken: "debug-secret"})
 	seedSubscription(t, web.appRPC, "local:thread-http")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/debug/subscriptions", nil)

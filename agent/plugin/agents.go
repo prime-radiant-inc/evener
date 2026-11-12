@@ -108,13 +108,14 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 			return Agent{}, errors.New("agent field \"tools\" must be a list of strings, a comma-separated string, or the string \"all\"")
 		}
 		for _, s := range names {
-			switch strings.TrimSpace(strings.ToLower(s)) {
+			trimmed := strings.TrimSpace(s)
+			switch strings.ToLower(trimmed) {
 			case "all", "*":
 				return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 			case "":
 				// tolerate empty list entries the same way as empty comma segments
 			default:
-				tools = append(tools, toolname.ClaudeToEvener(s))
+				tools = append(tools, toolname.ImportClaudeToolName(trimmed))
 			}
 		}
 	}

@@ -389,6 +389,20 @@ export async function closePage(endpoint, targetId) {
 // page that loaded but never booted is re-navigated at most this many times.
 export const BOOT_RETRY_LIMIT = 2;
 
+// A boot death whose only captured failures are host network changes is not
+// evidence about the harness: the host controls the interface, and a sustained
+// burst (measured already outlasting BOOT_RETRY_LIMIT re-navigations) ends on
+// its own. Retry only that shape up to this larger bound; a deterministic boot
+// death - a harness throw, a bad href, a broken import graph - keeps
+// BOOT_RETRY_LIMIT so a real regression still fails fast.
+export const BOOT_NETWORK_RETRY_LIMIT = 5;
+
+// The pause after a network-change boot death, doubling per consecutive one and
+// capped, so a sustained burst is asked again as it settles instead of inside
+// it. The deterministic pause stays BOOT_RETRY_DELAY_MS.
+export const BOOT_NETWORK_RETRY_DELAY_MS = 1000;
+export const BOOT_NETWORK_RETRY_MAX_DELAY_MS = 8000;
+
 /**
  * The ceiling on every in-page evaluation, named like the Go tripwires in
  * PR #852 and PR #873.
@@ -544,9 +558,11 @@ async function navigateToOnce({ ws, send }, url, onNavigated) {
  * (a dead burst leaves link.sheet null). It is evaluated AFTER the load event:
  * module scripts block the load event until their whole static import tree
  * has evaluated, so at load time a marker that will ever exist already does.
- * An unbooted page is re-navigated, bounded by BOOT_RETRY_LIMIT, and one that
- * never recovers fails with the boot cause - never the fonts error - plus the
- * Network.loadingFailed evidence captured inside the window.
+ * An unbooted page is re-navigated, bounded by BOOT_RETRY_LIMIT, or by the
+ * wider BOOT_NETWORK_RETRY_LIMIT when its attempts die only on a host
+ * network-change burst, and one that never recovers fails with the boot cause -
+ * never the fonts error - plus the Network.loadingFailed evidence captured
+ * inside the window.
  *
  * THE ATTRIBUTION IS EARNED, NOT ASSUMED: a missing boot marker alone does
  * not name the cause. A harness entry whose module-init path throws at top
@@ -585,11 +601,21 @@ async function navigateToOnce({ ws, send }, url, onNavigated) {
  * @param {string} [options.bootExpression] - in-page expression, truthy when booted
  * @param {string} [options.bootLabel] - human name of the marker for errors and logs
  * @param {number} [options.retryDelayMs] - pause before each re-navigation
+ * @param {number} [options.networkRetryDelayMs] - first pause after a
+ *   network-change-only boot death; doubles per consecutive one
+ * @param {number} [options.networkRetryLimit] - re-navigations allowed when
+ *   every captured failure is a host network change
  */
 export async function navigateTo(
   page,
   url,
-  { bootExpression = null, bootLabel = null, retryDelayMs = BOOT_RETRY_DELAY_MS } = {},
+  {
+    bootExpression = null,
+    bootLabel = null,
+    retryDelayMs = BOOT_RETRY_DELAY_MS,
+    networkRetryDelayMs = BOOT_NETWORK_RETRY_DELAY_MS,
+    networkRetryLimit = BOOT_NETWORK_RETRY_LIMIT,
+  } = {},
 ) {
   if (!bootExpression) return navigateToOnce(page, url);
   const { ws, send } = page;
@@ -788,6 +814,12 @@ export async function navigateTo(
   };
   ws.addEventListener("message", onLoadingFailed);
   let attempts = 0;
+  // Consecutive network-change deaths (the backoff resets after any other
+  // death) and the widest re-navigation bound this run actually used (the
+  // terminal attempt's own evidence cannot report a run whose earlier
+  // attempts earned the wider budget).
+  let networkDeaths = 0;
+  let widestRetryLimit = BOOT_RETRY_LIMIT;
   try {
     // Network events only flow while the domain is enabled, and only this
     // window needs them. The enable sits inside the SAME cleanup scope as the
@@ -828,20 +860,35 @@ export async function navigateTo(
       // consume a LATER navigation's commit: expire it on timeout.
       await waitForCommit(commitMatches, () => removePendingLoaderless(navigating));
       if (await evaluate(send, bootExpression)) return;
-      if (attempts > BOOT_RETRY_LIMIT) {
+      // Only a boot death whose own attempt captured a network-change BURST
+      // and nothing else earns the wider, backed-off budget: the host owns
+      // that cause, and the same page boots once the interface settles. Two
+      // failed requests, one of them the entry burst's script, is the measured
+      // burst shape (x55, x108); a single stray failure is not, and a silent
+      // deterministic death - a module throw emits no failed request - must
+      // never borrow the wider budget through one unrelated net error. Any
+      // other death keeps the deterministic bound.
+      const attemptFailures = failuresForAttempt(attempts).map((failure) => failure.params);
+      const networkFailures = attemptFailures.filter(isNetworkChangeFailure);
+      const otherFailures = attemptFailures.filter((failure) => !isNetworkChangeFailure(failure));
+      const networkDeath =
+        otherFailures.length === 0 &&
+        networkFailures.length >= 2 &&
+        networkFailures.some((failure) => failure.type === "Script");
+      const retryLimit = networkDeath ? networkRetryLimit : BOOT_RETRY_LIMIT;
+      widestRetryLimit = Math.max(widestRetryLimit, retryLimit);
+      networkDeaths = networkDeath ? networkDeaths + 1 : 0;
+      if (attempts > retryLimit) {
         const budget =
-          `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
-          `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
+          `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${widestRetryLimit} ` +
+          `re-navigation${widestRetryLimit === 1 ? "" : "s"} allowed)`;
         const verdict =
           `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
           `so the page is a dead document no measurement can read`;
         // Only the FINAL attempt's owned failures name the cause: earlier
         // attempts' failures exist but are never read here.
-        const finalFailures = failuresForAttempt(attempts).map((failure) => failure.params);
-        const networkEvidence = summarizeLoadingFailures(finalFailures.filter(isNetworkChangeFailure));
-        const otherEvidence = summarizeLoadingFailures(
-          finalFailures.filter((failure) => !isNetworkChangeFailure(failure)),
-        );
+        const networkEvidence = summarizeLoadingFailures(networkFailures);
+        const otherEvidence = summarizeLoadingFailures(otherFailures);
         let diagnosis;
         if (networkEvidence && otherEvidence) {
           // A window holding BOTH a network change and deterministic failures
@@ -884,14 +931,17 @@ export async function navigateTo(
         }
         throw new Error(diagnosis);
       }
-      const captured = failuresForAttempt(attempts).length;
+      const captured = attemptFailures.length;
       console.error(
         `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
           `${bootLabel ?? bootExpression} is missing` +
           (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
           ") - re-navigating",
       );
-      await delay(retryDelayMs);
+      const nextDelayMs = networkDeath
+        ? Math.min(networkRetryDelayMs * 2 ** (networkDeaths - 1), BOOT_NETWORK_RETRY_MAX_DELAY_MS)
+        : retryDelayMs;
+      await delay(nextDelayMs);
     }
   } finally {
     await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});

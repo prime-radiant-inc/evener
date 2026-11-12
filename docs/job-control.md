@@ -138,10 +138,11 @@ comes from a human or a Manager. It never follows unrelated later work or
 infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
 it keeps no continuation graph or terminal backlog. The existing subscription
-consumer retains the original candidate and held history cut while retrying a
-transient read-call failure. That answer-continuation retry reads with a
-two-second budget per call, two seconds between retries, and at most five
-consecutive failed calls. An operation timeout while the watch remains alive, transport
+consumer retains the original candidate while retrying a transient read-call
+failure; if the retry finds the held cut stale after a rebuild, it reads the
+fresh cut and re-asks the same candidate against it. That answer-continuation
+retry reads with a two-second budget per call, two seconds between retries,
+and at most five consecutive failed calls. An operation timeout while the watch remains alive, transport
 unavailability, index contention or rebuilding, and an unclassified internal
 read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
@@ -152,14 +153,15 @@ or generation, and history truncation end observation immediately. A
 same-target history discontinuity — a new epoch or incarnation for the same
 ref, instance and generation — re-anchors the observation when it arrives as
 the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
-latest window; unlike a continuing thread's re-read it does not page further
-back, so recorded evidence older than that window is not replayed to the
-watcher. One surfacing mid-read — while a continuing
-gap is still paging, or against a held cut a live continuation verdict still
-needs — ends the observation with re-registration guidance instead. Permanent
-request refusals and typed history failures also end it;
-none is a negative verdict. Exhausted retries end the watch with one durable
-end notice and re-registration guidance, never inferred completion. Index
+latest window and pages further back to the oldest position the pre-rebuild
+held window sampled, so recorded evidence older than the latest page still
+reaches the watcher. One surfacing mid-read — while a continuing gap is still
+paging, or against a held cut a live continuation verdict still needs —
+re-reads the authoritative latest cut and re-anchors; the continuation verdict
+is re-asked against that cut rather than discarding its candidate. Permanent
+request refusals and typed history failures also end it; none is a negative
+verdict. Exhausted retries end the watch with one durable end notice and
+re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may
 still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
