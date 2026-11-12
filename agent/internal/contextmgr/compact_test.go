@@ -227,14 +227,11 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 
 // TestMaybeCompact_SummarizeThreshold verifies summarize fires through the orchestrator.
 func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -284,14 +281,11 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 }
 
 func TestForceCompact_RunsAllLayers(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := testProfile("openai", "test", 100_000)
@@ -365,14 +359,11 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 
 func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	// ForceCompact should fire OnCompactionTurn for TurnSummary (L4).
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced summary")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced summary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -465,14 +456,11 @@ func TestForceCompact_ReportsSummarized(t *testing.T) {
 }
 
 func TestForceCompact_ReportsGeneratedSummary(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
-			},
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := testProfile("openai", "test", 100_000)
