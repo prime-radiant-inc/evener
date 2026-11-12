@@ -171,10 +171,13 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 	// later notification turn of the same model turn. Await it across calls
 	// instead of pinning the first one; an end_turn=false acknowledgement keeps
 	// the turn alive for the pending frame.
-	awaitRoster := func() (frames []rosterFrameView, discovered bool) {
-		// A missing frame must fail naming the state it waited for, not with a
-		// bare context deadline after the end_turn=false acknowledgements.
-		const callBound = 50
+	awaitRoster := func(callID string) (frames []rosterFrameView, discovered bool) {
+		// A failed registration or end notice must end this turn before the
+		// retry: the model cannot finish a turn it keeps acknowledging with
+		// end_turn=false, so ProcessInput never returns through done. The call
+		// bound is the fallback for a turn that makes no progress for another
+		// reason; either way, drain it with a terminal acknowledgement.
+		const callBound = 5
 		for calls := 0; ; {
 			select {
 			case call := <-adapter.calls:
@@ -184,8 +187,22 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 					call.reply <- activityRelayTool("communicate", communicateArgs("reconnect discovered"))
 					return frames, true
 				}
-				if calls >= callBound {
-					t.Fatalf("roster frame local:b never arrived after %d model calls; last frames = %+v", calls, frames)
+				if rosterRegistrationFailed(call.request, callID) || rosterWatchEnded(call.request) || calls >= callBound {
+					call.reply <- activityRelayTool("communicate", communicateArgs("reconnect registration ended"))
+					for {
+						select {
+						case err := <-done:
+							running = false
+							if err != nil {
+								t.Fatal(err)
+							}
+							return frames, false
+						case later := <-adapter.calls:
+							later.reply <- activityRelayTool("communicate", communicateArgs("turn drained"))
+						case <-ctx.Done():
+							t.Fatalf("reconnect turn did not drain after terminal acknowledgement; last frames = %+v: %v", frames, ctx.Err())
+						}
+					}
 				}
 				call.reply <- rosterContinue("awaiting reconnect roster")
 			case err := <-done:
@@ -199,14 +216,14 @@ func TestHubRosterWatchBrokerReconnectDiscoversWorkingWorker(t *testing.T) {
 			}
 		}
 	}
-	_, discovered := awaitRoster()
+	_, discovered := awaitRoster("roster-reconnect")
 	if !discovered {
 		// A failed reconnect handoff can durably end the watch with no frame at
 		// all. Drive the one documented re-register retry on its own input; the
 		// drain loop never runs two notification turns in a row.
 		startTurn("reconnect roster retry")
 		next().reply <- rosterRegister("roster-reconnect-retry")
-		frames, retried := awaitRoster()
+		frames, retried := awaitRoster("roster-reconnect-retry")
 		if !retried {
 			t.Fatalf("broker reconnect frames after one re-register = %+v, want local:b as a working worker in a delta or full snapshot", frames)
 		}
@@ -226,6 +243,39 @@ func rosterContinue(message string) llm.Response {
 	args := communicateArgs(message)
 	args["end_turn"] = false
 	return activityRelayTool("communicate", args)
+}
+
+// rosterRegistrationFailed reports a structured error tool result for the watch
+// registration this round sent. A failed persist reaches the model as an
+// ordinary tool-result error, so the test must end the turn rather than keep
+// acknowledging it with end_turn=false.
+func rosterRegistrationFailed(request llm.Request, callID string) bool {
+	for _, message := range request.Messages {
+		for _, part := range message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil || !part.ToolResult.IsError {
+				continue
+			}
+			if part.ToolResult.ToolCallID == callID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rosterWatchEnded reports the watch's own end notice by the frame's structured
+// job_id field: an ended hub watch delivers its final frame with the hub ref
+// plus "#ended" as the job. This is a frame identity, not message copy.
+func rosterWatchEnded(request llm.Request) bool {
+	for _, message := range request.Messages {
+		for line := range strings.SplitSeq(message.Text(), "\n") {
+			value, ok := strings.CutPrefix(line, "job_id: ")
+			if ok && strings.HasSuffix(strings.TrimSpace(value), "#ended") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type rosterFrameView struct {
