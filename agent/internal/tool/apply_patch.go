@@ -20,28 +20,72 @@ func ApplyPatch(fm execenv.FileMutator, patch string) (string, error) {
 }
 
 // ApplyPatchCtx is ApplyPatch with the caller's context threaded to each op's
-// read, so a cancelled call ends a read parked on a stream.
+// read, so a cancelled call ends a read parked on a stream. The result lists
+// one line per applied operation, led by its patchChangeKind, so the caller
+// can tell a created, moved or deleted file from an updated one.
 func ApplyPatchCtx(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
-	ops, err := parseV4APatch(patch)
+	changes, err := applyPatchChanges(ctx, fm, patch)
 	if err != nil {
 		return "", err
 	}
-	var touched []string
-	for _, op := range ops {
-		paths, err := op.apply(ctx, fm)
-		if err != nil {
-			return "", err
-		}
-		touched = append(touched, paths...)
-	}
-	if len(touched) == 0 {
+	if len(changes) == 0 {
 		return "no changes", nil
 	}
-	return "applied patch to:\n" + strings.Join(touched, "\n"), nil
+	lines := make([]string, len(changes))
+	for i, change := range changes {
+		lines[i] = change.String()
+	}
+	return "applied patch:\n" + strings.Join(lines, "\n"), nil
+}
+
+// applyPatchChanges parses patch and applies its operations in order,
+// returning what each one did. It stops at the first operation that fails.
+func applyPatchChanges(ctx context.Context, fm execenv.FileMutator, patch string) ([]patchChange, error) {
+	ops, err := parseV4APatch(patch)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]patchChange, 0, len(ops))
+	for _, op := range ops {
+		change, err := op.apply(ctx, fm)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, change)
+	}
+	return changes, nil
+}
+
+// patchChangeKind is what one applied operation did to its file. It leads the
+// operation's line in apply_patch's result.
+type patchChangeKind string
+
+const (
+	patchAdded   patchChangeKind = "added"
+	patchUpdated patchChangeKind = "updated"
+	patchMoved   patchChangeKind = "moved"
+	patchDeleted patchChangeKind = "deleted"
+)
+
+// patchChange is one applied operation. from is set only for patchMoved: the
+// file's path before the move, with path its destination.
+type patchChange struct {
+	kind patchChangeKind
+	path string
+	from string
+}
+
+// String renders the change as its result line: the kind and the path, or for
+// a move the kind and "from -> path".
+func (c patchChange) String() string {
+	if c.kind == patchMoved {
+		return string(c.kind) + " " + c.from + " -> " + c.path
+	}
+	return string(c.kind) + " " + c.path
 }
 
 type patchOp interface {
-	apply(ctx context.Context, fm execenv.FileMutator) ([]string, error)
+	apply(ctx context.Context, fm execenv.FileMutator) (patchChange, error)
 }
 
 // readFileRawCtx reads path through fm with the caller's context when fm
@@ -60,26 +104,26 @@ type addFileOp struct {
 	lines []string
 }
 
-func (o addFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string, error) {
+func (o addFileOp) apply(_ context.Context, fm execenv.FileMutator) (patchChange, error) {
 	content := strings.Join(o.lines, "\n")
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
 	if err := fm.WriteFileRaw(o.path, []byte(content), 0o644); err != nil {
-		return nil, err
+		return patchChange{}, err
 	}
-	return []string{o.path}, nil
+	return patchChange{kind: patchAdded, path: o.path}, nil
 }
 
 type deleteFileOp struct {
 	path string
 }
 
-func (o deleteFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string, error) {
+func (o deleteFileOp) apply(_ context.Context, fm execenv.FileMutator) (patchChange, error) {
 	if err := fm.RemovePath(o.path); err != nil {
-		return nil, err
+		return patchChange{}, err
 	}
-	return []string{o.path}, nil
+	return patchChange{kind: patchDeleted, path: o.path}, nil
 }
 
 type updateFileOp struct {
@@ -88,10 +132,10 @@ type updateFileOp struct {
 	hunks  [][]string // diff lines per hunk (may include leading @@ hint line)
 }
 
-func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]string, error) {
+func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) (patchChange, error) {
 	origBytes, err := readFileRawCtx(ctx, fm, o.path)
 	if err != nil {
-		return nil, err
+		return patchChange{}, err
 	}
 	origText := strings.ReplaceAll(string(origBytes), "\r\n", "\n")
 	hasFinalNL := strings.HasSuffix(origText, "\n")
@@ -126,7 +170,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 			if hunkLine == 0 {
 				diagLine = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
 			}
-			return nil, &PatchMismatchError{
+			return patchChange{}, &PatchMismatchError{
 				kind:      "expected lines not found",
 				Path:      o.path,
 				HunkLine:  hunkLine,
@@ -149,16 +193,15 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 		newText += "\n"
 	}
 	if err := fm.WriteFileRaw(o.path, []byte(newText), 0o644); err != nil {
-		return nil, err
+		return patchChange{}, err
 	}
-	paths := []string{o.path}
 	if strings.TrimSpace(o.moveTo) != "" && o.moveTo != o.path {
 		if err := fm.RenamePath(o.path, o.moveTo); err != nil {
-			return nil, err
+			return patchChange{}, err
 		}
-		paths = append(paths, o.moveTo)
+		return patchChange{kind: patchMoved, path: o.moveTo, from: o.path}, nil
 	}
-	return paths, nil
+	return patchChange{kind: patchUpdated, path: o.path}, nil
 }
 
 func parseV4APatch(patch string) ([]patchOp, error) {

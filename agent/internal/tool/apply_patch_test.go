@@ -1,10 +1,12 @@
 package tool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,12 +56,20 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 *** Delete File: d.txt
 *** End Patch
 `
-	out, err := ApplyPatch(testMutator(dir), patch)
+	changes, err := applyPatchChanges(context.Background(), testMutator(dir), patch)
 	if err != nil {
-		t.Fatalf("ApplyPatch: %v", err)
+		t.Fatalf("applyPatchChanges: %v", err)
 	}
-	if !strings.Contains(out, "b.txt") || !strings.Contains(out, "a.txt") || !strings.Contains(out, "c.txt") {
-		t.Fatalf("output: %q", out)
+	// Issue #6192: each operation reports what it did, and a move names its
+	// source and destination instead of listing them as two plain paths.
+	want := []patchChange{
+		{kind: patchAdded, path: "b.txt"},
+		{kind: patchUpdated, path: "a.txt"},
+		{kind: patchMoved, path: "c.txt", from: "b.txt"},
+		{kind: patchDeleted, path: "d.txt"},
+	}
+	if !slices.Equal(changes, want) {
+		t.Fatalf("changes = %+v, want %+v", changes, want)
 	}
 
 	// a.txt updated
@@ -85,6 +95,40 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 	// d.txt deleted
 	if _, err := os.Stat(filepath.Join(dir, "d.txt")); err == nil {
 		t.Fatalf("expected d.txt to be deleted")
+	}
+}
+
+// TestApplyPatch_ResultHasOneLinePerOperation pins the result's shape: one
+// line after the header for each operation, so a move occupies a single line
+// that names both of its paths.
+func TestApplyPatch_ResultHasOneLinePerOperation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "old.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n" +
+		"*** Add File: new.txt\n+fresh\n" +
+		"*** Update File: old.txt\n*** Move to: moved.txt\n@@\n keep\n" +
+		"*** Delete File: gone.txt\n" +
+		"*** End Patch\n"
+
+	out, err := ApplyPatch(testMutator(dir), patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 4 {
+		t.Fatalf("result has %d lines, want a header and one line per operation: %q", len(lines), out)
+	}
+	for i, paths := range [][]string{{"new.txt"}, {"old.txt", "moved.txt"}, {"gone.txt"}} {
+		for _, path := range paths {
+			if !strings.Contains(lines[i+1], path) {
+				t.Errorf("result line %d = %q, want it to name %s", i+1, lines[i+1], path)
+			}
+		}
 	}
 }
 
