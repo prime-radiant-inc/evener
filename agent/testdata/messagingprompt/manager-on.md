@@ -198,21 +198,21 @@ Default task list:
 <agent>
 Name: `doctor`
 Description: On-demand forensic auditor for evener sessions, jobs, watches, and the session tree. Reads canonical durable state through the evener doctor tools and emits structured Findings. Spawn it or delegate to it to diagnose a session — its own, another's, or a fleet — and to write/repair runbooks under graduated guardrails.
-Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `doctor_evener`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `memory_read`, `memory_search`, `read_file`, `task_list`, `use_skill`, `write_file`
+Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `doctor_evener`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `read_file`, `read_transcript`, `task_list`, `use_skill`, `write_file`
 Default task list:
 - none
 </agent>
 <agent>
 Name: `explorer`
 Description: Fast workspace scout with a real shell. Reports workspace facts and checks local or network sources when the current environment and sandbox allow it; read-only in effect, it never writes or modifies anything and has no edit tools; a seat that must write files (including a reviewer that writes its report) uses subagent.
-Capabilities: Default tools: `communicate`, `compact_context`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `memory_read`, `memory_search`, `read_file`, `task_list`, `use_skill`
+Capabilities: Default tools: `communicate`, `compact_context`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `read_file`, `read_transcript`, `task_list`, `use_skill`
 Default task list:
 - `Scan workspace`: List files, identify tests, data files, and deliverables. Include relevant parent task details in the `delegate` task prompt for this step.
 </agent>
 <agent>
 Name: `subagent`
 Description: Implementer for one bounded unit of work: owns the paths its brief names, makes the change, runs the check that proves it, and reports the evidence. Also handles a scoped investigation or review when that is what the brief asks for. Delegates in turn by default, one level below its parent's allowance; a parent that passes `delegation_allowance` 0 makes it a leaf.
-Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `delegate`, `delegate_send`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `memory_read`, `memory_search`, `read_file`, `read_transcript`, `task_list`, `use_skill`, `web_fetch`, `write_file`
+Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `delegate`, `delegate_send`, `exec_command`, `find_files`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `read_file`, `read_transcript`, `task_list`, `use_skill`, `web_fetch`, `write_file`
 Default task list:
 - none
 </agent>

@@ -235,6 +235,8 @@ description: claude
 tools:
   - Read
   - Bash
+  - " Skill "
+  - " mcp__my-srv__my-tool "
 ---
 Body.
 `)
@@ -245,8 +247,14 @@ Body.
 	if agent.AllTools {
 		t.Error("AllTools should be false")
 	}
-	if len(agent.Tools) != 2 || agent.Tools[0] != "read_file" || agent.Tools[1] != "shell" {
-		t.Errorf("Tools = %v, want [read_file shell] (Claude names mapped to evener canonical)", agent.Tools)
+	want := []string{"read_file", "shell", "use_skill", "my_srv__my_tool"}
+	if len(agent.Tools) != len(want) {
+		t.Fatalf("Tools = %v, want %v", agent.Tools, want)
+	}
+	for i, w := range want {
+		if agent.Tools[i] != w {
+			t.Errorf("Tools[%d] = %q, want %q", i, agent.Tools[i], w)
+		}
 	}
 }
 
