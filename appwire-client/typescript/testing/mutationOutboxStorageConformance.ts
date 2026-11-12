@@ -528,38 +528,17 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       });
     });
 
-    test("listTargetRefs reports every ref with a waiting outbox record", async () => {
+    test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
       await storage.enqueueIntent(conformanceTextIntent("a", CONFORMANCE_TARGET));
       const accepted = await storage.enqueueIntent({
         ...conformanceTextIntent("b", CONFORMANCE_OTHER_TARGET),
         optimisticDisplay: { input: [{ type: "text", text: "b" }] },
       });
       await storage.settleReceipt(accepted.clientMutationId, "pending");
-      // The second ref's waiting record now lives in the optimistic table as a
-      // display-only accepted copy, so only the ref with outbox work remains a
-      // discovery target.
+      // The ref's waiting record now lives in the optimistic table; both stores
+      // feed listTargetRefs.
       await expect(storage.getOptimistic(accepted.clientMutationId)).resolves.toMatchObject({ state: "accepted" });
-      await expect(storage.listTargetRefs()).resolves.toEqual([CONFORMANCE_TARGET]);
-    });
-
-    test("listTargetRefs keeps a ref whose optimistic record waits beside outbox work", async () => {
-      await storage.enqueueIntent(conformanceTextIntent("a", CONFORMANCE_TARGET));
-      const accepted = await storage.enqueueIntent({
-        ...conformanceTextIntent("b", CONFORMANCE_TARGET),
-        optimisticDisplay: { input: [{ type: "text", text: "b" }] },
-      });
-      await storage.settleReceipt(accepted.clientMutationId, "pending");
-      await expect(storage.listTargetRefs()).resolves.toEqual([CONFORMANCE_TARGET]);
-    });
-
-    test("listTargetRefs omits a ref whose only durable record is an accepted optimistic copy", async () => {
-      const accepted = await storage.enqueueIntent({
-        ...conformanceTextIntent("b", CONFORMANCE_OTHER_TARGET),
-        optimisticDisplay: { input: [{ type: "text", text: "b" }] },
-      });
-      await storage.settleReceipt(accepted.clientMutationId, "pending");
-      await expect(storage.getOptimistic(accepted.clientMutationId)).resolves.toMatchObject({ state: "accepted" });
-      await expect(storage.listTargetRefs()).resolves.toEqual([]);
+      await expect(storage.listTargetRefs()).resolves.toEqual([CONFORMANCE_TARGET, CONFORMANCE_OTHER_TARGET].sort());
     });
 
     // A pending receipt means accepted but not yet described by authoritative

@@ -110,10 +110,7 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // enqueue the interrupt record in one transaction — both or neither.
   // The generated id obeys enqueueIntent's cross-store uniqueness invariant.
   enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
-  // Every ref the outbox can still dispatch for, for a full scan: a ref whose
-  // durable rows are all accepted optimistic copies (display-only, nothing to
-  // dispatch) is not a target. Any outbox row in any state keeps the ref
-  // listed.
+  // Every ref with a record still waiting, for a full scan.
   listTargetRefs(): Promise<string[]>;
   // --- used by the dispatcher ---
   getOutbox(clientMutationId: string): Promise<MutationOutboxRecord<A> | undefined>;
