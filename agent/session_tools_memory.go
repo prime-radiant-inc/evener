@@ -293,10 +293,10 @@ func memoryIndexSliceFooter(body, scope, toolName string, offset, limit *int) st
 		winLimit = *limit
 	}
 	totalLines := strings.Count(body, "\n") + 1
-	end := start + winLimit - 1
-	if end >= totalLines {
+	if start > totalLines || winLimit > totalLines-start {
 		return ""
 	}
+	end := start + winLimit - 1
 	return fmt.Sprintf("\n[Showing lines %d-%d of %d; read more with %s(scope=%q, file_path=\"MEMORY.md\", offset=%d)]",
 		start, end, totalLines, toolName, scope, end+1)
 }
