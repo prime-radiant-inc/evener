@@ -862,6 +862,8 @@ func TestRenderTranscript_UnpairedResultUsesOriginatingWireToolName(t *testing.T
 	entries := []transcript.Entry{
 		toolCallEntry(call("g1", "grep_search", `{"pattern":"needle","path":"agent"}`)),
 		toolResultEntry(result("g1", "grep", "a.go:1:needle", false)),
+		toolCallEntry(call("comm-1", "communicate", `{"message":"done","end_turn":true}`)),
+		toolResultEntry(result("comm-1", "communicate", `{"accepted":true,"end_turn":true}`, false)),
 	}
 	out, _ := renderTranscript(transcript.Header{}, entries, "1-1", renderOpts{})
 	if !strings.Contains(out, "[call not shown] `grep_search`") {
@@ -869,6 +871,11 @@ func TestRenderTranscript_UnpairedResultUsesOriginatingWireToolName(t *testing.T
 	}
 	if strings.Contains(out, "[call not shown] `grep`") {
 		t.Fatalf("unpaired result fell back to canonical grep despite originating grep_search call:\n%s", out)
+	}
+
+	commSlice, _ := renderTranscript(transcript.Header{}, entries, "3-3", renderOpts{})
+	if strings.Contains(commSlice, "[call not shown]") || strings.Contains(commSlice, `"accepted"`) {
+		t.Fatalf("sub-range starting on communicate ack leaked internal ack card:\n%s", commSlice)
 	}
 }
 
@@ -1091,6 +1098,7 @@ func TestToolInputSummary(t *testing.T) {
 		{"edit_file summary not strings", "edit_file", `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`, "a.go", "aaaa"},
 		{"grep shows pattern and path", "grep", `{"pattern":"needle","path":"./agent"}`, "needle", ""},
 		{"grep_search shows pattern and path", "grep_search", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
+		{"grep_search custom schema falls back to scalar args", "grep_search", `{"query":"custom","limit":5}`, "query=custom", ""},
 		{"grep_files shows pattern and path", "grep_files", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
 		{"find_files shows pattern", "find_files", `{"pattern":"**/*.go"}`, "`**/*.go`", "pattern="},

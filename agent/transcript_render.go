@@ -182,6 +182,14 @@ func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, sta
 		}
 	}
 
+	if opt.callNames == nil {
+		for id := range idx.byCallID {
+			if !idx.consumed[id] {
+				opt.callNames = collectToolCallNames(entries)
+				break
+			}
+		}
+	}
 	writeUnpairedResults(b, &idx, opt)
 	return byteLimit == 0 || b.Len() <= byteLimit
 }
@@ -1269,11 +1277,20 @@ func wantFullResult(opt renderOpts, callOwnerSeq, resultOwnerSeq int) bool {
 // under a "Tool results without a shown call" subsection, each as a
 // [call not shown] card. Spec §Tool Call Condensation.
 func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) {
+	resultTool := effectiveResultToolName(opt)
 	ids := make([]string, 0, len(idx.byCallID))
-	for id := range idx.byCallID {
-		if !idx.consumed[id] {
-			ids = append(ids, id)
+	for id, pr := range idx.byCallID {
+		if idx.consumed[id] {
+			continue
 		}
+		displayName := pr.result.Name
+		if callName := opt.callNames[id]; callName != "" {
+			displayName = callName
+		}
+		if !pr.result.IsError && displayName == resultTool {
+			continue
+		}
+		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
 		return
@@ -1828,9 +1845,11 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return ""
 	}
 
-	switch wirenames.Canonical(name) {
+	canonical := wirenames.Canonical(name)
+	var summary string
+	switch canonical {
 	case "shell":
-		return truncRunes(get("command"), 120)
+		summary = truncRunes(get("command"), 120)
 
 	case "read_file":
 		s := get("file_path")
@@ -1844,31 +1863,31 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		if len(rangeParts) > 0 {
 			s += " (" + strings.Join(rangeParts, ", ") + ")"
 		}
-		return s
+		summary = s
 
 	case "write_file":
 		path := get("file_path")
-		return fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
+		summary = fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
 
 	case "edit_file":
 		path := get("file_path")
-		summary := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
+		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
 		if get("replace_all") == "true" {
-			summary += ", all"
+			s += ", all"
 		}
-		return summary + ")"
+		summary = s + ")"
 
 	case "grep":
-		return joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
+		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
 
 	case "glob":
-		return joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
+		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
 
 	case "web_fetch":
-		return joinSummary(hostOf(get("url")), quoteIfSet(get("question")))
+		summary = joinSummary(hostOf(get("url")), quoteIfSet(get("question")))
 
 	case "web_search":
-		return quoteIfSet(get("query"))
+		summary = quoteIfSet(get("query"))
 
 	case "delegate":
 		// Older transcripts carry the brief under the retired task key;
@@ -1884,20 +1903,24 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		if mw := get("max_wait_ms"); mw != "" && mw != "0" {
 			parts = append(parts, "max_wait_ms="+mw)
 		}
-		return joinSummary(parts...)
+		summary = joinSummary(parts...)
 
 	case "job_send_message":
-		return joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
+		summary = joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "delegate_send":
-		return joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
+		summary = joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "use_skill":
-		return get("skill_name")
+		summary = get("skill_name")
 
 	default:
 		return unknownToolSummary(m)
 	}
+	if summary == "" && name != canonical && len(m) > 0 {
+		return unknownToolSummary(m)
+	}
+	return summary
 }
 
 // unknownToolSummary lists up to three scalar arguments of an unknown tool, in

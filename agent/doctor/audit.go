@@ -458,11 +458,17 @@ func (m metricSource) resolve(path string) (any, error) {
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_calls.<tool>", path)
 		}
+		if v, exact := m.health.ToolCalls[rest]; exact {
+			return v, nil
+		}
 		return m.health.ToolCalls[wirenames.Canonical(rest)], nil
 	case "tool_errors":
 		tool, class, _ := strings.Cut(rest, ".")
 		if tool == "" || class == "" {
 			return nil, fmt.Errorf("metric %q: expected tool_errors.<tool>.<class>", path)
+		}
+		if byClass, exact := m.health.ToolErrors[tool]; exact {
+			return byClass[class], nil
 		}
 		return m.health.ToolErrors[wirenames.Canonical(tool)][class], nil
 	case "apilog":

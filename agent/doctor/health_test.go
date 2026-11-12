@@ -752,4 +752,38 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 	if matched, err := chk.evaluate(m); err != nil || !matched {
 		t.Errorf("AuditCheck(longest_identical_run.tool == run_shell_command) = (%t, %v), want (true, nil)", matched, err)
 	}
+
+	customTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("custom")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "exec_command", `{"command":"pwd"}`),
+			healthToolCall("c2", "grep_search", `{"query":"custom"}`),
+			healthToolCall("c3", "run_shell_command", `{"message":"done","end_turn":true}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "shell", "/tmp", false),
+			healthToolResult("c2", "grep_search", "bad query", true),
+			healthToolResult("c3", "run_shell_command", `{"accepted":true}`, false),
+		}}),
+	}
+	writeSessionsFixtureSession(t, bucket, sidB,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		customTurns,
+		schema.SessionMeta{
+			TurnCount: len(customTurns),
+			Config:    schema.ConfigSnapshot{ResultToolName: "run_shell_command"},
+		},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+	hc, err := TranscriptHealth(context.Background(), base, sidB)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(custom): %v", err)
+	}
+	if hc.ToolCalls["shell"] != 1 || hc.ToolCalls["run_shell_command"] != 1 || hc.ToolCalls["grep_search"] != 1 || hc.ToolCalls["grep"] != 0 {
+		t.Errorf("custom session ToolCalls = %+v, want shell=1 run_shell_command=1 grep_search=1 grep=0", hc.ToolCalls)
+	}
+	if hc.ToolErrors["grep_search"]["other"] != 1 || len(hc.ToolErrors["grep"]) != 0 {
+		t.Errorf("custom session ToolErrors = %+v, want grep_search[other]=1 and grep empty", hc.ToolErrors)
+	}
 }

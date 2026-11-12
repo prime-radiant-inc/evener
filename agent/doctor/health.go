@@ -12,7 +12,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -168,6 +167,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	var occurrences []toolCallOccurrence
 	resultSeen := map[string]bool{}
 	resultErrors := map[string]bool{}
+	resolver := newSessionToolResolver(doc.Entries, resultTool)
 
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
@@ -176,7 +176,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				if part.ToolCall == nil {
 					continue
 				}
-				name := wirenames.Canonical(part.ToolCall.Name)
+				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
 				occurrences = append(occurrences, toolCallOccurrence{
 					signature: toolCallSignature(name, part.ToolCall),
@@ -196,7 +196,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 					resultErrors[part.ToolResult.ToolCallID] = part.ToolResult.IsError
 				}
 				if part.ToolResult.IsError {
-					errTool := wirenames.Canonical(part.ToolResult.Name)
+					errTool := resolver.resultName(part.ToolResult)
 					if res.ToolErrors[errTool] == nil {
 						res.ToolErrors[errTool] = map[string]int{}
 					}
