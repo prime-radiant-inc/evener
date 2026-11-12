@@ -623,3 +623,125 @@ func TestForceCompact_InstructionsSummaryFailureKeepsCheckpoint(t *testing.T) {
 		t.Fatalf("expected fallback to TurnCheckpoint, got: %v", history[0].Kind)
 	}
 }
+
+func TestForceCompact_InstructionsKeepLaterCheckpointWritesAfterLargeOlderToolOutputs(t *testing.T) {
+	t.Parallel()
+	var promptSeen string
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			promptSeen = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] preserved details")}
+		},
+	})
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testProfile("openai", "test", 200_000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	history := make([]schema.Turn, 0, 60)
+	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("initial task")))
+
+	// 25 early turns, each with a 4 KB tool output (~100 KB total, exceeding 80 KB).
+	for i := range 25 {
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{
+						Kind: llm.ContentToolCall,
+						ToolCall: &llm.ToolCallData{
+							ID:        fmt.Sprintf("old-c%d", i),
+							Name:      "read_file",
+							Arguments: []byte(fmt.Sprintf(`{"file_path":"old_%d.txt"}`, i)),
+							Type:      "function",
+						},
+					},
+				},
+			}),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("old-c%d", i), "read_file", strings.Repeat("A", 4000), false)),
+		)
+	}
+
+	// Later folded write_file tool call and result.
+	const newerSentinel = "SENTINEL_NEWEST_TOOL_OUTPUT_9918"
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "c-later",
+						Name:      "write_file",
+						Arguments: []byte(`{"file_path":"later/important.go","content":"package later\n"}`),
+						Type:      "function",
+					},
+				},
+			},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("c-later", "write_file", newerSentinel, false)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	)
+
+	cm.ForceCompact(context.Background(), &history, "preserve recent tool findings and file writes", func(events.EventKind, events.EventData) {})
+
+	if !strings.Contains(promptSeen, "later/important.go") {
+		t.Fatalf("summarizer prompt missing later file write 'later/important.go'; prompt length: %d", len(promptSeen))
+	}
+	if !strings.Contains(promptSeen, newerSentinel) {
+		t.Fatalf("summarizer prompt missing newest tool output sentinel %q", newerSentinel)
+	}
+	if len(promptSeen) > 90_000 {
+		t.Fatalf("summarizer prompt length %d exceeded 90_000 bound", len(promptSeen))
+	}
+}
+
+func TestForceCompact_InstructionsBoundSingleBatchedToolResultsTurn(t *testing.T) {
+	t.Parallel()
+	var promptSeen string
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			promptSeen = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] preserved")}
+		},
+	})
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testProfile("openai", "test", 50_000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	// Single TurnToolResults turn with 60 parts of 4 KB each (240 KB total).
+	toolResultsParts := make([]llm.ContentPart, 60)
+	for i := range 60 {
+		toolResultsParts[i] = llm.ContentPart{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: fmt.Sprintf("call-%d", i),
+				Name:       "read_file",
+				Content:    strings.Repeat("X", 4000),
+			},
+		}
+	}
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("start task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("calling tools")),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{
+			Role:    llm.RoleTool,
+			Content: toolResultsParts,
+		}),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+
+	summarized := cm.ForceCompact(context.Background(), &history, "keep critical findings", func(events.EventKind, events.EventData) {})
+	if !summarized {
+		t.Fatalf("ForceCompact failed to summarize batched tool results turn (exceeded budget?)")
+	}
+	if len(promptSeen) > 90_000 {
+		t.Fatalf("prompt length %d > 90_000", len(promptSeen))
+	}
+}
