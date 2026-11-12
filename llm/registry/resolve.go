@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -204,6 +205,12 @@ func (r *Registry) liveRow(instance, id string) *Model {
 	return nil
 }
 
+func (r *Registry) liveRowMap(instance string) map[string]Model {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	return r.live[instance].rows
+}
+
 type lookupHit struct {
 	rowID       string
 	wireID      string
@@ -238,6 +245,14 @@ func (r *Registry) lookupRow(rec *record, model string) lookupHit {
 }
 
 func (r *Registry) lookupRowMode(rec *record, model string, includeLive bool) lookupHit {
+	var live map[string]Model
+	if includeLive {
+		live = r.liveRowMap(rec.name)
+	}
+	return lookupRowWithLive(rec, model, live)
+}
+
+func lookupRowWithLive(rec *record, model string, live map[string]Model) lookupHit {
 	rows := rec.head.Models
 	if m, ok := rows[model]; ok && !isGlob(model) {
 		wire := m.WireID
@@ -256,7 +271,7 @@ func (r *Registry) lookupRowMode(rec *record, model string, includeLive bool) lo
 			return lookupHit{rowID: s, wireID: model, step: "dated"}
 		}
 	}
-	if includeLive && r.liveRow(rec.name, model) != nil {
+	if _, ok := live[model]; ok {
 		return lookupHit{wireID: model, step: "live"}
 	}
 	return lookupHit{wireID: model, step: "synthesized", synthesized: true}
@@ -775,6 +790,11 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	if hit.rowID != "" {
 		prov["model"] = hit.step + ":" + hit.rowID
 	}
+	for _, layer := range rec.layers {
+		if layer.protocol != "" {
+			prov["Protocol"] = layer.tag + "/provider"
+		}
+	}
 	row := Model{ID: ref.Model, WireID: hit.wireID}
 	if hit.rowID != "" {
 		row = cloneModel(rec.head.Models[hit.rowID])
@@ -845,6 +865,9 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			if same && rec.head.Models[hit.rowID].Protocol == "" && rec.head.Models[hit.rowID].Transport == nil {
 				canonicalRowID = target.Model.ID
 				row.Protocol = target.Model.Protocol
+				if row.Protocol != "" {
+					prov["Protocol"] = provAlias
+				}
 				if target.Model.Transport != nil {
 					t := cloneTransport(*target.Model.Transport)
 					row.Transport = &t
@@ -932,7 +955,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)
+	warnings = append(warnings, derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)...)
 	// In the caller because derive early-returns for non-anthropic
 	// protocols; the ladder's membership is already settled here.
 	// rankEffortLadder states the ordering contract.
@@ -1000,6 +1023,40 @@ func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string,
 	return nil, "", false
 }
 
+// CheckAliasTarget validates whether aliasOf is a legal one-hop alias target
+// for model on instance, matching load-time validateRecord and resolve-time
+// aliasTargetRow rules.
+func (r *Registry) CheckAliasTarget(instance, model, aliasOf string) error {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return r.unknownInstance(instance)
+	}
+	if model == "" || isGlob(model) {
+		return fmt.Errorf("model %q cannot declare alias_of", model)
+	}
+	if aliasOf == "" || isGlob(aliasOf) {
+		return fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+	}
+	if aliasOf == model {
+		return fmt.Errorf("providers.%s.models.%q: alias_of %q cannot alias itself", rec.name, model, aliasOf)
+	}
+	targetModel, err := r.aliasTarget(rec, aliasOf)
+	if err != nil {
+		return fmt.Errorf("providers.%s.models.%q: %w", rec.name, model, err)
+	}
+	if targetModel.AliasOf != "" {
+		return fmt.Errorf("providers.%s.models.%q: alias_of %q is itself an alias (aliases are one hop)", rec.name, model, aliasOf)
+	}
+	targetRec, targetID, ok := r.aliasTargetRow(rec, aliasOf)
+	if !ok {
+		return fmt.Errorf("providers.%s.models.%q: alias_of %q does not name an existing non-alias row", rec.name, model, aliasOf)
+	}
+	if targetRec == rec && targetID == model {
+		return fmt.Errorf("providers.%s.models.%q: alias_of %q cannot alias itself", rec.name, model, aliasOf)
+	}
+	return nil
+}
+
 // resolveAliasTarget resolves an alias target through the same machinery
 // at facts depth: the replay hands back the target's caps, surface,
 // family, and transport — everything an alias row seeds from — without
@@ -1025,7 +1082,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string, includeLive b
 // alias row's layer 0 (spec §4.2).
 func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, prov map[string]string) {
 	facts := Caps{
-		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
+		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, CompactionThreshold: target.Caps.CompactionThreshold, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
 		EffortParameterUnsupported: target.Caps.EffortParameterUnsupported,
@@ -1043,6 +1100,9 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 	// provenance never reports "alias" for a number the alias did not state.
 	if facts.ContextWindow != nil && target.Provenance["ContextWindow"] != "" {
 		prov["ContextWindow"] = target.Provenance["ContextWindow"]
+	}
+	if facts.CompactionThreshold != nil && target.Provenance["CompactionThreshold"] != "" {
+		prov["CompactionThreshold"] = target.Provenance["CompactionThreshold"]
 	}
 	if target.Surface != "" {
 		row.Surface = target.Surface
@@ -1116,6 +1176,16 @@ func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto 
 // neither a protocol nor a preset (the parser rejects both), so nothing here
 // needs preset expansion.
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
+	if src.Protocol != "" {
+		row.Protocol = src.Protocol
+		prov["Protocol"] = tag
+	}
+	if src.WireID != "" {
+		prov["WireID"] = tag
+	}
+	if src.AliasOf != "" {
+		prov["AliasOf"] = tag
+	}
 	if src.Surface != "" {
 		row.Surface = src.Surface
 		prov["Surface"] = tag
@@ -1662,14 +1732,22 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 // A toggle on a live-only id authors an exact config row, which precedes live
 // lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
-	rec, ids, err := r.instanceRecordIDs(instance)
-	if err != nil {
-		return nil, err
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
+	}
+	live := r.liveRowMap(rec.name)
+	ids := modelIDsFromMap(rec, live)
+	nonConfigVisible := nonConfigVisibleIDs(rec, live)
+	var authoredModels map[string]Model
+	if r.userLayer != nil {
+		if p, ok := r.userLayer.Providers[rec.name]; ok {
+			authoredModels = p.Models
+		}
 	}
 	out := make([]InstanceModel, 0, len(ids))
-	mayDisable := r.recordMayDisable(rec)
 	for _, id := range ids {
-		hit := r.lookupRow(rec, id)
+		hit := lookupRowWithLive(rec, id, live)
 		if hit.rowID != "" {
 			if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
 				if _, _, ok := r.aliasTargetRow(rec, aliasOf); !ok {
@@ -1682,13 +1760,195 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 				}
 			}
 		}
-		disabled := false
-		if mayDisable {
-			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, hit)
+		summary := r.modelSummary(rec, Ref{Instance: rec.name, Model: id}, hit, live)
+		var authoredOnly, customized bool
+		if authoredRow, ok := authoredModels[id]; ok && !isGlob(id) {
+			authoredOnly = !nonConfigVisible[id]
+			customized = authoredOnly || modelHasAuthoredCustomizations(authoredRow)
 		}
-		out = append(out, InstanceModel{ID: id, Disabled: disabled})
+		out = append(out, InstanceModel{
+			ID:                  id,
+			Disabled:            summary.disabled,
+			AuthoredOnly:        authoredOnly,
+			Customized:          customized,
+			ContextWindow:       summary.contextWindow,
+			CompactionThreshold: summary.compactionThreshold,
+		})
 	}
 	return out, nil
+}
+
+// IsAuthoredOnlyModel reports whether model on instance exists in the inventory
+// solely because providers.toml authored an exact [providers.<instance>.models.<model>]
+// entry for it (absent from the instance's non-config visible catalog/overlay/live rows).
+func (r *Registry) IsAuthoredOnlyModel(instance, model string) bool {
+	if r == nil || model == "" || isGlob(model) || r.userLayer == nil {
+		return false
+	}
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return false
+	}
+	p, ok := r.userLayer.Providers[rec.name]
+	if !ok {
+		return false
+	}
+	if _, ok := p.Models[model]; !ok {
+		return false
+	}
+	live := r.liveRowMap(rec.name)
+	return !nonConfigVisibleIDs(rec, live)[model]
+}
+
+func nonConfigVisibleIDs(rec *record, live map[string]Model) map[string]bool {
+	seen := map[string]bool{}
+	if len(live) == 0 {
+		for _, layer := range rec.layers {
+			if layer.tag == LayerConfig {
+				continue
+			}
+			for id := range layer.rows {
+				if !isGlob(id) {
+					seen[id] = true
+				}
+			}
+		}
+	} else {
+		for _, layer := range rec.layers {
+			if layer.tag != LayerOverlay {
+				continue
+			}
+			for id := range layer.rows {
+				if !isGlob(id) {
+					seen[id] = true
+				}
+			}
+		}
+		for id := range live {
+			seen[id] = true
+		}
+	}
+	return seen
+}
+
+func modelHasAuthoredCustomizations(m Model) bool {
+	m.ID = ""
+	m.Disabled = nil
+	if len(m.Headers) == 0 {
+		m.Headers = nil
+	}
+	return !reflect.DeepEqual(m, Model{})
+}
+
+type modelSummaryResult struct {
+	disabled            bool
+	contextWindow       *int
+	maxInputTokens      *int
+	compactionThreshold *int
+}
+
+// modelSummary replays Disabled, ContextWindow, MaxInputTokens, and
+// CompactionThreshold across the same ordered positions as resolveLayersModeLive
+// without reflection, transport building, or URL parsing.
+func (r *Registry) modelSummary(rec *record, ref Ref, hit lookupHit, live map[string]Model) modelSummaryResult {
+	altID := hit.altRowID(ref.Model)
+	var (
+		aliasLockstep       bool
+		aliasTargetDisabled bool
+		inheritedDisabled   *bool
+		contextWindow       *int
+		maxInputTokens      *int
+		compactionThreshold *int
+	)
+	if hit.rowID != "" {
+		if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
+			if targetRec, targetID, ok := r.aliasTargetRow(rec, aliasOf); ok {
+				targetLive := live
+				if targetRec != rec {
+					targetLive = r.liveRowMap(targetRec.name)
+				}
+				targetHit := lookupRowWithLive(targetRec, targetID, targetLive)
+				targetSum := r.modelSummary(targetRec, Ref{Instance: targetRec.name, Model: targetID}, targetHit, targetLive)
+				contextWindow = targetSum.contextWindow
+				maxInputTokens = targetSum.maxInputTokens
+				compactionThreshold = targetSum.compactionThreshold
+				if targetRec == rec {
+					aliasLockstep = true
+					aliasTargetDisabled = targetSum.disabled
+				} else {
+					inheritedDisabled = &targetSum.disabled
+				}
+				altID = aliasAltID(altID, targetID)
+			}
+		}
+	}
+	var disabled, disabledSet bool
+	applyCaps := func(c Caps) {
+		if c.ContextWindow != nil {
+			contextWindow = c.ContextWindow
+		}
+		if c.MaxInputTokens != nil {
+			maxInputTokens = c.MaxInputTokens
+		}
+		if c.CompactionThreshold != nil {
+			compactionThreshold = c.CompactionThreshold
+		}
+	}
+	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{
+		live: func() {
+			lr, ok := live[ref.Model]
+			byWireID := false
+			if !ok && hit.wireID != ref.Model {
+				lr, ok = live[hit.wireID]
+				byWireID = true
+			}
+			if !ok {
+				return
+			}
+			lc := lr.Caps
+			if byWireID && r.overlayRowDeclaresWindow(rec, hit.rowID) {
+				lc.ContextWindow = nil
+			}
+			applyCaps(lc)
+		},
+		provider: func(layer capLayer) {
+			applyCaps(layer.provider)
+		},
+		visit: func(step replayStep) {
+			for _, g := range step.globs {
+				gr := step.rows[g]
+				applyCaps(gr.Caps)
+				if gr.Disabled != nil {
+					disabled, disabledSet = *gr.Disabled, true
+				}
+			}
+			if step.exact == "" {
+				return
+			}
+			if row, ok := step.rows[step.exact]; ok {
+				applyCaps(row.Caps)
+				if row.Disabled != nil {
+					disabled, disabledSet = *row.Disabled, true
+				}
+			}
+		},
+	})
+	if aliasLockstep {
+		disabled = aliasTargetDisabled
+	} else if !disabledSet && inheritedDisabled != nil {
+		disabled = *inheritedDisabled
+	}
+	if compactionThreshold != nil {
+		if ceiling := (Caps{ContextWindow: contextWindow, MaxInputTokens: maxInputTokens}).InputCeiling(); ceiling > 0 && *compactionThreshold >= ceiling {
+			compactionThreshold = nil
+		}
+	}
+	return modelSummaryResult{
+		disabled:            disabled,
+		contextWindow:       clonePointer(contextWindow),
+		maxInputTokens:      clonePointer(maxInputTokens),
+		compactionThreshold: clonePointer(compactionThreshold),
+	}
 }
 
 // instanceRecordIDs resolves an instance to its record plus its visible model
@@ -1698,7 +1958,7 @@ func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error)
 	if !ok {
 		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
-	return rec, modelIDs(rec, r.LiveModels(instance)), nil
+	return rec, modelIDsFromMap(rec, r.liveRowMap(instance)), nil
 }
 
 // ModelIDs lists an instance's visible model ids, sorted. A usable live
@@ -1732,6 +1992,14 @@ func (r *Registry) CatalogModelIDs(id string) ([]string, error) {
 }
 
 func modelIDs(rec *record, live []Model) []string {
+	liveMap := make(map[string]Model, len(live))
+	for _, m := range live {
+		liveMap[m.ID] = m
+	}
+	return modelIDsFromMap(rec, liveMap)
+}
+
+func modelIDsFromMap(rec *record, live map[string]Model) []string {
 	seen := map[string]bool{}
 	if len(live) == 0 {
 		for _, id := range exactRowIDs(rec) {
@@ -1749,8 +2017,8 @@ func modelIDs(rec *record, live []Model) []string {
 			}
 		}
 	}
-	for _, m := range live {
-		seen[m.ID] = true
+	for id := range live {
+		seen[id] = true
 	}
 	return sortedKeys(seen)
 }

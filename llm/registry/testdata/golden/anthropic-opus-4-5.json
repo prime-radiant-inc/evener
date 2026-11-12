@@ -75,6 +75,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "StructuredOutput": "snapshot/row",
@@ -82,6 +83,7 @@
     "ThinkingShape": "overlay/glob:*claude-opus-4-5*",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/provider",
+    "WireID": "snapshot/row",
     "model": "row:claude-opus-4-5"
   },
   "default_model": "claude-opus-5",

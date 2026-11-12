@@ -71,6 +71,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "StructuredOutput": "snapshot/row",
@@ -78,6 +79,7 @@
     "ThinkingShape": "derived",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/provider",
+    "WireID": "snapshot/row",
     "model": "row:gemini-2.5-flash"
   },
   "default_model": "gemini-3.8-flash",

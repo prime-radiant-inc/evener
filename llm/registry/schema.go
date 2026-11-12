@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -21,6 +22,12 @@ const (
 	LayerOverlay  = "overlay"
 	LayerLive     = "live"
 	LayerConfig   = "config"
+)
+
+// Token limit bounds enforced at parse time.
+const (
+	MinCompactionThreshold = 4096
+	MaxTokenLimit          = math.MaxInt32
 )
 
 // ContextWindowSource maps a ContextWindow provenance value ("<layer>" or
@@ -443,8 +450,14 @@ func validateTransport(ts transportSchema, where string) error {
 
 func validateCaps(c Caps, where string) error {
 	checkPositive := func(field string, v *int) error {
-		if v != nil && *v <= 0 {
+		if v == nil {
+			return nil
+		}
+		if *v <= 0 {
 			return fmt.Errorf("%s: %s must be a positive integer", where, field)
+		}
+		if *v > MaxTokenLimit {
+			return fmt.Errorf("%s: %s must be <= %d", where, field, MaxTokenLimit)
 		}
 		return nil
 	}
@@ -477,6 +490,9 @@ func validateCaps(c Caps, where string) error {
 		if e != nil {
 			return e
 		}
+	}
+	if c.CompactionThreshold != nil && (*c.CompactionThreshold < MinCompactionThreshold || *c.CompactionThreshold > MaxTokenLimit) {
+		return fmt.Errorf("%s: compaction_threshold must be between %d and %d", where, MinCompactionThreshold, MaxTokenLimit)
 	}
 	for _, rc := range c.ReasoningControls {
 		if !reasoningControlNames[rc] {
@@ -518,6 +534,17 @@ func ThinkingFormats() []string {
 	out := make([]string, 0, len(thinkingFormats))
 	for format := range thinkingFormats {
 		out = append(out, format)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ThinkingShapes returns every reasoning shape in the load-time vocabulary,
+// sorted.
+func ThinkingShapes() []string {
+	out := make([]string, 0, len(thinkingShapes))
+	for shape := range thinkingShapes {
+		out = append(out, shape)
 	}
 	sort.Strings(out)
 	return out
