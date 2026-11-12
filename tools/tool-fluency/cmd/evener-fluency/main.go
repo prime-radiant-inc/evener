@@ -378,7 +378,6 @@ func runSuite(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applySandboxDefaultAfterParse(fs, &cfg.sandbox)
 	cfg.systemPromptAppend = []string(systemPromptAppend)
 	// Decide the process-wide hermetic setting once, right after parsing and
 	// before any probe runs (#3227). See configureHermeticRunEnv.
@@ -457,6 +456,10 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
 	}
+	// An empty --sandbox value (--sandbox "$MODE" with MODE unset) keeps the
+	// safe default. Normalize here, where every run and matrix config lands, so
+	// a programmatic caller that skips flag parsing is safe too.
+	cfg.sandbox = sandboxModeOrDefault(cfg.sandbox)
 	// Validate the sandbox flags once, up front, so a typo fails before any
 	// probe launches instead of surfacing late from the spawned evener.
 	if _, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil {
@@ -1121,15 +1124,14 @@ func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 // operator opts out with --sandbox off (#3724).
 const defaultSandboxMode = "workspace-write"
 
-// applySandboxDefaultAfterParse keeps the safe default when the flag was given
-// an empty value: `--sandbox "$SANDBOX_MODE"` with the variable unset must not
-// read as off. An explicit "off" is still the opt-out.
-func applySandboxDefaultAfterParse(fs *flag.FlagSet, mode *string) {
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "sandbox" && strings.TrimSpace(*mode) == "" {
-			*mode = defaultSandboxMode
-		}
-	})
+// sandboxModeOrDefault keeps the safe default when --sandbox was given an empty
+// value: `--sandbox "$SANDBOX_MODE"` with the variable unset must not read as
+// off. An explicit "off" is still the opt-out.
+func sandboxModeOrDefault(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return defaultSandboxMode
+	}
+	return mode
 }
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {

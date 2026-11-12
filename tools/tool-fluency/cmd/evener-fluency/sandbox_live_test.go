@@ -32,7 +32,7 @@ func parseRunFlags(t *testing.T, args ...string) runConfig {
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse %v: %v", args, err)
 	}
-	applySandboxDefaultAfterParse(fs, &cfg.sandbox)
+	cfg.sandbox = sandboxModeOrDefault(cfg.sandbox)
 	cfg.systemPromptAppend = []string(systemPromptAppend)
 	return cfg
 }

@@ -75,7 +75,6 @@ func runMatrixCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applySandboxDefaultAfterParse(fs, &base.sandbox)
 	var misused []string
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
