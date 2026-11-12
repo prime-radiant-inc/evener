@@ -88,11 +88,35 @@ test("shows a loading state for discovered servers before the overview resolves"
   await act(() => fetch.value);
 });
 
-test("a top-level probe failure replaces the discovered-servers list with one message", async () => {
+test("a top-level diagnostic keeps the discovered servers and shows the message", async () => {
+  connectReadyFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: {
+          mcpDiscovered: {
+            error: "MCP config /home/me/.config/evener/mcp.json: parsing failed",
+            servers: [{ name: "local-tool", transport: "stdio", status: "available" }],
+          },
+        },
+      })}
+    />,
+  );
+  expect(screen.getByRole("alert").textContent).toContain("parsing failed");
+  expect(screen.getByRole("list", { name: "Discovered MCP servers" })).toBeTruthy();
+  expect(screen.getByText(/local-tool/)).toBeTruthy();
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+});
+
+test("a top-level diagnostic with no servers shows the message and no empty state", async () => {
   connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
   expect(screen.queryByRole("list", { name: "Discovered MCP servers" })).toBeNull();
+  expect(screen.queryByTestId("mcp-discovered-empty")).toBeNull();
   expect(screen.getByRole("alert").textContent).toContain("probe timed out");
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");

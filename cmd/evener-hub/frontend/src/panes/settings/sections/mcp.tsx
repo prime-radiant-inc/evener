@@ -190,6 +190,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   const mcps = layer?.mcps ?? [];
   const pendingServer = pendingRemoveServerIndex !== null ? mcps[pendingRemoveServerIndex] : undefined;
   const discovered = overview.data?.mcpDiscovered;
+  const discoveredServers = discovered?.servers ?? [];
 
   return (
     <section className={CLASS.page}>
@@ -204,18 +205,19 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         <section className={CLASS.section} data-section="mcp-discovered">
           <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
-          {discovered?.error !== undefined ? (
-            <InlineNotice tone="danger">{discovered.error}</InlineNotice>
-          ) : overview.loading && overview.data === null ? (
+          {discovered?.error !== undefined && <InlineNotice tone="danger">{discovered.error}</InlineNotice>}
+          {overview.loading && overview.data === null ? (
             <Skeleton />
-          ) : (
+          ) : discoveredServers.length === 0 &&
+            discovered?.error !== undefined ? // The diagnostic already says why nothing was discovered.
+          null : (
             <ul aria-label="Discovered MCP servers" className={CLASS.list}>
-              {(discovered?.servers ?? []).length === 0 ? (
+              {discoveredServers.length === 0 ? (
                 <li data-testid="mcp-discovered-empty">
                   <EmptyState size="compact" title="No MCP servers configured." />
                 </li>
               ) : (
-                (discovered?.servers ?? []).map((s) => (
+                discoveredServers.map((s) => (
                   <li key={s.name}>
                     {/* The name is the label alone and wraps in full; the
                         transport is the meta. */}

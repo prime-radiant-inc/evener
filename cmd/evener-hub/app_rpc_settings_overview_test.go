@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,8 +245,10 @@ func TestHubRPCSettingsOverview_MCPDiscoveredEmptyWhenConfigMissing(t *testing.T
 
 // TestHubRPCSettingsOverview_MCPDiscoveredMergedSet proves the overview probes
 // the same layered set a session's initMCP builds: user-global, project, and
-// session-local configs merged with later layers shadowing earlier ones by
-// server name. Each layer also contributes a name no other layer defines.
+// launch-config MCP files and inline servers, merged with later layers
+// shadowing earlier ones by server name. Each layer also contributes a name no
+// other layer defines. The launch layer is driven through a real launch.toml,
+// not by injecting MCPConfigPath, so the production source is covered.
 func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
 	if _, err := exec.LookPath("true"); err != nil {
 		t.Skipf("`true` not found on PATH: %v", err)
@@ -271,22 +274,35 @@ func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
 	}
 	writeMCPConfigLayer(t, filepath.Join(repo, ".evener", "mcp.json"), `{"mcpServers": {
 		"shared": {"type": "http", "url": "`+refused+`"},
+		"inline-shadow": {"type": "http", "url": "`+refused+`"},
 		"project-only": {"command": "true"},
 		"project-shadow": {"command": "true"}
 	}}`)
 
-	// The session-local layer is the highest-precedence config file Discover's
-	// CLI layer carries.
-	sessionConfig := filepath.Join(t.TempDir(), "session-mcp.json")
-	writeMCPConfigLayer(t, sessionConfig, `{"mcpServers": {
+	// The launch configuration supplies the files and inline servers a spawned
+	// session receives on argv. Its config file shadows the project's shared,
+	// and its inline entry shadows the project's inline-shadow.
+	launchConfigFile := filepath.Join(t.TempDir(), "launch-mcp.json")
+	writeMCPConfigLayer(t, launchConfigFile, `{"mcpServers": {
 		"shared": {"command": "true"},
 		"session-only": {"command": "true"}
 	}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `mcp_configs = ["`+launchConfigFile+`"]
+
+[[mcps]]
+name = "inline-shadow"
+command = "true"
+
+[[mcps]]
+name = "launch-inline-only"
+command = "true"
+`)
 
 	resp := requestSettingsOverview(t, hubcore.WebConfig{
-		Past:            hubcore.NewPastIndex(""),
-		MCPConfigPath:   sessionConfig,
-		MCPDiscoveryDir: repo,
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  repo,
 	})
 
 	if resp.McpDiscovered == nil {
@@ -295,8 +311,8 @@ func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
 	if resp.McpDiscovered.Error != "" {
 		t.Errorf("McpDiscovered.Error = %q, want empty", resp.McpDiscovered.Error)
 	}
-	if len(resp.McpDiscovered.Servers) != 5 {
-		t.Fatalf("McpDiscovered.Servers = %+v, want 5 merged rows", resp.McpDiscovered.Servers)
+	if len(resp.McpDiscovered.Servers) != 7 {
+		t.Fatalf("McpDiscovered.Servers = %+v, want 7 merged rows", resp.McpDiscovered.Servers)
 	}
 	got := make(map[string]appwire.SettingsMCPServerEntry, len(resp.McpDiscovered.Servers))
 	for _, server := range resp.McpDiscovered.Servers {
@@ -307,6 +323,8 @@ func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
 		transport string
 		status    string
 	}{
+		{name: "inline-shadow", transport: "stdio", status: "available"},
+		{name: "launch-inline-only", transport: "stdio", status: "available"},
 		{name: "project-only", transport: "stdio", status: "available"},
 		{name: "project-shadow", transport: "stdio", status: "available"},
 		{name: "session-only", transport: "stdio", status: "available"},
@@ -322,6 +340,46 @@ func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
 		if server.Transport != w.transport || server.Status != w.status {
 			t.Errorf("%s row = %+v, want {%s %s}", w.name, server, w.transport, w.status)
 		}
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredMalformedGlobalKeepsServers proves a
+// malformed user-global layer is reported as a diagnostic while the layers that
+// did load still populate Servers. Without the diagnostic the list would shrink
+// with no visible cause.
+func TestHubRPCSettingsOverview_MCPDiscoveredMalformedGlobalKeepsServers(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeMCPConfigLayer(t, filepath.Join(xdg, "evener", "mcp.json"), `{"mcpServers":`)
+
+	launchConfigFile := filepath.Join(t.TempDir(), "launch-mcp.json")
+	writeMCPConfigLayer(t, launchConfigFile, `{"mcpServers": {
+		"launch-only": {"command": "true"}
+	}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `mcp_configs = ["`+launchConfigFile+`"]`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if !strings.Contains(resp.McpDiscovered.Error, "mcp.json") {
+		t.Errorf("McpDiscovered.Error = %q, want the malformed global config named", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 1 {
+		t.Fatalf("McpDiscovered.Servers = %+v, want the successfully discovered launch-only row", resp.McpDiscovered.Servers)
+	}
+	server := resp.McpDiscovered.Servers[0]
+	if server.Name != "launch-only" || server.Transport != "stdio" || server.Status != "available" {
+		t.Errorf("server = %+v, want {launch-only stdio available}", server)
 	}
 }
 
