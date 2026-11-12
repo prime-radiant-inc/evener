@@ -1,13 +1,18 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* A floating card INSIDE the pane body's padding, in both states: the
-   * pane's own edge is the frame, and this card is inset from it. It used to
-   * cancel the top padding to sit flush against the pane edge, which parked
-   * its top border and both top corners exactly on the scrollport's clip line
-   * where they were painted away - the square, open-topped look. */
+  /* Attached to the header: the top edge is flush to the header's bottom
+   * border, so the panel reads as a continuation of the header rather than
+   * a floating card. The top is square (no radius, no top border on that
+   * edge) and the card keeps its horizontal inset via the body's side
+   * padding. The negative top margin cancels the body's top padding so
+   * there is no gap below the header, and the top border is omitted to
+   * avoid a doubled line against the header's own border-bottom. Only the
+   * bottom corners are rounded. */
+  margin-top: calc(-1 * var(--space-5));
   border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-panel);
+  border-top: none;
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
   box-shadow: 0 8px 28px var(--shadow-color);
   /* The boundary is a real border, NOT --shadow-overlay's ring: the ring is a
    * spread box-shadow, which paints OUTSIDE the border box and is shaved
@@ -20,10 +25,12 @@
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. Matches Card and PaneScaffold. */
+ * corner area this shapes. Matches Card and PaneScaffold. Top edge is flat
+ * where it meets the header, so only the bottom corners carry the curve. */
 @supports (corner-shape: squircle) {
   .topNotesPanel {
     corner-shape: squircle;
+    border-radius: 0 0 var(--radius-panel) var(--radius-panel);
   }
 }
 
@@ -145,4 +152,10 @@
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: clip;
+}
+
+@media (max-width: 899px) {
+  .topNotesPanel {
+    margin-top: calc(-1 * var(--space-4));
+  }
 }
