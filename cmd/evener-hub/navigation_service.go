@@ -955,8 +955,11 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		// without a publication and the later forced refresh finds no
 		// changes and clears the invalidation silently. Mark the flight
 		// mutating only when the capture observed a change, so a no-op
-		// recovery does not wake the scheduler for nothing.
+		// recovery does not wake the scheduler for nothing. The commit below
+		// consumes the invalidation it publishes, so the retry does not
+		// republish a newer source change as a second receipt.
 		adoptPending := !flight.mutated && s.pendingInvalidation
+		adoptedEpoch := s.pendingEpoch
 		if adoptPending {
 			flight.hint = mergeNavigationChangeHints(flight.hint, s.pendingHint)
 		}
@@ -1018,6 +1021,12 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				default:
 				}
 				navigationPublicationCommittedLocked(s)
+			}
+			if adoptPending && s.pendingEpoch == adoptedEpoch {
+				s.pendingHint = navigationChangeHint{}
+				s.pendingInvalidation = false
+				s.nextAttemptAt = time.Time{}
+				navigationPendingCleared()
 			}
 			s.completeRefreshTicketsLocked(flight, flight.mutation, nil)
 		}

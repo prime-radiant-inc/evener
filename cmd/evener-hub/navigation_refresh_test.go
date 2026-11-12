@@ -146,4 +146,7 @@ func TestNavigationRecoveryCapturePublishesAPendingInvalidationAfterATimedOutRef
 	if got := service.Capability().Sequence; got != 1 {
 		t.Fatalf("sequence = %d, want one recovery publication", got)
 	}
+	if _, pending := service.pendingAttemptAt(); pending {
+		t.Fatal("recovery capture left the invalidation it published armed for a second publication")
+	}
 }
