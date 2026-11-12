@@ -842,6 +842,10 @@ function createEntryTranscriptRepository(
       !fixture.cachedUnverified &&
       (!productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true),
     onHistoryReadAccepted: (response, model) => reconcileAcceptedReadRecovery(ref, response, model),
+    // A read whose mutation generation moved cannot prove absence, but its
+    // published content is still real: prune carried copies against it and
+    // leave the destructive replay out.
+    onHistoryReadAcceptedStale: (_response, model) => pruneConsumedQueueRows(ref, model),
     mutationGeneration: () => mutationStateGenerations.get(ref) ?? 0,
     readHistory: (held, signal) =>
       runEntryHistoryRequest(fixture, signal, () => {
@@ -7414,6 +7418,11 @@ async function handleReady(
     authoritativePublishedRefs.has(targetRef) &&
     acceptedCopyReplayRefs.has(targetRef)
   ) {
+    // One replay per ref per reconnect. Leaving the flag set made every later
+    // targeted resync of this ref replay every accepted copy again, because an
+    // empty authoritative set makes each of them eligible. The flag exists to
+    // cover the reconnect, not to become a permanent re-send policy.
+    acceptedCopyReplayRefs.delete(targetRef);
     void runtime.dispatcher.reconcileAcceptedCopies(targetRef, new Set());
   }
 }
@@ -7710,10 +7719,14 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
       id.startsWith("client:") ? id.slice("client:".length) : id,
     ),
   );
+  // A recorded identity is already visible: the daemon retires a FAILED input
+  // whose failure turn it recorded, and settling that would delete the row
+  // while the transcript shows the failure.
+  const recorded = transcriptMutationIds(model);
   const candidates = new Set(pending ?? []);
-  for (const id of retiredInputs) candidates.add(id);
+  for (const id of retiredInputs) if (!recorded.has(id)) candidates.add(id);
   if (candidates.size === 0) return;
-  const settled = [...retiredInputs];
+  const settled = [...candidates].filter((id) => retiredInputs.has(id));
   const present = transcriptMutationIds(model);
   // Without a recorded user item the replacement is not visible yet; keep the
   // display copy rather than blinking the message out between the two states.

@@ -549,6 +549,34 @@ test("an unrelated earlier turn does not make a canceled queue row look delivere
   expect(rows[0]).toMatchObject({ id: "canceled-elsewhere", text: "gone" });
 });
 
+// Stop cancels an unattempted queue row, but the daemon leaves the entry in
+// its queue. Taking the queue's state for the merged row rendered the canceled
+// message as "Queued, sends when this turn ends" with actions that no longer
+// apply, so the local terminal state has to win.
+test("a queue row canceled by Stop keeps its canceled state while the daemon still lists it", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 7,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["stopped"],
+      preview: ["stopped"],
+    },
+  } as Parameters<typeof threadModel>[0]);
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    optimistic: [accepted("m1", "turn/queue", "stopped", { queueEntryIds: ["q1"] })],
+    // Stop leaves the outbox row behind in the canceled state; the optimistic
+    // accepted copy is what the daemon already reflected.
+    outbox: [local("m1", "turn/queue", "stopped", { state: "canceled", queueEntryIds: ["q1"] })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "canceled" });
+});
+
 test("an accepted source stays while the daemon still projects its queue entry", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 5, ids: [] },

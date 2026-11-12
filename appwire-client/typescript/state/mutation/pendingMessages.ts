@@ -315,6 +315,14 @@ function durableState<A extends MutationAttachmentRef>(
   return undefined;
 }
 
+// True when this client's own durable record says the message already ended:
+// Stop canceled it, or delivery became unknown to the point that the row must
+// keep its own state. The daemon's queue can still list the entry, so the
+// queue's own state is not the authority for these rows.
+function locallyEnded<A extends MutationAttachmentRef>(row: PendingMessage<A>): boolean {
+  return row.state === "canceled" || row.state === "uncertain";
+}
+
 function rowFromBase<A extends MutationAttachmentRef>(
   entry: {
     id: string;
@@ -600,7 +608,17 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     (entry) =>
       !queuedEntryIds.has(entry.entryId) &&
       !pendingEntryIds.has(entry.entryId) &&
-      !(mutationStateAuthoritative && mutationSnapshotCurrent && retiredInputs.has(entry.clientMutationId)) &&
+      // A retired input normally means nothing more will arrive, but the
+      // daemon also retires a FAILED input whose failure turn it recorded. A
+      // recorded item for this identity means the reader can already see what
+      // happened, so the row is not the only copy and must not be the one
+      // deleted.
+      !(
+        mutationStateAuthoritative &&
+        mutationSnapshotCurrent &&
+        retiredInputs.has(entry.clientMutationId) &&
+        !transcriptIds.has(entry.clientMutationId)
+      ) &&
       !(
         mutationStateAuthoritative &&
         mutationSnapshotCurrent &&
@@ -774,8 +792,11 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       const next: PendingMessage<A> = {
         ...withQueue,
         // A queued message's state is the queue's (including the Stop-parked
-        // held state). A drain or promote keeps its steering state.
-        ...(withQueue.method === "queue" ? { state: row.state } : {}),
+        // held state), unless the local record says Stop already ended it: a
+        // Stop cancels an unattempted queue row while the daemon leaves the
+        // entry in its queue, so taking the queue's word would render a
+        // canceled message as "Queued" with actions that no longer apply.
+        ...(withQueue.method === "queue" && !locallyEnded(withQueue) ? { state: row.state } : {}),
         ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
         ...(row.queueEntryId ? { queueEntryId: row.queueEntryId } : {}),
         ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),

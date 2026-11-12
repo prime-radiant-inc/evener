@@ -403,7 +403,12 @@ function LiveConversationBody({
   // A held ghost is mounted content even on a turnless transcript: the
   // dormant empty surface yields to the transcript subtree so the ghost
   // stack and its announcements mount (steering-ghost spec §2).
-  const showDormantSurface = isDormantTranscript(model.turns) && !pendingVisible;
+  // A pending row is only actionable with a composer source to move it back
+  // to. Without one - a remote share, a seat with no composer - the stack
+  // would render rows with no actions and no way to dismiss them, so the
+  // dormant surface keeps the pane instead.
+  const pendingActionable = pendingVisible && submission?.actions.pendingProps !== undefined;
+  const showDormantSurface = isDormantTranscript(model.turns) && !pendingActionable;
   const dormantSurface = showColdStartSkeleton ? (
     <ColdStartSkeleton />
   ) : (

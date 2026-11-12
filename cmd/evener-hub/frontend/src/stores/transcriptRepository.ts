@@ -339,6 +339,14 @@ export interface TranscriptRepositoryBinding {
   /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
   onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
   /**
+   * The same accepted read when nothing destructive may follow it: the read's
+   * mutation generation moved, so it cannot prove absence, but it still proves
+   * what it VISIBLEly contains. Pruning a carried copy against visible content
+   * is safe here, and withholding it leaves stale rows past a read that showed
+   * them gone.
+   */
+  onHistoryReadAcceptedStale?: (response: ThreadReadResponse, model: ThreadModel) => void;
+  /**
    * The owner's mutation-state generation. A read that predates a local
    * mutation change - a message queued here, or one another client promoted -
    * can omit both identities, so it cannot prove absence. The accepted-read
@@ -2389,12 +2397,14 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
-      if (
-        current() &&
-        this.#model &&
-        (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
-      )
-        this.#binding.onHistoryReadAccepted?.(response, this.#model);
+      if (current() && this.#model) {
+        // The generation fence protects absence-based proofs, not the visible
+        // content this read just published. A stale read must not settle or
+        // replay, but it may still prune what it plainly shows as gone.
+        if (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
+          this.#binding.onHistoryReadAccepted?.(response, this.#model);
+        else this.#binding.onHistoryReadAcceptedStale?.(response, this.#model);
+      }
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -2565,12 +2575,11 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
-    if (
-      current() &&
-      this.#model &&
-      (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
-    )
-      this.#binding.onHistoryReadAccepted?.(response, this.#model);
+    if (current() && this.#model) {
+      if (mutationGeneration === undefined || this.#binding.mutationGeneration?.() === mutationGeneration)
+        this.#binding.onHistoryReadAccepted?.(response, this.#model);
+      else this.#binding.onHistoryReadAcceptedStale?.(response, this.#model);
+    }
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
