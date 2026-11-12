@@ -109,10 +109,11 @@ func TestExtFromContentType(t *testing.T) {
 }
 
 func TestWebFetchTool_Integration(t *testing.T) {
+	const titleSentinel = "WFTITLE9B4E21"
 	// Serve HTML via httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<html><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`)
+		_, _ = fmt.Fprintf(w, `<html><head><title>%s</title></head><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`, titleSentinel)
 	}))
 	defer srv.Close()
 
@@ -195,6 +196,9 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	if !strings.Contains(userText, "Test Page") {
 		t.Fatalf("cheap model user message missing page content: %s", userText)
 	}
+	if !strings.Contains(userText, titleSentinel) {
+		t.Fatalf("cheap model user message missing <title> %s: %s", titleSentinel, userText)
+	}
 
 	// Verify cache files use date-bucketed directory structure under XDG cache.
 	// Try both dates to tolerate a midnight boundary crossing during the fetch.
@@ -224,6 +228,9 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	}
 	if !strings.Contains(string(mdContent), "Test Page") {
 		t.Fatalf("rendered.md missing page content")
+	}
+	if !strings.Contains(string(mdContent), titleSentinel) {
+		t.Fatalf("rendered.md missing <title> %s: %s", titleSentinel, string(mdContent))
 	}
 }
 
@@ -830,69 +837,73 @@ func TestWebFetchHTMLToMarkdown_PreservesTitleWhenAbsentFromBody(t *testing.T) {
 
 	t.Run("does_not_duplicate_matching_heading", func(t *testing.T) {
 		t.Parallel()
-		raw := fmt.Sprintf(`<html><head><title>%s</title></head><body><h1>%s</h1><p>Body88.</p></body></html>`,
-			matchedHeading, strings.ToLower(matchedHeading))
-		md, err := htmlToMarkdown(raw)
-		if err != nil {
-			t.Fatalf("htmlToMarkdown: %v", err)
-		}
-		if got := strings.Count(strings.ToUpper(md), matchedHeading); got != 1 {
-			t.Fatalf("matching <title> and <h1> emitted %d occurrences of %s, want 1:\n%s", got, matchedHeading, md)
+		for _, bodyHeading := range []string{
+			fmt.Sprintf("<h1>%s</h1>", strings.ToLower(matchedHeading)),
+			"<h1>WFBR44A<br>WFBR44B</h1>",
+			"<h1><div>WFBR44A</div><div>WFBR44B</div></h1>",
+			"<h1>WFBR44A <textarea>WFIGNORE99</textarea> WFBR44B</h1>",
+			`<h1>WFBR44A WFBR44B <a href="#anchor" aria-hidden="true">#</a></h1>`,
+		} {
+			title := "WFBR44A WFBR44B"
+			needle := "WFBR44A WFBR44B"
+			if strings.Contains(bodyHeading, strings.ToLower(matchedHeading)) {
+				title = matchedHeading
+				needle = matchedHeading
+			}
+			raw := fmt.Sprintf(`<html><head><title>%s</title></head><body>%s<p>Body88.</p></body></html>`, title, bodyHeading)
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown(%s): %v", bodyHeading, err)
+			}
+			if got := strings.Count(strings.ToUpper(md), needle); got != 1 {
+				t.Fatalf("matching <title> and %s emitted %d occurrences of %s, want 1:\n%s", bodyHeading, got, needle, md)
+			}
 		}
 	})
-}
 
-func TestWebFetchTool_TitleOnlyHTMLReachesModelAndRenderedCache(t *testing.T) {
-	const (
-		titleSentinel    = "WFTITLEONLY9B4E21"
-		questionSentinel = "WFTITLEQUESTION3A11C7"
-		answerSentinel   = "WFTITLEANSWER6D90F4"
-	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, `<!doctype html><html><head><title>%s</title></head><body><div id="app"></div><script src="/s.js"></script></body></html>`, titleSentinel)
-	}))
-	t.Cleanup(srv.Close)
+	t.Run("escapes_markdown_atx_and_rcdata_html_in_title", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			title    string
+			wantHead string
+		}{
+			{title: "WFTRAIL11 #", wantHead: `# WFTRAIL11 \#`},
+			{title: "###", wantHead: `# ##\#`},
+			{title: "WFRCDATA22 <script>alert(1)</script> [x](https://x.invalid)", wantHead: `# WFRCDATA22 &lt;script&gt;alert(1)&lt;/script&gt; \[x](https://x.invalid)`},
+		} {
+			raw := fmt.Sprintf("<html><head><title>%s</title></head><body><p>Body77.</p></body></html>", tc.title)
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown(%q): %v", tc.title, err)
+			}
+			if !strings.HasPrefix(md, tc.wantHead+"\n\n") {
+				t.Fatalf("htmlToMarkdown(%q) = %q, want heading %q", tc.title, md, tc.wantHead)
+			}
+		}
+	})
 
-	cacheHome := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Run("scopes_to_first_head_title_only", func(t *testing.T) {
+		t.Parallel()
+		const (
+			secondTitle = "WFSECONDTITLE31A"
+			bodyTitle   = "WFBODYTITLE52B"
+		)
+		emptyFirst := fmt.Sprintf("<html><head><title>   </title><title>%s</title></head><body><p>Body66.</p></body></html>", secondTitle)
+		md, err := htmlToMarkdown(emptyFirst)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(empty first): %v", err)
+		}
+		if strings.Contains(md, secondTitle) {
+			t.Fatalf("second <title> promoted past empty first <title>: %q", md)
+		}
 
-	adapter := &agenttest.ModelTrackingAdapter{
-		Provider: "openai",
-		Respond: func(req llm.Request) (llm.Response, error) {
-			return agenttest.FinalResponse(answerSentinel), nil
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(sess.Close)
-
-	got, err := sess.webFetch(context.Background(), srv.URL, questionSentinel)
-	if err != nil {
-		t.Fatalf("webFetch: %v", err)
-	}
-	resMap, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("webFetch result = %T, want map[string]any", got)
-	}
-	mdPath, _ := resMap["markdown_file"].(string)
-	if mdPath == "" {
-		t.Fatalf("webFetch result missing markdown_file: %#v", resMap)
-	}
-	rendered, err := os.ReadFile(mdPath)
-	if err != nil {
-		t.Fatalf("read rendered.md: %v", err)
-	}
-	if !strings.Contains(string(rendered), titleSentinel) {
-		t.Fatalf("rendered.md missing <title> %s: %q", titleSentinel, string(rendered))
-	}
-	reqs := adapter.Requests()
-	if len(reqs) != 1 || !requestMessagesContainText(reqs[0].Messages, titleSentinel) {
-		t.Fatalf("cheap model request missing <title> %s: %+v", titleSentinel, reqs)
-	}
+		inBody := fmt.Sprintf("<html><head></head><body><title>%s</title><p>Body55.</p></body></html>", bodyTitle)
+		mdBody, err := htmlToMarkdown(inBody)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(body title): %v", err)
+		}
+		if strings.HasPrefix(mdBody, "# "+bodyTitle) {
+			t.Fatalf("<body> <title> was promoted to document heading: %q", mdBody)
+		}
+	})
 }

@@ -44,36 +44,39 @@ func htmlToMarkdown(rawHTML string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	title, headingHasTitle := inspectHTMLTitle(doc)
+	title := extractHTMLTitle(doc)
 	mdBytes, err := htmltomarkdown.ConvertNode(doc)
 	if err != nil {
 		return "", err
 	}
 	md := string(mdBytes)
+	if title == "" {
+		return md, nil
+	}
+	heading, err := renderTitleHeading(title)
+	if err != nil || heading == "" {
+		return md, err
+	}
+	headingBody := strings.TrimPrefix(heading, "# ")
 	trimmed := strings.TrimSpace(md)
-	if title == "" || headingHasTitle || strings.EqualFold(trimmed, title) {
+	if strings.EqualFold(trimmed, title) || strings.EqualFold(trimmed, headingBody) || markdownHasTitleHeading(md, headingBody) {
 		return md, nil
 	}
 	if trimmed == "" {
-		return "# " + title, nil
+		return heading, nil
 	}
-	return "# " + title + "\n\n" + md, nil
+	return heading + "\n\n" + md, nil
 }
 
-// inspectHTMLTitle finds the first non-empty HTML <title> before ConvertNode
-// mutates doc (ignoring foreign namespaces such as <svg>/<math> and inert
-// containers such as <template>) and reports whether any body heading already
-// matches that title case-insensitively.
-func inspectHTMLTitle(doc *html.Node) (title string, headingHasTitle bool) {
-	title = extractHTMLTitle(doc)
-	if title == "" {
-		return "", false
-	}
-	return title, hasMatchingBodyHeading(doc, title)
-}
-
+// extractHTMLTitle returns the collapsed text of the first HTML <title> inside
+// <head> (per WHATWG HTML document.title), before ConvertNode mutates doc,
+// ignoring foreign namespaces and inert containers such as <template>.
 func extractHTMLTitle(doc *html.Node) string {
-	stack := []*html.Node{doc}
+	head := findHTMLHead(doc)
+	if head == nil {
+		return ""
+	}
+	stack := pushHTMLChildren(nil, head)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -81,35 +84,82 @@ func extractHTMLTitle(doc *html.Node) string {
 			continue
 		}
 		if n.Type == html.ElementNode && n.Data == "title" {
-			if t := collapseHTMLWhitespace(htmlNodeText(n)); t != "" {
-				return t
-			}
-			continue
+			return collapseHTMLWhitespace(htmlNodeText(n))
 		}
 		stack = pushHTMLChildren(stack, n)
 	}
 	return ""
 }
 
-func hasMatchingBodyHeading(doc *html.Node, title string) bool {
+func findHTMLHead(doc *html.Node) *html.Node {
 	stack := []*html.Node{doc}
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if isInertHTMLElement(n) || (n.Type == html.ElementNode && n.Data == "head") {
+		if isInertHTMLElement(n) {
 			continue
 		}
 		if n.Type == html.ElementNode {
-			switch n.Data {
-			case "h1", "h2", "h3", "h4", "h5", "h6":
-				if strings.EqualFold(collapseHTMLWhitespace(htmlNodeText(n)), title) {
-					return true
-				}
+			if n.Data == "head" {
+				return n
+			}
+			if n.Data == "body" {
+				continue
 			}
 		}
 		stack = pushHTMLChildren(stack, n)
 	}
+	return nil
+}
+
+func renderTitleHeading(title string) (string, error) {
+	h1 := &html.Node{Type: html.ElementNode, Data: "h1"}
+	h1.AppendChild(&html.Node{Type: html.TextNode, Data: title})
+	out, err := htmltomarkdown.ConvertNode(h1)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func markdownHasTitleHeading(md, headingBody string) bool {
+	for line := range strings.SplitSeq(md, "\n") {
+		body, ok := atxHeadingBody(line)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(body, headingBody) || strings.EqualFold(stripTrailingFragmentLink(body), headingBody) {
+			return true
+		}
+	}
 	return false
+}
+
+func atxHeadingBody(line string) (string, bool) {
+	line = strings.TrimLeft(line, " ")
+	hashes := 0
+	for hashes < len(line) && line[hashes] == '#' {
+		hashes++
+	}
+	if hashes == 0 || hashes > 6 || hashes >= len(line) || (line[hashes] != ' ' && line[hashes] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(line[hashes+1:]), true
+}
+
+func stripTrailingFragmentLink(s string) string {
+	if !strings.HasSuffix(s, ")") {
+		return s
+	}
+	mid := strings.LastIndex(s, "](#")
+	if mid < 0 {
+		return s
+	}
+	open := strings.LastIndex(s[:mid], " [")
+	if open < 0 {
+		return s
+	}
+	return strings.TrimSpace(s[:open])
 }
 
 func htmlNodeText(root *html.Node) string {
@@ -138,7 +188,7 @@ func isInertHTMLElement(n *html.Node) bool {
 		return true
 	}
 	switch n.Data {
-	case "script", "style", "noscript", "iframe", "template":
+	case "script", "style", "noscript", "iframe", "template", "textarea":
 		return true
 	default:
 		return false
