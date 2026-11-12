@@ -468,6 +468,9 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
 	}
+	if err := resolveProbePaths(&cfg); err != nil {
+		return err
+	}
 	if holdsResults(cfg.outDir) {
 		return fmt.Errorf("--out %s already holds results; a second run there would mix with them, so name a new directory", cfg.outDir)
 	}
@@ -924,6 +927,16 @@ func envModeLabel(inheritOperatorEnv bool) string {
 
 func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
+	if err := resolveProbePaths(&cfg); err != nil {
+		return probeResult{
+			Status:     "failed",
+			Probe:      probe.ID,
+			Model:      cfg.model,
+			Error:      err.Error(),
+			Findings:   []finding{{Category: "infra", Title: "resolve probe paths", Detail: err.Error()}},
+			DurationMS: time.Since(start).Milliseconds(),
+		}
+	}
 	slug := safeName(probe.ID)
 	base := filepath.Join(cfg.outDir, slug, fmt.Sprintf("rep-%02d", rep))
 	workDir := filepath.Join(base, "work")
@@ -1157,6 +1170,45 @@ func sandboxModeOrDefault(mode string) string {
 		return defaultSandboxMode
 	}
 	return mode
+}
+
+// resolveProbePaths anchors the run's file arguments to the launcher's cwd.
+// The CLI worker starts in res.WorkDir, so a relative executable, output/state
+// directory or --system-prompt-append path would otherwise resolve beneath
+// WorkDir instead of where the operator named it. A bare executable name stays
+// bare so exec.Command keeps its PATH lookup (#6227).
+func resolveProbePaths(cfg *runConfig) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve the launcher working directory: %w", err)
+	}
+	return resolveProbePathsFrom(cfg, cwd)
+}
+
+// resolveProbePathsFrom is resolveProbePaths with the launcher directory
+// supplied, so a test can prove the anchoring without changing the process cwd.
+func resolveProbePathsFrom(cfg *runConfig, base string) error {
+	if cfg.outDir != "" {
+		cfg.outDir = anchoredPath(base, cfg.outDir)
+	}
+	if cfg.evenerBin != "" && strings.ContainsAny(cfg.evenerBin, `/\`) {
+		cfg.evenerBin = anchoredPath(base, cfg.evenerBin)
+	}
+	for i, path := range cfg.systemPromptAppend {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		cfg.systemPromptAppend[i] = anchoredPath(base, path)
+	}
+	return nil
+}
+
+// anchoredPath returns path resolved against base when path is relative.
+func anchoredPath(base, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(base, path)
 }
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
