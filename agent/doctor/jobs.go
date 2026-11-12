@@ -113,7 +113,7 @@ func Jobs(stateBase, selector string, opts JobOpts) (JobReport, error) {
 		return JobReport{}, err
 	}
 	report.DelegatesPath = delegatesPath
-	report.Delegates = projectDoctorDelegates(paths.SessionID, delegates)
+	report.Delegates = projectDoctorDelegates(stateBase, paths.SessionID, delegates)
 	report.Diagnostics = diagnostics
 	report.Failures = legacyDelegateFailures(events)
 	return report, nil
@@ -243,7 +243,7 @@ func stableDoctorDelegatesForRoot(ctx context.Context, bucketDir, rootSessionID 
 	return path, state, diagnostics, nil
 }
 
-func projectDoctorDelegates(ownerSessionID string, state delegatestore.State) []DelegateView {
+func projectDoctorDelegates(stateBase, ownerSessionID string, state delegatestore.State) []DelegateView {
 	ids := make([]string, 0, len(state))
 	for id, aggregate := range state {
 		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == ownerSessionID {
@@ -255,9 +255,22 @@ func projectDoctorDelegates(ownerSessionID string, state delegatestore.State) []
 	for _, id := range ids {
 		aggregate := state[id]
 		descriptor := aggregate.Descriptor
+		ref := descriptor.TranscriptRef
+		if stateBase != "" {
+			ref = ""
+			sel := strings.TrimSpace(descriptor.TranscriptRef)
+			if sel == "" {
+				sel = descriptor.ChildSessionID
+			}
+			if sel != "" {
+				if childPaths, err := Locate(stateBase, sel); err == nil {
+					ref = childPaths.TranscriptRef
+				}
+			}
+		}
 		rows = append(rows, DelegateView{
 			DelegateID: id, Name: descriptor.Name, OwnerSessionID: descriptor.OwnerSessionID, VisibleSessionID: descriptor.VisibleSessionID,
-			ParentDelegateID: descriptor.ParentDelegateID, ChildSessionID: descriptor.ChildSessionID, TranscriptRef: descriptor.TranscriptRef,
+			ParentDelegateID: descriptor.ParentDelegateID, ChildSessionID: descriptor.ChildSessionID, TranscriptRef: ref,
 			Task: descriptor.Task, Description: descriptor.Description, AgentType: descriptor.AgentType,
 			RequestedModel: descriptor.RequestedModel, ResolvedProfileID: descriptor.ResolvedProfileID,
 			ResolvedModel: descriptor.ResolvedModel, ReasoningEffort: descriptor.Config.ReasoningEffort,

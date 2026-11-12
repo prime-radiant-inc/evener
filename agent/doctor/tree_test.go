@@ -82,6 +82,66 @@ func TestTree_DelegateEdgeCrossBucket(t *testing.T) {
 	}
 }
 
+// In doctor.Tree, a delegate child in the same project bucket must emit the
+// canonical proj:<bucket>:<id> ref matching the root node's ref, even when
+// delegates.jsonl recorded a local:<id> descriptor (issue #6179).
+func TestTree_SameBucketChildRefMatchesRootProjScheme(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	rootSID := sidA
+	childSID := "02wMz5Txv2enqVTitaig6F"
+
+	writeSession(t, bucket, rootSID)
+	writeSession(t, bucket, childSID) // child lives in the SAME bucket as root
+
+	rootDelegates := filepath.Join(bucket, "sessions", rootSID, "delegates.jsonl")
+	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
+		{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: "del1",
+			Created: &delegatestore.DelegateCreated{
+				Descriptor: delegatestore.Descriptor{
+					ChildSessionID:   childSID,
+					TranscriptRef:    "local:" + childSID,
+					OwnerSessionID:   rootSID,
+					VisibleSessionID: rootSID,
+					Task:             "inspect child",
+					AgentType:        "explorer",
+					ToolNameCeiling:  []string{"communicate"},
+					Resumable:        true,
+				},
+			},
+		},
+		{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: "del1",
+			RunStarted: &delegatestore.RunStarted{
+				Generation: 1,
+				Trigger:    delegatestore.TriggerInitial,
+				StartedAt:  time.Unix(1, 0).UTC(),
+			},
+		},
+	})
+
+	root, err := Tree(base, rootSID, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRootRef := "proj:" + hash1 + ":" + rootSID
+	if root.TranscriptRef != wantRootRef {
+		t.Fatalf("root.TranscriptRef = %q, want %q", root.TranscriptRef, wantRootRef)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("root should have 1 child, got %d", len(root.Children))
+	}
+	child := root.Children[0]
+	wantChildRef := "proj:" + hash1 + ":" + childSID
+	if child.TranscriptRef != wantChildRef {
+		t.Errorf("child.TranscriptRef = %q, want canonical %q", child.TranscriptRef, wantChildRef)
+	}
+}
+
 func TestTree_ObserversOptIn(t *testing.T) {
 	base, rootSID := treeFixture(t)
 
@@ -258,6 +318,9 @@ func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
 	}
 	if len(root.Children) != 1 || root.Children[0].SessionID != missing || root.Children[0].Note == "" {
 		t.Errorf("children = %+v, want the missing child listed with a note", root.Children)
+	}
+	if root.Children[0].TranscriptRef != "" {
+		t.Errorf("missing child TranscriptRef = %q, want empty", root.Children[0].TranscriptRef)
 	}
 }
 
