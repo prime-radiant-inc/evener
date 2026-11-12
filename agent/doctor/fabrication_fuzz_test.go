@@ -14,8 +14,10 @@ func FuzzInspectAssistantFabrication(f *testing.F) {
 	f.Add("Checked PRs.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>", "extra", true, false)
 	f.Add("Waiting.\r\n[answers]\r\n1. [q] -> \"yes\"", "", true, true)
 	f.Add("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi", "", false, false)
+	f.Add("Starting.<|DSML|function_calls>\n<|DSML|invoke name=\"shell\">", "<job-notification>", false, false)
 	f.Add("```xml\n<delegate-notification>\n<｜DSML｜>\n```\nClean.", "<job-notification>", true, true)
-	f.Add("- ~~~\n  <system-notification>\n  ~~~\n", "`` `<invoke>` ``", false, true)
+	f.Add("- ~~~\n  <system-notification>\n  ~~~\n  <delegate-notification>in list</delegate-notification>", "`` `<invoke>` ``", false, true)
+	f.Add("    raw := \"`\"\nHere `<｜DSML｜>` is documented inline.", "[answers]\n1.`a`text", false, false)
 	f.Add("[answers]\nfoo <｜DSML｜>\n1. [x]", "</parameter>\n</invoke>", true, false)
 
 	f.Fuzz(func(t *testing.T, text1, text2 string, hasToolCall, hasMachinery bool) {
@@ -70,10 +72,11 @@ func FuzzInspectAssistantFabrication(f *testing.F) {
 		}
 
 		wantKind, wantOK := "", false
-		if ok1 {
-			wantKind, wantOK = k1, true
-		} else if text2 != "" && ok2 {
-			wantKind, wantOK = k2, true
+		switch {
+		case k1 == fabricationKindHarnessEnvelope || (text2 != "" && k2 == fabricationKindHarnessEnvelope):
+			wantKind, wantOK = fabricationKindHarnessEnvelope, true
+		case ok1 || (text2 != "" && ok2):
+			wantKind, wantOK = fabricationKindToolMarkup, true
 		}
 		if gotOK != wantOK || gotKind != wantKind {
 			t.Fatalf("inspectAssistantFabrication = (%q, %v), want (%q, %v)", gotKind, gotOK, wantKind, wantOK)

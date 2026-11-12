@@ -20,7 +20,9 @@ const (
 type lineSpan struct {
 	start  int
 	end    int // excludes trailing \r\n or \n
+	indent int // leading ASCII spaces when prose is true
 	fenced bool
+	prose  bool
 }
 
 var harnessTagPrefixes = []struct {
@@ -55,29 +57,40 @@ var lineStartToolPrefixes = []struct {
 var dsmlTokens = []string{
 	"<｜DSML｜",
 	"</｜DSML｜",
-	"<|DSML|>",
-	"</|DSML|>",
+	"<|DSML|",
+	"</|DSML|",
 }
 
-// inspectAssistantFabrication scans non-machinery ContentText parts on msg in
-// encounter order and reports the kind of the earliest fabricated harness/user
-// envelope or unparsed raw tool-call markup outside code spans, blockquotes,
-// and list items.
+// inspectAssistantFabrication scans non-machinery ContentText parts on msg and
+// reports whether the turn carries a fabricated harness/user envelope or
+// unparsed raw tool-call markup outside code spans, blockquotes, and list
+// items. Within a single assistant turn, harness_envelope (high severity) takes
+// precedence over tool_markup (medium severity) so an earlier markup leak never
+// masks a fabricated input frame later in the turn.
 func inspectAssistantFabrication(msg llm.Message) (kind string, ok bool) {
+	sawToolMarkup := false
 	for _, part := range msg.Content {
 		if part.Kind != llm.ContentText || part.Machinery || part.Text == "" {
 			continue
 		}
-		if k, matched := inspectAssistantText(part.Text); matched {
-			return k, true
+		k, matched := inspectAssistantText(part.Text)
+		if !matched {
+			continue
 		}
+		if k == fabricationKindHarnessEnvelope {
+			return fabricationKindHarnessEnvelope, true
+		}
+		sawToolMarkup = true
+	}
+	if sawToolMarkup {
+		return fabricationKindToolMarkup, true
 	}
 	return "", false
 }
 
-// inspectAssistantText scans text for the earliest fabricated harness envelope
-// or raw tool-call markup outside code blocks, inline code spans, blockquotes,
-// and list items. Clean strings without '<' or '[' return immediately with zero
+// inspectAssistantText scans text for fabricated harness envelopes or raw
+// tool-call markup outside code blocks, inline code spans, blockquotes, and
+// list items. Clean strings without '<' or '[' return immediately with zero
 // allocations.
 func inspectAssistantText(text string) (kind string, ok bool) {
 	if !strings.ContainsAny(text, "<[") {
@@ -85,62 +98,69 @@ func inspectAssistantText(text string) (kind string, ok bool) {
 	}
 
 	lines, masked := maskCodeSpans(text)
+	sawToolMarkup := false
 
 	for i, ln := range lines {
-		if ln.fenced {
+		if !ln.prose {
 			continue
 		}
 		rawLine := text[ln.start:ln.end]
-		rawIndent, ok := proseLineIndent(rawLine)
-		if !ok {
-			continue
-		}
 		maskedLine := masked[ln.start:ln.end]
-		rest := maskedLine[rawIndent:]
+		rest := maskedLine[ln.indent:]
+		lineMatchedMarkup := false
 
 		switch rest[0] {
 		case '<':
 			// 1. Line-start harness/user input envelopes.
 			for _, h := range harnessTagPrefixes {
-				if hasPrefixMode(rest, h.prefix, h.caseFoldASCII) && hasTagBoundary(rest[len(h.prefix):], false) {
+				if after, ok := cutPrefixMode(rest, h.prefix, h.caseFoldASCII); ok && hasTagBoundary(after, false) {
 					return fabricationKindHarnessEnvelope, true
 				}
 			}
 			// 2. Line-start raw XML tool-call markup.
-			for _, tm := range lineStartToolPrefixes {
-				if strings.HasPrefix(rest, tm.prefix) && hasTagBoundary(rest[len(tm.prefix):], tm.allowEquals) {
-					return fabricationKindToolMarkup, true
+			if !sawToolMarkup {
+				for _, tm := range lineStartToolPrefixes {
+					if after, ok := strings.CutPrefix(rest, tm.prefix); ok && hasTagBoundary(after, tm.allowEquals) {
+						sawToolMarkup = true
+						lineMatchedMarkup = true
+						break
+					}
 				}
 			}
 		case '[':
-			rawTrimmed := strings.TrimRight(rawLine[rawIndent:], " \t")
+			rawTrimmed := strings.TrimRight(rawLine[ln.indent:], " \t")
 			maskedTrimmed := strings.TrimRight(rest, " \t")
 			if rawTrimmed == maskedTrimmed {
 				if maskedTrimmed == "[CONTEXT SUMMARY]" {
 					return fabricationKindHarnessEnvelope, true
 				}
-				if maskedTrimmed == "[answers]" && hasFollowingNumberedAnswerLine(text, masked, lines, i+1) {
+				if maskedTrimmed == "[answers]" && hasFollowingNumberedAnswerLine(text, lines, i+1) {
 					return fabricationKindHarnessEnvelope, true
 				}
 			}
 		}
 
 		// 3. DSML tokens anywhere on a prose-eligible line.
-		if strings.IndexByte(maskedLine, '<') >= 0 {
+		if !sawToolMarkup && !lineMatchedMarkup && strings.IndexByte(maskedLine, '<') >= 0 {
 			for _, tok := range dsmlTokens {
 				if strings.Contains(maskedLine, tok) {
-					return fabricationKindToolMarkup, true
+					sawToolMarkup = true
+					break
 				}
 			}
 		}
 	}
 
+	if sawToolMarkup {
+		return fabricationKindToolMarkup, true
+	}
 	return "", false
 }
 
 func maskCodeSpans(text string) ([]lineSpan, string) {
 	lines := make([]lineSpan, 0, strings.Count(text, "\n")+1)
 	var fence mdfence.Tracker
+	listContentCol := 0
 
 	pos := 0
 	for pos < len(text) {
@@ -159,10 +179,49 @@ func maskCodeSpans(text string) ([]lineSpan, string) {
 			end--
 		}
 
+		rawLine := text[pos:end]
+		wasInFence := fence.Inside()
+		inFence := fence.StepInBlock(rawLine)
+		indent := 0
+		prose := false
+		if inFence {
+			if !wasInFence {
+				cols := mdfence.LeadingColumns(rawLine)
+				if listContentCol > 0 && cols < listContentCol {
+					listContentCol = 0
+				}
+				if listContentCol == 0 && cols < 4 {
+					if col, ok := listItemContentColumn(rawLine, cols); ok {
+						listContentCol = col
+					}
+				}
+			}
+		} else if strings.TrimSpace(rawLine) != "" {
+			cols := mdfence.LeadingColumns(rawLine)
+			if listContentCol > 0 && cols < listContentCol {
+				listContentCol = 0
+			}
+			if listContentCol == 0 && cols < 4 {
+				// Any leading '\t' reaches at least column 4, so cols < 4
+				// guarantees leading whitespace is pure ASCII spaces.
+				rest := rawLine[cols:]
+				if rest[0] != '>' {
+					if col, ok := listItemContentColumn(rawLine, cols); ok {
+						listContentCol = col
+					} else {
+						indent = cols
+						prose = true
+					}
+				}
+			}
+		}
+
 		lines = append(lines, lineSpan{
 			start:  pos,
 			end:    end,
-			fenced: fence.StepInBlock(text[pos:end]),
+			indent: indent,
+			fenced: inFence,
+			prose:  prose,
 		})
 		pos = rawEnd
 	}
@@ -172,15 +231,15 @@ func maskCodeSpans(text string) ([]lineSpan, string) {
 	}
 	buf := []byte(text)
 
-	// Mask CommonMark inline backtick code spans within each non-fenced paragraph
-	// (blank lines end a paragraph so an unclosed backtick cannot bleed across paragraphs).
+	// Mask CommonMark inline backtick code spans strictly within each contiguous
+	// prose paragraph so literal backticks in fenced/indented code, blockquotes,
+	// list items, or across blank lines cannot bleed into prose paragraphs.
 	pStart := -1
 	for idx, ln := range lines {
-		isBlank := ln.fenced || strings.TrimSpace(text[ln.start:ln.end]) == ""
-		if !isBlank && pStart < 0 {
+		if ln.prose && pStart < 0 {
 			pStart = ln.start
 		}
-		if isBlank && pStart >= 0 {
+		if !ln.prose && pStart >= 0 {
 			maskParagraphInlineCode(buf, pStart, lines[idx-1].end)
 			pStart = -1
 		}
@@ -190,6 +249,33 @@ func maskCodeSpans(text string) ([]lineSpan, string) {
 	}
 
 	return lines, string(buf)
+}
+
+func listItemContentColumn(rawLine string, indent int) (int, bool) {
+	rest := rawLine[indent:]
+	mLen, ok := mdfence.ListMarker(rest)
+	if !ok {
+		return 0, false
+	}
+	after := rest[mLen:]
+	if after == "" || (after[0] != ' ' && after[0] != '\t') {
+		return 0, false
+	}
+	baseCols := indent + mLen
+	cols := baseCols
+	i := 0
+	for i < len(after) && (after[i] == ' ' || after[i] == '\t') {
+		if after[i] == ' ' {
+			cols++
+		} else {
+			cols += 4 - cols%4
+		}
+		i++
+	}
+	if i == len(after) || cols-baseCols > 4 {
+		return baseCols + 1, true
+	}
+	return cols, true
 }
 
 func maskParagraphInlineCode(buf []byte, start, end int) {
@@ -230,25 +316,7 @@ func maskParagraphInlineCode(buf []byte, start, end int) {
 	}
 }
 
-func proseLineIndent(rawLine string) (int, bool) {
-	if mdfence.LeadingColumns(rawLine) >= 4 {
-		return 0, false
-	}
-	indent := mdfence.LeadingSpaces(rawLine)
-	rest := rawLine[indent:]
-	if rest == "" || rest[0] == '>' {
-		return 0, false
-	}
-	if mLen, ok := mdfence.ListMarker(rest); ok {
-		after := rest[mLen:]
-		if after != "" && (after[0] == ' ' || after[0] == '\t') {
-			return 0, false
-		}
-	}
-	return indent, true
-}
-
-func hasFollowingNumberedAnswerLine(text, masked string, lines []lineSpan, fromLine int) bool {
+func hasFollowingNumberedAnswerLine(text string, lines []lineSpan, fromLine int) bool {
 	for k := fromLine; k < len(lines); k++ {
 		raw := text[lines[k].start:lines[k].end]
 		if strings.TrimSpace(raw) == "" {
@@ -258,20 +326,19 @@ func hasFollowingNumberedAnswerLine(text, masked string, lines []lineSpan, fromL
 			return false
 		}
 		rawIndent := mdfence.LeadingSpaces(raw)
-		mLine := masked[lines[k].start:lines[k].end]
-		return strings.HasPrefix(mLine[rawIndent:], "1. ")
+		return strings.HasPrefix(raw[rawIndent:], "1. ")
 	}
 	return false
 }
 
-func hasPrefixMode(s, prefix string, caseFoldASCII bool) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
+func cutPrefixMode(s, prefix string, caseFoldASCII bool) (string, bool) {
 	if !caseFoldASCII {
-		return strings.HasPrefix(s, prefix)
+		return strings.CutPrefix(s, prefix)
 	}
-	return strings.EqualFold(s[:len(prefix)], prefix)
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return "", false
+	}
+	return s[len(prefix):], true
 }
 
 func hasTagBoundary(rest string, allowEquals bool) bool {
