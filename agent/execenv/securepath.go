@@ -241,8 +241,17 @@ func (s *sandboxFS) grantableTarget(abs string, write bool) string {
 	if !ok {
 		return ""
 	}
-	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return ""
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ""
+		}
+		// A read card's preflight opens the target before the human approves
+		// it, and a special file can act at open: a nonblocking read of a FIFO
+		// connects a reader and releases a waiting producer, losing its output.
+		// Only a regular file or a directory is a safe preflight target.
+		if !write && !info.Mode().IsRegular() && !info.IsDir() {
+			return ""
+		}
 	}
 	masked := s.underMasked
 	if write {
@@ -252,6 +261,14 @@ func (s *sandboxFS) grantableTarget(abs string, write bool) string {
 		return ""
 	}
 	if write && (s.underProtected(abs) || s.underProtected(target)) {
+		return ""
+	}
+	// Match the card to the recheck a grant applies after Allow: a case variant
+	// on a case-insensitive volume, or the macOS data-volume firmlink, passes
+	// the textual checks above while the kernel's canonical path names a masked
+	// or git-protected surface. Offering that card would promise an operation
+	// the grant then refuses (#6115).
+	if s.grantFdRecheckRefuses(target, write) {
 		return ""
 	}
 	return target
