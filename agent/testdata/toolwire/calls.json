@@ -748,7 +748,7 @@
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "output": "applied patch to:\nagent/tree.go\nagent/tree_drain.go",
+      "output": "applied patch to:\nM agent/tree.go\nA agent/tree_drain.go",
       "status": "completed",
       "completedAt": 1790625602000
     },
