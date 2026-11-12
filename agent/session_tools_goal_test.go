@@ -130,3 +130,91 @@ func TestUpdateGoalTool_NoActiveGoal(t *testing.T) {
 		t.Fatal("no goal should be present after update on empty store")
 	}
 }
+
+func TestUpdateGoalTool_AlreadyTerminal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		initialStatus goal.Status
+		updateStatus  string
+		wantStatus    string
+	}{
+		{
+			name:          "already complete",
+			initialStatus: goal.StatusComplete,
+			updateStatus:  "blocked",
+			wantStatus:    "complete",
+		},
+		{
+			name:          "already blocked",
+			initialStatus: goal.StatusBlocked,
+			updateStatus:  "complete",
+			wantStatus:    "blocked",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := testGoalSession(t)
+			sess.getOrCreateGoalStore().Set("seeded objective", testGoalNow())
+			if !sess.getOrCreateGoalStore().SetTerminal(tc.initialStatus, "seed-reason", testGoalNow()) {
+				t.Fatalf("setup: failed to set goal %v", tc.initialStatus)
+			}
+
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID:        "g-term",
+				Name:      "update_goal",
+				Arguments: json.RawMessage(`{"status":"` + tc.updateStatus + `"}`),
+			})
+			if res.IsError {
+				t.Fatalf("update_goal on already terminal goal should not be IsError, got: %s", res.Output)
+			}
+			wantOutput := "The goal for this session is already terminal (" + tc.wantStatus + "); nothing recorded — this tool only updates an active goal."
+			if res.Output != wantOutput {
+				t.Fatalf("Output = %q, want %q", res.Output, wantOutput)
+			}
+			var state map[string]any
+			if err := json.Unmarshal(res.ToolState, &state); err != nil {
+				t.Fatalf("unmarshal ToolState: %v", err)
+			}
+			if state["status"] != tc.wantStatus {
+				t.Fatalf("ToolState status = %v, want %q", state["status"], tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestUpdateGoal_VisibilityFollowsGoalConfiguration(t *testing.T) {
+	t.Parallel()
+	sess := testGoalSession(t)
+
+	// Goal-less session at launch: update_goal must NOT be advertised in cachedToolDefs or ToolDefinitions.
+	if hasToolDef(sess.cachedToolDefs, "update_goal") {
+		t.Fatal("update_goal should not be advertised in cachedToolDefs when no goal is configured")
+	}
+	if hasToolDef(sess.ToolDefinitions(), "update_goal") {
+		t.Fatal("update_goal should not be advertised in ToolDefinitions() when no goal is configured")
+	}
+
+	// Dynamically attaching a goal via SetGoal: update_goal becomes visible.
+	ctx := context.Background()
+	if _, err := sess.SetGoal(ctx, "dynamic objective"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if !hasToolDef(sess.cachedToolDefs, "update_goal") {
+		t.Fatal("update_goal should be advertised in cachedToolDefs after SetGoal")
+	}
+	if !hasToolDef(sess.ToolDefinitions(), "update_goal") {
+		t.Fatal("update_goal should be advertised in ToolDefinitions() after SetGoal")
+	}
+
+	// Clearing the goal via ClearGoal: update_goal is hidden again.
+	if err := sess.ClearGoal(); err != nil {
+		t.Fatalf("ClearGoal: %v", err)
+	}
+	if hasToolDef(sess.cachedToolDefs, "update_goal") {
+		t.Fatal("update_goal should not be advertised in cachedToolDefs after ClearGoal")
+	}
+	if hasToolDef(sess.ToolDefinitions(), "update_goal") {
+		t.Fatal("update_goal should not be advertised in ToolDefinitions() after ClearGoal")
+	}
+}

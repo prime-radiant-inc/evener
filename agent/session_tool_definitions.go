@@ -231,6 +231,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
+		if td.Name == "update_goal" && !s.hasGoalConfigured() {
+			continue
+		}
 		if td.Name == "shell" {
 			// A profile that omits shell still gets the environment-aware
 			// schema here rather than the registry's fully capable copy
@@ -278,4 +281,12 @@ func normalizeRegistryToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
 		}
 	}
 	return td
+}
+
+func (s *Session) hasGoalConfigured() bool {
+	if s.goalStore == nil {
+		return false
+	}
+	_, ok := s.goalStore.Snapshot()
+	return ok
 }
