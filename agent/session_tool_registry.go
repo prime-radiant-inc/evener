@@ -261,25 +261,19 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
-	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
+	transitionTerminal   func(goal.Status, string) (goal.Snapshot, goal.SetTerminalResult)
 }
 
 // Store returns the session's goal store, initializing it if needed.
 func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
 
-// SetTerminal commits through the owning Session when available, keeping the
-// mutation and its GOAL_UPDATED event ordered. Direct test constructions fall
-// back to the store-only behavior they had before live goal updates.
-func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, bool) {
-	if g.setTerminal != nil {
-		return g.setTerminal(status, reason)
+// TransitionTerminal transitions the goal store terminal status through the
+// owning Session when available.
+func (g goalGuard) TransitionTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, goal.SetTerminalResult) {
+	if g.transitionTerminal != nil {
+		return g.transitionTerminal(status, reason)
 	}
-	store := g.Store()
-	if !store.SetTerminal(status, reason, now) {
-		return goal.Snapshot{}, false
-	}
-	snap, _ := store.Snapshot()
-	return snap, true
+	return g.Store().TransitionTerminal(status, reason, now)
 }
 
 // notesGuard is a thin facade over the session's shared-notes store. It uses
@@ -351,7 +345,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
-			setTerminal:          s.setGoalTerminal,
+			transitionTerminal:   s.transitionGoalTerminal,
 		},
 		notesGuard: notesGuard{
 			mutateAgentNote: s.mutateAgentNoteSerialized,

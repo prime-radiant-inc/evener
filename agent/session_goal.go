@@ -70,7 +70,13 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// A fresh objective never waited on the old goal's dependents: void any
 	// pending hold so the settle cannot suppress this goal's kick with it.
 	s.goalDependentsHeld = false
+	var promptWarning string
+	if s.reg != nil {
+		s.rebuildToolDefsCache()
+		promptWarning, _ = s.refreshSystemPromptCache(s.env)
+	}
 	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 
@@ -98,7 +104,13 @@ func (s *Session) ClearGoal() error {
 	s.mu.Lock()
 	s.getOrCreateGoalStore().Clear()
 	s.goalDependentsHeld = false
+	var promptWarning string
+	if s.reg != nil {
+		s.rebuildToolDefsCache()
+		promptWarning, _ = s.refreshSystemPromptCache(s.env)
+	}
 	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 	return nil
@@ -517,13 +529,17 @@ func (s *Session) emitCurrentGoalState() {
 // unit. The goal store releases its own mutex before emission, and this helper
 // never takes Session.mu.
 func (s *Session) setGoalTerminal(status goal.Status, reason string) (goal.Snapshot, bool) {
+	snap, res := s.transitionGoalTerminal(status, reason)
+	return snap, res == goal.SetTerminalSuccess
+}
+
+func (s *Session) transitionGoalTerminal(status goal.Status, reason string) (goal.Snapshot, goal.SetTerminalResult) {
 	s.goalUpdateMu.Lock()
 	defer s.goalUpdateMu.Unlock()
 	store := s.getOrCreateGoalStore()
-	if !store.SetTerminal(status, reason, s.sclock().Now()) {
-		return goal.Snapshot{}, false
+	snap, res := store.TransitionTerminal(status, reason, s.sclock().Now())
+	if res == goal.SetTerminalSuccess {
+		s.emitGoalUpdated(snap)
 	}
-	snap, _ := store.Snapshot()
-	s.emitGoalUpdated(snap)
-	return snap, true
+	return snap, res
 }

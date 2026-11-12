@@ -664,6 +664,38 @@ test("phrases a housekeeping call as its step line does", () => {
   expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
 });
 
+test("update_goal produces distinct summaries across active, unconfigured, and terminal states", () => {
+  const activeComplete = toolStepSummary(housekeeping("update_goal", { status: "complete" }, "Goal marked complete."));
+  const noGoal = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "No goal is active for this session (none was set at launch)...",
+    ),
+  );
+  const alreadyComplete = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "blocked" },
+      "The goal for this session is already terminal (complete); nothing recorded — this tool only updates an active goal.",
+    ),
+  );
+  const alreadyBlocked = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "The goal for this session is already terminal (blocked); nothing recorded — this tool only updates an active goal.",
+    ),
+  );
+
+  // All 4 summaries must be distinct.
+  const summaries = new Set([activeComplete, noGoal, alreadyComplete, alreadyBlocked]);
+  expect(summaries.size).toBe(4);
+
+  // An already-blocked goal called with status: "complete" must NOT claim "Marked the goal complete".
+  expect(alreadyBlocked).not.toContain("Marked the goal complete");
+});
+
 // A call whose arguments the hub didn't send can't say it only clears a
 // note, so it says what the tool usually does, running and done alike.
 test("says notes_agent_set's usual lines when its arguments are missing", () => {
