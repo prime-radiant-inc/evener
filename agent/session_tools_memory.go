@@ -292,17 +292,10 @@ func memoryIndexSliceFooter(body, scope, toolName string, offset, limit *int) st
 	if limit != nil && *limit > 0 {
 		winLimit = *limit
 	}
-	norm := strings.ReplaceAll(body, "\r\n", "\n")
-	totalLines := strings.Count(norm, "\n") + 1
-	if start > totalLines {
-		return ""
-	}
+	totalLines := strings.Count(body, "\n") + 1
 	end := start + winLimit - 1
 	if end >= totalLines {
 		return ""
-	}
-	if toolName == "" {
-		toolName = "memory_read"
 	}
 	return fmt.Sprintf("\n[Showing lines %d-%d of %d; read more with %s(scope=%q, file_path=\"MEMORY.md\", offset=%d)]",
 		start, end, totalLines, toolName, scope, end+1)
@@ -342,11 +335,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		body := strings.TrimSuffix(rendered.Index, "\n")
 		offset, limit := optionalIntArg(args, "offset"), optionalIntArg(args, "limit")
 		out := execenv.NumberLines(body, offset, limit)
-		toolName := "memory_read"
-		if s != nil {
-			toolName = s.providerVisibleToolName("memory_read")
-		}
-		return out + memoryIndexSliceFooter(body, scope, toolName, offset, limit), nil
+		return out + memoryIndexSliceFooter(body, scope, s.providerVisibleToolName("memory_read"), offset, limit), nil
 	}
 	// Capture the bytes this read loaded, so the page's record is exactly what
 	// the session saw. They are the whole page even for an offset or limit

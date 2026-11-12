@@ -233,23 +233,35 @@ func normalizeMemoryTags(v any) []string {
 }
 
 func cleanMemoryTag(raw string) string {
-	const trimSet = "- \t\r\n\v\f,;\"'[]{}"
+	const trimSet = "- \t\r\n\v\f;\"'[]{}"
 	s := strings.Trim(strings.ToLower(raw), trimSet)
 	if s == "" {
 		return ""
 	}
-	var parts []string
+	var b strings.Builder
+	b.Grow(len(s))
 	for field := range strings.FieldsSeq(s) {
 		field = strings.Trim(field, trimSet)
-		if field != "" {
-			parts = append(parts, field)
+		if field == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('-')
+		}
+		prevHyphen := false
+		for i := 0; i < len(field); i++ {
+			if field[i] == '-' {
+				if !prevHyphen {
+					b.WriteByte('-')
+					prevHyphen = true
+				}
+				continue
+			}
+			prevHyphen = false
+			b.WriteByte(field[i])
 		}
 	}
-	joined := strings.Join(parts, "-")
-	for strings.Contains(joined, "--") {
-		joined = strings.ReplaceAll(joined, "--", "-")
-	}
-	return strings.Trim(joined, "-")
+	return b.String()
 }
 
 // memoryStampDate reads an updated value: a YAML date or a YYYY-MM-DD string.

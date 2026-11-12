@@ -1024,10 +1024,10 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 	var omitted *LineRange
 	if truncated && out != full {
 		out += "\n[Tool output was truncated.]"
-		if toolName == "read_file" && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
+		if (toolName == "read_file" || toolName == "memory_read") && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
 			omitted = omittedNumberedLines(full, lim.MaxChars)
 			if omitted != nil {
-				out += fmt.Sprintf("\n[Lines %d-%d were cut; read_file with offset=%d limit=%d returns them.]", omitted.From, omitted.To, omitted.From, omitted.To-omitted.From+1)
+				out += fmt.Sprintf("\n[Lines %d-%d were cut; %s with offset=%d limit=%d returns them.]", omitted.From, omitted.To, toolName, omitted.From, omitted.To-omitted.From+1)
 			}
 		}
 		if toolName == "grep" && reason == TruncatedByChars {

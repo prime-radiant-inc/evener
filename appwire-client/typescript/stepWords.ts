@@ -42,16 +42,24 @@ export function withDetail(words: StepWords, detail: string | undefined): StepWo
 /** The header read_file puts before an image or a document's base64 data. */
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
-/** A read's line range from its requested bounds or the output it returned. */
 const NUMBERED_LINE = /^\s*\d+\t/;
 
+function numberedOrRawLineCount(output: string): number {
+  if (!NUMBERED_LINE.test(output)) return lineCount(output);
+  let count = 0;
+  for (const line of output.split("\n")) {
+    if (!NUMBERED_LINE.test(line)) break;
+    count++;
+  }
+  return count;
+}
+
+/** A read's line range from its requested bounds or the output it returned. */
 export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
   const limitArg = args.limit;
-  const blank = NUMBERED_LINE.test(output) ? output.indexOf("\n\n") : -1;
-  const body = blank < 0 ? output : output.slice(0, blank);
-  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(body);
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : numberedOrRawLineCount(output);
   if (count > 0) return `lines ${offset}-${offset + count - 1}`;
   return output === "" ? undefined : `lines ${offset}`;
 }

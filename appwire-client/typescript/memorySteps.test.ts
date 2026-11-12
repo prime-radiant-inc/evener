@@ -147,6 +147,14 @@ test("counts logical lines when a read without a limit returns unterminated outp
       step({ scope: "personal", file_path: "page.md" }, "   1\tline 1\n   2\tline 2\n\nThis page is long (5 KB)."),
     ),
   ).toBe("Read memory personal/page.md · lines 1-2");
+  expect(
+    memoryReadSummary(
+      step(
+        { scope: "personal", file_path: "page.md" },
+        "   1\tline 1\n   2\tline 2\n[Unchanged since your earlier read: same file, same range.]",
+      ),
+    ),
+  ).toBe("Read memory personal/page.md · lines 1-2");
 });
 
 test("an edit with neither old nor new string has no diff detail", () => {
