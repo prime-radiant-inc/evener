@@ -28,6 +28,24 @@ const (
 	StatusLimited StatusKind = "limited"
 )
 
+var ErrPageEnvelopeBudgetTooSmall = errors.New("page envelope budget too small")
+
+type PageEnvelopeBudgetError struct {
+	RequiredBytes int
+}
+
+func (e *PageEnvelopeBudgetError) Error() string {
+	return fmt.Sprintf("page envelope budget too small (need at least %d bytes)", e.RequiredBytes)
+}
+
+func (e *PageEnvelopeBudgetError) Is(target error) bool {
+	return target == ErrPageEnvelopeBudgetTooSmall
+}
+
+func envelopeBudgetError(minBytes int) error {
+	return &PageEnvelopeBudgetError{RequiredBytes: minBytes}
+}
+
 type ProviderStatus struct {
 	Kind   StatusKind `json:"kind"`
 	Detail string     `json:"detail,omitempty"`
@@ -46,7 +64,7 @@ type Page struct {
 	Version    string                    `json:"version"`
 	Complete   bool                      `json:"complete"`
 	Terminal   bool                      `json:"terminal"`
-	Status     map[string]ProviderStatus `json:"status"`
+	Status     map[string]ProviderStatus `json:"status,omitempty"`
 	Provenance string                    `json:"provenance"`
 }
 
@@ -359,15 +377,18 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 	if maxCount < 0 || maxCount > DefaultPageMaxCount || maxBytes < 0 || maxBytes > DefaultPageMaxBytes {
 		return Page{}, errors.New("invalid page bounds")
 	}
-	status := s.Status
-	if status == nil {
-		status = map[string]ProviderStatus{}
+	var status map[string]ProviderStatus
+	if off == 0 {
+		status = s.Status
+		if status == nil {
+			status = map[string]ProviderStatus{}
+		}
 	}
 	p := Page{Version: s.Version, Complete: s.Complete, Status: status, Provenance: "startup-frozen"}
 	if off >= len(s.Choices) {
 		p = s.pageAtOffset(p, off, maxCount, maxBytes)
 		if p.SerializedBytes() > maxBytes {
-			return Page{}, errors.New("page envelope budget too small")
+			return Page{}, envelopeBudgetError(p.SerializedBytes())
 		}
 		return p, nil
 	}
@@ -387,16 +408,26 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		trial.Oversized = append(append([]int(nil), p.Oversized...), off)
 		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
 		if trial.SerializedBytes() > maxBytes {
-			return Page{}, errors.New("page envelope budget too small")
+			return Page{}, envelopeBudgetError(trial.SerializedBytes())
 		}
 		p = trial
 		off++
 	}
 	if len(p.Choices) == 0 && len(p.Oversized) == 0 {
-		return Page{}, errors.New("page envelope budget too small")
+		trial := p
+		trial.Choices = append(append([]string(nil), p.Choices...), s.Choices[off])
+		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
+		minBytes := trial.SerializedBytes()
+		trialOversized := p
+		trialOversized.Oversized = append(append([]int(nil), p.Oversized...), off)
+		trialOversized = s.pageAtOffset(trialOversized, off+1, maxCount, maxBytes)
+		if trialOversized.SerializedBytes() < minBytes {
+			minBytes = trialOversized.SerializedBytes()
+		}
+		return Page{}, envelopeBudgetError(minBytes)
 	}
 	if p.SerializedBytes() > maxBytes {
-		return Page{}, errors.New("page envelope budget too small")
+		return Page{}, envelopeBudgetError(p.SerializedBytes())
 	}
 	return p, nil
 }

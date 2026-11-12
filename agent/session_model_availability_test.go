@@ -523,6 +523,42 @@ func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 	}
 }
 
+func TestModelListContinuationOmitsStatusUnderTightBudget(t *testing.T) {
+	t.Parallel()
+	models1 := []registry.Model{
+		{ID: "model-01"},
+		{ID: "model-02"},
+	}
+	adapter1 := &modelAvailabilityAdapter{models: models1}
+	adapter1.name = "provider1"
+	adapter2 := &modelAvailabilityAdapter{
+		listErr: errors.New("enumeration unavailable"),
+	}
+	adapter2.name = "provider2"
+
+	client := llm.NewClient()
+	client.Register(adapter1)
+	client.Register(adapter2)
+	sess, err := NewSession(client, NewOpenAIProfile(models1[0].ID), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	first := executeModelListPage(t, sess, "", 1, 2048)
+	if first.Next == "" {
+		t.Fatalf("first page = %+v, want a continuation", first)
+	}
+	if first.Status == nil || len(first.Status) < 2 {
+		t.Fatalf("first page status = %#v, want multi-provider status", first.Status)
+	}
+
+	next := executeModelListPage(t, sess, first.Next, 1, 2048)
+	if next.Status != nil {
+		t.Fatalf("continuation page status = %#v, want nil", next.Status)
+	}
+}
+
 func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
 	t.Parallel()
 	adapter := &modelAvailabilityAdapter{listErr: errors.New("enumeration unavailable")}

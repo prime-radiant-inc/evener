@@ -375,6 +375,62 @@ func TestCursorRejectsAuthenticatedUnknownAndTrailingFields(t *testing.T) {
 	}
 }
 
+func TestPageOmitsStatusOnContinuationPages(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1", "p1/m2", "p1/m3")
+	s.Status = make(map[string]ProviderStatus)
+	for i := 0; i < 10; i++ {
+		s.Status[fmt.Sprintf("provider-%02d", i)] = ProviderStatus{
+			Kind:   StatusSuccess,
+			Detail: "enumeration succeeded with extra descriptive text",
+		}
+	}
+	// Initial page contains Status
+	first, err := s.Page("", 1, 2048)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Status == nil || len(first.Status) != 10 {
+		t.Fatalf("first page status = %#v, want 10 providers", first.Status)
+	}
+	firstBytes, err := json.MarshalIndent(first, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(firstBytes), `"status":`) {
+		t.Fatal("first page JSON must contain status")
+	}
+
+	next, err := s.Page(first.Next, 1, 2048)
+	if err != nil {
+		t.Fatalf("continuation page failed: %v", err)
+	}
+	if next.Status != nil {
+		t.Fatalf("continuation page status = %#v, want nil", next.Status)
+	}
+	nextBytes, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(nextBytes), `"status"`) {
+		t.Fatalf("continuation page JSON must omit status, got:\n%s", string(nextBytes))
+	}
+}
+
+func TestPageEnvelopeBudgetTooSmallIncludesByteFloor(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1")
+	s.Status = map[string]ProviderStatus{
+		"provider": {Kind: StatusSuccess, Detail: strings.Repeat("x", 200)},
+	}
+	_, err := s.Page("", 1, 100)
+	if err == nil || !errors.Is(err, ErrPageEnvelopeBudgetTooSmall) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrPageEnvelopeBudgetTooSmall)", err)
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.RequiredBytes <= 100 {
+		t.Fatalf("budgetErr = %#v, want RequiredBytes > 100", budgetErr)
+	}
+}
+
 func testSnapshot(version string, complete bool, choices ...string) Snapshot {
 	return Snapshot{Version: version, Complete: complete, Choices: choices, key: []byte("test-key")}
 }
