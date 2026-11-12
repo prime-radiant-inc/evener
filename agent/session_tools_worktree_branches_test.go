@@ -874,3 +874,66 @@ func TestRootOnlySubagentToolsIncludesJobControl(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf
+
+func TestWorktreeListSummaryCappedOverTen(t *testing.T) {
+	t.Parallel()
+	entries := make([]WorktreeListEntry, 12)
+	for i := range entries {
+		entries[i] = WorktreeListEntry{Name: fmt.Sprintf("wt-%02d", i+1), AheadCommits: 0, Dirty: false, Merged: true}
+	}
+	result := worktreeListSummary(entries, nil)
+	if !strings.Contains(result, "12 managed worktree(s)") {
+		t.Fatalf("expected count 12: %q", result)
+	}
+	if !strings.Contains(result, "; and 2 more.") {
+		t.Fatalf("expected '; and 2 more.': %q", result)
+	}
+	if strings.Contains(result, "wt-11") || strings.Contains(result, "wt-12") {
+		t.Fatalf("expected wt-11 and wt-12 to be elided: %q", result)
+	}
+}
+
+func TestWorktreeUnmanagedSummaryCappedOverTen(t *testing.T) {
+	t.Parallel()
+	unmanaged := make([]WorktreeListEntry, 13)
+	for i := range unmanaged {
+		unmanaged[i] = WorktreeListEntry{Path: fmt.Sprintf("/wt-%02d", i+1), Branch: "main"}
+	}
+	result := worktreeUnmanagedSummary(unmanaged)
+	if !strings.Contains(result, "13 unmanaged worktree(s)") {
+		t.Fatalf("expected count 13: %q", result)
+	}
+	if !strings.Contains(result, "; and 3 more.") {
+		t.Fatalf("expected '; and 3 more.': %q", result)
+	}
+}
+
+func TestWorktreeListSummaryPagingHint(t *testing.T) {
+	t.Parallel()
+	result := worktreeListSummaryPaged(nil, nil, true, 20)
+	if !strings.Contains(result, "(offset=20 for next page)") {
+		t.Fatalf("expected paging hint: %q", result)
+	}
+}
+
+func TestWorktreeListSummaryPagedTotals(t *testing.T) {
+	t.Parallel()
+	entries := make([]WorktreeListEntry, 7)
+	for i := range entries {
+		entries[i] = WorktreeListEntry{Name: fmt.Sprintf("wt-%02d", i+1), AheadCommits: 0, Dirty: false, Merged: true}
+	}
+	// Paged: truncated=true, nextOffset=7, totalManaged=18, totalUnmanaged=6
+	result := worktreeListSummaryPagedWithTotals(entries, nil, true, 7, 18, 6)
+	if !strings.Contains(result, "7 of 18 managed worktree(s)") {
+		t.Fatalf("expected '7 of 18 managed worktree(s)': %q", result)
+	}
+	if !strings.Contains(result, "; and 2 more.") {
+		t.Fatalf("expected '; and 2 more.' (capped at 5): %q", result)
+	}
+	if !strings.Contains(result, "0 of 6 unmanaged worktree(s)") {
+		t.Fatalf("expected '0 of 6 unmanaged worktree(s)': %q", result)
+	}
+	if !strings.Contains(result, "(offset=7 for next page)") {
+		t.Fatalf("expected '(offset=7 for next page)': %q", result)
+	}
+}
