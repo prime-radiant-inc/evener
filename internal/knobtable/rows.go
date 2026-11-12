@@ -97,10 +97,18 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	registryByIdent := map[string]string{}
+	for _, e := range registry {
+		registryByIdent[e.ident] = e.name
+	}
+	lookups, err := lookupNames(sources)
+	if err != nil {
+		return nil, err
+	}
 	byIdent := map[string]map[string]bool{}
 	byGetenv := map[string]map[string]bool{} // literal os.Getenv / os.LookupEnv names
 	for _, src := range sources {
-		refs, err := scanRefs(src)
+		refs, err := scanRefs(src, registryByIdent, lookups)
 		if err != nil {
 			return nil, err
 		}
@@ -112,6 +120,13 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		for _, name := range refs.getenvs {
 			addTo(byGetenv, name, src.dir())
 		}
+		for _, name := range refs.lookups {
+			addTo(byGetenv, name, src.dir())
+		}
+	}
+	nonGo, err := nonGoEnvConsumers(root, envNames(registry))
+	if err != nil {
+		return nil, err
 	}
 	catalog, err := registryNames(root)
 	if err != nil {
@@ -142,6 +157,9 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		if catalog[e.name] {
 			dirs["llm/registry"] = true
 		}
+		for file := range nonGo[e.name] {
+			dirs[file] = true
+		}
 		rows = append(rows, envRow{
 			Name:       e.name,
 			Visibility: e.visibility,
@@ -150,6 +168,16 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		})
 	}
 	return rows, nil
+}
+
+// envNames is the set of registered variable names, so the non-Go scan only
+// looks for names that can appear in the table.
+func envNames(registry []registryEntry) map[string]bool {
+	names := make(map[string]bool, len(registry))
+	for _, e := range registry {
+		names[e.name] = true
+	}
+	return names
 }
 
 // isTestSupport reports whether dir is a package that exists only to support
@@ -252,7 +280,76 @@ func addTomlNames(v any, names map[string]bool) {
 type fileRefs struct {
 	registry map[string]bool // envvars identifiers used other than to set or clear the variable
 	declared []string        // string constants and variables: a name a tool declares for itself
-	getenvs  []string        // names passed literally to os.Getenv / os.LookupEnv
+	getenvs  []string        // names passed to os.Getenv / os.LookupEnv, resolved from literals or constants
+	lookups  []string        // names passed to an injected environment lookup function or field
+}
+
+// lookupNames is every function, variable or struct field whose type is an
+// environment lookup: func(string) string or func(string) (string, bool). A
+// call through one of these names reads the environment even though it is not
+// os.Getenv. The set is repo-wide because a struct field's declaration and its
+// callers need not share a file; parameter names are collected per file in
+// scanRefs.
+func lookupNames(sources []goSource) (map[string]bool, error) {
+	names := map[string]bool{}
+	for _, src := range sources {
+		if !strings.Contains(src.text, "func(string)") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), src.path, src.text, 0)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.FuncDecl:
+				if envLookupFunc(v.Type) {
+					names[v.Name.Name] = true
+				}
+			case *ast.ValueSpec:
+				if envLookupFunc(v.Type) {
+					for _, id := range v.Names {
+						names[id.Name] = true
+					}
+				}
+			case *ast.StructType:
+				for _, field := range v.Fields.List {
+					if envLookupFunc(field.Type) {
+						for _, id := range field.Names {
+							names[id.Name] = true
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	return names, nil
+}
+
+// envLookupFunc reports whether t is func(string) string or
+// func(string) (string, bool), the two shapes the repo's injected lookups use.
+func envLookupFunc(t ast.Expr) bool {
+	ft, ok := t.(*ast.FuncType)
+	if !ok || ft.Params == nil || len(ft.Params.List) != 1 || ft.Results == nil {
+		return false
+	}
+	param, ok := ft.Params.List[0].Type.(*ast.Ident)
+	if !ok || param.Name != "string" {
+		return false
+	}
+	results := ft.Results.List
+	switch len(results) {
+	case 1:
+		first, ok := results[0].Type.(*ast.Ident)
+		return ok && first.Name == "string"
+	case 2:
+		first, okFirst := results[0].Type.(*ast.Ident)
+		second, okSecond := results[1].Type.(*ast.Ident)
+		return okFirst && okSecond && first.Name == "string" && second.Name == "bool"
+	default:
+		return false
+	}
 }
 
 // setterMethods only write the variable, so a file that merely sets it for a
@@ -298,8 +395,10 @@ func markWrites(n ast.Node, writes map[ast.Node]bool) {
 }
 
 // scanRefs finds a file's environment references in its syntax tree, so
-// comments and strings that mention an identifier are not references.
-func scanRefs(src goSource) (fileRefs, error) {
+// comments and strings that mention an identifier are not references. A name
+// built from string constants or from envvars.X.Name is resolved before it is
+// recorded, and a call through an injected lookup is a read like os.Getenv.
+func scanRefs(src goSource, registryByIdent map[string]string, lookups map[string]bool) (fileRefs, error) {
 	refs := fileRefs{registry: map[string]bool{}}
 	if !strings.Contains(src.text, "envvars.") && !strings.Contains(src.text, `"EVENER_`) && !strings.Contains(src.text, "os.Getenv") && !strings.Contains(src.text, "os.LookupEnv") {
 		return refs, nil
@@ -308,6 +407,37 @@ func scanRefs(src goSource) (fileRefs, error) {
 	if err != nil {
 		return refs, err
 	}
+	consts := stringConstants(file)
+	localLookups := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.FuncType:
+			if v.Params != nil {
+				for _, field := range v.Params.List {
+					if envLookupFunc(field.Type) {
+						for _, id := range field.Names {
+							localLookups[id.Name] = true
+						}
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			if envLookupFunc(v.Type) {
+				for _, id := range v.Names {
+					localLookups[id.Name] = true
+				}
+			} else if len(v.Names) == 1 && len(v.Values) == 1 && isEnvLookupValue(v.Values[0], lookups) {
+				localLookups[v.Names[0].Name] = true
+			}
+		case *ast.AssignStmt:
+			if v.Tok == token.DEFINE && len(v.Lhs) == 1 && len(v.Rhs) == 1 && isEnvLookupValue(v.Rhs[0], lookups) {
+				if id, ok := v.Lhs[0].(*ast.Ident); ok {
+					localLookups[id.Name] = true
+				}
+			}
+		}
+		return true
+	})
 	skip := map[ast.Node]bool{}   // envvars.X selectors already classified through their method
 	writes := map[ast.Node]bool{} // expressions that only name a variable to write it
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -331,17 +461,128 @@ func scanRefs(src goSource) (fileRefs, error) {
 				}
 			}
 		case *ast.CallExpr:
-			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && isIdent(sel.X, "os") && (sel.Sel.Name == "Getenv" || sel.Sel.Name == "LookupEnv") && len(v.Args) == 1 {
-				if lit, ok := v.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-					if name, err := strconv.Unquote(lit.Value); err == nil {
-						refs.getenvs = append(refs.getenvs, name)
-					}
+			direct, injected := lookupCall(v, lookups, localLookups)
+			if !direct && !injected {
+				break
+			}
+			if name, ok := resolveEnvName(v.Args[0], consts, registryByIdent); ok && name != "" {
+				if direct {
+					refs.getenvs = append(refs.getenvs, name)
+				} else {
+					refs.lookups = append(refs.lookups, name)
 				}
 			}
 		}
 		return true
 	})
 	return refs, nil
+}
+
+// lookupCall classifies a one-argument call as a direct os.Getenv/LookupEnv
+// read or a call through an injected environment lookup.
+func lookupCall(call *ast.CallExpr, lookups, localLookups map[string]bool) (direct, injected bool) {
+	if len(call.Args) != 1 {
+		return false, false
+	}
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		return false, localLookups[fn.Name] || lookups[fn.Name]
+	case *ast.SelectorExpr:
+		if isIdent(fn.X, "os") && (fn.Sel.Name == "Getenv" || fn.Sel.Name == "LookupEnv") {
+			return true, false
+		}
+		return false, localLookups[fn.Sel.Name] || lookups[fn.Sel.Name]
+	}
+	return false, false
+}
+
+// isEnvLookupValue reports whether expr names os.Getenv/os.LookupEnv or one of
+// the repo's lookup names, the forms a local lookup variable is assigned from.
+func isEnvLookupValue(expr ast.Expr, lookups map[string]bool) bool {
+	switch v := expr.(type) {
+	case *ast.SelectorExpr:
+		if isIdent(v.X, "os") && (v.Sel.Name == "Getenv" || v.Sel.Name == "LookupEnv") {
+			return true
+		}
+		return lookups[v.Sel.Name]
+	case *ast.Ident:
+		return lookups[v.Name]
+	}
+	return false
+}
+
+// stringConstants maps a file's string constants and variables to their
+// literal values, including values built by concatenating other resolvable
+// names. It is how a name built at run time from constants is still found.
+func stringConstants(file *ast.File) map[string]string {
+	consts := map[string]string{}
+	type declaration struct {
+		name  string
+		value ast.Expr
+	}
+	var pending []declaration
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		if len(spec.Names) == len(spec.Values) {
+			for i, id := range spec.Names {
+				pending = append(pending, declaration{name: id.Name, value: spec.Values[i]})
+			}
+		}
+		return true
+	})
+	// Declarations can name each other in any order, so iterate to a fixed
+	// point: each pass resolves a value whose parts are already known.
+	for changed := true; changed; {
+		changed = false
+		for _, d := range pending {
+			if _, done := consts[d.name]; done {
+				continue
+			}
+			if value, ok := resolveEnvName(d.value, consts, nil); ok {
+				consts[d.name] = value
+				changed = true
+			}
+		}
+	}
+	return consts
+}
+
+// resolveEnvName statically resolves a name expression: a string literal, a
+// same-file string constant, a concatenation of those, or envvars.X.Name. A
+// name computed from anything else (a function argument, a runtime value) is
+// not resolvable and is left unfound.
+func resolveEnvName(expr ast.Expr, consts map[string]string, registryByIdent map[string]string) (string, bool) {
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		if v.Kind == token.STRING {
+			name, err := strconv.Unquote(v.Value)
+			return name, err == nil
+		}
+	case *ast.Ident:
+		name, ok := consts[v.Name]
+		return name, ok
+	case *ast.ParenExpr:
+		return resolveEnvName(v.X, consts, registryByIdent)
+	case *ast.BinaryExpr:
+		if v.Op == token.ADD {
+			left, leftOK := resolveEnvName(v.X, consts, registryByIdent)
+			right, rightOK := resolveEnvName(v.Y, consts, registryByIdent)
+			if leftOK && rightOK {
+				return left + right, true
+			}
+		}
+	case *ast.SelectorExpr:
+		if v.Sel.Name == "Name" {
+			if inner, ok := v.X.(*ast.SelectorExpr); ok && isIdent(inner.X, "envvars") {
+				name, ok := registryByIdent[inner.Sel.Name]
+				return name, ok
+			}
+		}
+	}
+	return "", false
 }
 
 // registryFuncReads is the set of registry identifiers that envvars.go's own
@@ -387,7 +628,7 @@ func directEnvRows(root string, sources []goSource) ([]directRow, error) {
 		if src.path == "envvars/envvars.go" {
 			continue
 		}
-		refs, err := scanRefs(src)
+		refs, err := scanRefs(src, nil, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -199,6 +199,21 @@ scratch_dir work evener-testbudget
 measured="$work/measured.tsv"
 : >"$measured"
 
+# evener-dev supplies test-cpu-exec for the measurement and timing-compare for
+# the verdict. Build it once, before the first step that needs it, in the
+# repository's own workspace whatever GOWORK the modules run under.
+ensure_evener_dev() {
+	if [ -n "${EVENER_DEV_BIN:-}" ]; then
+		return 0
+	fi
+	EVENER_DEV_BIN="$work/evener-dev"
+	if ! ( cd "$repo_root" && GOWORK= GOFLAGS= go build -o "$EVENER_DEV_BIN" ./cmd/evener-dev/bin ) >"$work/evener-dev-build.log" 2>&1; then
+		echo "test-timing-budget: could not build evener-dev (see $work/evener-dev-build.log)" >&2
+		run_failed=1; exit 1
+	fi
+	export EVENER_DEV_BIN
+}
+
 module_short_flag() {
 	[ "$1" = "." ] && printf '' || printf -- '-short'
 }
@@ -215,18 +230,10 @@ else
 			module_missing=1
 			continue
 		fi
-		# Every test binary runs under evener-dev's test-cpu-exec, which puts the
-		# binary's CPU time into the package's stream; the parser reuses the
-		# build. It is built once, before the first module that needs it, in
-		# the repository's own workspace whatever GOWORK the modules run under.
-		if [ -z "${EVENER_DEV_BIN:-}" ]; then
-			EVENER_DEV_BIN="$work/evener-dev"
-			if ! ( cd "$repo_root" && GOWORK= GOFLAGS= go build -o "$EVENER_DEV_BIN" ./cmd/evener-dev/bin ) >"$work/evener-dev-build.log" 2>&1; then
-				echo "test-timing-budget: could not build evener-dev (see $work/evener-dev-build.log)" >&2
-				run_failed=1; exit 1
-			fi
-			export EVENER_DEV_BIN
-		fi
+			# Every test binary runs under evener-dev's test-cpu-exec, which puts the
+			# binary's CPU time into the package's stream; the parser reuses the
+			# build.
+			ensure_evener_dev
 		name="$m"; [ "$name" = "." ] && name="root"
 		base="$work/$(printf '%s' "$name" | tr / _)"
 		log="$base.jsonl"
@@ -323,465 +330,26 @@ fi
 # checkout that skipped one is not full), the frontend included, and a real
 # measurement rather than a --measured replay. A bless needs it to decide
 # whether every number left in the file is in the metric this run just measured
-# — see the metric-marker logic in compare.py below. It is computed here, after
-# the module loop, because that loop is what records a skipped module.
+# — see the metric-marker logic in timing-compare below. It is computed here,
+# after the module loop, because that loop is what records a skipped module.
 bless_full=false
 if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && [ "$module_missing" -eq 0 ] && $web && [ -d "$web_dir" ]; then
 	bless_full=true
 fi
 
-# compare.py is the whole comparison contract: package ratios against the
-# checked-in budget, the per-class per-test ceilings (strict) plus the flat
+# evener-dev timing-compare is the whole comparison contract: package ratios
+# against the checked-in budget, the per-test ceilings (strict) plus the flat
 # per-test ceiling (warn-only for an unclassified test), the missing-budget-entry
-# warn, and the global no-baseline-yet warn. It can be exercised entirely through
-# --budget/--modules/measured.tsv, with no go test or vitest run involved —
-# the fixture IS the input this step reads.
-compare_out="$work/compare.txt"
-python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
-import json, math, sys
-
-measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
-bless = bless == "true"
-check = check == "true"
-strict = strict == "true"
-bless_full = bless_full == "true"
-
-DEFAULT_CEILING = 2.0
-FAIL_RATIO = 1.5
-WARN_RATIO = 1.1
-# A package's wall time is mostly how long its threads waited for a core on an
-# oversubscribed runner, so it is checked only for a gross wait: a package with
-# a CPU row fails when its scaled wall ratio passes this backstop.
-WALL_BACKSTOP_RATIO = 2.5
-# The smallest budget a bless records for a Go package, in either unit.
-GO_BUDGET_FLOOR = 2.0
-
-# A slow runner slows every package at once, which no package's code earned. The
-# run's own slowdown is the median measured/budget ratio over the packages whose
-# budget is big enough to be signal (a 2s floor entry is all noise), and only
-# with enough of them for a median to mean "the runner" and not "one package".
-# FAIL verdicts are judged against that slowdown: one package far above its peers
-# still fails, a whole run uniformly above its budgets does not. Warnings stay on
-# the raw ratio. Each measure has its own median: CPU ratios scale the CPU limit
-# (the hardware's speed), and wall ratios scale the wall limits and the per-test
-# ceilings (the hardware's speed and how busy the run kept it).
-SLOWDOWN_MIN_BUDGET = 5.0
-SLOWDOWN_MIN_PACKAGES = 3
-
-# The metric the recorded numbers were blessed under: `packages` holds each Go
-# package's test CPU seconds and `wallPackages` each row's wall seconds. A budget
-# whose "metric" is not this holds numbers in another unit, which are not
-# comparable to this measurement; until a rebaseline rewrites them, a would-be
-# ratio FAIL is a WARNING, never fatal — enforcing numbers in the wrong units
-# would be worse than not enforcing them.
-CPU_METRIC = "package-cpu-seconds"
-
-# The frontend rolls up under this one key. vitest reports no CPU time, so the
-# row has none and keeps the wall rule.
-WEB_KEY = "web"
-
-sums = {}
-cpus = {}
-tests = []  # (package, name, seconds)
-with open(measured_path) as fh:
-	for line in fh:
-		parts = line.rstrip("\n").split("\t")
-		if parts[0] == "SUM":
-			_, pkg, secs = parts
-			sums[pkg] = sums.get(pkg, 0.0) + float(secs)
-		elif parts[0] == "CPU":
-			_, pkg, secs = parts
-			cpus[pkg] = cpus.get(pkg, 0.0) + float(secs)
-			sums.setdefault(pkg, 0.0)
-		elif parts[0] == "TEST":
-			_, pkg, name, secs = parts
-			tests.append((pkg, name, float(secs)))
-		elif parts[0] == "PKG":
-			# A package-level terminal event. It seeds the package at 0 so a
-			# package whose every test was filtered out (or that has no test
-			# files at all) still appears in the report and in a blessed
-			# budget — the completeness contract's other half: what the
-			# producer vouches for must be recorded, not just what ran.
-			if parts[1]:
-				sums.setdefault(parts[1], 0.0)
-
-# A Go package whose tests ran under test-cpu-exec carries a CPU row. One that
-# ran tests without it was measured without the number its budget is in, which
-# is a broken measurement in every mode, not a reason to judge it by wall time.
-uncounted = sorted({pkg for pkg, _, _ in tests if pkg != WEB_KEY and pkg not in cpus})
-if uncounted:
-	with open(out_path, "w") as fh:
-		for pkg in uncounted:
-			fh.write(f"FAIL  BROKEN MEASUREMENT: {pkg} ran tests but has no CPU row "
-				"(its test binary did not run under test-cpu-exec)\n")
-	sys.exit(1)
-
-def fail_malformed(what):
-	# A malformed budget is a broken config, not an absent one. The missing-file
-	# warn state below is deliberate (kata b6rv): the tree stays green until a
-	# measured baseline is blessed. A syntax error must not ride that path —
-	# collapsing it into `budget = {}` reads as no baseline and silently disarms
-	# every package ratio and every perTestCeiling ceiling, with nothing
-	# naming the syntax error (issue #4609). Fail in every mode, before any bless,
-	# naming the file and the problem.
-	with open(out_path, "w") as fh:
-		fh.write("FAIL  MALFORMED BUDGET: testing-budget.json " + what
-			+ " (" + budget_path + ")\n")
-	sys.exit(1)
-
-def seconds_error(value):
-	# Why `value` cannot serve as a number of seconds, or None if it can. bool is an
-	# int subclass in Python, so it is rejected explicitly (True would otherwise read
-	# as 1). A JSON float can be Infinity or NaN, and a JSON integer can be too large
-	# to convert to a float — a 400-digit literal, which would crash the ratio
-	# arithmetic below and is no more a usable seconds value than Infinity is. The
-	# package map and the flat perTestCeilingSeconds share this one definition.
-	if isinstance(value, bool) or not isinstance(value, (int, float)):
-		return "got " + type(value).__name__
-	try:
-		if math.isfinite(value):
-			return None
-	except OverflowError:
-		return "too large for a float"
-	return "got " + json.dumps(value)
-
-def _pairs_to_object(pairs):
-	# json.load silently keeps the LAST of two identical keys. Parse with the
-	# pairs preserved so a repeat can be seen at all.
-	return dict(pairs)
-
-def _reject_duplicate_keys(pairs, where):
-	seen = set()
-	for key, _ in pairs:
-		if key in seen:
-			fail_malformed(where + "[" + json.dumps(key) + "] more than once")
-		seen.add(key)
-	return dict(pairs)
-
-try:
-	with open(budget_path) as fh:
-		# Only the perTestCeiling value is re-parsed with duplicate detection, so
-		# the object_pairs_hook stays out of every other key's parsing path.
-		budget = json.load(fh)
-except FileNotFoundError:
-	budget = {}
-except ValueError as exc:
-	fail_malformed("could not be parsed: " + str(exc))
-if isinstance(budget, dict) and isinstance(budget.get("perTestCeiling"), dict):
-	# The per-test ceiling map is hand-edited, so a test named twice must fail
-	# naming the collision: json.load keeps whichever the editor wrote second,
-	# and the flat map no longer has a "one class only" rule to catch it.
-	#
-	# Locate the value STRUCTURALLY, by re-parsing the whole file with pairs
-	# preserved and taking the top-level "perTestCeiling" pair. Scanning the raw
-	# text for the key name would also match it inside another value: a
-	# metadata string that merely mentions "perTestCeiling" sits above
-	# "packages", and a substring scan would hand back the packages map as the
-	# ceilings.
-	with open(budget_path) as fh:
-		try:
-			top_pairs = json.load(fh, object_pairs_hook=lambda pairs: pairs)
-		except ValueError:
-			top_pairs = None
-	if isinstance(top_pairs, list):
-		# The top-level key can repeat too, and json.load keeps the last one, so
-		# take the last pair rather than stopping at the first.
-		ceiling_pairs = None
-		for key, value in top_pairs:
-			if key == "perTestCeiling" and isinstance(value, list):
-				ceiling_pairs = value
-		if ceiling_pairs is not None:
-			budget["perTestCeiling"] = _reject_duplicate_keys(ceiling_pairs, "perTestCeiling")
-
-# A budget whose TOP level is not an object is a broken config, not an empty one:
-# budget.get below would crash a list, number, string, null or bool with an
-# AttributeError traceback. #4609 left this shape alone because it already exited
-# nonzero (through the traceback), but issue #4622 requires every malformed shape
-# to fail loudly NAMING the file, so it takes the same path as the rest
-# (#4609/#4614/#4618) instead of an unnamed crash.
-if not isinstance(budget, dict):
-	fail_malformed("must be a JSON object (got " + type(budget).__name__ + ")")
-
-# A `packages` value present but not an object is a broken config, not an empty
-# map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
-# NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
-# ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
-# absent key from an explicit `null`, and `{"packages": null}` disarms the same
-# way — and route it through the malformed-config path above (#4609), which fails
-# in every mode naming the file. `budget` is an object by the guard above.
-if "packages" in budget and not isinstance(budget["packages"], dict):
-	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
-		+ type(budget["packages"]).__name__ + ")")
-packages = budget.get("packages", {})
-
-# Every package VALUE must be a usable number, not only the map's type (issue
-# #4618). A string crashes the ratio below with a TypeError traceback, a bool IS
-# an int in Python (True/False) so the ratio is computed against 1 or 0, and a
-# null reads as "no budget entry" — a WARN that leaves the package silently
-# unenforced. A non-finite value is worse than either: m/inf reads 0, so the
-# package prints OK and the run exits 0 with the package silently disarmed, and a
-# 400-digit integer tracebacks the arithmetic (issue #4622). Route each through
-# the malformed-config path above, which fails in every mode naming the entry.
-# The loop runs only for an object `packages` (the top-level guard above).
-# wallPackages, each row's wall budget, is the same shape as packages and is
-# validated the same way.
-if "wallPackages" in budget and not isinstance(budget["wallPackages"], dict):
-	fail_malformed("wallPackages must be an object mapping each package to its wall seconds (got "
-		+ type(budget["wallPackages"]).__name__ + ")")
-wall_packages = budget.get("wallPackages", {})
-for key, budgets in (("packages", packages), ("wallPackages", wall_packages)):
-	for pkg, budget_secs in budgets.items():
-		problem = seconds_error(budget_secs)
-		if problem:
-			fail_malformed(key + "[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
-
-# The flat ceiling is read with budget.get, so a present null cannot be told from
-# an absent key — test the KEY, as `packages` and the class map do. A string,
-# null, list or object crashes the `secs > ceiling` comparison with a TypeError
-# traceback; a bool IS an int so `true` silently becomes a 1-second ceiling; and a
-# non-finite value silently disarms the ceiling instead of bounding it. Each is a
-# broken config reached the same way as the package values above (issue #4622),
-# so each takes the malformed-config path and fails in every mode naming the field.
-if "perTestCeilingSeconds" in budget:
-	problem = seconds_error(budget["perTestCeilingSeconds"])
-	if problem:
-		fail_malformed("perTestCeilingSeconds must be a number of seconds (" + problem + ")")
-ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
-
-# The per-test ceilings (#4601, ruling 2026-10-13; flattened 2026-11-09). A test
-# named here, or a subtest of one (Name/sub), is compared STRICTLY against its
-# own ceiling; a test named nowhere keeps the flat `ceiling` above and stays
-# warn-only in every mode, so the unclassified backlog cannot red the gate.
-# Membership is by test name, not by package, because one package holds several
-# of these. The named-class grouping that used to wrap this map carried no
-# enforcement the per-test names did not: every ceiling is per test anyway, and
-# a class name only decided which tests shared a number.
-# A perTestCeiling map present but not an object is a broken config, not "no
-# ceilings": `budget.get` cannot tell an absent key from an explicit `null`, so
-# `{"perTestCeiling": null}` read as an empty map and silently disarmed every
-# ceiling, while the other non-object values (`[]`, `false`, `0`, `""`) failed
-# only under the strict posture (issue #4618). Test the KEY and route all of them
-# through the malformed-config path above, as the `packages` value does (#4614):
-# they fail in every mode, not only strict. An absent key still means no
-# per-test ceilings, which is fine. The `packages` read above has already made
-# `budget` an object, so no isinstance guard is needed here.
-if "perTestCeiling" in budget and not isinstance(budget["perTestCeiling"], dict):
-	fail_malformed("perTestCeiling must be an object mapping each test name to its "
-		"ceiling seconds (got " + type(budget["perTestCeiling"]).__name__ + ")")
-per_test_ceilings = budget.get("perTestCeiling", {})
-
-def test_ceiling(name):
-	# The ceiling for `name` or for its nearest named parent, or None. An exact
-	# name wins over a parent prefix, so a test named both ways keeps its own.
-	if name in per_test_ceilings:
-		return name, per_test_ceilings[name]
-	parent = name
-	while "/" in parent:
-		parent = parent.rsplit("/", 1)[0]
-		if parent in per_test_ceilings:
-			return parent, per_test_ceilings[parent]
-	return None, None
-
-no_baseline = len(packages) == 0 and len(wall_packages) == 0
-had_metric = budget.get("metric") == CPU_METRIC
-stale_units = not no_baseline and not had_metric
-
-lines = []
-worst = "ok"  # ok < warn < fail
-def raise_worst(level):
-	global worst
-	order = {"ok": 0, "warn": 1, "fail": 2}
-	if order[level] > order[worst]:
-		worst = level
-
-# Every per-test ceiling must be a usable (non-bool) number of seconds. It goes
-# through the shared seconds_error definition and the malformed-config path above
-# — every mode, naming the test and the field — like the package values and the
-# flat perTestCeilingSeconds (#4629). A faulty entry drops that test back to the
-# warn-only flat default below rather than crashing the check. (The map itself
-# being a non-object is the harder error above, handled before any entry is
-# read.)
-valid_ceilings = {}
-for test_name, value in per_test_ceilings.items():
-	# seconds_error is the one definition of "cannot serve as seconds", and it is
-	# overflow-safe: a JSON integer too large to convert to a float used to reach
-	# math.isfinite first and raise OverflowError — a traceback in every mode, from
-	# a shape the strict-only FAIL line below would only have downgraded (#4629).
-	# Routing its problem through fail_malformed names the test and the field in
-	# every mode. A huge but FINITE ceiling stays accepted: a ceiling is an upper
-	# bound, so a very large finite value simply disables that test's ceiling.
-	problem = seconds_error(value)
-	if problem:
-		fail_malformed("perTestCeiling[" + json.dumps(test_name)
-			+ "] must be a number of seconds (" + problem + ")")
-	valid_ceilings[test_name] = value
-per_test_ceilings = valid_ceilings
-
-if no_baseline:
-	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
-		"result below is informational only and --check always exits 0 until "
-		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
-elif stale_units:
-	lines.append("STALE UNITS: testing-budget.json does not record \"metric\": "
-		f"\"{CPU_METRIC}\", so its numbers are not in the units this run measured; every "
-		"ratio failure below warns, with its numbers, until a rebaseline records them.")
-
-def ratio_of(m, b):
-	return (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
-
-def runner_slowdown(measured, budgets):
-	if stale_units:
-		return 1.0  # Stale-unit ratios are not comparable measurements of the runner.
-	ratios = sorted(measured[pkg] / b for pkg, b in budgets.items()
-		if pkg in measured and b >= SLOWDOWN_MIN_BUDGET)
-	if len(ratios) < SLOWDOWN_MIN_PACKAGES:
-		return 1.0
-	mid = len(ratios) // 2
-	median = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
-	return max(1.0, median)
-
-cpu_slowdown = runner_slowdown(cpus, packages)
-wall_slowdown = runner_slowdown(sums, wall_packages)
-for what, factor in (("CPU", cpu_slowdown), ("wall", wall_slowdown)):
-	if factor > WARN_RATIO:
-		lines.append(f"NOTE  this run's packages sit at a median {factor:.2f}x of their {what} budgets: "
-			f"the runner is slow, so {what} failure limits below are scaled by {factor:.2f}x")
-
-def judge(pkg, m, b, unit, fail_ratio, slowdown, warn):
-	ratio = ratio_of(m, b)
-	if ratio / slowdown > fail_ratio:
-		if stale_units:
-			lines.append(f"WARN  {pkg}: {m:.2f}s {unit} over stale budget {b:.2f}s "
-				f"({ratio:.2f}x > {fail_ratio}x; not enforced until a rebaseline)")
-			raise_worst("warn")
-		else:
-			lines.append(f"FAIL  {pkg}: {m:.2f}s {unit} over budget {b:.2f}s ({ratio:.2f}x > {fail_ratio}x)")
-			raise_worst("fail")
-		return False
-	if warn and ratio > WARN_RATIO:
-		lines.append(f"WARN  {pkg}: {m:.2f}s {unit} over budget {b:.2f}s ({ratio:.2f}x > {WARN_RATIO}x)")
-		raise_worst("warn")
-		return False
-	return True
-
-# A package with a CPU row is budgeted on CPU at the fail and warn ratios, and
-# its wall time is checked only against the backstop. A row with no CPU (the
-# frontend, and a package with no test binary) keeps the wall rule.
-for pkg in sorted(sums):
-	wall = sums[pkg]
-	wall_budget = wall_packages.get(pkg)
-	if pkg in cpus:
-		cpu = cpus[pkg]
-		cpu_budget = packages.get(pkg)
-		if cpu_budget is None:
-			lines.append(f"WARN  {pkg}: {cpu:.2f}s cpu, {wall:.2f}s wall, no budget entry (add one to testing-budget.json)")
-			raise_worst("warn")
-			ok = False
-		else:
-			ok = judge(pkg, cpu, cpu_budget, "cpu", FAIL_RATIO, cpu_slowdown, True)
-		if wall_budget is not None:
-			ok = judge(pkg, wall, wall_budget, "wall", WALL_BACKSTOP_RATIO, wall_slowdown, False) and ok
-		if ok:
-			lines.append(f"OK    {pkg}: {cpu:.2f}s cpu (budget {cpu_budget:.2f}s), {wall:.2f}s wall")
-		continue
-	if wall_budget is None:
-		lines.append(f"WARN  {pkg}: {wall:.2f}s, no budget entry (add one to testing-budget.json)")
-		raise_worst("warn")
-		continue
-	if judge(pkg, wall, wall_budget, "wall", FAIL_RATIO, wall_slowdown, True):
-		lines.append(f"OK    {pkg}: {wall:.2f}s wall (budget {wall_budget:.2f}s)")
-
-for pkg, name, secs in tests:
-	# A named test is compared STRICTLY against its own ceiling (#4601, ruling
-	# 2026-10-13, flattened 2026-11-09): the ceilings are drawn from CI, so a
-	# breach is a real regression and FAILs — nonzero under --check in a
-	# CI-shaped environment or --strict. Membership is by name; a subtest
-	# inherits its nearest named parent's ceiling.
-	named, named_ceiling = test_ceiling(name)
-	if named is not None:
-		if secs > named_ceiling * wall_slowdown:
-			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its "
-				f"{named_ceiling:g}s ceiling (named '{named}' in testing-budget.json perTestCeiling)")
-			raise_worst("fail")
-		else:
-			lines.append(f"OK    {pkg}: test {name} {secs:.2f}s (named ceiling {named_ceiling:g}s)")
-		continue
-	if secs > ceiling:
-		# A test named nowhere keeps the flat ceiling and stays warn-only in EVERY
-		# mode, --strict included (#4601): the unnamed backlog has never run
-		# under a ceiling, so enforcing the flat 3s would red the gate on tests
-		# that were always over it. Name the test in perTestCeiling to enforce it.
-		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling "
-			f"(unnamed; warn-only, #4601)")
-		raise_worst("warn")
-
-# no_baseline is the ONE place the "tree must stay green" rule is enforced
-# (below, in exit_code): severity above is computed the same way regardless of
-# whether a baseline exists, so this override is the single point that can
-# make it a no-op rather than three scattered ones that could drift apart.
-
-if bless:
-	# Key order is a function of the checked-in file, not of the run: the
-	# terminal events arrive in completion order, which varies run to run, so a
-	# re-bless of an unchanged tree has to reproduce the file. Recorded packages
-	# keep the order the file already has - re-sorting them would reorder nearly
-	# all of testing-budget.json's packages in a diff that says nothing about
-	# timing - and only packages the file does not mention are ordered by name.
-	#
-	# A bless records what this run measured and never deletes an entry it did
-	# not measure: a narrowed run (--modules, --no-web, or a frontend that is
-	# not checked out) would otherwise silently drop every package it skipped
-	# from the one file whose whole job is to be the checked-in baseline. A FULL
-	# bless is different — go list enumerated every package, so an entry with no
-	# measurement this run is a package gone from the tree, not one skipped, and
-	# is dropped below.
-	def blessed(recorded, measured_secs):
-		order = list(recorded) + sorted(pkg for pkg in measured_secs if pkg not in recorded)
-		# A Go package's budget is floored, so a sub-second package does not trip
-		# its ratio on noise and no budget rounds to zero.
-		measured = {pkg: round(measured_secs[pkg], 2) if pkg == WEB_KEY
-			else max(GO_BUDGET_FLOOR, round(measured_secs[pkg], 2)) for pkg in measured_secs}
-		if bless_full:
-			# Full surface: every recorded package was measured, so an entry with
-			# no measurement is a package gone from the tree (or one holding the
-			# old units): drop it.
-			return {pkg: measured[pkg] for pkg in order if pkg in measured}
-		return {pkg: measured[pkg] if pkg in measured else recorded[pkg] for pkg in order}
-	budget["packages"] = blessed(packages, cpus)
-	budget["wallPackages"] = blessed(wall_packages, sums)
-	# A full bless stamps the marker. A narrowed bless keeps an existing one —
-	# the entries it preserves are already in these units — but never adds one:
-	# stamping a stale file would enforce ratios against the old-unit entries it
-	# preserved.
-	if bless_full or had_metric:
-		budget["metric"] = CPU_METRIC
-	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
-	with open(budget_path, "w") as fh:
-		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
-		# does not reformat all ~130 lines and bury the real change in
-		# whitespace (issue #172).
-		json.dump(budget, fh, indent=1)
-		fh.write("\n")
-	lines.append(f"blessed budget -> {budget_path}")
-
-exit_code = 0
-if check:
-	if no_baseline:
-		exit_code = 0
-	elif strict:
-		exit_code = 1 if worst == "fail" else 0
-	else:
-		exit_code = 0
-		if worst == "fail":
-			lines.append(f"warn-only run: would exit non-zero under --strict/CI ({worst})")
-		elif worst == "warn":
-			lines.append("warn-only run: the warnings above are reported but not enforced")
-
-with open(out_path, "w") as fh:
-	fh.write("\n".join(lines) + ("\n" if lines else ""))
-sys.exit(exit_code)
-PY
+# warn, the global no-baseline-yet warn, and the bless rewrite. It can be
+# exercised entirely through --budget/--modules/measured.tsv, with no go test or
+# vitest run involved — the fixture IS the input this step reads.
+compare=(timing-compare --measured "$measured" --budget "$budget_file")
+$bless && compare+=(--bless)
+$check && compare+=(--check)
+$strict && compare+=(--strict)
+$bless_full && compare+=(--bless-full)
+ensure_evener_dev
+"$EVENER_DEV_BIN" dev "${compare[@]}"
 status=$?
-cat "$compare_out"
 [ "$status" -eq 0 ] || run_failed=1
 exit "$status"
