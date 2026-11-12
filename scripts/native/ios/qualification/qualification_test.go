@@ -629,7 +629,79 @@ EXTERNAL SOURCES:
 		"exec pod install --project-directory=ios",
 		"exec pod update EXApplication --no-repo-update --project-directory=ios",
 		"exec pod install --project-directory=ios",
-		"exec pod update hermes-engine --no-repo-update --project-directory=ios",
+		"exec pod update EXApplication hermes-engine --no-repo-update --project-directory=ios",
+		"exec pod install --project-directory=ios",
+	}
+	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if !slices.Equal(got, want) {
+		t.Fatalf("pod argv sequence = %v, want %v", got, want)
+	}
+	if strings.Contains(string(data), "ReactNativeDependencies") {
+		t.Fatalf("an unrelated local parent was unlocked: %s", data)
+	}
+}
+
+// CocoaPods can refuse during the update itself: updating the first named pod
+// resolves the lock against a second still-locked local pod. The update log is
+// read the same way, and the accumulated names retry the update together.
+func TestResolvePodsReadsRefusalDuringUpdate(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "argv")
+	installs := filepath.Join(dir, "installs")
+	const bundle = `#!/bin/sh
+TICK=$(printf '\140')
+printf '%s\n' "$*" >> "$POD_ARGV_RECORD"
+case "$*" in
+"exec pod install --project-directory=ios")
+	n=0
+	[ -f "$POD_INSTALL_COUNT" ] && n=$(cat "$POD_INSTALL_COUNT")
+	n=$((n + 1))
+	printf '%s' "$n" > "$POD_INSTALL_COUNT"
+	case "$n" in
+	1) printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}EXApplication${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2; exit 1 ;;
+	esac
+	exit 0
+	;;
+"exec pod update EXApplication --no-repo-update --project-directory=ios")
+	printf '%s\n' "It seems like you've changed the version of the dependency ${TICK}hermes-engine${TICK} and it differs from the version stored in ${TICK}Pods/Local Podspecs${TICK}." >&2
+	exit 1
+	;;
+"exec pod update EXApplication hermes-engine --no-repo-update --project-directory=ios")
+	exit 0
+	;;
+*) exit 7 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "bundle"), []byte(bundle), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("POD_ARGV_RECORD", record)
+	t.Setenv("POD_INSTALL_COUNT", installs)
+	lock := []byte(`EXTERNAL SOURCES:
+  EXApplication:
+    :path: "../node_modules/expo-application/ios"
+  hermes-engine:
+    :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
+  ReactNativeDependencies:
+    :podspec: "../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec"
+`)
+	r := &runner{native: dir, output: dir}
+	if err := r.resolvePods(context.Background(), lock); err != nil {
+		t.Fatalf("resolvePods: %v", err)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"exec pod install --project-directory=ios",
+		"exec pod update EXApplication --no-repo-update --project-directory=ios",
+		"exec pod update EXApplication hermes-engine --no-repo-update --project-directory=ios",
 		"exec pod install --project-directory=ios",
 	}
 	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")

@@ -122,12 +122,14 @@ development pods. Never delete the input lock.
 When CocoaPods refuses the committed lock because a local development pod's
 version changed, the runner unlocks only the pod that refusal names with
 `pod update --no-repo-update` and repeats the install while CocoaPods names
-another changed pod; unrelated local parents stay locked. A name the committed
-lock does not declare as local, or a refusal that names nothing new, fails
-instead of widening the update. Registry pods reachable only through a named
-local pod may move with their parent, so the candidate diff against the
-committed lock is the guard. The result is still compared against the committed
-lock, and the candidate and its diff remain reviewable failure evidence.
+another changed pod; an update that itself refuses on another still-locked
+local pod is read the same way and retried with the accumulated names, so
+unrelated local parents stay locked. A name the committed lock does not declare
+as local, or a refusal that names nothing new, fails instead of widening the
+update. Registry pods reachable only through a named local pod may move with
+their parent, so the candidate diff against the committed lock is the guard.
+The result is still compared against the committed lock, and the candidate and
+its diff remain reviewable failure evidence.
 
 Review `Podfile.lock.candidate` and `Podfile.lock.diff` with `build-identity.json`.
 Match its `sourceRevision` and `npmLockSha256` to the tested branch before applying

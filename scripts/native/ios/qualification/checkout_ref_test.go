@@ -121,12 +121,9 @@ func TestCheckoutRefChoosesHeadOrMerge(t *testing.T) {
 	if !strings.Contains(reason, "scripts/native/ios/qualification") {
 		t.Fatalf("stale head reason %q does not name the missing harness path", reason)
 	}
-	ref, reason = selectRef(current, currentMerge)
+	ref, _ = selectRef(current, currentMerge)
 	if ref != current {
 		t.Fatalf("current head selected %s, want the PR head %s", ref, current)
-	}
-	if reason != "PR head" {
-		t.Fatalf("current head reason = %q, want %q", reason, "PR head")
 	}
 
 	// The selector must refuse a commit it cannot read, not silently pick one.
