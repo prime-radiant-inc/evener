@@ -561,6 +561,26 @@ test.each<[string, ToolStep, string, string]>([
     "Marking the goal complete",
   ],
   [
+    "a goal update on an already complete goal",
+    housekeeping(
+      "update_goal",
+      { status: "blocked" },
+      "The goal for this session is already terminal (complete); nothing recorded — this tool only updates an active goal.",
+    ),
+    "Marked the goal blocked · already complete",
+    "Marking the goal blocked",
+  ],
+  [
+    "a goal update on an already blocked goal",
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "The goal for this session is already terminal (blocked); nothing recorded — this tool only updates an active goal.",
+    ),
+    "Marked the goal complete · already blocked",
+    "Marking the goal complete",
+  ],
+  [
     "a compaction asked for",
     housekeeping(
       "compact_context",

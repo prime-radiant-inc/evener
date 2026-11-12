@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,6 +161,13 @@ func TestUpdateGoalTool_AlreadyTerminal(t *testing.T) {
 				t.Fatalf("setup: failed to set goal %v", tc.initialStatus)
 			}
 
+			noGoalSess := testGoalSession(t)
+			noGoalRes := noGoalSess.reg.ExecuteCall(context.Background(), noGoalSess.env, llm.ToolCallData{
+				ID:        "g-none",
+				Name:      "update_goal",
+				Arguments: json.RawMessage(`{"status":"complete"}`),
+			})
+
 			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 				ID:        "g-term",
 				Name:      "update_goal",
@@ -168,9 +176,13 @@ func TestUpdateGoalTool_AlreadyTerminal(t *testing.T) {
 			if res.IsError {
 				t.Fatalf("update_goal on already terminal goal should not be IsError, got: %s", res.Output)
 			}
-			wantOutput := "The goal for this session is already terminal (" + tc.wantStatus + "); nothing recorded — this tool only updates an active goal."
-			if res.Output != wantOutput {
-				t.Fatalf("Output = %q, want %q", res.Output, wantOutput)
+			snap, ok := sess.getOrCreateGoalStore().Snapshot()
+			if !ok || snap.Status != tc.initialStatus || snap.StopReason != "seed-reason" {
+				t.Fatalf("goal store changed: %+v", snap)
+			}
+			assertNoGoalUpdated(t, sess)
+			if len(res.ToolState) == 0 {
+				t.Fatal("expected non-empty ToolState for already-terminal goal")
 			}
 			var state map[string]any
 			if err := json.Unmarshal(res.ToolState, &state); err != nil {
@@ -178,6 +190,12 @@ func TestUpdateGoalTool_AlreadyTerminal(t *testing.T) {
 			}
 			if state["status"] != tc.wantStatus {
 				t.Fatalf("ToolState status = %v, want %q", state["status"], tc.wantStatus)
+			}
+			if state["stopReason"] != "seed-reason" {
+				t.Fatalf("ToolState stopReason = %v, want seed-reason", state["stopReason"])
+			}
+			if res.Output == "" || res.Output == noGoalRes.Output {
+				t.Fatalf("expected distinct output from no-goal fallback, got %q", res.Output)
 			}
 		})
 	}
@@ -216,5 +234,23 @@ func TestUpdateGoal_VisibilityFollowsGoalConfiguration(t *testing.T) {
 	}
 	if hasToolDef(sess.ToolDefinitions(), "update_goal") {
 		t.Fatal("update_goal should not be advertised in ToolDefinitions() after ClearGoal")
+	}
+}
+
+func TestHasGoalConfigured_RaceWithGoalStoreInit(t *testing.T) {
+	t.Parallel()
+	for range 100 {
+		sess := &Session{}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = sess.hasGoalConfigured()
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _ = sess.GoalStatus()
+		}()
+		wg.Wait()
 	}
 }

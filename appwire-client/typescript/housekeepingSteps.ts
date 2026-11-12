@@ -6,8 +6,9 @@
 // note"), as a reader watching it sees it.
 //
 // Ground truth: agent/session_tools_notes.go (notes_agent_set, notes_read,
-// urls_add, urls_remove), session_tools_goal.go (update_goal, and "No goal is
-// active…" when none was set), session_tools_compact.go (compact_context, and
+// urls_add, urls_remove), session_tools_goal.go (update_goal, "No goal is
+// active…" when none was set, and "The goal for this session is already
+// terminal…" when already terminal), session_tools_compact.go (compact_context, and
 // "Note cleared. No compaction requested." when an empty note asks for no
 // compaction; an empty note with compaction instructions still schedules one
 // and prints "Note cleared. A compaction will run…"),
@@ -121,7 +122,14 @@ const HOUSEKEEPING: Record<string, HousekeepingTool> = {
     words: (step, did) => {
       const status = goalStatus(step);
       const verb = status ? `Marked the goal ${status}` : did;
-      return step.output?.startsWith("No goal is active") ? { verb, detail: "no goal set" } : { verb };
+      if (step.output?.startsWith("No goal is active")) {
+        return { verb, detail: "no goal set" };
+      }
+      const terminalMatch = step.output?.match(/^The goal for this session is already terminal \(([^)]+)\)/);
+      if (terminalMatch) {
+        return { verb, detail: `already ${terminalMatch[1]}` };
+      }
+      return { verb };
     },
     progress: (step) => {
       const status = goalStatus(step);

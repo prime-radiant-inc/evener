@@ -284,9 +284,9 @@ func normalizeRegistryToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
 }
 
 func (s *Session) hasGoalConfigured() bool {
-	if s.goalStore == nil {
+	if s == nil {
 		return false
 	}
-	_, ok := s.goalStore.Snapshot()
+	_, ok := s.getOrCreateGoalStore().Snapshot()
 	return ok
 }
