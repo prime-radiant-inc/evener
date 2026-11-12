@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -275,5 +277,75 @@ func TestDenial_ApprovalCardMatchesFdCanonicalRefusal(t *testing.T) {
 				t.Fatalf("approval card offered = %v (target %q), want %v", gotCard, d.GrantTarget, tc.wantCard)
 			}
 		})
+	}
+}
+
+// TestDenial_OutsideRootFIFONotOpenedForApproval covers #6226: building a
+// restricted-mode read denial must not open an outside-root FIFO. A nonblocking
+// reader open connects the FIFO and releases a producer blocked in open(2),
+// losing its output; the Lstat preflight refuses the card before that open.
+func TestDenial_OutsideRootFIFONotOpenedForApproval(t *testing.T) {
+	outDir := realTempDir(t)
+	worktree := filepath.Join(outDir, "wt")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(outDir, "outside.fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	rp := &sandbox.ResolvedPolicy{
+		Mode:     sandbox.ModeRestricted,
+		FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}, WriteRoots: []string{worktree}},
+	}
+	s := newSandboxFS(rp, "")
+	t.Cleanup(s.close)
+
+	// A producer blocked in open(2) until a reader connects, then writing.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = f.Write([]byte("one line\n"))
+		_ = f.Close()
+	}()
+	// Leave the producer time to reach open(2) before the denial is built.
+	time.Sleep(100 * time.Millisecond)
+	t.Cleanup(func() {
+		// Release and reap the producer even when an assertion fails early.
+		if r, err := os.OpenFile(fifo, os.O_RDONLY|unix.O_NONBLOCK, 0); err == nil {
+			_ = r.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	var d *sandbox.DeniedError
+	if err := sbRead(s, fifo); !asDenied(err, &d) {
+		t.Fatalf("expected an out-of-roots denial, got %v", err)
+	}
+	if d.GrantTarget != "" {
+		t.Fatalf("the denial offered a grant for a FIFO: %q", d.GrantTarget)
+	}
+	select {
+	case <-done:
+		t.Fatalf("constructing the denial opened the FIFO and released the waiting producer")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	reader, err := os.OpenFile(fifo, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("open the FIFO to release the producer: %v", err)
+	}
+	defer reader.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the producer did not finish after a reader opened the FIFO")
 	}
 }

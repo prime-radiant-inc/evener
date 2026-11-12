@@ -241,8 +241,17 @@ func (s *sandboxFS) grantableTarget(abs string, write bool) string {
 	if !ok {
 		return ""
 	}
-	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return ""
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ""
+		}
+		// A read card's preflight opens the target before the human approves
+		// it, and a special file can act at open: a nonblocking read of a FIFO
+		// connects a reader and releases a waiting producer, losing its output.
+		// Only a regular file or a directory is a safe preflight target.
+		if !write && !info.Mode().IsRegular() && !info.IsDir() {
+			return ""
+		}
 	}
 	masked := s.underMasked
 	if write {
