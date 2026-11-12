@@ -561,13 +561,18 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   // name the lineage: a pending mutation carries the queueEntryIds it owns. So
   // an entry is delivered when a recorded mutation owns it, or when the
   // consumed entry's own id landed (an older daemon that never promoted it).
-  const recordedOwnerOf = (entryId: string): boolean =>
+  // Lineage names the conversation INPUT, which the daemon derives from the
+  // client mutation that produced the entry (`client:<clientMutationId>`), so
+  // it must be compared against that identity. A queue ENTRY id is a different
+  // value and only the pending mutation's queueEntryIds speak in it.
+  const recordedOwnerOf = (entry: { entryId: string; clientMutationId: string }): boolean =>
     (model?.pendingMutations ?? []).some(
-      (mutation) => (mutation.queueEntryIds ?? []).includes(entryId) && transcriptIds.has(mutation.clientMutationId),
+      (mutation) =>
+        (mutation.queueEntryIds ?? []).includes(entry.entryId) && transcriptIds.has(mutation.clientMutationId),
     ) ||
     // A recorded item that inherited this entry's conversation input is the
     // same proof for a promotion or drain whose pending owner already settled.
-    recordedLineage.has(`client:${entryId}`);
+    recordedLineage.has(`client:${entry.clientMutationId}`);
   const deliveredAny = (input.deliveredHere?.size ?? 0) > 0 || transcriptIds.size > 0;
   const mutationStateAuthoritative = input.mutationStateAuthoritative === true;
   const mutationSnapshotCurrent = input.mutationSnapshotCurrent === true;
@@ -581,7 +586,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       !(
         mutationStateAuthoritative &&
         mutationSnapshotCurrent &&
-        (transcriptIds.has(entry.clientMutationId) || recordedOwnerOf(entry.entryId))
+        (transcriptIds.has(entry.clientMutationId) || recordedOwnerOf(entry))
       ),
   );
 

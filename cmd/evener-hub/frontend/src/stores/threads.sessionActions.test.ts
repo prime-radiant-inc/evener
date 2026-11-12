@@ -508,6 +508,59 @@ test("a queue frame keeps the content of a row a promotion removed without namin
   ]);
 });
 
+// A cancellation from an older daemon names no consumed ids at all, so no
+// consumed frame ever carried the entry. Its only evidence is the provenance
+// state's retired input list, which must settle the retained copy on its own
+// or the canceled message stays an actionless Delivering row until reconnect.
+test("a retired input settles a retained copy no consumed frame named", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m9" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m9", input: [{ type: "text", text: "queued elsewhere" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued elsewhere" }] },
+  });
+  await storage.markAttempted("m9");
+  expect(await storage.settleReceipt("m9", "pending", ["q1"])).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1 },
+        pendingMutations: [],
+      },
+    }),
+  );
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // The daemon retires the input with no queue frame: an older daemon's
+  // cancellation looks exactly like this.
+  fake.emitNotification({
+    method: "thread/conversation-provenance/changed",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      provenance: {
+        version: 1,
+        authoritative: true,
+        revision: 2,
+        instanceId: "inc",
+        admittedInputs: [],
+        retiredInputs: ["client:m9"],
+        frontiers: [],
+      },
+    },
+  } as never);
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m9")) === undefined);
+
+  expect(await storage.getOptimistic("m9")).toBeUndefined();
+});
+
 test("an authoritative hydration retires an absent retained queue source", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
   await storage.enqueueIntent({

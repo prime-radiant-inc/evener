@@ -6751,7 +6751,15 @@ function handleNotification(n: AnyNotification): void {
   // consumed queue id is banked on its queue frame and settled by the next
   // accepted snapshot, never by the frame itself.
   const settlementRef = notificationRef(n);
-  if ((mutationIdentities.length > 0 || n.method === "thread/queueChanged") && settlementRef) {
+  // A provenance change carries no mutation identity and no queue frame, but
+  // it is the only announcement a cancellation makes, so it has to reach the
+  // settlement below.
+  if (
+    (mutationIdentities.length > 0 ||
+      n.method === "thread/queueChanged" ||
+      n.method === "thread/conversation-provenance/changed") &&
+    settlementRef
+  ) {
     const settledModel =
       publishableThreads?.get(settlementRef) ??
       nextWatchedThreads?.get(settlementRef) ??
@@ -6841,6 +6849,13 @@ function handleNotification(n: AnyNotification): void {
           });
       }
       if (runtime && acceptedFrame && settledModel) {
+        settleConsumedFromModel(runtime, settlementRef, settledModel);
+      }
+      // A cancellation announces itself as provenance, never as a consumed
+      // queue frame, so this is where its retained copy has to settle. The
+      // build's own authority gates the answer: a stale snapshot proves
+      // nothing about an input that is still waiting.
+      if (runtime && settledModel && n.method === "thread/conversation-provenance/changed" && settlementRef) {
         settleConsumedFromModel(runtime, settlementRef, settledModel);
       }
     }
@@ -7676,35 +7691,40 @@ function forgetConsumedQueueRows(ref: string): void {
 }
 
 // A consumed queue identity retires only when an accepted authoritative
-// snapshot shows the message is no longer queued, pending, or recorded. The
-// queue frame that named the consumption keeps the copy visible until then.
+// snapshot shows the message is no longer queued, pending, recorded, or
+// waiting on a retired input. The queue frame that named the consumption keeps
+// the copy visible until then.
 function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: ThreadModel): void {
   const pending = pendingConsumedSettlements.get(ref);
-  if (!pending || pending.size === 0) return;
-  const present = transcriptMutationIds(model);
   // An input the daemon names as retired will never be recorded, so it settles
-  // without the transcript evidence the rest of this needs. That is the only
-  // way a cancellation settles in a session this client never typed into,
-  // where no recorded clientMutationId exists at all.
+  // without any transcript evidence. A cancellation announces itself only this
+  // way - a promotion's queue frame carries its consumed ids, a cancellation's
+  // frame carries none - and a session this client never typed into has no
+  // recorded clientMutationId to wait for at all.
   const retiredInputs = new Set(
     (model.conversationProvenance?.retiredInputs ?? []).map((id) =>
       id.startsWith("client:") ? id.slice("client:".length) : id,
     ),
   );
-  const settled = [...pending].filter((id) => retiredInputs.has(id));
+  const candidates = new Set(pending ?? []);
+  for (const id of retiredInputs) candidates.add(id);
+  if (candidates.size === 0) return;
+  const settled = [...retiredInputs];
+  const present = transcriptMutationIds(model);
   // Without a recorded user item the replacement is not visible yet; keep the
   // display copy rather than blinking the message out between the two states.
   if (present.size > 0) {
     for (const id of model.queue?.clientMutationIds ?? []) present.add(id);
     for (const mutation of model.pendingMutations ?? []) present.add(mutation.clientMutationId);
-    for (const id of pending) if (!present.has(id) && !retiredInputs.has(id)) settled.push(id);
+    for (const id of candidates) {
+      if (!present.has(id) && !retiredInputs.has(id)) settled.push(id);
+    }
   }
-  const retired = [...new Set(settled)];
-  if (retired.length === 0) return;
-  for (const id of retired) pending.delete(id);
-  if (pending.size === 0) pendingConsumedSettlements.delete(ref);
+  if (settled.length === 0) return;
+  for (const id of settled) pending?.delete(id);
+  if (pending && pending.size === 0) pendingConsumedSettlements.delete(ref);
   void runtime.dispatcher
-    .reconcileIdentities(retired)
+    .reconcileIdentities(settled)
     .then(() => refreshMutationPins(runtime, [ref]))
     .catch(() => {
       // A later accepted snapshot retries the same identity settlement.

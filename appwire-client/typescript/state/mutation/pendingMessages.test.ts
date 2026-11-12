@@ -393,6 +393,50 @@ test("a carried row stays while its recorded owner is still only pending", () =>
   expect(rows).toHaveLength(1);
 });
 
+// An older daemon promotes without queueEntryIds, so the pending mutation
+// cannot name the entry it consumed. The recorded item's lineage is the only
+// remaining proof, and it speaks in conversation INPUT ids: the daemon derives
+// them from the client mutation that produced the entry. Comparing them
+// against the queue ENTRY id matches nothing and leaves a duplicate row.
+test("a carried row leaves on lineage alone when the promotion names no queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued elsewhere",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m9"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
 // A canceled message is never recorded. The daemon reports it in the
 // provenance state's retiredInputs, which is the only durable evidence the
 // row has that nothing more will arrive.
