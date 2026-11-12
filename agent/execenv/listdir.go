@@ -100,10 +100,8 @@ func NewDirListBudget(offset, limit, charBudget int) *DirListBudget {
 		limit = 1
 	}
 	window := maxListDirWalkEntries
-	windowClamped := true
 	if limit < maxListDirWalkEntries {
 		window = limit + 1
-		windowClamped = false
 	}
 	if charBudget < 0 {
 		charBudget = 0
@@ -113,7 +111,7 @@ func NewDirListBudget(offset, limit, charBudget int) *DirListBudget {
 		skip:          offset,
 		window:        window,
 		charBudget:    charBudget,
-		windowClamped: windowClamped,
+		windowClamped: limit >= maxListDirWalkEntries,
 	}
 }
 

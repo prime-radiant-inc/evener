@@ -107,15 +107,18 @@ func formatDirListing(r listDirResult) string {
 		default:
 			fmt.Fprintf(&b, "%d entries", r.Returned)
 		}
-		switch {
-		case r.HitWalkCap && r.Depth > 1:
-			fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or reduce depth to see the rest.", r.WalkTruncatedAt)
-		case r.HitWalkCap:
-			fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
-		case r.Depth > 1:
-			fmt.Fprintf(&b, "\nThe walk stopped after %d entries once this page filled; total count was not enumerated. Page with %s(offset=%d), narrow the path, or reduce depth.", r.WalkTruncatedAt, toolName, nextOffset)
-		default:
+		if r.HitWalkCap {
+			fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or ", r.WalkTruncatedAt)
+			if r.Depth > 1 {
+				b.WriteString("reduce depth to see the rest.")
+			} else {
+				fmt.Fprintf(&b, "page with %s(offset=%d) to see the rest.", toolName, nextOffset)
+			}
+		} else {
 			fmt.Fprintf(&b, "\nThe walk stopped after %d entries once this page filled; total count was not enumerated.", r.WalkTruncatedAt)
+			if r.Depth > 1 {
+				fmt.Fprintf(&b, " Page with %s(offset=%d), narrow the path, or reduce depth.", toolName, nextOffset)
+			}
 		}
 	case r.Truncated:
 		fmt.Fprintf(&b, "%d of %d entries (offset %d) — more with %s(offset=%d)", r.Returned, r.Total, r.Offset, toolName, nextOffset)
@@ -245,8 +248,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			// MaxListDirDepth. Environments without the capability (test
 			// doubles) keep the legacy whole-tree walk.
 			var entries []execenv.DirEntry
-			walkTruncatedAt := 0
-			hitWalkCap := false
 			var res listDirResult
 			switch ld := env.(type) {
 			case execenv.DirListBudgeter:
@@ -256,8 +257,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				if err != nil {
 					return nil, err
 				}
-				walkTruncatedAt = budget.TruncatedAt()
-				hitWalkCap = budget.HitWalkCap()
 				// The budgeted walk returns only the page window — the offset
 				// prefix was charged and discarded — so the page starts at the
 				// window's head while the footer still displays the requested
@@ -265,7 +264,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				// charged in total, not what it retained.
 				res = paginateDirEntries(path, entries, 0, limit)
 				res.Offset = offset
-				if walkTruncatedAt == 0 {
+				res.WalkTruncatedAt = budget.TruncatedAt()
+				res.HitWalkCap = budget.HitWalkCap()
+				if res.WalkTruncatedAt == 0 {
 					res.Total = budget.Visited()
 				}
 			default:
@@ -276,13 +277,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				}
 				res = paginateDirEntries(path, entries, offset, limit)
 			}
-			res.ToolName = "list_dir"
 			if s != nil {
 				res.ToolName = s.providerVisibleToolName("list_dir")
 			}
 			res.Depth = depth
-			res.WalkTruncatedAt = walkTruncatedAt
-			res.HitWalkCap = hitWalkCap
 			return formatDirListing(res), nil
 		},
 	})

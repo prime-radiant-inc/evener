@@ -135,20 +135,34 @@ function listTarget(args: Record<string, unknown>): { path: string; pattern?: st
 // like a count ("2 entries.md", "2 entries (notes)") never reads as one.
 const LIST_DIR_COUNT_RE =
   /^(\d+)(?:(?: of \d+)? entries \(offset \d+\)(?: — more with list_(?:dir|directory)\(offset=\d+\))?| entries)$/;
-const LIST_DIR_STOP_NOTE_RE = /\nThe (?:walk|listing) stopped after (?:visiting its cap of )?\d+ entries\b[^\n]*$/;
 
 function entries(n: number | string): string {
   return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
 }
 
+function footerCountHeader(tail: string): string {
+  const trimmed = tail.trimEnd();
+  const sep = trimmed.lastIndexOf("\n\n");
+  if (sep >= 0) {
+    const block = trimmed.slice(sep + 2);
+    const nl = block.indexOf("\n");
+    return nl >= 0 ? block.slice(0, nl) : block;
+  }
+  const nl = trimmed.indexOf("\n");
+  if (nl >= 0 && trimmed.startsWith("0 ")) {
+    return trimmed.slice(0, nl);
+  }
+  return lastLine(trimmed);
+}
+
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
-  // The footer is the last line of the tool's own output, which may be
-  // followed by a walk-stop note line or an intervention the registry appended.
+  // The footer starts after the listing's trailing blank line (or at index 0
+  // when zero entries were returned), with optional note lines beneath its
+  // count header and optional registry interventions after a further blank line.
   const tails = outputTails(output);
   for (const tail of tails) {
-    const withoutNote = tail.trimEnd().replace(LIST_DIR_STOP_NOTE_RE, "");
-    const stated = LIST_DIR_COUNT_RE.exec(lastLine(withoutNote))?.[1];
+    const stated = LIST_DIR_COUNT_RE.exec(footerCountHeader(tail))?.[1];
     if (stated !== undefined) return entries(stated);
   }
   // No footer: the listing's own lines, without an intervention after it.
