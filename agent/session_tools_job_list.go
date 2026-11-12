@@ -114,8 +114,9 @@ func stableJobListCandidates(s *Session, jm *jobManager, filter listFilter, now 
 		}
 	}
 	includeStableDescendants := filter.IncludeNested || filter.IncludeDescendants
+	nameMap := s.currentToolNameMap()
 	for _, visible := range delegateRowsForSession(s, includeStableDescendants) {
-		item := projectDelegateListItem(now, visible)
+		item := projectDelegateListItem(now, visible, nameMap)
 		if stableJobListItemMatches(item, filter) {
 			items = append(items, item)
 		}
@@ -194,10 +195,14 @@ func delegateRowsForSession(s *Session, includeDescendants bool) []delegateVisib
 	return rows
 }
 
-func projectDelegateListItem(now time.Time, visible delegateVisibleRow) jobListEntry {
+func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap ...map[string]string) jobListEntry {
 	snapshot := visible.snapshot
-	status := projectDelegateStatus(now, snapshot)
+	status := projectDelegateStatus(now, snapshot, nameMap...)
 	resumable := snapshot.resumable
+	tools := append([]string(nil), snapshot.descriptor.ToolNameCeiling...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	item := jobListEntry{
 		ID:                   snapshot.id,
 		Kind:                 "delegate",
@@ -218,7 +223,7 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow) jobListE
 		Depth:                visible.depth,
 		Task:                 snapshot.descriptor.Task,
 		AgentType:            snapshot.descriptor.AgentType,
-		Tools:                append([]string(nil), snapshot.descriptor.ToolNameCeiling...),
+		Tools:                tools,
 		Model:                snapshot.descriptor.ResolvedModel,
 		ReasoningEffort:      snapshot.descriptor.Config.ReasoningEffort,
 		ParentDelegateID:     stringPtrOrNil(snapshot.parentID),

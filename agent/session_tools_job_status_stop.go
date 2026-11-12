@@ -59,7 +59,7 @@ func delegateStatusTool(s *Session, delegateID string, maxChars int) (any, error
 		return "", fmt.Errorf("not_controllable: stable delegate %s is not visible to this session", delegateID)
 	}
 	now := s.sclock().Now()
-	out := projectDelegateStatus(now, row.snapshot)
+	out := projectDelegateStatus(now, row.snapshot, s.currentToolNameMap())
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
 		return "", err
@@ -344,8 +344,12 @@ type delegateStatusResult struct {
 	LastOutcome        *delegatestore.Outcome `json:"last_outcome,omitempty"`
 }
 
-func projectDelegateStatus(now time.Time, snapshot delegateSnapshot) delegateStatusResult {
+func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...map[string]string) delegateStatusResult {
 	descriptor := snapshot.descriptor
+	tools := append([]string(nil), descriptor.ToolNameCeiling...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	out := delegateStatusResult{
 		ID:                 snapshot.id,
 		Type:               "delegate",
@@ -354,7 +358,7 @@ func projectDelegateStatus(now time.Time, snapshot delegateSnapshot) delegateSta
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
-		Tools:              append([]string(nil), descriptor.ToolNameCeiling...),
+		Tools:              tools,
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,

@@ -694,8 +694,50 @@ func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
 // either shares its parent's current directory or gets its own worktree lane, so
 // the only comparison is the parent's live working directory against each live
 // child's — which is also what catches a child that re-rooted itself.
-func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) string {
+func delegateDescriptorIsReadOnly(desc *delegatestore.Descriptor) bool {
+	if desc == nil {
+		return false
+	}
+	if desc.Sandbox != nil {
+		modeStr := strings.TrimSpace(desc.Sandbox.Mode)
+		if modeStr == "read-only" || strings.HasPrefix(modeStr, "read-only") {
+			return true
+		}
+		if mode, err := sandbox.ParseMode(modeStr); err == nil && mode == sandbox.ModeReadOnly {
+			return true
+		}
+	}
+	if len(desc.ToolNameCeiling) > 0 && subagentToolScopeIsReadOnly(false, desc.ToolNameCeiling) {
+		return true
+	}
+	return false
+}
+
+func runningSubagentIsReadOnly(sub *subagent) bool {
+	if sub == nil {
+		return false
+	}
+	if sub.stableDescriptor != nil && delegateDescriptorIsReadOnly(sub.stableDescriptor) {
+		return true
+	}
+	if sub.sess != nil {
+		if local, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok && local.Sandbox != nil {
+			if local.Sandbox.Inputs().Mode == sandbox.ModeReadOnly {
+				return true
+			}
+		}
+		if !sub.sess.canInstructTool("write_file") && !sub.sess.canInstructTool("edit_file") && !sub.sess.canInstructTool("apply_patch") && !sub.sess.canInstructTool("manage_worktree") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string, newDelegateDesc ...*delegatestore.Descriptor) string {
 	if s == nil || s.subagents == nil || strings.TrimSpace(requestedIsolation) != "" {
+		return ""
+	}
+	if len(newDelegateDesc) > 0 && newDelegateDesc[0] != nil && delegateDescriptorIsReadOnly(newDelegateDesc[0]) {
 		return ""
 	}
 	parentEnv := s.currentEnv()
@@ -704,6 +746,9 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 	}
 	parentDir := parentEnv.WorkingDirectory()
 	target := canonicalOrClean(parentDir)
+
+	hasRunningMatchingSibling := false
+	allRunningSiblingsReadOnly := true
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
 		active := sub.running || sub.driving
@@ -717,16 +762,20 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 		}
 		env := sub.sess.currentEnv()
 		if env != nil && canonicalOrClean(env.WorkingDirectory()) == target {
-			// Name the directory the way the caller knows it, not its canonical
-			// form: the comparison resolves symlinks, the advisory does not.
-			return fmt.Sprintf(
-				"shared workspace %q already has a running delegate; this delegate will still launch, "+
-					"but consider isolation=\"worktree\" to avoid file, report, branch, and Git-state collisions",
-				parentDir,
-			)
+			hasRunningMatchingSibling = true
+			if !runningSubagentIsReadOnly(sub) {
+				allRunningSiblingsReadOnly = false
+			}
 		}
 	}
-	return ""
+	if !hasRunningMatchingSibling || allRunningSiblingsReadOnly {
+		return ""
+	}
+	return fmt.Sprintf(
+		"shared workspace %q already has a running delegate; this delegate will still launch, "+
+			"but consider isolation=\"worktree\" to avoid file, report, branch, and Git-state collisions",
+		parentDir,
+	)
 }
 
 // subagentHookAgentType is the agent type a SubagentStart/SubagentStop matcher

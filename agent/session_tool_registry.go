@@ -486,6 +486,12 @@ func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
 
 func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
+	register := reg.Register
+	if deps.registerTool != nil {
+		register = func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}
+	}
 	if err := registerFileTools(reg, deps); err != nil {
 		return err
 	}
@@ -497,6 +503,11 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
+	}
+	for _, rt := range transcriptTools(deps) {
+		if err := register(rt); err != nil {
+			return err
+		}
 	}
 	if err := registerDelegateTool(reg, s); err != nil {
 		return err
@@ -520,17 +531,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)
-	register := reg.Register
-	if deps.registerTool != nil {
-		register = func(registered tool.RegisteredTool) error {
-			return deps.registerTool(reg, registered)
-		}
-	}
-	for _, rt := range transcriptTools(deps) {
-		if err := register(rt); err != nil {
-			return err
-		}
-	}
 	for _, rt := range doctorTools(deps) {
 		if err := register(rt); err != nil {
 			return err

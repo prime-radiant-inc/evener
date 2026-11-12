@@ -136,7 +136,30 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 // defaultToolSummaryForAgent) already runs under a held s.mu, and s.mu is not
 // reentrant, so taking the lock here would deadlock prompt rendering.
 func (s *Session) providerVisibleToolNames(names []string) []string {
-	return providerVisibleToolNames(names, s.profile.ToolNameMap())
+	if s == nil || s.profile == nil {
+		return append([]string(nil), names...)
+	}
+	return providerVisibleToolNames(names, s.toolNameMap())
+}
+
+// currentToolNameMap reads s.currentProfile().ToolNameMap() under s.mu.
+// Tool handlers running outside prompt rendering use this to safely access the active profile.
+func (s *Session) currentToolNameMap() map[string]string {
+	if s == nil {
+		return nil
+	}
+	prof := s.currentProfile()
+	if prof == nil {
+		return nil
+	}
+	return prof.ToolNameMap()
+}
+
+func (s *Session) toolNameMap() map[string]string {
+	if s == nil || s.profile == nil {
+		return nil
+	}
+	return s.profile.ToolNameMap()
 }
 
 // providerVisibleToolName is providerVisibleToolNames for a single name, for
