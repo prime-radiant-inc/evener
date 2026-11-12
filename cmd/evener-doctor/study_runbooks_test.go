@@ -477,19 +477,13 @@ func TestRun_AuditAssistantFabricationBundledRunbook(t *testing.T) {
 	healthySID := "02wLIRxqmq3AUo6vl2OW65"
 
 	writeStudySession(t, base, envSID, []schema.Turn{
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>"},
-		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>")),
 	})
 	writeStudySession(t, base, markupSID, []schema.Turn{
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi"},
-		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi")),
 	})
 	writeStudySession(t, base, healthySID, []schema.Turn{
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Discussing tags in code:\n```\n<delegate-notification>\n<｜DSML｜>\n```"},
-		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Discussing tags in code:\n```\n<delegate-notification>\n<｜DSML｜>\n```")),
 	})
 
 	res := studyAuditJSON(t, base, "assistant-fabrication", envSID, markupSID, healthySID)

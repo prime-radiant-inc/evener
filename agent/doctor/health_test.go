@@ -348,10 +348,8 @@ func TestTranscriptHealth_AssistantFabrications(t *testing.T) {
 
 	// 1. Clean + fenced-code discussion reports 0 and nil map.
 	fencedTurns := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("explain tags")}}),
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			assistantText("In fenced code:\n```xml\n<delegate-notification delegate_id=\"dlg_1\">ok</delegate-notification>\n<｜DSML｜ parameter name=\"x\">\n```\nInline `<job-notification>` too."),
-		}}),
+		schema.NewTurn(schema.TurnUserInput, llm.User("explain tags")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("In fenced code:\n```xml\n<delegate-notification delegate_id=\"dlg_1\">ok</delegate-notification>\n<｜DSML｜ parameter name=\"x\">\n```\nInline `<job-notification>` too.")),
 	}
 	cleanBase, cleanSID := rejectedSignatureFixture(t, fencedTurns)
 	cleanHealth, err := TranscriptHealth(context.Background(), cleanBase, cleanSID)
@@ -366,17 +364,13 @@ func TestTranscriptHealth_AssistantFabrications(t *testing.T) {
 	}
 
 	// 2. 1 multi-tag harness_envelope turn + 1 tool_markup turn + 1 compaction fold copy of the envelope turn -> total 2 (1 each).
-	envelopeTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-		assistantText("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>\n[answers]\n1. [q] -> \"yes\""),
-	}})
-	markupTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-		assistantText("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi"),
-	}})
+	envelopeTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>\n[answers]\n1. [q] -> \"yes\""))
+	markupTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi"))
 	fabTurns := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
 		envelopeTurn,
 		markupTurn,
-		schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+		schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint")),
 		foldCopy(envelopeTurn, 1),
 	}
 	fabBase, fabSID := rejectedSignatureFixture(t, fabTurns)

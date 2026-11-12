@@ -96,7 +96,7 @@ func TestSession_NotificationBareTextRequiresNoPriorToolActivity(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				case2Step.Add(1)
-				return agenttest.ToolCallResponse(communicateCall("c_final", "Completed wake work."))
+				return agenttest.FinalResponse("Completed wake work.")
 			},
 		},
 	}
