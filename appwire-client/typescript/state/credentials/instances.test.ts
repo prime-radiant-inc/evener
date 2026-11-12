@@ -1345,8 +1345,10 @@ describe("getModel and editModel", () => {
 
     const stale = store.getState().getModel({ name: "work", model: "deepseek-4.1-flash" });
     store.connectionChanged(readyClient(), "ready");
+    const stateBefore = store.getState();
     pending.resolve(MODEL_DETAIL);
-    await expect(stale).rejects.toThrow(CONNECTION_REPLACED_ERROR);
+    await expect(stale).rejects.toBeInstanceOf(Error);
+    expect(store.getState()).toBe(stateBefore);
   });
 
   test("editModel stamps originClientId, consumes own evener/auth/updated echo without foreign refetch, and returns detail", async () => {
