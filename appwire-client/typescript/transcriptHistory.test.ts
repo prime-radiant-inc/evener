@@ -464,6 +464,57 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
 });
 
 // A system item can attach structured detail behind its prose text, e.g. a
+// A promotion or drain records its own clientMutationId but inherits the
+// consumed queue entry's conversation input ids. That lineage is the only tie
+// between a recorded message and the queue row it replaced, so the model must
+// carry it or a carried row can never retire.
+test("wireItemToModel carries the wire conversationInputIds lineage onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_user_1",
+            type: "userMessage",
+            text: "promoted message",
+            clientMutationId: "promotion-control",
+            conversationInputIds: ["client:original-queue"],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).conversationInputIds).toEqual(["client:original-queue"]);
+});
+
+// The daemon's retired-input list is the only durable evidence that a canceled
+// message will never reach history. A read snapshot must carry it, or the
+// client can never retire the row that message left behind.
+test("a read snapshot carries the daemon's conversation provenance onto the model", () => {
+  const thread = testThread({
+    evener: {
+      conversationProvenance: {
+        version: 1,
+        authoritative: true,
+        instanceId: "instance_1",
+        revision: 7,
+        consumedFrontierId: "",
+        admittedInputs: [],
+        retiredInputs: ["client:canceled-message"],
+        frontiers: [],
+      },
+    },
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(model.conversationProvenance?.retiredInputs).toEqual(["client:canceled-message"]);
+});
+
+// A system item can attach structured detail behind its prose text, e.g. a
 // round_timings item's per-phase durations (ThreadItem.raw) or a
 // compaction item's before/after counts. wireItemToModel historically dropped
 // it, forcing a renderer to re-parse numbers out of human-readable text. The

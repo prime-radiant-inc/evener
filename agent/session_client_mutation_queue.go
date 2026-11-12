@@ -1247,6 +1247,7 @@ func addPendingSteeringAs(snapshot *clientMutationSnapshot, record *clientMutati
 		Input:            cloneClientMutationInput(input),
 		ExecutionState:   "accepted",
 		TurnID:           record.StableTurnID,
+		QueueEntryIDs:    slices.Clone(record.StableQueueEntryIDs),
 		ProjectionState:  acceptedClientMutationProjection(record.Method),
 	}
 	snapshot.SteeringOrder = append(snapshot.SteeringOrder, record.ClientMutationID)
