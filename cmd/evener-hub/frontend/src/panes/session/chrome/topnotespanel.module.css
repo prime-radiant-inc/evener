@@ -1,15 +1,15 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* Attached to the header: the top edge sits flush against the header's
-   * 1px hairline so the panel reads as a continuation of the header, not a
-   * floating card. The top is square (no radius, no top border) and the
-   * horizontal inset comes from the body's own side padding. The negative top
-   * margin cancels the body's top padding so there is no gap below the header;
-   * the seam itself is the header's single border-bottom. Only the bottom
-   * corners are rounded. Shadow is the intentional separation from the
-   * transcript — layered soft bloom rather than a hard bar. */
-  margin-top: calc(-1 * var(--space-5));
+  /* Attached to the header in standalone session panes: the negative margin
+   * below cancels the body's top padding so there is no gap below the
+   * header; the top is square (no radius, no top border) and reads as a
+   * continuation of the header, whose own border-bottom is the single seam.
+   * Inside cascade columns the body is flush (bodyNoScroll) with no padding
+   * to cancel, so that margin rule lives in a session-scoped override below
+   * and stays 0 there. Only the bottom corners are rounded. Shadow is the
+   * intentional separation from the transcript — layered soft bloom rather
+   * than a hard bar. */
   position: relative;
   z-index: var(--z-raised);
   border: 1px solid var(--edge);
@@ -25,6 +25,13 @@
    * border paints inside the box and cannot be clipped. */
   overflow: hidden;
   background: var(--surface-2);
+}
+
+/* Only the padded standalone session body contributes a top inset to cancel;
+ * the cascade's flush body (bodyNoScroll + column .content) has none, so the
+ * panel must not pull above its scrollport there. */
+:global([data-pane-scaffold^="session:"]) .topNotesPanel {
+  margin-top: calc(-1 * var(--space-5));
 }
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
@@ -159,7 +166,7 @@
 }
 
 @media (max-width: 899px) {
-  .topNotesPanel {
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel {
     margin-top: calc(-1 * var(--space-4));
   }
 }
