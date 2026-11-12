@@ -497,7 +497,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		}
 	}
 
-	layout, err := ClassifyWorkspace(cwd)
+	layout, err := ClassifyWorkspaceWithCeilings(cwd, host.GitCeilingDirs)
 	if err != nil {
 		return ResolvedPolicy{}, &RefusalError{
 			Mode:   policy.Mode,

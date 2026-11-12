@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/schema"
@@ -371,5 +372,35 @@ func TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync(t *testing.T) {
 	}
 	if entries := faultTestEntries(t, base); len(entries) != 2 {
 		t.Fatalf("entries after reopen and one more append = %d, want 2 (no duplicate of the retained one)", len(entries))
+	}
+}
+
+// TestEstablishDurability_NilWriter covers the nil/nil-file guard in
+// EstablishDurability.
+func TestEstablishDurability_NilWriter(t *testing.T) {
+	var w *Writer
+	if err := w.EstablishDurability(); err == nil {
+		t.Error("EstablishDurability on nil writer should return error")
+	}
+}
+
+// TestEstablishDurability_ClosedWriter covers the closed-writer guard in
+// EstablishDurability.
+func TestEstablishDurability_ClosedWriter(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	w, err := newWriterFS(fs, "/session/transcript.jsonl", Header{
+		SessionID: "test",
+		CreatedAt: time.Unix(0, 0).UTC(),
+		ProfileID: "openai",
+		Model:     "gpt-5.5",
+	}, true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.EstablishDurability(); err == nil {
+		t.Error("EstablishDurability on closed writer should return error")
 	}
 }

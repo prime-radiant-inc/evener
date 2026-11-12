@@ -593,7 +593,7 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	}
 
 	registered := watchRegisteredEvent(jm, progressCfg)
-	cleared := watchClearedEvent(jm, progressCfg, "cleared")
+	cleared := watchClearedEvent(jm, progressCfg, "cleared", progressCfg.deliveries)
 	if registered.Kind != jobstore.EventWatchRegistered || registered.Watch == nil || cleared.Kind != jobstore.EventWatchCleared || cleared.Watch == nil {
 		t.Fatalf("watch registry events are malformed: registered=%+v cleared=%+v", registered, cleared)
 	}

@@ -56,7 +56,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		}
 		archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
 		favorite := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
-		web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
+		web := newTestWebServerWithConfig(t, hubcore.WebConfig{StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
@@ -104,7 +104,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 			return oldRemove(path)
 		}
 		t.Cleanup(func() { removeProjectSessionFile = oldRemove })
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+		web := newTestWebServerWithConfig(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
@@ -155,7 +155,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 			return oldRemove(path)
 		}
 		t.Cleanup(func() { removeProjectSessionFile = oldRemove })
-		web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+		web := newTestWebServerWithConfig(t, hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
@@ -197,7 +197,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		oldRemoveDir := removeProjectSessionDir
 		removeProjectSessionDir = func(string) error { return errors.New("injected resume fence") }
 		t.Cleanup(func() { removeProjectSessionDir = oldRemoveDir })
-		web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+		web := newTestWebServerWithConfig(t, hubcore.WebConfig{HubStateRoot: root, StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
@@ -252,7 +252,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+		web := newTestWebServerWithConfig(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.changeTitle("session-baseline")
 		source.mu.Lock()

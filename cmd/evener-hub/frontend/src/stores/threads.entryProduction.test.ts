@@ -37,6 +37,7 @@ import { connectionStore } from "./connection";
 import {
   entryTranscriptRoute,
   olderTranscriptPageKey,
+  openingRecoveryCompletion,
   productionEntryTranscriptForTests,
   publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
@@ -2148,6 +2149,121 @@ it("a stalled restore's late partial window cannot demote a resident range", asy
   }
 }, 15000);
 
+it("a stalled restore's unusable late result re-arms recovery when its re-open misses", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const read = { ...response("local:a", [turn("older-item", 1), turn("recorded", 2)]), olderCursor: "cur-1" };
+  const client = connect(read);
+  // The hub echoes the request generation; a static reply would make the
+  // recovery read discard as already-applied history.
+  client.on("thread/read", (params) => ({ ...read, requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const loaded = () => {
+    const model = threadsStore.getState().threads.get("local:a");
+    const items = [...(model?.history?.turns ?? []), ...(model?.turns ?? [])].flatMap((turn) => turn.items ?? []);
+    return [...new Set(items.map((item) => item.text))];
+  };
+  expect(loaded()).toEqual(["older-item", "recorded"]);
+  // An in-flight older-page load holds the view through the pane's release,
+  // so the stalled restore takes the resident-range branch.
+  const finishOlder = deferred<void>();
+  let olderListed = false;
+  client.on("thread/turns/list", async () => {
+    olderListed = true;
+    await finishOlder.promise;
+    return { data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
+  });
+  const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
+  await vi.waitFor(() => expect(olderListed).toBe(true));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  threadsStore.getState().releaseThread("local:a");
+  setSessionCacheStalledOpenForTests(100);
+  setSessionCacheOpenBackstopForTests(100);
+  const restoreGate = deferred<void>();
+  const reopenGate = deferred<void>();
+  const recoveryGate = deferred<void>();
+  const windowOriginal = storage.getLatestWindow.bind(storage);
+  let windowReads = 0;
+  const windowLookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    windowReads += 1;
+    if (windowReads === 1) {
+      await restoreGate.promise;
+      return windowOriginal(...args);
+    }
+    if (windowReads === 2) {
+      await reopenGate.promise;
+      return windowOriginal(...args);
+    }
+    if (windowReads === 3) {
+      await recoveryGate.promise;
+      return windowOriginal(...args);
+    }
+    return windowOriginal(...args);
+  });
+  const flush = async (turns = 5) => {
+    for (let turn = 0; turn < turns; turn += 1) await vi.advanceTimersByTimeAsync(0);
+  };
+  try {
+    const reopened = threadsStore.getState().ensureThread("local:a");
+    await vi.advanceTimersByTimeAsync(101);
+    await reopened;
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+    expect(windowReads).toBe(1);
+    // Arm an owed recorded range once the restore's fill decision has been
+    // taken (the turn-metadata read) but before its verdict: the still
+    // complete late window then fails the usable test, so the continuation
+    // takes its source-refresh and re-open path.
+    const getTurnOriginal = storage.getTurn.bind(storage);
+    let owedArmed = false;
+    vi.spyOn(storage, "getTurn").mockImplementation(async (...args) => {
+      if (!owedArmed) {
+        owedArmed = true;
+        productionEntryTranscriptForTests("local:a").repository?.noteOwedRecordedRange();
+      }
+      return getTurnOriginal(...args);
+    });
+    restoreGate.resolve();
+    await flush();
+    // The source refresh settles, then the re-open reaches the held local
+    // lookup that misses its own backstop window.
+    for (let turn = 0; turn < 20 && windowReads < 2; turn += 1) await vi.advanceTimersByTimeAsync(0);
+    expect(windowReads).toBe(2);
+    await vi.advanceTimersByTimeAsync(101);
+    await flush();
+    expect(productionEntryTranscriptForTests("local:a").unresolvedOpenMiss).toBe(true);
+    // The fix: the missed re-open re-arms the paced recovery chain, whose
+    // fresh open reaches the local lookup again. Without it the route keeps
+    // its stranding markers and nothing re-arms them.
+    for (let turn = 0; turn < 20 && windowReads < 3; turn += 1) await vi.advanceTimersByTimeAsync(0);
+    expect(windowReads).toBe(3);
+    const recovery = openingRecoveryCompletion("local:a");
+    expect(recovery).toBeDefined();
+    reopenGate.resolve();
+    recoveryGate.resolve();
+    let recoveryDone = false;
+    void recovery?.then(() => {
+      recoveryDone = true;
+    });
+    for (let turn = 0; turn < 20 && !recoveryDone; turn += 1) await vi.advanceTimersByTimeAsync(100);
+    expect(recoveryDone).toBe(true);
+    expect(loaded()).toEqual(["older-item", "recorded"]);
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    vi.useRealTimers();
+    restoreGate.resolve();
+    reopenGate.resolve();
+    recoveryGate.resolve();
+    await Promise.all(windowLookup.mock.results.map((result) => result.value));
+    finishOlder.resolve();
+    await historyRequest;
+    threadsStore.getState().releaseThread("local:a");
+  }
+}, 15000);
+
 it("a late restore result cannot act after its pane releases", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);
@@ -3738,10 +3854,12 @@ it("a close and reopen around the committed windowed hydration still restores th
   let foregroundReads = 0;
   let heldGeneration: number | undefined;
   const heldRead = deferred<ThreadReadResponse>();
+  const secondReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     foregroundReads += 1;
     if (foregroundReads === 1) return read;
     if (foregroundReads === 2) {
+      secondReadEntered.resolve();
       heldGeneration = params.requestGeneration;
       return heldRead.promise;
     }
@@ -3817,8 +3935,9 @@ it("a close and reopen around the committed windowed hydration still restores th
     // withheld and the backstop pinned — arming the owed recorded range, and
     // the claim's windowed hydration (the held read) is now in flight.
     await act(async () => {
-      await vi.waitFor(() => expect(foregroundReads).toBe(2));
+      await secondReadEntered.promise;
     });
+    expect(foregroundReads).toBe(2);
     expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
     // The pane closes — its background lease ends with it — WHILE the windowed
     // hydration is still finishing its mutation reconciliation, then reopens
@@ -3980,6 +4099,13 @@ it("a foreground opening whose cache reads answer slowly but successfully still 
 // no held read can advance — an observation that costs no wall-clock time.
 async function drainSettleSteps(): Promise<void> {
   for (let step = 0; step < 30; step += 1) await Promise.resolve();
+}
+
+// The open records its verdict in the microtasks that the settle event wakes:
+// await the event, then drain those continuations before reading the verdict.
+async function settleEntryVerdict(ref: string): Promise<void> {
+  await settleEntryTranscriptForTests(ref);
+  await drainSettleSteps();
 }
 
 it("a foreground opening whose storage read fails transiently still converges the recorded display", async () => {
@@ -4959,9 +5085,10 @@ it("a failed foreign settlement during a body-suppressed post-claim opening repo
     // The miss verdict armed the cache recovery chain: with the wedge
     // released, the recorded window promotes and the display converges.
     localReadReleased.resolve();
-    await vi.waitFor(() => {
-      expect(bodies()).toContain("row-26");
-    });
+    // Await the chain's registered span instead of polling the display
+    // against a wall-clock ceiling (#5630).
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toContain("row-26");
     expect(bodies()).toContain("row-225");
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
@@ -5082,8 +5209,12 @@ it("an open superseded by a replacement hydration settles without the displaced 
   // are still pending, so the opening settles long before the backstop.
   const wireReleased = deferred<void>();
   let wireReads = 0;
+  const firstWireReadEntered = deferred<void>();
+  const secondWireReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     wireReads += 1;
+    if (wireReads === 1) firstWireReadEntered.resolve();
+    if (wireReads === 2) secondWireReadEntered.resolve();
     const echoed = { ...read, requestGeneration: params.requestGeneration };
     return wireReads === 1 ? wireReleased.promise.then(() => echoed) : echoed;
   });
@@ -5091,9 +5222,8 @@ it("an open superseded by a replacement hydration settles without the displaced 
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(1);
-  });
+  await firstWireReadEntered.promise;
+  expect(wireReads).toBe(1);
   let holding = false;
   const localReadEntered = deferred<void>();
   const localReadReleased = deferred<void>();
@@ -5116,10 +5246,12 @@ it("an open superseded by a replacement hydration settles without the displaced 
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(2);
-  });
-  await drainSettleSteps();
+  await secondWireReadEntered.promise;
+  expect(wireReads).toBe(2);
+  // The replacement hydration's own settlement is the event the open's
+  // superseded verdict follows; drain what it wakes before reading the
+  // route's recorded verdict (#5630).
+  await settleEntryVerdict(ref);
   expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
   expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
   expect(bodies()).toContain("row-26");
@@ -5195,9 +5327,10 @@ it("a pane whose settlement recovered nothing converges from storage after two f
   });
   try {
     await opened;
-    await vi.waitFor(() => {
-      expect(bodies()).toContain("row-26");
-    });
+    // Await the chain's registered span instead of polling the display
+    // against a wall-clock ceiling (#5630).
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toContain("row-26");
     // The chain converged from storage: no further wire read was needed.
     expect(wireReads).toBe(2);
   } finally {
@@ -5245,8 +5378,12 @@ it("a replacement incarnation settling over the open's captured repository certi
 
   const wireReleased = deferred<void>();
   let wireReads = 0;
+  const firstWireReadEntered = deferred<void>();
+  const secondWireReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     wireReads += 1;
+    if (wireReads === 1) firstWireReadEntered.resolve();
+    if (wireReads === 2) secondWireReadEntered.resolve();
     if (wireReads === 1) {
       return wireReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
     }
@@ -5256,9 +5393,8 @@ it("a replacement incarnation settling over the open's captured repository certi
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(1);
-  });
+  await firstWireReadEntered.promise;
+  expect(wireReads).toBe(1);
   let holding = false;
   const localReadEntered = deferred<void>();
   const localReadReleased = deferred<void>();
@@ -5281,10 +5417,12 @@ it("a replacement incarnation settling over the open's captured repository certi
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect(wireReads).toBe(2);
-  });
-  await drainSettleSteps();
+  await secondWireReadEntered.promise;
+  expect(wireReads).toBe(2);
+  // The replacement hydration's own settlement is the event the open's
+  // superseded verdict follows; drain what it wakes before reading the
+  // route's recorded verdict (#5630).
+  await settleEntryVerdict(ref);
   // The replacement owns the display: the superseded open certifies it
   // instead of judging the disposed repository it captured.
   expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -124,6 +125,19 @@ func recoverObservationHistory(ctx context.Context, client *appwire.Client, ref 
 	if !observationHistoryContinues(held, fresh) {
 		return appwire.TranscriptItemCursorStale()
 	}
+	return pageObservationHistory(ctx, client, ref, held, fresh, emit)
+}
+
+// reanchorObservationHistory pages a same-target rebuilt history from its
+// latest window back to the pre-rebuild held window's oldest position. A
+// rebuild leaves no continuable gap, but a terminal that landed during the
+// relay gap is still older than the truncated latest window, so the fresh
+// history must be paged instead of forwarding only its latest page.
+func reanchorObservationHistory(ctx context.Context, client *appwire.Client, ref string, held, fresh appwire.ThreadReadResponse, emit func([]appwire.ThreadItem) bool) error {
+	return pageObservationHistory(ctx, client, ref, held, fresh, emit)
+}
+
+func pageObservationHistory(ctx context.Context, client *appwire.Client, ref string, held, fresh appwire.ThreadReadResponse, emit func([]appwire.ThreadItem) bool) error {
 	if fresh.Changes != nil && !emit(fresh.Changes.Items) {
 		return ctx.Err()
 	}
@@ -150,6 +164,17 @@ func recoverObservationHistory(ctx context.Context, client *appwire.Client, ref 
 		oldest, cursor = next, page.NextCursor
 	}
 	return nil
+}
+
+// observationCursorStale reports the typed answer for a cursor that no longer
+// addresses the served history.
+func observationCursorStale(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
 func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
@@ -275,7 +300,8 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		readDone := make(chan readResult)
 		reading, readAgain := false, false
 		held, pending := read, read
-		refresh := func() {
+		staleRefreshed := false
+		refresh := func(freshCut bool) {
 			if reading {
 				readAgain = true
 				return
@@ -292,17 +318,32 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					}
 				}
 				recoveryParams := params
-				recoveryParams.HeldSnapshot = previous.Snapshot
+				if freshCut {
+					// A stale cut cannot answer against this history and
+					// re-reading with it would only repeat that answer. Ask
+					// for the latest authoritative cut instead.
+					recoveryParams.HeldSnapshot = nil
+				} else {
+					recoveryParams.HeldSnapshot = previous.Snapshot
+				}
 				recoveryParams.ItemLimit = appwire.TranscriptItemPageLimit
 				response, err := client.ThreadRead(watchCtx, recoveryParams)
-				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns && observationHistoryContinues(previous, response) {
+				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns {
 					// A same-target discontinuity (an index rebuild behind a
-					// resync) has no continuable gap to page: the main loop
-					// re-anchors on the fresh cut, so paging must not turn the
-					// expected discontinuity into a fatal error.
-					err = recoverObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
-						return publish(readResult{items: items})
-					})
+					// resync) has no continuable gap, but its truncated latest
+					// window can still sit above evidence the watch has not
+					// replayed. Page the fresh history back to the held window
+					// so that evidence delivers instead of stranding the watch.
+					switch observationSnapshotDisposition(initial.Metadata, previous, response) {
+					case observationContinues:
+						err = recoverObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
+							return publish(readResult{items: items})
+						})
+					case observationReanchors:
+						err = reanchorObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
+							return publish(readResult{items: items})
+						})
+					}
 				}
 				publish(readResult{finished: true, err: err})
 			}()
@@ -313,9 +354,20 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				return
 			case result := <-readDone:
 				if result.err != nil {
+					if !staleRefreshed && observationCursorStale(result.err) {
+						// The history rotated while this read was paging its
+						// gap. Ask for the latest cut once; the next read
+						// takes the re-anchor branch instead of ending the
+						// subscription.
+						staleRefreshed = true
+						reading = false
+						refresh(true)
+						continue
+					}
 					return
 				}
 				if fresh := result.response; fresh != nil {
+					staleRefreshed = false
 					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
 					disposition := observationSnapshotDisposition(initial.Metadata, held, *fresh)
 					if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
@@ -344,7 +396,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					held, reading = pending, false
 					if readAgain {
 						readAgain = false
-						refresh()
+						refresh(false)
 					}
 				}
 			case notification, open := <-notifications:
@@ -360,7 +412,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					if !send(appwire.SessionWatchUpdate{Notification: &notification, Metadata: base}) {
 						return
 					}
-					refresh()
+					refresh(false)
 					continue
 				}
 				// The shared human relay deliberately fans malformed and untargeted
@@ -375,7 +427,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 						continue
 					}
 					if history.BootGeneration != "" && history.BootGeneration != read.BootGeneration {
-						refresh()
+						refresh(false)
 						continue
 					}
 					for _, u := range recordedObservationUpdates(history.Items, request, ref.String(), base.InstanceID, base.GenerationID) {

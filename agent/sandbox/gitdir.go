@@ -129,9 +129,18 @@ var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commond
 // only on an unreadable or unrecognized .git pointer shape — a fail-closed signal
 // the resolver turns into a refusal rather than guessing a grant set.
 func ClassifyWorkspace(cwd string) (GitLayout, error) {
+	return ClassifyWorkspaceWithCeilings(cwd, nil)
+}
+
+// ClassifyWorkspaceWithCeilings is ClassifyWorkspace with git's
+// GIT_CEILING_DIRECTORIES boundary: the upward search stops before a ceiling
+// directory, so a workspace nested inside another repository is classified as
+// its own non-Git root when a ceiling names its parent (#3724). A .git entry at
+// cwd itself is still found before any ceiling is consulted.
+func ClassifyWorkspaceWithCeilings(cwd string, ceilings []string) (GitLayout, error) {
 	cwd = identifier.ResolveClean(cwd)
 
-	holder, isDir, ok := findGitEntry(cwd)
+	holder, isDir, ok := findGitEntry(cwd, ceilings)
 	if !ok {
 		return GitLayout{Kind: NonGit, WorktreeRoot: cwd}, nil
 	}
@@ -212,10 +221,17 @@ func isSymlink(path string) bool {
 }
 
 // findGitEntry walks up from cwd to the nearest directory containing a ".git"
-// entry, returning that directory, whether the entry is a directory (vs a
-// pointer file), and ok=false if none is found before the filesystem root.
-func findGitEntry(cwd string) (holder string, isDir, ok bool) {
+// entry, stopping before any ceiling directory and returning that directory,
+// whether the entry is a directory (vs a pointer file), and ok=false if none is
+// found before a ceiling or the filesystem root.
+func findGitEntry(cwd string, ceilings []string) (holder string, isDir, ok bool) {
 	dir := filepath.Clean(cwd)
+	ceiling := make(map[string]struct{}, len(ceilings))
+	for _, c := range ceilings {
+		if c != "" {
+			ceiling[identifier.ResolveClean(c)] = struct{}{}
+		}
+	}
 	for {
 		info, err := os.Lstat(filepath.Join(dir, ".git"))
 		if err == nil {
@@ -227,8 +243,16 @@ func findGitEntry(cwd string) (holder string, isDir, ok bool) {
 			}
 			return dir, info.IsDir(), true
 		}
+		// A .git entry in the starting directory is still found when that
+		// directory is itself a ceiling; a ceiling is never entered from below.
+		if _, stop := ceiling[dir]; stop {
+			return "", false, false
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
+			return "", false, false
+		}
+		if _, stop := ceiling[parent]; stop {
 			return "", false, false
 		}
 		dir = parent

@@ -682,7 +682,70 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		_ = store.Close()
 		return nil, err
 	}
+	if err := jm.rehydrateHistoricalWatchesFromLog(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return jm, nil
+}
+
+func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
+	if jm.store == nil {
+		return nil
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
+	var ended []*jobstore.WatchRecord
+	for _, rec := range watches {
+		if rec == nil || rec.Active || rec.EndReason == "runtime_lost" {
+			continue
+		}
+		ended = append(ended, rec)
+	}
+	sort.SliceStable(ended, func(i, j int) bool {
+		return ended[i].EndedSeq < ended[j].EndedSeq
+	})
+	if len(ended) > watchHistoryCap {
+		ended = ended[len(ended)-watchHistoryCap:]
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, rec := range ended {
+		target := rec.Target
+		if target == runtimeMessageAliasCaller || target == "caller" {
+			target = "self"
+		}
+		source := rec.Source
+		if source == "" {
+			source = watchPublicSource(source, target)
+		}
+		if source == runtimeMessageAliasCaller || source == "caller" {
+			source = "self"
+		}
+		endedAt := rec.EndedAt
+		if endedAt.IsZero() {
+			endedAt = jm.now()
+		}
+		jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
+			id:                 rec.WatchID,
+			source:             source,
+			target:             target,
+			condition:          rec.Condition,
+			note:               rec.Note,
+			sendTo:             rec.SendTo,
+			receiverSessionID:  rec.ReceiverSessionID,
+			receiverDelegateID: rec.ReceiverDelegateID,
+			deliveries:         rec.Deliveries,
+			endReason:          rec.EndReason,
+			endedAt:            endedAt,
+		})
+	}
+	if len(jm.watchHistory) > watchHistoryCap {
+		jm.watchHistory = jm.watchHistory[len(jm.watchHistory)-watchHistoryCap:]
+	}
+	return nil
 }
 
 func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, error) {
@@ -734,10 +797,11 @@ func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:       key,
-			cfg:       cfg,
-			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
-			endReason: "job_manager_closed",
+			key:        key,
+			cfg:        cfg,
+			terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			endReason:  "job_manager_closed",
+			deliveries: cfg.deliveries,
 		})
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)

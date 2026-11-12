@@ -199,7 +199,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
-	delegateCount := len(projectDoctorDelegates(meta.ID, stable))
+	delegateCount := len(projectDoctorDelegates("", meta.ID, stable))
 
 	resultTool := "communicate"
 	if meta.Config.ResultToolName != "" {

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -39,6 +40,7 @@ type renderOpts struct {
 	// expand_turn pagination.
 	headTailEvidenceFor *int
 	evidence            *transcriptEvidence
+	callNames           map[string]string
 }
 
 // effectiveResultToolName returns the result tool name to use.
@@ -66,6 +68,25 @@ type pairedResult struct {
 type resultIndex struct {
 	byCallID map[string]pairedResult
 	consumed map[string]bool
+}
+
+func collectToolCallNames(entries []transcript.Entry) map[string]string {
+	var names map[string]string
+	for _, e := range entries {
+		for j := range e.Turn.Message.Content {
+			p := &e.Turn.Message.Content[j]
+			if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.ID == "" || p.ToolCall.Name == "" {
+				continue
+			}
+			if names == nil {
+				names = make(map[string]string)
+			}
+			if _, exists := names[p.ToolCall.ID]; !exists {
+				names[p.ToolCall.ID] = p.ToolCall.Name
+			}
+		}
+	}
+	return names
 }
 
 // buildResultIndex scans every entry and collects tool results keyed by the call
@@ -161,6 +182,14 @@ func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, sta
 		}
 	}
 
+	if opt.callNames == nil {
+		for id := range idx.byCallID {
+			if !idx.consumed[id] {
+				opt.callNames = collectToolCallNames(entries)
+				break
+			}
+		}
+	}
 	writeUnpairedResults(b, &idx, opt)
 	return byteLimit == 0 || b.Len() <= byteLimit
 }
@@ -517,6 +546,9 @@ func rawLinesForRange(ctx context.Context, path, root string, startSeq, endSeq i
 // As a final safety net, the combined content over hardCapChars is truncated
 // rune-safe with an honest note.
 func renderTranscript(header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) (string, readMeta) {
+	if opt.callNames == nil {
+		opt.callNames = collectToolCallNames(entries)
+	}
 	total := len(entries)
 	start, end := parseRange(rangeSpec, total)
 	opt.evidence = nil // Budget probes do not contribute retained evidence.
@@ -1201,7 +1233,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 
 	if hasResult {
 		full := wantFullResult(opt, callOwnerSeq, paired.ownerSeq)
-		writeToolResultBody(b, tc.Name, paired.result, full)
+		writeToolResultBody(b, wirenames.Canonical(tc.Name), paired.result, full)
 	}
 }
 
@@ -1245,11 +1277,20 @@ func wantFullResult(opt renderOpts, callOwnerSeq, resultOwnerSeq int) bool {
 // under a "Tool results without a shown call" subsection, each as a
 // [call not shown] card. Spec §Tool Call Condensation.
 func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) {
+	resultTool := effectiveResultToolName(opt)
 	ids := make([]string, 0, len(idx.byCallID))
-	for id := range idx.byCallID {
-		if !idx.consumed[id] {
-			ids = append(ids, id)
+	for id, pr := range idx.byCallID {
+		if idx.consumed[id] {
+			continue
 		}
+		displayName := pr.result.Name
+		if callName := opt.callNames[id]; callName != "" {
+			displayName = callName
+		}
+		if !pr.result.IsError && displayName == resultTool {
+			continue
+		}
+		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
 		return
@@ -1267,10 +1308,14 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 	b.WriteString("_The originating tool call is outside the rendered range, or not present in the transcript (e.g. after a repair) — not an error._\n")
 	for _, id := range ids {
 		pr := idx.byCallID[id]
+		displayName := pr.result.Name
+		if callName := opt.callNames[id]; callName != "" {
+			displayName = callName
+		}
 		var result strings.Builder
-		fmt.Fprintf(&result, "- [call not shown] `%s`\n", pr.result.Name)
+		fmt.Fprintf(&result, "- [call not shown] `%s`\n", displayName)
 		full := wantFullTurn(opt, pr.ownerSeq)
-		writeToolResultBody(&result, pr.result.Name, pr.result, full)
+		writeToolResultBody(&result, wirenames.Canonical(displayName), pr.result, full)
 		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == pr.ownerSeq {
 			b.WriteString(boundOversizedTurnEvidence(result.String()))
 		} else {
@@ -1800,9 +1845,11 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return ""
 	}
 
-	switch name {
+	canonical := wirenames.Canonical(name)
+	var summary string
+	switch canonical {
 	case "shell":
-		return truncRunes(get("command"), 120)
+		summary = truncRunes(get("command"), 120)
 
 	case "read_file":
 		s := get("file_path")
@@ -1816,31 +1863,31 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		if len(rangeParts) > 0 {
 			s += " (" + strings.Join(rangeParts, ", ") + ")"
 		}
-		return s
+		summary = s
 
 	case "write_file":
 		path := get("file_path")
-		return fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
+		summary = fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
 
 	case "edit_file":
 		path := get("file_path")
-		summary := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
+		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
 		if get("replace_all") == "true" {
-			summary += ", all"
+			s += ", all"
 		}
-		return summary + ")"
+		summary = s + ")"
 
 	case "grep":
-		return joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
+		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
 
 	case "glob":
-		return joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
+		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
 
 	case "web_fetch":
-		return joinSummary(hostOf(get("url")), quoteIfSet(get("question")))
+		summary = joinSummary(hostOf(get("url")), quoteIfSet(get("question")))
 
 	case "web_search":
-		return quoteIfSet(get("query"))
+		summary = quoteIfSet(get("query"))
 
 	case "delegate":
 		// Older transcripts carry the brief under the retired task key;
@@ -1856,20 +1903,24 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		if mw := get("max_wait_ms"); mw != "" && mw != "0" {
 			parts = append(parts, "max_wait_ms="+mw)
 		}
-		return joinSummary(parts...)
+		summary = joinSummary(parts...)
 
 	case "job_send_message":
-		return joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
+		summary = joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "delegate_send":
-		return joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
+		summary = joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "use_skill":
-		return get("skill_name")
+		summary = get("skill_name")
 
 	default:
 		return unknownToolSummary(m)
 	}
+	if summary == "" && name != canonical && len(m) > 0 {
+		return unknownToolSummary(m)
+	}
+	return summary
 }
 
 // unknownToolSummary lists up to three scalar arguments of an unknown tool, in

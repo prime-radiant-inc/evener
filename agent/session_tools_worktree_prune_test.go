@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/llm"
 )
 
 // These are REAL-git integration tests for the manage_worktree list and prune
@@ -22,12 +24,18 @@ import (
 
 // listOp drives the list operation through the registered tool surface.
 func (r *wtRepo) listOp(t *testing.T) (map[string]any, error) {
+	return r.listOpArgs(t, nil)
+}
+
+func (r *wtRepo) listOpArgs(t *testing.T, extra map[string]any) (map[string]any, error) {
 	t.Helper()
 	rt := r.s.reg.Get("manage_worktree")
 	if rt == nil {
 		t.Fatal("registry is missing manage_worktree")
 	}
-	out, err := rt.Exec(t.Context(), r.s.currentEnv(), map[string]any{"operation": "list"})
+	args := map[string]any{"operation": "list"}
+	maps.Copy(args, extra)
+	out, err := rt.Exec(t.Context(), r.s.currentEnv(), args)
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +44,205 @@ func (r *wtRepo) listOp(t *testing.T) (map[string]any, error) {
 		t.Fatalf("list result is %T, want map[string]any", out)
 	}
 	return m, nil
+}
+
+func TestWorktreeList_Pagination(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	r.addManagedWorktreeFixture(t, "page-lane-1")
+	r.addManagedWorktreeFixture(t, "page-lane-2")
+	r.addManagedWorktreeFixture(t, "page-lane-3")
+
+	// Page 1: limit=2, offset=0
+	p1, err := r.listOpArgs(t, map[string]any{"limit": 2, "offset": 0})
+	if err != nil {
+		t.Fatalf("list page 1: %v", err)
+	}
+	entries1 := listEntries(t, p1)
+	if len(entries1) != 2 {
+		t.Fatalf("page 1 entries count = %d, want 2", len(entries1))
+	}
+	if p1["total_entries"] != 3 {
+		t.Fatalf("page 1 total_entries = %v, want 3", p1["total_entries"])
+	}
+	if p1["truncated"] != true {
+		t.Fatalf("page 1 truncated = %v, want true", p1["truncated"])
+	}
+	if p1["next_offset"] != 2 {
+		t.Fatalf("page 1 next_offset = %v, want 2", p1["next_offset"])
+	}
+
+	// Page 2: limit=2, offset=2
+	p2, err := r.listOpArgs(t, map[string]any{"limit": 2, "offset": 2})
+	if err != nil {
+		t.Fatalf("list page 2: %v", err)
+	}
+	entries2 := listEntries(t, p2)
+	if len(entries2) != 1 {
+		t.Fatalf("page 2 entries count = %d, want 1", len(entries2))
+	}
+	if p2["total_entries"] != 3 {
+		t.Fatalf("page 2 total_entries = %v, want 3", p2["total_entries"])
+	}
+	if p2["truncated"] != false {
+		t.Fatalf("page 2 truncated = %v, want false", p2["truncated"])
+	}
+
+	// Page 3: offset >= total (empty page beyond bounds)
+	p3, err := r.listOpArgs(t, map[string]any{"limit": 2, "offset": 10})
+	if err != nil {
+		t.Fatalf("list page 3: %v", err)
+	}
+	entries3 := listEntries(t, p3)
+	if len(entries3) != 0 {
+		t.Fatalf("page 3 entries count = %d, want 0", len(entries3))
+	}
+	if p3["total_entries"] != 3 {
+		t.Fatalf("page 3 total_entries = %v, want 3", p3["total_entries"])
+	}
+	if p3["truncated"] != false {
+		t.Fatalf("page 3 truncated = %v, want false", p3["truncated"])
+	}
+}
+
+func TestWorktreeList_BoundsAndValidation(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	r.addManagedWorktreeFixture(t, "v-lane-1")
+
+	// Negative limit
+	if _, err := r.listOpArgs(t, map[string]any{"limit": -1}); !errors.Is(err, ErrWorktreeInvalidLimit) {
+		t.Fatalf("expected error for limit -1, got: %v", err)
+	}
+
+	// Zero limit
+	if _, err := r.listOpArgs(t, map[string]any{"limit": 0}); !errors.Is(err, ErrWorktreeInvalidLimit) {
+		t.Fatalf("expected error for limit 0, got: %v", err)
+	}
+
+	// Negative offset
+	if _, err := r.listOpArgs(t, map[string]any{"offset": -1}); !errors.Is(err, ErrWorktreeInvalidOffset) {
+		t.Fatalf("expected error for offset -1, got: %v", err)
+	}
+
+	// Huge offset (1e20)
+	p, err := r.listOpArgs(t, map[string]any{"offset": 1e20})
+	if err != nil {
+		t.Fatalf("unexpected error for huge offset: %v", err)
+	}
+	entries := listEntries(t, p)
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries for huge offset, got: %d", len(entries))
+	}
+}
+
+func TestWorktreeList_ExecuteCall_NoMaxCharsTruncation(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+
+	// Create 18 managed + 6 unmanaged = 24 total worktrees with realistic paths
+	for i := 1; i <= 18; i++ {
+		name := fmt.Sprintf("feature-manage-worktree-pagination-fix-step-%02d", i)
+		r.addManagedWorktreeFixture(t, name)
+	}
+	for i := 1; i <= 6; i++ {
+		name := fmt.Sprintf("unmanaged-scratch-testing-lane-step-%02d", i)
+		r.addUnmanagedWorktreeFixture(t, name, name)
+	}
+
+	// Execute through r.s.reg.ExecuteCall with default limit
+	ctx := t.Context()
+	call := llm.ToolCallData{
+		ID:        "list-call-1",
+		Name:      "manage_worktree",
+		Arguments: json.RawMessage(`{"operation":"list"}`),
+	}
+	res := r.s.reg.ExecuteCall(ctx, r.s.currentEnv(), call)
+	if res.IsError {
+		t.Fatalf("ExecuteCall failed: %s", res.Output)
+	}
+	if res.Truncated {
+		t.Fatalf("ExecuteCall truncated output mid-JSON at MaxChars=20,000! Output len=%d", len(res.Output))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(res.Output), &parsed); err != nil {
+		t.Fatalf("ExecuteCall output is not valid JSON: %v\nOutput: %s", err, res.Output)
+	}
+
+	if parsed["total_entries"] != float64(18) {
+		t.Fatalf("total_entries = %v, want 18", parsed["total_entries"])
+	}
+	if parsed["total_unmanaged"] != float64(6) {
+		t.Fatalf("total_unmanaged = %v, want 6", parsed["total_unmanaged"])
+	}
+	if parsed["truncated"] != true {
+		t.Fatalf("page 1 should be truncated")
+	}
+
+	// Traverse all pages using next_offset
+	visitedManaged := make(map[string]bool)
+	visitedUnmanaged := make(map[string]bool)
+
+	offset := 0
+	for {
+		argsJSON, _ := json.Marshal(map[string]any{
+			"operation": "list",
+			"offset":    offset,
+			"limit":     15,
+		})
+		pageCall := llm.ToolCallData{
+			ID:        fmt.Sprintf("page-%d", offset),
+			Name:      "manage_worktree",
+			Arguments: json.RawMessage(argsJSON),
+		}
+		pageRes := r.s.reg.ExecuteCall(ctx, r.s.currentEnv(), pageCall)
+		if pageRes.IsError || pageRes.Truncated {
+			t.Fatalf("page at offset %d failed (isError=%v, truncated=%v): %s", offset, pageRes.IsError, pageRes.Truncated, pageRes.Output)
+		}
+
+		var pageData map[string]any
+		if err := json.Unmarshal([]byte(pageRes.Output), &pageData); err != nil {
+			t.Fatalf("invalid json on page at offset %d: %v", offset, err)
+		}
+
+		entries, _ := pageData["entries"].([]any)
+		for _, raw := range entries {
+			e := raw.(map[string]any)
+			name := e["name"].(string)
+			if visitedManaged[name] {
+				t.Fatalf("duplicate managed worktree visited: %s", name)
+			}
+			visitedManaged[name] = true
+		}
+
+		unmanaged, _ := pageData["unmanaged"].([]any)
+		for _, raw := range unmanaged {
+			u := raw.(map[string]any)
+			path := u["path"].(string)
+			if visitedUnmanaged[path] {
+				t.Fatalf("duplicate unmanaged worktree visited: %s", path)
+			}
+			visitedUnmanaged[path] = true
+		}
+
+		isTruncated, _ := pageData["truncated"].(bool)
+		if !isTruncated {
+			break
+		}
+		nextOffset, ok := pageData["next_offset"].(float64)
+		if !ok || int(nextOffset) <= offset {
+			t.Fatalf("invalid or non-advancing next_offset: %v (current %d)", pageData["next_offset"], offset)
+		}
+		offset = int(nextOffset)
+	}
+
+	if len(visitedManaged) != 18 {
+		t.Fatalf("visited %d managed worktrees, want 18", len(visitedManaged))
+	}
+	if len(visitedUnmanaged) != 6 {
+		t.Fatalf("visited %d unmanaged worktrees, want 6", len(visitedUnmanaged))
+	}
 }
 
 // pruneOp drives the prune operation through the registered tool surface.

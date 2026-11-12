@@ -128,6 +128,63 @@ func TestConfigHelperWithUngatedConfig(t *testing.T) {
 			flagged: []string{"TestConfigHelperWithUngatedConfig", "TestFixtureWithSnapshot", "TestWrapperWithSnapshot"},
 		},
 		{
+			// Opt-ins the scan cannot see are ungated: a slice variable spread
+			// into the fixture, an option held in a variable (directly or
+			// through a helper), and a function literal that sets the snapshot
+			// itself. Spreading the enclosing function's own variadic
+			// parameter stays gated, because that function's callers are
+			// audited; a spread of anything else, here a slice built by
+			// append, is opaque.
+			name: "hidden opt-ins are ungated",
+			src: `
+func newSession(t *testing.T, opts ...sessionOpt) *Session {
+	var o sessionOpts
+	cfg := o.cfg
+	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
+	s, _ := NewSession(nil, nil, nil, cfg)
+	return s
+}
+func forwardingSession(t *testing.T, opts ...sessionOpt) *Session {
+	return newSession(t, opts...)
+}
+func appendedSession(t *testing.T, opts ...sessionOpt) *Session {
+	all := append([]sessionOpt{withDir("x")}, opts...)
+	return newSession(t, all...)
+}
+func TestSliceVariableOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	opts := []sessionOpt{withEnvironmentSnapshot()}
+	_ = newSession(t, opts...)
+}
+func TestOptionVariableOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	snap := withEnvironmentSnapshot()
+	_ = newSession(t, snap)
+}
+func TestOptionVariableThroughHelper(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	snap := withEnvironmentSnapshot()
+	_ = forwardingSession(t, snap)
+}
+func TestFuncLiteralOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = newSession(t, func(o *sessionOpts) { o.environmentSnapshot = true })
+}
+func TestForwardedOptionsStayGated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = forwardingSession(t)
+}
+func TestAppendSpreadIsOpaque(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = appendedSession(t)
+}
+func TestDirectCallStaysGated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = newSession(t, withDir("x"))
+}`,
+			flagged: []string{"TestSliceVariableOptIn", "TestOptionVariableOptIn", "TestOptionVariableThroughHelper", "TestFuncLiteralOptIn", "TestAppendSpreadIsOpaque"},
+		},
+		{
 			// The restore entry points: the config-bearing one is gated by
 			// its RestoreSessionConfig, the bare one cannot be gated at all.
 			name: "restore entry points",

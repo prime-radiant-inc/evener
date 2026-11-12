@@ -752,12 +752,13 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		delivery.endNotice = true
 	}
 	delivery.allowAfterTerminalExpiry = true
+	deliveries := cfg.deliveries
 	jm.mu.Unlock()
 	if jm.testOnlyBeforeTerminalWatchSend != nil {
 		jm.testOnlyBeforeTerminalWatchSend()
 	}
 	delivery = jm.snapshotWatchSendFrame(delivery)
-	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
+	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason, deliveries)})
 	committed := state.DeliveryID != ""
 	if !committed {
 		jm.mu.Lock()
@@ -1287,10 +1288,15 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			}
 			query := &appwire.AnswerContinuationQuery{AncestorTurnID: ancestor, CandidateTurnID: candidate}
 			var result appwire.SessionOperationResponse
+			// The cut and epoch the verdict is answered against stay local to
+			// this lookup. Advancing the stream's held watermark from a fresh
+			// continuation cut would make a queued snapshot from the same
+			// rebuild look like a length regression and end a healthy watch.
+			cut, cutEpoch := held, epoch
 			for failures := 1; ; failures++ {
 				readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
 				var err error
-				result, err = client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: held, AnswerContinuation: query}})
+				result, err = client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: cut, AnswerContinuation: query}})
 				if err == nil {
 					err = readCtx.Err()
 				}
@@ -1300,6 +1306,21 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				}
 				if err == nil {
 					break
+				}
+				if staleHubContinuationCut(err) {
+					// The index repair completed behind the retry and replaced
+					// the held cut. Keep the candidate: read the fresh cut and
+					// re-ask the same verdict against it. Waiting for a snapshot
+					// is not enough here because the rebuild's resync can be
+					// consumed while this lookup retries.
+					fresh, freshEpoch, freshErr := freshHubContinuationCut(ctx, client, ref, generation)
+					if freshErr == nil {
+						cut, cutEpoch = fresh, freshEpoch
+						continue
+					}
+					// A transient fresh-cut read uses the same bounded retry
+					// budget as the verdict call; the candidate stays intact.
+					err = freshErr
 				}
 				if !retryableHubContinuationRead(err) || failures >= hubWatchStateFailureLimit {
 					return false, err
@@ -1321,8 +1342,8 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if read == nil {
 				return false, errors.New("answer continuation response missing")
 			}
-			if read.Thread.Evener.Ref != ref || read.Thread.Evener.InstanceID != instance || read.BootGeneration != generation || read.Epoch != epoch || read.Snapshot == nil || read.Snapshot.Incarnation != held.Incarnation || read.Snapshot.Length < held.Length {
-				return false, fmt.Errorf("answer continuation response identity mismatch: ref=%t instance=%t boot=%t epoch=%d/%d snapshot=%+v held=%+v", read.Thread.Evener.Ref == ref, read.Thread.Evener.InstanceID == instance, read.BootGeneration == generation, read.Epoch, epoch, read.Snapshot, held)
+			if read.Thread.Evener.Ref != ref || read.Thread.Evener.InstanceID != instance || read.BootGeneration != generation || read.Epoch != cutEpoch || read.Snapshot == nil || read.Snapshot.Incarnation != cut.Incarnation || read.Snapshot.Length < cut.Length {
+				return false, fmt.Errorf("answer continuation response identity mismatch: ref=%t instance=%t boot=%t epoch=%d/%d snapshot=%+v held=%+v", read.Thread.Evener.Ref == ref, read.Thread.Evener.InstanceID == instance, read.BootGeneration == generation, read.Epoch, cutEpoch, read.Snapshot, cut)
 			}
 			verdict := read.AnswerContinuation
 			if verdict == nil || verdict.AncestorTurnID != ancestor || verdict.CandidateTurnID != candidate {
@@ -1542,6 +1563,51 @@ func retryableHubContinuationRead(err error) bool {
 	default:
 		return false
 	}
+}
+
+// staleHubContinuationCut reports the typed answer for a held cut that no
+// longer addresses the current history. Unlike a transient read failure it is
+// not retryable against the same cut: the caller keeps the watch armed and asks
+// again against the next snapshot's fresh cut.
+func staleHubContinuationCut(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+}
+
+// freshHubContinuationCut reads the authoritative latest cut after a held cut
+// has gone stale. The caller re-asks the same continuation verdict against it,
+// so a rebuild that lands mid-lookup does not discard the candidate while the
+// watch waits for a snapshot that may never arrive.
+func freshHubContinuationCut(ctx context.Context, client SessionHubClient, ref, generation string) (*appwire.SnapshotIdentity, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
+	defer cancel()
+	// A session-operation Read is a status read: it rejects IncludeTurns on
+	// the real connection. The turns operation with no cursor serves the
+	// latest page with the snapshot identity this recovery needs.
+	request := appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 1}}
+	if err := request.Validate(); err != nil {
+		return nil, 0, err
+	}
+	result, err := client.Invoke(readCtx, request)
+	if err == nil {
+		err = readCtx.Err()
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	page := result.Turns
+	if page == nil || page.Snapshot == nil {
+		return nil, 0, errors.New("fresh continuation cut missing")
+	}
+	if page.BootGeneration != "" && page.BootGeneration != generation {
+		return nil, 0, errors.New("fresh continuation cut target replaced")
+	}
+	cut := *page.Snapshot
+	return &cut, page.Epoch, nil
 }
 
 // A server refusing the request or its selector cannot be repaired by another

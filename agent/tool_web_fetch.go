@@ -13,8 +13,10 @@ import (
 	"time"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"golang.org/x/net/html"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/llm"
 )
@@ -35,9 +37,211 @@ func webFetchCacheKey(rawURL string) string {
 	return nonProjectHash(rawURL)
 }
 
-// htmlToMarkdown converts an HTML string to markdown.
-func htmlToMarkdown(html string) (string, error) {
-	return htmltomarkdown.ConvertString(html)
+// htmlToMarkdown converts an HTML string to markdown, prepending a non-empty
+// HTML document <title> as a top-level heading when no rendered body heading
+// already carries it.
+func htmlToMarkdown(rawHTML string) (string, error) {
+	doc, err := html.Parse(strings.NewReader(rawHTML))
+	if err != nil {
+		return "", err
+	}
+	title := extractHTMLTitle(doc)
+	mdBytes, err := htmltomarkdown.ConvertNode(doc)
+	if err != nil {
+		return "", err
+	}
+	md := string(mdBytes)
+	if title == "" {
+		return md, nil
+	}
+	heading, err := renderTitleHeading(title)
+	if err != nil || heading == "" {
+		return md, err
+	}
+	headingBody := strings.TrimPrefix(heading, "# ")
+	trimmed := strings.TrimSpace(md)
+	if strings.EqualFold(trimmed, title) || strings.EqualFold(trimmed, headingBody) || markdownHasTitleHeading(md, headingBody) {
+		return md, nil
+	}
+	if trimmed == "" {
+		return heading, nil
+	}
+	return heading + "\n\n" + md, nil
+}
+
+// extractHTMLTitle returns the collapsed text of the first HTML <title> inside
+// <head> (per WHATWG HTML document.title), before ConvertNode mutates doc,
+// ignoring foreign namespaces and inert containers such as <template>.
+func extractHTMLTitle(doc *html.Node) string {
+	head := findHTMLHead(doc)
+	if head == nil {
+		return ""
+	}
+	stack := pushHTMLChildren(nil, head)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if isInertHTMLElement(n) {
+			continue
+		}
+		if n.Type == html.ElementNode && n.Data == "title" {
+			return collapseHTMLWhitespace(htmlNodeText(n))
+		}
+		stack = pushHTMLChildren(stack, n)
+	}
+	return ""
+}
+
+func findHTMLHead(doc *html.Node) *html.Node {
+	stack := []*html.Node{doc}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if isInertHTMLElement(n) {
+			continue
+		}
+		if n.Type == html.ElementNode {
+			if n.Data == "head" {
+				return n
+			}
+			if n.Data == "body" {
+				continue
+			}
+		}
+		stack = pushHTMLChildren(stack, n)
+	}
+	return nil
+}
+
+func renderTitleHeading(title string) (string, error) {
+	h1 := &html.Node{Type: html.ElementNode, Data: "h1"}
+	h1.AppendChild(&html.Node{Type: html.TextNode, Data: title})
+	out, err := htmltomarkdown.ConvertNode(h1)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func markdownHasTitleHeading(md, headingBody string) bool {
+	var fences mdfence.Tracker
+	for line := range strings.SplitSeq(md, "\n") {
+		if fences.StepInBlock(line) {
+			continue
+		}
+		body, ok := atxHeadingBody(line)
+		if !ok {
+			continue
+		}
+		trimmed := stripTrailingFragmentLink(body)
+		if strings.EqualFold(body, headingBody) ||
+			strings.EqualFold(trimmed, headingBody) ||
+			strings.EqualFold(stripInlineFormatting(trimmed), headingBody) {
+			return true
+		}
+	}
+	return false
+}
+
+func atxHeadingBody(line string) (string, bool) {
+	spaces := 0
+	for spaces < len(line) && line[spaces] == ' ' {
+		spaces++
+	}
+	if spaces > 3 {
+		return "", false
+	}
+	line = line[spaces:]
+	hashes := 0
+	for hashes < len(line) && line[hashes] == '#' {
+		hashes++
+	}
+	if hashes == 0 || hashes > 6 || hashes >= len(line) || (line[hashes] != ' ' && line[hashes] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(line[hashes+1:]), true
+}
+
+func stripTrailingFragmentLink(s string) string {
+	if !strings.HasSuffix(s, ")") {
+		return s
+	}
+	mid := strings.LastIndex(s, "](#")
+	if mid < 0 {
+		return s
+	}
+	if strings.ContainsAny(s[mid+3:len(s)-1], ") \t") {
+		return s
+	}
+	open := strings.LastIndex(s[:mid], "[")
+	if open < 0 || (open > 0 && s[open-1] == '\\') {
+		return s
+	}
+	return strings.TrimSpace(s[:open])
+}
+
+func stripInlineFormatting(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i])
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		switch s[i] {
+		case '*', '_', '`':
+			continue
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+func htmlNodeText(root *html.Node) string {
+	var b strings.Builder
+	stack := pushHTMLChildren(nil, root)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n.Type == html.TextNode {
+			b.WriteString(n.Data)
+			continue
+		}
+		if isInertHTMLElement(n) {
+			continue
+		}
+		stack = pushHTMLChildren(stack, n)
+	}
+	return b.String()
+}
+
+func isInertHTMLElement(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	if n.Namespace != "" {
+		return true
+	}
+	switch n.Data {
+	case "script", "style", "noscript", "iframe", "template", "textarea":
+		return true
+	default:
+		return false
+	}
+}
+
+func pushHTMLChildren(stack []*html.Node, n *html.Node) []*html.Node {
+	for child := n.LastChild; child != nil; child = child.PrevSibling {
+		stack = append(stack, child)
+	}
+	return stack
+}
+
+func collapseHTMLWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // webFetchCachePath returns the absolute per-fetch directory path under the XDG cache dir.
@@ -142,7 +346,8 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	isHTML := strings.Contains(contentType, "text/html")
+	rawExt := extFromContentType(contentType)
+	isHTML := rawExt == ".html"
 	sizeBytes := len(body)
 
 	// Per-fetch cache directory (absolute XDG path).
@@ -152,7 +357,6 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	// Write raw file.
-	rawExt := extFromContentType(contentType)
 	rawName := "raw" + rawExt
 	rawPath := filepath.Join(fetchDir, rawName)
 	if err := rt.writeFile(rawPath, body, 0o644); err != nil {

@@ -330,18 +330,15 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	t.Parallel()
 	dir := t.TempDir()
 	const secret = "https://provider.invalid/body request-id=secret credential=secret"
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				reasoning := 7
-				return llm.Response{
-					Message: llm.Assistant(visionOutputSentinel),
-					Usage:   llm.Usage{InputTokens: 101, OutputTokens: 13, ReasoningTokens: &reasoning},
-				}, errors.New(secret)
-			},
+	adapter := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			reasoning := 7
+			return llm.Response{
+				Message: llm.Assistant(visionOutputSentinel),
+				Usage:   llm.Usage{InputTokens: 101, OutputTokens: 13, ReasoningTokens: &reasoning},
+			}, errors.New(secret)
 		},
-	}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("m")), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))

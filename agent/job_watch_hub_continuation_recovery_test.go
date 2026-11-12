@@ -261,7 +261,7 @@ func TestManagerWatchContinuationRecoveryCallFailures(t *testing.T) {
 // indexed positive verdict before exactly one evidence field is changed.
 func TestManagerWatchContinuationRecoveryPermanent(t *testing.T) {
 	t.Parallel()
-	for _, defect := range []string{"invalid_params", "invalid_request", "unknown_method", "stale_cut", "history_failed", "missing_read", "missing_verdict", "ancestor", "candidate", "ref", "instance", "generation", "epoch", "missing_snapshot", "incarnation", "truncation"} {
+	for _, defect := range []string{"invalid_params", "invalid_request", "unknown_method", "history_failed", "missing_read", "missing_verdict", "ancestor", "candidate", "ref", "instance", "generation", "epoch", "missing_snapshot", "incarnation", "truncation"} {
 		for _, replay := range []bool{true, false} {
 			for _, transientFirst := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/replay_%v/retry_%v", defect, replay, transientFirst), func(t *testing.T) {
@@ -282,8 +282,6 @@ func TestManagerWatchContinuationRecoveryPermanent(t *testing.T) {
 							err = appwire.InvalidRequest("refused")
 						case "unknown_method":
 							err = appwire.MethodNotFound("thread/read")
-						case "stale_cut":
-							err = appwire.TranscriptItemCursorStale()
 						case "history_failed":
 							err = appwire.WireError{Code: appwire.CodeInternalError, Data: map[string]any{"evenerErrorInfo": string(appwire.ErrorTranscriptHistoryFailed)}}
 						case "missing_read":
@@ -324,6 +322,224 @@ func TestManagerWatchContinuationRecoveryPermanent(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// A stale held cut is not a permanent defect: the consumer reads the fresh cut
+// and re-asks the same verdict, so the watch completes instead of staying armed
+// (issue #5669).
+func TestManagerWatchContinuationRecoveryStaleCutRearms(t *testing.T) {
+	t.Parallel()
+	for _, replay := range []bool{true, false} {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
+			t.Parallel()
+			f := newContinuationRecoveryFixture(t, replay)
+			var continuations atomic.Int32
+			f.peer.invoke = func(ctx context.Context, r appwire.SessionOperationRequest, _ int) (appwire.SessionOperationResponse, error) {
+				if err := r.Validate(); err != nil {
+					t.Errorf("scripted peer received an invalid session-operation request: %v", err)
+					return appwire.SessionOperationResponse{}, err
+				}
+				if r.Turns != nil {
+					page := appwire.ThreadHistoryTurnsListResponse{
+						Snapshot:       &appwire.SnapshotIdentity{Incarnation: f.initial.Snapshot.Snapshot.Incarnation, Length: f.initial.Snapshot.Snapshot.Length},
+						Epoch:          f.initial.Snapshot.Epoch,
+						BootGeneration: f.initial.Snapshot.BootGeneration,
+					}
+					return appwire.SessionOperationResponse{Turns: &page}, nil
+				}
+				if continuations.Add(1) == 1 {
+					return appwire.SessionOperationResponse{}, appwire.TranscriptItemCursorStale()
+				}
+				return f.verdict(ctx, r)
+			}
+			f.start(t)
+			f.wait(t)
+			completed, ends, interruptions := f.counts(t)
+			if completed != 1 || ends != 0 || interruptions != 0 || f.peer.calls.Load() != 3 {
+				t.Fatalf("completion=%d end_notices=%d interruptions=%d lookups=%d, want 1/0/0/3", completed, ends, interruptions, f.peer.calls.Load())
+			}
+		})
+	}
+}
+
+// An index repair that completes behind the continuation retry replaces the
+// held cut. The stale answer must not discard the candidate and leave the
+// completion watch armed with no snapshot coming: the consumer reads the fresh
+// cut and re-asks the same verdict against it (issue #5669).
+func TestManagerWatchContinuationRecoveryStaleCutReAsksFreshCut(t *testing.T) {
+	t.Parallel()
+	for _, replay := range []bool{true, false} {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
+			t.Parallel()
+			f := newContinuationRecoveryFixture(t, replay)
+			const repairedIncarnation = "history-repaired"
+			repaired := *f.initial.Snapshot
+			repaired.Epoch++
+			repaired.Snapshot = &appwire.SnapshotIdentity{Incarnation: repairedIncarnation, Length: f.initial.Snapshot.Snapshot.Length}
+			repaired.Thread.Turns = nil
+			var continuations, freshReads atomic.Int32
+			f.peer.invoke = func(ctx context.Context, r appwire.SessionOperationRequest, _ int) (appwire.SessionOperationResponse, error) {
+				if err := r.Validate(); err != nil {
+					t.Errorf("scripted peer received an invalid session-operation request: %v", err)
+					return appwire.SessionOperationResponse{}, err
+				}
+				if r.Turns != nil {
+					freshReads.Add(1)
+					if r.Read != nil {
+						t.Errorf("fresh-cut request carried a read: %+v", r.Read)
+					}
+					page := appwire.ThreadHistoryTurnsListResponse{
+						Snapshot:       &appwire.SnapshotIdentity{Incarnation: repairedIncarnation, Length: repaired.Snapshot.Length},
+						Epoch:          repaired.Epoch,
+						BootGeneration: repaired.BootGeneration,
+					}
+					return appwire.SessionOperationResponse{Turns: &page}, nil
+				}
+				switch continuations.Add(1) {
+				case 1:
+					return appwire.SessionOperationResponse{}, appwire.TranscriptIndexRebuilding()
+				case 2:
+					return appwire.SessionOperationResponse{}, appwire.TranscriptItemCursorStale()
+				}
+				if r.Read.HeldSnapshot == nil || r.Read.HeldSnapshot.Incarnation != repairedIncarnation {
+					t.Errorf("re-asked continuation held cut = %+v, want %q", r.Read.HeldSnapshot, repairedIncarnation)
+				}
+				query := r.Read.AnswerContinuation
+				read := repaired
+				read.AnswerContinuation = &appwire.AnswerContinuationVerdict{
+					AncestorTurnID:  query.AncestorTurnID,
+					CandidateTurnID: query.CandidateTurnID,
+					Matches:         true,
+				}
+				versioned := appwire.HistoryReadResponse(read)
+				return appwire.SessionOperationResponse{Read: &versioned}, nil
+			}
+			f.start(t)
+			f.wait(t)
+			completed, ends, interruptions := f.counts(t)
+			if completed != 1 || ends != 0 || interruptions != 1 || continuations.Load() != 3 || freshReads.Load() != 1 {
+				t.Fatalf("completion=%d end_notices=%d interruptions=%d continuation_calls=%d fresh_reads=%d, want 1/0/1/3/1", completed, ends, interruptions, continuations.Load(), freshReads.Load())
+			}
+		})
+	}
+}
+
+// A transient failure reading the fresh cut must use the same bounded retry
+// budget as the verdict call: the candidate stays intact and is only re-asked
+// after a valid cut is acquired (issue #5669 review round 2).
+func TestManagerWatchContinuationRecoveryFreshCutRetriesTransient(t *testing.T) {
+	t.Parallel()
+	for _, replay := range []bool{true, false} {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
+			t.Parallel()
+			f := newContinuationRecoveryFixture(t, replay)
+			const repairedIncarnation = "history-repaired"
+			repairedEpoch := f.initial.Snapshot.Epoch + 1
+			var continuations, freshReads atomic.Int32
+			f.peer.invoke = func(ctx context.Context, r appwire.SessionOperationRequest, _ int) (appwire.SessionOperationResponse, error) {
+				if err := r.Validate(); err != nil {
+					t.Errorf("scripted peer received an invalid session-operation request: %v", err)
+					return appwire.SessionOperationResponse{}, err
+				}
+				if r.Turns != nil {
+					if freshReads.Add(1) == 1 {
+						return appwire.SessionOperationResponse{}, appwire.TranscriptIndexRebuilding()
+					}
+					page := appwire.ThreadHistoryTurnsListResponse{
+						Snapshot:       &appwire.SnapshotIdentity{Incarnation: repairedIncarnation, Length: f.initial.Snapshot.Snapshot.Length},
+						Epoch:          repairedEpoch,
+						BootGeneration: f.initial.Snapshot.BootGeneration,
+					}
+					return appwire.SessionOperationResponse{Turns: &page}, nil
+				}
+				continuations.Add(1)
+				if r.Read.HeldSnapshot == nil || r.Read.HeldSnapshot.Incarnation != repairedIncarnation {
+					return appwire.SessionOperationResponse{}, appwire.TranscriptItemCursorStale()
+				}
+				query := r.Read.AnswerContinuation
+				read := *f.initial.Snapshot
+				read.Epoch = repairedEpoch
+				read.Snapshot = r.Read.HeldSnapshot
+				read.Thread.Turns = nil
+				read.AnswerContinuation = &appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID, Matches: true}
+				versioned := appwire.HistoryReadResponse(read)
+				return appwire.SessionOperationResponse{Read: &versioned}, nil
+			}
+			f.start(t)
+			f.wait(t)
+			completed, ends, interruptions := f.counts(t)
+			if completed != 1 || ends != 0 || interruptions != 1 || continuations.Load() != 3 || freshReads.Load() != 2 {
+				t.Fatalf("completion=%d end_notices=%d interruptions=%d continuation_calls=%d fresh_reads=%d, want 1/0/1/3/2", completed, ends, interruptions, continuations.Load(), freshReads.Load())
+			}
+		})
+	}
+}
+
+// A fresh continuation cut is local to the lookup. A rebuild can queue a
+// snapshot at length N while history grows and the fresh read answers N+1; the
+// later queued snapshot must not look like a length regression and end a
+// healthy watch, especially after a negative verdict (issue #5669 review round
+// 2).
+func TestManagerWatchContinuationRecoveryFreshCutDoesNotAdvanceStreamWatermark(t *testing.T) {
+	t.Parallel()
+	for _, replay := range []bool{true, false} {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
+			t.Parallel()
+			f := newContinuationRecoveryFixture(t, replay)
+			const repairedIncarnation = "history-repaired"
+			repairedEpoch := f.initial.Snapshot.Epoch + 1
+			olderLength := f.initial.Snapshot.Snapshot.Length
+			freshLength := olderLength + 1
+			var continuations, freshReads atomic.Int32
+			f.peer.invoke = func(ctx context.Context, r appwire.SessionOperationRequest, _ int) (appwire.SessionOperationResponse, error) {
+				if err := r.Validate(); err != nil {
+					t.Errorf("scripted peer received an invalid session-operation request: %v", err)
+					return appwire.SessionOperationResponse{}, err
+				}
+				if r.Turns != nil {
+					freshReads.Add(1)
+					page := appwire.ThreadHistoryTurnsListResponse{
+						Snapshot:       &appwire.SnapshotIdentity{Incarnation: repairedIncarnation, Length: freshLength},
+						Epoch:          repairedEpoch,
+						BootGeneration: f.initial.Snapshot.BootGeneration,
+					}
+					return appwire.SessionOperationResponse{Turns: &page}, nil
+				}
+				continuations.Add(1)
+				if r.Read.HeldSnapshot == nil || r.Read.HeldSnapshot.Incarnation != repairedIncarnation {
+					return appwire.SessionOperationResponse{}, appwire.TranscriptItemCursorStale()
+				}
+				matches := true
+				if r.Read.HeldSnapshot.Length == freshLength {
+					// The verdict against the refreshed cut is negative. The
+					// stream watermark must stay at the queued snapshot's length.
+					matches = false
+				} else if r.Read.HeldSnapshot.Length != olderLength {
+					t.Errorf("post-queue continuation held length = %d, want %d", r.Read.HeldSnapshot.Length, olderLength)
+				}
+				query := r.Read.AnswerContinuation
+				read := *f.initial.Snapshot
+				read.Epoch = repairedEpoch
+				read.Snapshot = r.Read.HeldSnapshot
+				read.Thread.Turns = nil
+				read.AnswerContinuation = &appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID, Matches: matches}
+				versioned := appwire.HistoryReadResponse(read)
+				return appwire.SessionOperationResponse{Read: &versioned}, nil
+			}
+			f.start(t)
+			queued := *f.initial.Snapshot
+			queued.Epoch = repairedEpoch
+			queued.Snapshot = &appwire.SnapshotIdentity{Incarnation: repairedIncarnation, Length: olderLength}
+			queued.Thread.Turns = nil
+			f.updates <- appwire.SessionWatchUpdate{Metadata: f.initial.Metadata, Snapshot: &queued}
+			f.updates <- f.terminal
+			f.wait(t)
+			completed, ends, interruptions := f.counts(t)
+			if completed != 1 || ends != 0 || interruptions != 0 || continuations.Load() != 3 || freshReads.Load() != 1 {
+				t.Fatalf("completion=%d end_notices=%d interruptions=%d continuation_calls=%d fresh_reads=%d, want 1/0/0/3/1", completed, ends, interruptions, continuations.Load(), freshReads.Load())
+			}
+		})
 	}
 }
 

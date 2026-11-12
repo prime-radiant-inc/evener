@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -428,6 +429,143 @@ func TestFind_CurrentSessionUsesLiveTurnCount(t *testing.T) {
 	}
 	if got := cur["approx_turns"]; got != float64(7) {
 		t.Fatalf("current session approx_turns = %v, want 7 (live count, not stale disk 0)", got)
+	}
+}
+
+func TestFind_ProjectName_LinkedGitWorktree(t *testing.T) {
+	t.Parallel()
+	main, wt := gittest.NewLinkedWorktree(t)
+	dir := newBucket(t)
+	sid := identifier.MustNewSessionID()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	writeFindSession(t, dir, findMetaSpec{
+		id:         sid,
+		name:       "worktree session",
+		workingDir: wt,
+		updated:    now,
+		turnCount:  3,
+	}, "worktree test")
+
+	deps := &toolDeps{stateDir: dir, sessionID: sid}
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps, map[string]any{})))
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	wantProject := filepath.Base(main)
+	if got := matches[0]["project"]; got != wantProject {
+		t.Fatalf("match project = %v, want main repo root basename %q (not worktree leaf %q)", got, wantProject, filepath.Base(wt))
+	}
+}
+
+func TestFind_ProjectName_QueryModeUsesMainRepoRoot(t *testing.T) {
+	t.Parallel()
+	main, wt := gittest.NewLinkedWorktree(t)
+	dir := newBucket(t)
+	sid := identifier.MustNewSessionID()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	writeFindSession(t, dir, findMetaSpec{
+		id:         sid,
+		name:       "worktree query session",
+		workingDir: wt,
+		updated:    now,
+		turnCount:  3,
+	}, "content search needle here")
+
+	deps := &toolDeps{stateDir: dir, sessionID: sid}
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps, map[string]any{"query": "content search needle"})))
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	wantProject := filepath.Base(main)
+	if got := matches[0]["project"]; got != wantProject {
+		t.Fatalf("query-mode project = %v, want main repo root basename %q (not worktree leaf %q)", got, wantProject, filepath.Base(wt))
+	}
+}
+
+func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
+	t.Parallel()
+
+	// 1. Hyphenated repo name in an in-repo worktree must not be truncated to the last hyphen
+	m1 := schema.SessionMeta{}
+	m1.EnvInfo.WorkingDir = "/home/jesse/git/my-cool-repo/.claude/worktrees/fix-foo"
+	if got := projectName(m1); got != "my-cool-repo" {
+		t.Fatalf("projectName(.claude/worktrees) = %q, want %q", got, "my-cool-repo")
+	}
+
+	m2 := schema.SessionMeta{}
+	m2.EnvInfo.WorkingDir = "/home/jesse/git/my-cool-repo/.worktrees/fix-foo"
+	if got := projectName(m2); got != "my-cool-repo" {
+		t.Fatalf("projectName(.worktrees) = %q, want %q", got, "my-cool-repo")
+	}
+
+	m3 := schema.SessionMeta{}
+	m3.EnvInfo.WorkingDir = "/home/jesse/git/my-cool-repo/.git/worktrees/fix-foo"
+	if got := projectName(m3); got != "my-cool-repo" {
+		t.Fatalf("projectName(.git/worktrees) = %q, want %q", got, "my-cool-repo")
+	}
+
+	// 2. Ordinary non-git directory must not be altered or lossily split
+	mNotes := schema.SessionMeta{}
+	mNotes.EnvInfo.WorkingDir = "/home/jesse/my-notes"
+	if got := projectName(mNotes); got != "my-notes" {
+		t.Fatalf("projectName(ordinary dir) = %q, want %q", got, "my-notes")
+	}
+
+	// 3. WorktreeRestoreRoot / HomeDir takes precedence when in a worktree
+	mRestore := schema.SessionMeta{
+		WorktreePath:        "/home/jesse/evener/.worktrees/branch",
+		WorktreeRestoreRoot: "/home/jesse/evener",
+	}
+	mRestore.EnvInfo.WorkingDir = "/home/jesse/evener/.worktrees/branch"
+	if got := projectName(mRestore); got != "evener" {
+		t.Fatalf("projectName(WorktreeRestoreRoot) = %q, want %q", got, "evener")
+	}
+
+	// 4. Deleted delegate worktree in Evener state dir falls back to root session meta in bucketDir
+	bucketDir := t.TempDir()
+	rootSID := identifier.MustNewSessionID()
+	rootMeta := schema.SessionMeta{
+		ID:                  rootSID,
+		WorktreeRestoreRoot: "/home/jesse/my-cool-project",
+	}
+	rootMeta.EnvInfo.WorkingDir = "/home/jesse/my-cool-project"
+	if err := schema.SaveSessionMeta(bucketDir, rootMeta); err != nil {
+		t.Fatal(err)
+	}
+
+	childMeta := schema.SessionMeta{
+		ID: identifier.MustNewSessionID(),
+	}
+	childMeta.EnvInfo.WorkingDir = filepath.Join(bucketDir, "sessions", rootSID, "worktrees", "dlg_123")
+	if got := projectName(childMeta, bucketDir); got != "my-cool-project" {
+		t.Fatalf("projectName(state-dir delegate worktree) = %q, want %q", got, "my-cool-project")
+	}
+
+	// 5. Unresolvable Evener state-dir worktree must return empty, not leak worktree branch leaf
+	mDeleted := schema.SessionMeta{}
+	mDeleted.EnvInfo.WorkingDir = "/home/jesse/.local/state/evener/projects/some-bucket/worktrees/some-bucket/revert-rail-slice"
+	if got := projectName(mDeleted, t.TempDir()); got != "" {
+		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
+	}
+
+	// 6. Two-pass bucket scan: GitOriginURL on sibling session takes precedence over older non-worktree home
+	twoPassDir := t.TempDir()
+	s1 := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	s1.EnvInfo.WorkingDir = "/tmp/some-plain-dir"
+	if err := schema.SaveSessionMeta(twoPassDir, s1); err != nil {
+		t.Fatal(err)
+	}
+	s2 := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	s2.EnvInfo.GitOriginURL = "git@github.com:owner/authoritative-repo.git"
+	if err := schema.SaveSessionMeta(twoPassDir, s2); err != nil {
+		t.Fatal(err)
+	}
+	mTestTwoPass := schema.SessionMeta{}
+	mTestTwoPass.EnvInfo.WorkingDir = filepath.Join(twoPassDir, "worktrees", "some-bucket", "lane")
+	if got := projectName(mTestTwoPass, twoPassDir); got != "authoritative-repo" {
+		t.Fatalf("projectName(two-pass bucket scan) = %q, want %q", got, "authoritative-repo")
 	}
 }
 

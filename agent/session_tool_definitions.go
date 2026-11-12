@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 
 func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
 	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
+	canonical = ensureRecoveryReader(canonical, s.reg)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -170,17 +172,28 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
+	if s == nil || s.reg == nil {
+		if s != nil {
+			s.cachedToolDefs = nil
+		}
+		return
+	}
 	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
 	// keyed by canonical names. Each registered profile tool is advertised in its
 	// provider-visible wire form (provider-specific rename + intent param).
-	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
+	var nameMap map[string]string // canonical → provider, may be nil
+	var profileDefs []llm.ToolDefinition
+	if s.profile != nil {
+		nameMap = s.profile.ToolNameMap()
+		profileDefs = s.profile.ToolDefinitions()
+	}
 
 	var defs []llm.ToolDefinition
 	included := make(map[string]bool)
-	for _, td := range s.profile.ToolDefinitions() {
+	for _, td := range profileDefs {
 		if registered[td.Name] {
 			// Manager composition already owns both the ordinary and hub branches.
 			// Keep its parameters as well as its description on provider requests.
@@ -198,6 +211,26 @@ func (s *Session) rebuildToolDefsCache() {
 					if props, ok := td.Parameters["properties"].(map[string]any); ok {
 						delete(props, "delegation_allowance")
 					}
+				}
+				if !s.hubEnabled && s.delegationAllowance > 0 && s.reg != nil && s.reg.Get("delegate") != nil {
+					regTool := s.reg.Get("delegate")
+					regTool.Definition = td
+					// The registry executor validates calls against regTool.Schema.
+					// Remove the static enum from regTool's parameters so tests and runtime plugins
+					// can add agents dynamically to s.pluginAgents without failing schema validation.
+					if paramsJSON, err := json.Marshal(td.Parameters); err == nil {
+						var regParams map[string]any
+						if err := json.Unmarshal(paramsJSON, &regParams); err == nil {
+							if props, ok := regParams["properties"].(map[string]any); ok {
+								if agentTypeProp, ok := props["agent_type"].(map[string]any); ok {
+									delete(agentTypeProp, "enum")
+								}
+							}
+							regTool.Definition.Parameters = regParams
+						}
+					}
+					regTool.Schema = nil
+					_ = s.reg.Register(*regTool)
 				}
 			}
 			if td.Name == "shell" {
@@ -229,6 +262,9 @@ func (s *Session) rebuildToolDefsCache() {
 	// on reviewer sessions) that weren't already covered by profile or MCP.
 	for _, td := range s.reg.Definitions() {
 		if included[td.Name] {
+			continue
+		}
+		if td.Name == "update_goal" && !s.hasGoalConfigured() {
 			continue
 		}
 		if td.Name == "shell" {
@@ -278,4 +314,12 @@ func normalizeRegistryToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
 		}
 	}
 	return td
+}
+
+func (s *Session) hasGoalConfigured() bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.getOrCreateGoalStore().Snapshot()
+	return ok
 }

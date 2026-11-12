@@ -261,3 +261,150 @@ printf '200\n'
 		})
 	}
 }
+
+// TestScriptFailedPublishLeavesThePreviousBinary proves install.sh publishes by
+// rename: a copy that fails after writing part of its payload must leave the
+// previous complete binary and symlink in place, never a truncated live file
+// (#2345). The fake install writes "partial" into its destination and exits 1;
+// with an in-place install that destination is the live binary.
+func TestScriptFailedPublishLeavesThePreviousBinary(t *testing.T) {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64", "darwin/arm64":
+		// install.sh ships release archives for exactly these; this harness
+		// serves the archive the script computes for its own platform.
+	default:
+		t.Skipf("install.sh ships no release archive for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	for _, tool := range []string{"sh", "tar", "install", "mktemp", "uname"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH; the installer needs it", tool)
+		}
+	}
+	if _, err := exec.LookPath("sha256sum"); err != nil {
+		if _, err := exec.LookPath("shasum"); err != nil {
+			t.Skip("neither sha256sum nor shasum is on PATH; install.sh refuses to verify without one")
+		}
+	}
+	realInstall, err := exec.LookPath("install")
+	if err != nil {
+		t.Skipf("install is not on PATH: %v", err)
+	}
+
+	var archive bytes.Buffer
+	rootName := fmt.Sprintf("evener_%s_%s", runtime.GOOS, runtime.GOARCH)
+	archiveName := rootName + ".tar.gz"
+	gz := gzip.NewWriter(&archive)
+	tw := tar.NewWriter(gz)
+	body := "#!/bin/sh\necho release binary\n"
+	hdr := &tar.Header{Name: path.Join(rootName, "evener"), Mode: 0o755, Size: int64(len(body))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		t.Fatalf("tar body: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	sum := sha256.Sum256(archive.Bytes())
+
+	runDir := t.TempDir()
+	home := t.TempDir()
+	archivePath := filepath.Join(runDir, archiveName)
+	if err := os.WriteFile(archivePath, archive.Bytes(), 0o644); err != nil {
+		t.Fatalf("stage the release archive: %v", err)
+	}
+	checksumsPath := filepath.Join(runDir, "checksums.txt")
+	if err := os.WriteFile(checksumsPath, []byte(hex.EncodeToString(sum[:])+"  "+archiveName+"\n"), 0o644); err != nil {
+		t.Fatalf("stage checksums.txt: %v", err)
+	}
+
+	shareBin := filepath.Join(home, ".local", "share", "evener", "bin")
+	binDir := filepath.Join(home, ".local", "bin")
+	for _, dir := range []string{shareBin, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	old := []byte("#!/bin/sh\necho old binary\n")
+	installed := filepath.Join(shareBin, "evener")
+	if err := os.WriteFile(installed, old, 0o755); err != nil {
+		t.Fatalf("stage the previous binary: %v", err)
+	}
+	if err := os.Symlink(installed, filepath.Join(binDir, "evener")); err != nil {
+		t.Fatalf("stage the previous symlink: %v", err)
+	}
+
+	fakeBin := t.TempDir()
+	curlShim := `#!/bin/sh
+set -eu
+url=
+out=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-o) out=$2; shift; shift ;;
+	-w) shift; shift ;;
+	-*) shift ;;
+	*) if [ -z "$url" ]; then url=$1; fi; shift ;;
+	esac
+done
+case "$url" in
+*checksums.txt) cat "$EVENER_TEST_CHECKSUMS" ;;
+*) cat "$EVENER_TEST_ARCHIVE" ;;
+esac > "$out"
+printf '200\n'
+`
+	installShim := fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ "$1" = "-d" ]; then
+	exec %q "$@"
+fi
+for last; do :; done
+printf 'partial' > "$last"
+exit 1
+`, realInstall)
+	for name, body := range map[string]string{"curl": curlShim, "install": installShim} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatalf("stage the fake %s: %v", name, err)
+		}
+	}
+
+	scriptPath := filepath.Join(runDir, "install.sh")
+	if err := os.WriteFile(scriptPath, Script, 0o644); err != nil {
+		t.Fatalf("stage the embedded installer: %v", err)
+	}
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Dir = runDir
+	cmd.Env = []string{
+		"HOME=" + home,
+		"TMPDIR=" + runDir,
+		"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"EVENER_TEST_ARCHIVE=" + archivePath,
+		"EVENER_TEST_CHECKSUMS=" + checksumsPath,
+		"TAR_OPTIONS=--strip-components=1",
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("install.sh succeeded despite the failed publish:\n%s", out)
+	}
+
+	got, rerr := os.ReadFile(installed)
+	if rerr != nil || !bytes.Equal(got, old) {
+		t.Fatalf("the failed publish replaced the live binary with %q (err %v):\n%s", got, rerr, out)
+	}
+	if link, lerr := os.Readlink(filepath.Join(binDir, "evener")); lerr != nil || link != installed {
+		t.Fatalf("the failed publish changed the binary symlink to %q (err %v):\n%s", link, lerr, out)
+	}
+	for _, dir := range []string{shareBin, binDir} {
+		stages, gerr := filepath.Glob(filepath.Join(dir, ".evener.install.*"))
+		if gerr != nil {
+			t.Fatalf("glob staging files in %s: %v", dir, gerr)
+		}
+		if len(stages) != 0 {
+			t.Fatalf("install.sh left staging files behind: %v", stages)
+		}
+	}
+}

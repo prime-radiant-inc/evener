@@ -58,12 +58,12 @@ func newCancelThread() appwire.Thread {
 	}
 }
 
-func newCancelHarness() (*WebServer, *cancelRecordingSource) {
+func newCancelHarness(t *testing.T) (*WebServer, *cancelRecordingSource) {
 	source := &cancelRecordingSource{
 		scriptedAppSource: &scriptedAppSource{id: "remote", thread: newCancelThread()},
 		gotIndex:          -1,
 	}
-	web := NewWebServer(hubcore.WebConfig{})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{})
 	registry := appsource.NewRegistry()
 	registry.Add(source)
 	web.sources = registry
@@ -77,7 +77,7 @@ func newCancelHarness() (*WebServer, *cancelRecordingSource) {
 // {Send:false, Steer:true, Queue:true} (review C1), so this also pins that
 // the relay gates on Queue — a Send-gated relay would 503 here.
 func TestHubRPCCancelQueuedRelays(t *testing.T) {
-	_, source := newCancelHarness()
+	_, source := newCancelHarness(t)
 	source.removedText = "echo me"
 	registry := appsource.NewRegistry()
 	registry.Add(source)

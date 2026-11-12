@@ -47,6 +47,17 @@ func (s *Script[T]) Replace(steps []T) {
 	s.steps = steps
 }
 
+// Reset swaps the whole script and rewinds the cursor to the first step.
+// Unlike Replace, which keeps a mid-run drive's position, Reset starts the
+// sequence over: a caller rerunning the same script per iteration gets the
+// first step again.
+func (s *Script[T]) Reset(steps []T) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steps = steps
+	s.i = 0
+}
+
 // Append adds steps to the end of the script.
 func (s *Script[T]) Append(steps ...T) {
 	s.mu.Lock()

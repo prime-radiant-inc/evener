@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
@@ -66,6 +69,129 @@ func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	for _, legacy := range []string{"job_id", "started_job_id", "latest_job_id", "activation_job_id"} {
 		if _, exists := result[legacy]; exists {
 			t.Fatalf("delegate result retains activation alias %q: %#v", legacy, result)
+		}
+	}
+}
+
+func TestDelegatePublicMetadataUsesProviderWireToolNames(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	adapter := &fakeAdapter{name: "google", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return agenttest.FinalResponse("done")
+		},
+	}}
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, newGeminiProfile("gemini-test"))
+	workspace := t.TempDir()
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// 1. Check delegate call result
+	call := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:   "call-delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"prompt": "inspect",
+			"agent_type": "explorer"
+		}`),
+	})
+	if call.IsError {
+		t.Fatalf("delegate call error: %s", call.Output)
+	}
+	var createRes delegateCreateResult
+	if err := json.Unmarshal(toolResultJSON(call), &createRes); err != nil {
+		t.Fatalf("unmarshal create result: %v", err)
+	}
+	if !slices.Contains(createRes.Tools, "run_shell_command") || !slices.Contains(createRes.Tools, "grep_search") {
+		t.Errorf("delegate create Tools = %v, want wire names run_shell_command and grep_search", createRes.Tools)
+	}
+	if slices.Contains(createRes.Tools, "shell") || slices.Contains(createRes.Tools, "grep") {
+		t.Errorf("delegate create Tools = %v, must not contain canonical shell or grep", createRes.Tools)
+	}
+
+	// 2. Check job_status result
+	statusCall := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:        "call-status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(`{"target": "` + createRes.DelegateID + `"}`),
+	})
+	if statusCall.IsError {
+		t.Fatalf("job_status call error: %s", statusCall.Output)
+	}
+	var statusRes delegateStatusResult
+	if err := json.Unmarshal(toolResultJSON(statusCall), &statusRes); err != nil {
+		t.Fatalf("unmarshal status result: %v", err)
+	}
+	if !slices.Contains(statusRes.Tools, "run_shell_command") || !slices.Contains(statusRes.Tools, "grep_search") {
+		t.Errorf("job_status Tools = %v, want wire names run_shell_command and grep_search", statusRes.Tools)
+	}
+	if slices.Contains(statusRes.Tools, "shell") || slices.Contains(statusRes.Tools, "grep") {
+		t.Errorf("job_status Tools = %v, must not contain canonical shell or grep", statusRes.Tools)
+	}
+
+	// 3. Check delegate_send completion result mapping (line 491)
+	metaBytes, _ := json.Marshal(delegateTerminalPacketMetadata{
+		Tools: []string{"shell", "grep", "read_file"},
+	})
+	var sendRes sendMessageResult
+	populateDelegateSendResult(&sendRes, delegatestore.TerminalPacket{
+		Metadata: metaBytes,
+	}, sess.toolNameMap())
+	if !slices.Contains(sendRes.Tools, "run_shell_command") || !slices.Contains(sendRes.Tools, "grep_search") {
+		t.Errorf("populateDelegateSendResult Tools = %v, want wire names run_shell_command and grep_search", sendRes.Tools)
+	}
+	if slices.Contains(sendRes.Tools, "shell") || slices.Contains(sendRes.Tools, "grep") {
+		t.Errorf("populateDelegateSendResult Tools = %v, must not contain canonical shell or grep", sendRes.Tools)
+	}
+
+	// 4. Check delegate_send recovery/failure result mapping (line 609)
+	failedRes := delegateFailedSendResult(delegateStartCommit{
+		descriptor: delegatestore.Descriptor{
+			ToolNameCeiling: []string{"shell", "grep", "read_file"},
+		},
+	}, delegateMutationPlans{}, nil, sess.toolNameMap())
+	if !slices.Contains(failedRes.Tools, "run_shell_command") || !slices.Contains(failedRes.Tools, "grep_search") {
+		t.Errorf("delegateFailedSendResult Tools = %v, want wire names run_shell_command and grep_search", failedRes.Tools)
+	}
+	if slices.Contains(failedRes.Tools, "shell") || slices.Contains(failedRes.Tools, "grep") {
+		t.Errorf("delegateFailedSendResult Tools = %v, must not contain canonical shell or grep", failedRes.Tools)
+	}
+
+	// 5. Check job_list result
+	listCall := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:        "call-list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if listCall.IsError {
+		t.Fatalf("job_list call error: %s", listCall.Output)
+	}
+	var listRes struct {
+		Items []jobListEntry `json:"items"`
+	}
+	if err := json.Unmarshal(toolResultJSON(listCall), &listRes); err != nil {
+		t.Fatalf("unmarshal job_list result: %v", err)
+	}
+	for _, item := range listRes.Items {
+		if item.AgentType == "explorer" {
+			if !slices.Contains(item.Tools, "run_shell_command") || !slices.Contains(item.Tools, "grep_search") {
+				t.Errorf("job_list item Tools = %v, want wire names run_shell_command and grep_search", item.Tools)
+			}
+			if slices.Contains(item.Tools, "shell") || slices.Contains(item.Tools, "grep") {
+				t.Errorf("job_list item Tools = %v, must not contain canonical shell or grep", item.Tools)
+			}
 		}
 	}
 }

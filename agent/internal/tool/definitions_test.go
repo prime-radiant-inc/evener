@@ -775,7 +775,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	}
 
 	// Per-operation args from spec §2's table, flattened.
-	for _, k := range []string{"name", "base_ref", "path", "force", "force_dirty", "delete_branch", "id"} {
+	for _, k := range []string{"name", "base_ref", "path", "force", "force_dirty", "delete_branch", "id", "limit", "offset"} {
 		if _, ok := props[k]; !ok {
 			t.Errorf("manage_worktree missing param %q", k)
 		}
@@ -788,6 +788,15 @@ func TestDefManageWorktreeShape(t *testing.T) {
 	deleteBranchProp, ok := props["delete_branch"].(map[string]any)
 	if !ok || deleteBranchProp["type"] != "boolean" {
 		t.Errorf("delete_branch property = %v, want boolean type", props["delete_branch"])
+	}
+
+	limitProp, ok := props["limit"].(map[string]any)
+	if !ok || limitProp["type"] != "integer" || limitProp["maximum"] != 15 || limitProp["minimum"] != 1 {
+		t.Errorf("limit property = %v, want integer type with min 1, max 15", props["limit"])
+	}
+	offsetProp, ok := props["offset"].(map[string]any)
+	if !ok || offsetProp["type"] != "integer" || offsetProp["minimum"] != 0 {
+		t.Errorf("offset property = %v, want integer type with min 0", props["offset"])
 	}
 }
 
@@ -1023,6 +1032,14 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
 		}
 	}
+
+	maxBytesProp, ok := props["max_bytes"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing max_bytes prop")
+	}
+	if minBytes, ok := maxBytesProp["minimum"].(int); !ok || minBytes != 512 {
+		t.Errorf("model_list max_bytes minimum = %v, want 512", maxBytesProp["minimum"])
+	}
 }
 
 // TestAllBuiltinParametersCarryDescriptions is the description audit as a
@@ -1124,8 +1141,8 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	}
 	addItems := add.(map[string]any)["items"].(map[string]any)
 	addReq, ok := addItems["required"].([]string)
-	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
-		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
+	if !ok || len(addReq) != 2 || addReq[0] != "description" || addReq[1] != "prompt" {
+		t.Fatalf("add item required = %v, want [description prompt]", addItems["required"])
 	}
 	if addItems["additionalProperties"] != false {
 		t.Fatalf("add item additionalProperties = %v, want false", addItems["additionalProperties"])

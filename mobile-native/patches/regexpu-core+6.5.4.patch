@@ -1,8 +1,8 @@
 diff --git a/node_modules/regexpu-core/rewrite-pattern.js b/node_modules/regexpu-core/rewrite-pattern.js
-index 02c52c2..63b950e 100644
+index 33864b8..3976859 100644
 --- a/node_modules/regexpu-core/rewrite-pattern.js
 +++ b/node_modules/regexpu-core/rewrite-pattern.js
-@@ -71,7 +71,7 @@ const getUnicodePropertyValueSet = (property, value) => {
+@@ -67,7 +67,7 @@ const getUnicodePropertyValueSet = (property, value) => {
  		`${ property }/${ value }` :
  		`Binary_Property/${ property }`;
  	try {
@@ -11,21 +11,19 @@ index 02c52c2..63b950e 100644
  	} catch (exception) {
  		throw new Error(
  			`Failed to recognize value \`${ value }\` for property ` +
-@@ -116,7 +116,12 @@ const getUnicodePropertyEscapeSet = (value, isNegative, isUnicodeSetIgnoreCase)
+@@ -112,7 +112,10 @@ const getUnicodePropertyEscapeSet = (value, isNegative, isUnicodeSetIgnoreCase)
  			throw new Error('Cannot negate Unicode property of strings');
  		}
  		return {
 -			characters: (isUnicodeSetIgnoreCase ? UNICODE_IV_SET : UNICODE_SET).clone().remove(set.characters),
 +			// UnicodeSets complements operate on folded property members.
 +			characters: (isUnicodeSetIgnoreCase ? UNICODE_IV_SET : UNICODE_SET).clone().remove(
-+				isUnicodeSetIgnoreCase
-+					? regenerate(set.characters.toArray().map(simpleCaseFolding))
-+					: set.characters
++				isUnicodeSetIgnoreCase ? simpleCaseFoldingSet(set.characters) : set.characters
 +			),
- 			strings: new Set()
+ 			strings: new Map()
  		};
  	}
-@@ -686,7 +691,8 @@ const processTerm = (item, regenerateOptions, groups) => {
+@@ -801,7 +804,8 @@ const processTerm = (item, regenerateOptions, groups) => {
  					data.transformed = true;
  					item = processCharacterClass(item, regenerateOptions, data);
  				}
@@ -37,10 +35,10 @@ index 02c52c2..63b950e 100644
  					data.singleChars.toString(regenerateOptions)
 diff --git a/node_modules/regexpu-core/unicode-properties.js b/node_modules/regexpu-core/unicode-properties.js
 new file mode 100644
-index 0000000..1157f6d
+index 0000000..4e0139a
 --- /dev/null
 +++ b/node_modules/regexpu-core/unicode-properties.js
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,457 @@
 +// Static lazy imports let Metro bundle the pinned Unicode property manifest.
 +module.exports = new Map([
 +["General_Category/Cased_Letter", () => require("regenerate-unicode-properties/General_Category/Cased_Letter.js")],
@@ -143,6 +141,7 @@ index 0000000..1157f6d
 +["Script/Inscriptional_Pahlavi", () => require("regenerate-unicode-properties/Script/Inscriptional_Pahlavi.js")],
 +["Script/Inscriptional_Parthian", () => require("regenerate-unicode-properties/Script/Inscriptional_Parthian.js")],
 +["Script/Javanese", () => require("regenerate-unicode-properties/Script/Javanese.js")],
++["Script/Jurchen", () => require("regenerate-unicode-properties/Script/Jurchen.js")],
 +["Script/Kaithi", () => require("regenerate-unicode-properties/Script/Kaithi.js")],
 +["Script/Kannada", () => require("regenerate-unicode-properties/Script/Kannada.js")],
 +["Script/Katakana", () => require("regenerate-unicode-properties/Script/Katakana.js")],
@@ -209,11 +208,13 @@ index 0000000..1157f6d
 +["Script/Pau_Cin_Hau", () => require("regenerate-unicode-properties/Script/Pau_Cin_Hau.js")],
 +["Script/Phags_Pa", () => require("regenerate-unicode-properties/Script/Phags_Pa.js")],
 +["Script/Phoenician", () => require("regenerate-unicode-properties/Script/Phoenician.js")],
++["Script/Proto_Cuneiform", () => require("regenerate-unicode-properties/Script/Proto_Cuneiform.js")],
 +["Script/Psalter_Pahlavi", () => require("regenerate-unicode-properties/Script/Psalter_Pahlavi.js")],
 +["Script/Rejang", () => require("regenerate-unicode-properties/Script/Rejang.js")],
 +["Script/Runic", () => require("regenerate-unicode-properties/Script/Runic.js")],
 +["Script/Samaritan", () => require("regenerate-unicode-properties/Script/Samaritan.js")],
 +["Script/Saurashtra", () => require("regenerate-unicode-properties/Script/Saurashtra.js")],
++["Script/Seal", () => require("regenerate-unicode-properties/Script/Seal.js")],
 +["Script/Sharada", () => require("regenerate-unicode-properties/Script/Sharada.js")],
 +["Script/Shavian", () => require("regenerate-unicode-properties/Script/Shavian.js")],
 +["Script/Siddham", () => require("regenerate-unicode-properties/Script/Siddham.js")],
@@ -318,6 +319,7 @@ index 0000000..1157f6d
 +["Script_Extensions/Inscriptional_Pahlavi", () => require("regenerate-unicode-properties/Script_Extensions/Inscriptional_Pahlavi.js")],
 +["Script_Extensions/Inscriptional_Parthian", () => require("regenerate-unicode-properties/Script_Extensions/Inscriptional_Parthian.js")],
 +["Script_Extensions/Javanese", () => require("regenerate-unicode-properties/Script_Extensions/Javanese.js")],
++["Script_Extensions/Jurchen", () => require("regenerate-unicode-properties/Script_Extensions/Jurchen.js")],
 +["Script_Extensions/Kaithi", () => require("regenerate-unicode-properties/Script_Extensions/Kaithi.js")],
 +["Script_Extensions/Kannada", () => require("regenerate-unicode-properties/Script_Extensions/Kannada.js")],
 +["Script_Extensions/Katakana", () => require("regenerate-unicode-properties/Script_Extensions/Katakana.js")],
@@ -384,11 +386,13 @@ index 0000000..1157f6d
 +["Script_Extensions/Pau_Cin_Hau", () => require("regenerate-unicode-properties/Script_Extensions/Pau_Cin_Hau.js")],
 +["Script_Extensions/Phags_Pa", () => require("regenerate-unicode-properties/Script_Extensions/Phags_Pa.js")],
 +["Script_Extensions/Phoenician", () => require("regenerate-unicode-properties/Script_Extensions/Phoenician.js")],
++["Script_Extensions/Proto_Cuneiform", () => require("regenerate-unicode-properties/Script_Extensions/Proto_Cuneiform.js")],
 +["Script_Extensions/Psalter_Pahlavi", () => require("regenerate-unicode-properties/Script_Extensions/Psalter_Pahlavi.js")],
 +["Script_Extensions/Rejang", () => require("regenerate-unicode-properties/Script_Extensions/Rejang.js")],
 +["Script_Extensions/Runic", () => require("regenerate-unicode-properties/Script_Extensions/Runic.js")],
 +["Script_Extensions/Samaritan", () => require("regenerate-unicode-properties/Script_Extensions/Samaritan.js")],
 +["Script_Extensions/Saurashtra", () => require("regenerate-unicode-properties/Script_Extensions/Saurashtra.js")],
++["Script_Extensions/Seal", () => require("regenerate-unicode-properties/Script_Extensions/Seal.js")],
 +["Script_Extensions/Sharada", () => require("regenerate-unicode-properties/Script_Extensions/Sharada.js")],
 +["Script_Extensions/Shavian", () => require("regenerate-unicode-properties/Script_Extensions/Shavian.js")],
 +["Script_Extensions/Siddham", () => require("regenerate-unicode-properties/Script_Extensions/Siddham.js")],

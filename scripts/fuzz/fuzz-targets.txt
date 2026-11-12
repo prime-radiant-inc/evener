@@ -553,3 +553,4 @@ native:.:./cmd/evener:FuzzServeSeedCoverage
 native:.:./cmd/evener:FuzzUpgradeErrorSeedCoverage
 
 native:agent:./internal/modelavailability:FuzzCursorDecode
+native:agent:./doctor:FuzzInspectAssistantFabrication

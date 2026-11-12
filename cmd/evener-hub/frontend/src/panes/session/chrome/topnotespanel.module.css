@@ -1,14 +1,23 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* A floating card INSIDE the pane body's padding, in both states: the
-   * pane's own edge is the frame, and this card is inset from it. It used to
-   * cancel the top padding to sit flush against the pane edge, which parked
-   * its top border and both top corners exactly on the scrollport's clip line
-   * where they were painted away - the square, open-topped look. */
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-panel);
-  box-shadow: 0 8px 28px var(--shadow-color);
+  /* Attached to the header in standalone session panes: the negative margin
+   * below cancels the body's top padding so there is no gap below the
+   * header; the top is square (no radius, no top border) and reads as a
+   * continuation of the header, whose own border-bottom is the single seam.
+   * Inside cascade columns the body is flush (bodyNoScroll) with no padding
+   * to cancel, so that margin rule lives in a session-scoped override below
+   * and stays 0 there. Only the bottom corners are rounded. Shadow is the
+   * intentional separation from the transcript — layered soft bloom rather
+   * than a hard bar. */
+  position: relative;
+  z-index: var(--z-raised);
+  border: 1px solid var(--edge);
+  border-top: none;
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  box-shadow:
+    0 1px 3px var(--shadow-color),
+    0 8px 24px var(--shadow-color);
   /* The boundary is a real border, NOT --shadow-overlay's ring: the ring is a
    * spread box-shadow, which paints OUTSIDE the border box and is shaved
    * wherever a clipping ancestor cuts the card's edge - the pane body's
@@ -18,12 +27,21 @@
   background: var(--surface-2);
 }
 
+/* Only the padded standalone session body contributes a top inset to cancel;
+ * the cascade's flush body (bodyNoScroll + column .content) has none, so the
+ * panel must not pull above its scrollport there. */
+:global([data-pane-scaffold^="session:"]) .topNotesPanel {
+  margin-top: calc(-1 * var(--space-5));
+}
+
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. Matches Card and PaneScaffold. */
+ * corner area this shapes. Matches Card and PaneScaffold. Top edge is flat
+ * where it meets the header, so only the bottom corners carry the curve. */
 @supports (corner-shape: squircle) {
   .topNotesPanel {
     corner-shape: squircle;
+    border-radius: 0 0 var(--radius-panel) var(--radius-panel);
   }
 }
 
@@ -145,4 +163,10 @@
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: clip;
+}
+
+@media (max-width: 899px) {
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel {
+    margin-top: calc(-1 * var(--space-4));
+  }
 }

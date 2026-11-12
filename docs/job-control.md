@@ -138,10 +138,11 @@ comes from a human or a Manager. It never follows unrelated later work or
 infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
 it keeps no continuation graph or terminal backlog. The existing subscription
-consumer retains the original candidate and held history cut while retrying a
-transient read-call failure. That answer-continuation retry reads with a
-two-second budget per call, two seconds between retries, and at most five
-consecutive failed calls. An operation timeout while the watch remains alive, transport
+consumer retains the original candidate while retrying a transient read-call
+failure; if the retry finds the held cut stale after a rebuild, it reads the
+fresh cut and re-asks the same candidate against it. That answer-continuation
+retry reads with a two-second budget per call, two seconds between retries,
+and at most five consecutive failed calls. An operation timeout while the watch remains alive, transport
 unavailability, index contention or rebuilding, and an unclassified internal
 read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
@@ -152,14 +153,15 @@ or generation, and history truncation end observation immediately. A
 same-target history discontinuity — a new epoch or incarnation for the same
 ref, instance and generation — re-anchors the observation when it arrives as
 the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
-latest window; unlike a continuing thread's re-read it does not page further
-back, so recorded evidence older than that window is not replayed to the
-watcher. One surfacing mid-read — while a continuing
-gap is still paging, or against a held cut a live continuation verdict still
-needs — ends the observation with re-registration guidance instead. Permanent
-request refusals and typed history failures also end it;
-none is a negative verdict. Exhausted retries end the watch with one durable
-end notice and re-registration guidance, never inferred completion. Index
+latest window and pages further back to the oldest position the pre-rebuild
+held window sampled, so recorded evidence older than the latest page still
+reaches the watcher. One surfacing mid-read — while a continuing gap is still
+paging, or against a held cut a live continuation verdict still needs —
+re-reads the authoritative latest cut and re-anchors; the continuation verdict
+is re-asked against that cut rather than discarding its candidate. Permanent
+request refusals and typed history failures also end it; none is a negative
+verdict. Exhausted retries end the watch with one durable end notice and
+re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may
 still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
@@ -1300,7 +1302,7 @@ ref (`job:` for shell, session ref for delegate).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match: <regex>`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for any watch that carries one; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log; cleared and completed watches in `jobs.jsonl` rehydrate into the bounded ring across session restore (`runtime_lost` excluded).
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
 

@@ -21,7 +21,7 @@ func webCoreRequest(t *testing.T, web *WebServer, method, target, body string) *
 }
 
 func TestWebCoreAPIHelpersAndRoutes(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{})
 	firstLock := web.lockForSession("a")
 	if firstLock != web.lockForSession("a") {
 		t.Fatal("session lock was not stable")

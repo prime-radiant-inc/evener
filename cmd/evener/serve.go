@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
@@ -221,7 +223,7 @@ type serveDeps struct {
 	runContext       func(context.Context) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
-	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
+	startLivePprof   func(log *slog.Logger) (indexURL string, stop func(), err error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
@@ -504,9 +506,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		defer stop()
 	}
-	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(logOut, format+"\n", args...)
-	})
+	_, stopPprof, pprofErr := deps.startLivePprof(componentlog.NewWriter("serve", logOut))
 	if pprofErr != nil {
 		return pprofErr
 	}

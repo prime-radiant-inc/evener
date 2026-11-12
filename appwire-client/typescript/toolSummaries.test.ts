@@ -471,6 +471,17 @@ test("says the count list_dir states, one entry or many", () => {
   expect(listed("b.go\t3\nc.go\t4\n\n2 of 5 entries (offset 0) — more with list_dir(offset=2)")).toBe(
     "Listed a · 2 entries",
   );
+  expect(listed("0 of 5 entries (offset 5) — more with list_directory(offset=5)")).toBe("Listed a · 0 entries");
+  expect(
+    listed(
+      "b.go\t3\nc.go\t4\n\n0 entries (offset 2) — more with list_directory(offset=2)\nThe walk stopped after 2 entries once this page filled; total count was not enumerated.",
+    ),
+  ).toBe("Listed a · 0 entries");
+  expect(
+    listed(
+      "b.go\t3\nc.go\t4\n\n2 entries (offset 0) — more with custom_list_dir(offset=2)\nThe walk stopped after 3 entries once this page filled; total count was not enumerated.",
+    ),
+  ).toBe("Listed a · 2 entries");
   expect(listed("d.go\t3\n\n1 of 5 entries (offset 4)")).toBe("Listed a · 1 entry");
   // An entry named like a count is an entry: only the footer, after the blank
   // line (or alone, for an empty directory), is the count.
@@ -482,6 +493,7 @@ test("says the count list_dir states, one entry or many", () => {
   // output without the footer, which counts its lines.
   expect(listed("2 entries.md\t9\n")).toBe("Listed a · 1 entry");
   expect(listed("b.go\t3\nc.go\t4\n2 entries.md\t9")).toBe("Listed a · 3 entries");
+  expect(listed("0 entries\nb.go\nc.go")).toBe("Listed a · 3 entries");
   // Only the whole footer is a count; an entry starting like a page's footer
   // is an entry.
   expect(listed("2 entries (notes)\t9\n")).toBe("Listed a · 1 entry");
@@ -650,6 +662,38 @@ test("phrases a housekeeping call as its step line does", () => {
   // tell a clear from a set, so it says what the tool usually does.
   expect(housekeepingAction("notes_agent_set", {})).toBe("updated its note");
   expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
+});
+
+test("update_goal produces distinct summaries across active, unconfigured, and terminal states", () => {
+  const activeComplete = toolStepSummary(housekeeping("update_goal", { status: "complete" }, "Goal marked complete."));
+  const noGoal = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "No goal is active for this session (none was set at launch)...",
+    ),
+  );
+  const alreadyComplete = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "blocked" },
+      "The goal for this session is already terminal (complete); nothing recorded — this tool only updates an active goal.",
+    ),
+  );
+  const alreadyBlocked = toolStepSummary(
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "The goal for this session is already terminal (blocked); nothing recorded — this tool only updates an active goal.",
+    ),
+  );
+
+  // All 4 summaries must be distinct.
+  const summaries = new Set([activeComplete, noGoal, alreadyComplete, alreadyBlocked]);
+  expect(summaries.size).toBe(4);
+
+  // An already-blocked goal called with status: "complete" must NOT claim "Marked the goal complete".
+  expect(alreadyBlocked).not.toContain("Marked the goal complete");
 });
 
 // A call whose arguments the hub didn't send can't say it only clears a

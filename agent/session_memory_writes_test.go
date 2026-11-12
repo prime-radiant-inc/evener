@@ -264,9 +264,26 @@ func TestMemoryReadRendersTheIndex(t *testing.T) {
 	if res.IsError || !strings.HasPrefix(res.Output, "   1\tTags: t (300)\n") || strings.Count(res.Output, "\n") != 301 || strings.Contains(res.Output, "Not shown") {
 		t.Fatalf("full index: %d lines, %.200q", strings.Count(res.Output, "\n"), res.Output)
 	}
+	sliced := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "offset": 1, "limit": 40})
+	if sliced.IsError {
+		t.Fatalf("sliced MEMORY.md errored: %s", sliced.Output)
+	}
+	slicedBody, slicedFooter, hasFooter := strings.Cut(sliced.Output, "\n\n")
+	if !hasFooter || strings.Count(slicedBody, "\n") != 39 || !strings.Contains(slicedFooter, "offset=41") || !descriptionMentions(slicedFooter, 301) {
+		t.Fatalf("sliced MEMORY.md missing continuation footer (hasFooter=%t):\n%s", hasFooter, sliced.Output)
+	}
 	paged := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "offset": 300, "limit": 5})
 	if paged.IsError || !strings.HasPrefix(paged.Output, " 300\t- [") || strings.Count(paged.Output, "\n") != 2 {
 		t.Fatalf("paged: %q", paged.Output)
+	}
+	for _, huge := range []map[string]any{
+		{"scope": "personal", "file_path": "MEMORY.md", "offset": 10, "limit": (1 << 63) - 1024},
+		{"scope": "personal", "file_path": "MEMORY.md", "offset": 3 << 61, "limit": 3 << 61},
+	} {
+		got := memoryExec(t, s, "memory_read", huge)
+		if got.IsError || strings.Contains(got.Output, "offset=-") || strings.Contains(got.Output, "MEMORY.md") {
+			t.Fatalf("huge bounds %v produced bogus continuation footer: %q", huge, got.Output)
+		}
 	}
 	// memory_search never matches the virtual index.
 	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "personal", "pattern": `\(updated 2026`}); strings.Contains(res.Output, "MEMORY.md") || strings.Contains(res.Output, "(updated") {

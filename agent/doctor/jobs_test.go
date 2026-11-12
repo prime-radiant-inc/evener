@@ -426,3 +426,71 @@ func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
 		t.Errorf("delegates = %v, diagnostics = %v; want the stored delegate and one torn-tail diagnostic", r.Delegates, r.Diagnostics)
 	}
 }
+
+// In doctor.Jobs, delegate records must normalize transcript_ref to match the
+// canonical proj:<bucket>:<id> scheme (or empty when unlocatable/missing),
+// never leaking local:<id> recorded in delegates.jsonl (issue #6179).
+func TestJobs_DelegateChildRefMatchesRootProjScheme(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	rootSID := sidA
+	childSID := "02wMz5Txv2enqVTitaig6F"
+	missingSID := "01MISSINGCHILDSESSIONXXXXXX"
+
+	writeSession(t, bucket, rootSID)
+	writeSession(t, bucket, childSID)
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", rootSID, "jobs.jsonl"), nil)
+
+	writeDelegateEvents(t, filepath.Join(bucket, "sessions", rootSID, "delegates.jsonl"), []delegatestore.Event{
+		{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: "dlg_1",
+			Created: &delegatestore.DelegateCreated{
+				Descriptor: delegatestore.Descriptor{
+					OwnerSessionID:   rootSID,
+					VisibleSessionID: rootSID,
+					ChildSessionID:   childSID,
+					TranscriptRef:    "local:" + childSID,
+					AgentType:        "worker",
+					Task:             "inspect child",
+					Resumable:        true,
+					ToolNameCeiling:  []string{"communicate"},
+				},
+			},
+		},
+		{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: "dlg_missing",
+			Created: &delegatestore.DelegateCreated{
+				Descriptor: delegatestore.Descriptor{
+					OwnerSessionID:   rootSID,
+					VisibleSessionID: rootSID,
+					ChildSessionID:   missingSID,
+					TranscriptRef:    "local:" + missingSID,
+					AgentType:        "worker",
+					Task:             "inspect missing child",
+					Resumable:        true,
+					ToolNameCeiling:  []string{"communicate"},
+				},
+			},
+		},
+	})
+
+	report, err := Jobs(base, rootSID, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(report.Delegates) != 2 {
+		t.Fatalf("expected 2 delegates, got %d", len(report.Delegates))
+	}
+	// Existing child must have canonical proj: ref
+	wantChildRef := "proj:" + hash1 + ":" + childSID
+	if got := report.Delegates[0].TranscriptRef; got != wantChildRef {
+		t.Errorf("Delegates[0].TranscriptRef = %q, want %q", got, wantChildRef)
+	}
+	// Missing child must have empty ref, never local:
+	if got := report.Delegates[1].TranscriptRef; got != "" {
+		t.Errorf("Delegates[1].TranscriptRef = %q, want empty", got)
+	}
+}

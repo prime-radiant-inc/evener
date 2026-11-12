@@ -103,14 +103,11 @@ func TestNonRetryableModelErrorClearsActiveProvenanceAtIdleBoundary(t *testing.T
 func newProvenanceErrorSession(t *testing.T, modelErr error) *Session {
 	t.Helper()
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return llm.Response{}, modelErr
-			},
+	c.Register(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, modelErr
 		},
-	})
+	}))
 	s, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

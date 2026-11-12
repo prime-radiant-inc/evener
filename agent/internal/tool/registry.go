@@ -239,12 +239,30 @@ func cloneSchemaValue(v any) any {
 	return v
 }
 
-// normalizeAskUserArgs normalizes ask_user arguments by wrapping the shorthand
+// MinimalExampleQuestionsArray returns a minimal valid example for ask_user error messages.
+func MinimalExampleQuestionsArray() string {
+	minimalExample := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which option?",
+				"options": []any{
+					map[string]any{"label": "Option A", "detail": "First choice"},
+					map[string]any{"label": "Option B", "detail": "Second choice"},
+				},
+			},
+		},
+	}
+	exBytes, _ := json.MarshalIndent(minimalExample, "", "  ")
+	return string(exBytes)
+}
+
+// NormalizeAskUserArgs normalizes ask_user arguments by wrapping the shorthand
 // form (question + options) into the canonical batch form (questions array).
 // When questions is absent but question + options are present (plus optional
 // why, if_unanswered, multi_select, header), wraps them into a one-element
-// questions array. Returns normalized args or an error if the shape is invalid.
-func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
+// questions array. Preserves any non-shorthand keys (such as intent). Returns
+// normalized args or an error if the shape is invalid.
+func NormalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 	_, hasQuestions := args["questions"]
 	question, hasQuestion := args["question"]
 	options, hasOptions := args["options"]
@@ -274,41 +292,41 @@ func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 			wrapped["header"] = header
 		}
 
-		// Create normalized args with wrapped questions
-		out := make(map[string]any, 1)
+		// Create normalized args with wrapped questions, preserving non-shorthand keys.
+		out := make(map[string]any, len(args))
+		for k, v := range args {
+			if k != "question" && k != "options" && k != "why" && k != "if_unanswered" &&
+				k != "multi_select" && k != "header" {
+				out[k] = v
+			}
+		}
 		out["questions"] = []any{wrapped}
 		return out, nil
 	}
 
 	// Case 3: distinguish sub-cases within invalid shapes
-	minimalExample := map[string]any{
-		"questions": []any{
-			map[string]any{
-				"question": "Which option?",
-				"options": []any{
-					map[string]any{"label": "Option A", "detail": "First choice"},
-					map[string]any{"label": "Option B", "detail": "Second choice"},
-				},
-			},
-		},
-	}
-	exBytes, _ := json.MarshalIndent(minimalExample, "", "  ")
+	example := MinimalExampleQuestionsArray()
 
 	// Sub-case 3a: both questions and question/options present
 	if hasQuestions && hasQuestion {
-		errorMsg := "ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n" + string(exBytes)
+		errorMsg := "ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n" + example
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
 	if hasQuestion && !hasOptions {
-		errorMsg := "ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n" + string(exBytes)
+		errorMsg := "ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n" + example
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3c: neither questions nor question+options present
-	errorMsg := "ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n" + string(exBytes)
+	errorMsg := "ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n" + example
 	return nil, errors.New(errorMsg)
+}
+
+// normalizeAskUserArgs is an unexported alias for NormalizeAskUserArgs.
+func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
+	return NormalizeAskUserArgs(args)
 }
 
 // TruncationReason names the registry output limit that shortened a result.
@@ -860,7 +878,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// Normalize ask_user shorthand form (question + options) into batch form (questions array)
 	// before schema validation, so both forms are validated against the same schema.
 	if name == "ask_user" {
-		normalized, err := normalizeAskUserArgs(args)
+		normalized, err := NormalizeAskUserArgs(args)
 		if err != nil {
 			return rejectedResult(name, callID, err.Error(), t.Limit)
 		}
@@ -1024,10 +1042,10 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 	var omitted *LineRange
 	if truncated && out != full {
 		out += "\n[Tool output was truncated.]"
-		if toolName == "read_file" && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
+		if (toolName == "read_file" || toolName == "memory_read") && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
 			omitted = omittedNumberedLines(full, lim.MaxChars)
 			if omitted != nil {
-				out += fmt.Sprintf("\n[Lines %d-%d were cut; read_file with offset=%d limit=%d returns them.]", omitted.From, omitted.To, omitted.From, omitted.To-omitted.From+1)
+				out += fmt.Sprintf("\n[Lines %d-%d were cut; %s with offset=%d limit=%d returns them.]", omitted.From, omitted.To, toolName, omitted.From, omitted.To-omitted.From+1)
 			}
 		}
 		if toolName == "grep" && reason == TruncatedByChars {

@@ -159,7 +159,6 @@ Currently callable tools:
 - `manage_worktree`
 - `notes_agent_set`
 - `notes_read`
-- `update_goal`
 - `urls_add`
 - `urls_remove`
 

@@ -36,7 +36,7 @@ func (canaryStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) e
 func canarySession(t *testing.T, steps ...func(llm.Request) (llm.Response, error)) (*Session, *fakeErrAdapter) {
 	t.Helper()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "canary-provider", steps: steps}
+	adapter := newFakeErrAdapter("canary-provider", steps)
 	client.Register(adapter)
 	sess, err := NewSession(client, testOpenAICompatProfile("canary-provider", "canary-model", 0), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {

@@ -333,6 +333,31 @@ func (s *sandboxFS) recheckWriteTargetFd(tool, orig string, parentFd int, leaf s
 	return nil
 }
 
+// grantFdRecheckRefuses reports whether the fd-anchored recheck a grant applies
+// after Allow would refuse target. The approval card is gated on it so a
+// spelling the textual checks cannot distinguish — another letter case on a
+// case-insensitive volume, the macOS data-volume firmlink — never offers a card
+// the grant then refuses (#6115). It opens what the grant would open (the
+// parent directory for a write, the target itself for a read) with every
+// symlink refused, runs the same recheck, and treats an open failure as a
+// refusal because the grant could not complete at that target either.
+func (s *sandboxFS) grantFdRecheckRefuses(target string, write bool) bool {
+	if write {
+		parentFd, err := openAbsNoSymlinks(filepath.Dir(target), unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		if err != nil {
+			return true
+		}
+		defer func() { _ = unix.Close(parentFd) }()
+		return s.recheckWriteTargetFd("write_file", target, parentFd, filepath.Base(target)) != nil
+	}
+	fd, err := openAbsNoSymlinks(target, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return s.recheckMaskedFd("read_file", target, fd) != nil
+}
+
 // openWriteParent resolves the parent directory of abs beneath a writable root,
 // returning that directory fd (caller closes) and the leaf name. Writes never
 // happen "anywhere": WriteRoots is always the confining set (empty ⇒ read-only

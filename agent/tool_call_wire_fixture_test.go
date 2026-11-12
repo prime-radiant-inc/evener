@@ -493,7 +493,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_list_dir_page", tool: "list_dir",
-			note: "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
+			note: "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many entries were returned, where the next page starts, and where the budgeted walk stopped.",
 			args: map[string]any{"path": "agent", "limit": 2},
 		},
 		{

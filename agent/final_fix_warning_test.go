@@ -250,11 +250,11 @@ func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
 func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "warning-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("warning-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("warning-primary", 403, "primary rejected", nil, nil)
 		},
-	}})
+	}))
 	fallbackAdapter := &fakeAdapter{name: "warning-fallback", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			if req.MaxTokens == nil || *req.MaxTokens != 976 {
@@ -366,14 +366,14 @@ func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *tes
 func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "local-post-dispatch", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("local-post-dispatch", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("local-post-dispatch", "local-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -398,14 +398,14 @@ func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *test
 func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "provider-no-manager", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("provider-no-manager", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("provider-no-manager", "provider-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -435,14 +435,14 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 	client := llm.NewClient()
 	// The provider's body echoes the user's request, as real ones can.
 	const body = "context length exceeded: messages[1].content began \"user-private-prompt\""
-	adapter := &fakeErrAdapter{name: "provider-warning", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("provider-warning", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("provider-warning", "provider-model", 0)
 	resolved := profile.Resolved()
@@ -482,7 +482,7 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "output-budget", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("output-budget", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{
 				Provider:     "output-budget",
@@ -492,7 +492,7 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 				Maximum:      1_000,
 			}
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("output-budget", "output-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -516,11 +516,11 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "local-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("local-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("local-primary", 403, "rejected", nil, nil)
 		},
-	}})
+	}))
 	primary := testOpenAICompatProfile("local-primary", "primary-model", 0)
 	primaryResolved := primary.Resolved()
 	primaryResolved.Caps.ContextWindow = new(524_288)
@@ -557,22 +557,22 @@ func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "identity-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("identity-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
 		},
-	}})
-	fallbackAdapter := &fakeErrAdapter{name: "identity-fallback", steps: []func(llm.Request) (llm.Response, error){
+	}))
+	fallbackAdapter := newFakeErrAdapter("identity-fallback", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
 		},
-	}}
+	})
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("identity-primary", "primary-model", 0)
 	fallback := testOpenAICompatProfile("identity-fallback", "fallback-model", 0)
@@ -604,11 +604,11 @@ func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T)
 func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "unrelated-warning", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("unrelated-warning", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("unrelated-warning", 401, "unauthorized", nil, nil)
 		},
-	}})
+	}))
 	profile := testOpenAICompatProfile("unrelated-warning", "unrelated-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {

@@ -1782,6 +1782,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	} else {
 		reg = newProfileToolRegistry(s.profile)
+		s.reg = reg
 		if err := s.restoreSideEffect("register_core_tools", func() error { return registerCoreTools(reg, s) }); err != nil {
 			return nil, err
 		}

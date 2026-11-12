@@ -71,6 +71,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
+  type MutationDiscoveryReason,
   MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
@@ -1268,6 +1269,12 @@ type PendingTranscriptUpdate = ReceivedTranscriptUpdate & {
 type PendingThreadHydration = {
   client: AppwireClientLike;
   epoch: number;
+  // The ref's mutation-state generation when this read was issued. A
+  // successful authoritative publication marks the read current only while
+  // the generation still matches: a durable outbox change during the read
+  // (a receipt, a refusal, a settle) outranks the snapshot it predates, so
+  // discovery must read again.
+  mutationGeneration: number;
   notifications: PendingTranscriptUpdate[];
   backgroundBytes: number;
   backgroundInvalidated?: boolean;
@@ -2004,6 +2011,17 @@ const mutationStateGenerations = new Map<string, number>();
 function noteMutationStateChange(ref: string): void {
   mutationStateGenerations.set(ref, (mutationStateGenerations.get(ref) ?? 0) + 1);
 }
+// The mutation-state generation a ref's last authoritative read covered.
+// Discovery keeps a ref with a retained accepted display copy discoverable
+// for as long as the message waits, so without this marker every two-second
+// pass would re-transfer the transcript for state the client already holds.
+// A generation change (any durable outbox change, including a refusal whose
+// reply only a read carries) or live outbox work opens the gate again; only
+// once a read has run since the latest change does the poll stop.
+const discoveryReadGenerations = new Map<string, number>();
+function discoveryReadIsCurrent(ref: string): boolean {
+  return discoveryReadGenerations.get(ref) === (mutationStateGenerations.get(ref) ?? 0);
+}
 // Per-ref count of durable enqueues whose write is still in flight (from the
 // click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
 // serve this: a background pin refresh clears a ref's arm when the outbox reads
@@ -2408,7 +2426,11 @@ export function transientRefusalRetryPending(targetRef: string): boolean {
   return transientRefusalCancels.has(targetRef);
 }
 
-function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
+function handleDiscoveredMutations(
+  runtime: MutationRuntime,
+  targetRefs: Iterable<string>,
+  reason: MutationDiscoveryReason,
+): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const state = threadsStore.getState();
   // Storage-blocked refs ride the same retry: the wedge that failed their
@@ -2445,8 +2467,57 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
     }
     const pending = pendingThreadHydrations.get(targetRef);
     if (pending?.client === client && pending.epoch === epoch) continue;
+    // The ref stays discoverable while an accepted display copy waits. Only
+    // the periodic interval is a recovery scan for a healthy ref: every other
+    // reason is a real durable event or lifecycle transition, whose read is
+    // exactly the one a just-committed reply or a newly visible session
+    // depends on, so those keep reading. For an interval pass, a last
+    // authoritative read that already covers the ref's current mutation
+    // generation and owes no reconciliation leaves only live work or a real
+    // invalidation with something to recover.
+    if (
+      reason === "interval" &&
+      refState.threads.has(targetRef) &&
+      refState.mutationAuthorityRefs.has(targetRef) &&
+      !refState.mutationReconciliationFailures.has(targetRef) &&
+      !refState.mutationReconciliationStorageBlocked.has(targetRef) &&
+      discoveryReadIsCurrent(targetRef)
+    ) {
+      void hydrateDiscoveryRefForWork(runtime, client, epoch, targetRef, mutationStateGenerations.get(targetRef) ?? 0);
+      continue;
+    }
     void handleReady(client, epoch, targetRef);
   }
+}
+
+// The only reasons discovery still reads a ref whose last authoritative
+// snapshot is current: live outbox work this pass has not seen (another tab's
+// enqueue, or a send this tab has not dispatched yet), or a durable change
+// that advanced the generation while the storage read was in flight. A
+// canceled or superseded row is dead work. A failed read proves nothing, so
+// it hydrates rather than leaving the ref unreconciled.
+async function hydrateDiscoveryRefForWork(
+  runtime: MutationRuntime,
+  client: AppwireClientLike,
+  epoch: number,
+  targetRef: string,
+  generation: number,
+): Promise<void> {
+  const hasWork = await runtime.storage
+    .listOutbox(targetRef)
+    .then((records) => records.some((record) => record.state !== "canceled" && record.state !== "superseded"))
+    .catch(() => true);
+  if (!hasWork && (mutationStateGenerations.get(targetRef) ?? 0) === generation) return;
+  if (
+    !isCurrentMutationRuntime(runtime) ||
+    getWiredClient() !== client ||
+    getReadyEpoch() !== epoch ||
+    client.state !== "ready"
+  )
+    return;
+  const pending = pendingThreadHydrations.get(targetRef);
+  if (pending?.client === client && pending.epoch === epoch) return;
+  void handleReady(client, epoch, targetRef);
 }
 
 async function refreshUncertainMutationAuthority(
@@ -2603,8 +2674,8 @@ function getMutationRuntime(): MutationRuntime | null {
   });
   const outbox = new MutationOutbox(storage, {
     getClient,
-    onDiscover: (targetRefs) => {
-      if (runtime) handleDiscoveredMutations(runtime, targetRefs);
+    onDiscover: (targetRefs, reason) => {
+      if (runtime) handleDiscoveredMutations(runtime, targetRefs, reason);
     },
     // The browser's own discovery capabilities, named here rather than reached
     // for inside the shared class: sibling tabs over BroadcastChannel, the
@@ -3738,7 +3809,7 @@ export async function retryBlockedMutation(
         notifyMutationPersistence([record.targetRef]);
         // The resync-and-dispatch tail above already ran its dispatch pass, so
         // the fresh row drives its own - the same kick a resend gives it.
-        handleDiscoveredMutations(runtime, [record.targetRef]);
+        handleDiscoveredMutations(runtime, [record.targetRef], "enqueue");
       }
     }
   }
@@ -3988,7 +4059,7 @@ export async function resendRecoveryMutation(
   for (const retired of result.retiredIds) noteHandledMutation(retired);
   pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
-  handleDiscoveredMutations(runtime, [targetRef]);
+  handleDiscoveredMutations(runtime, [targetRef], "enqueue");
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
   if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
@@ -5715,6 +5786,7 @@ function beginThreadHydration(
   const pending = {
     client,
     epoch,
+    mutationGeneration: mutationStateGenerations.get(ref) ?? 0,
     notifications: [],
     backgroundBytes: 0,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
@@ -5759,6 +5831,7 @@ function beginWatchedHydration(
   const pending = {
     client,
     epoch,
+    mutationGeneration: mutationStateGenerations.get(ref) ?? 0,
     notifications: [],
     backgroundBytes: 0,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
@@ -5980,6 +6053,16 @@ async function publishAndReconcileThreadHydration(
     scheduleEntryRecordedReconciliation(ref);
   }
   reconcileAcceptedReadRecovery(ref, hydration.response, published);
+  // The ref's authoritative snapshot is current only until the next durable
+  // outbox change. Capture the generation this read was issued under; a
+  // change during the read leaves the gate open for the next discovery pass.
+  if (hydration.response.thread.evener.mutationStateAuthoritative === true) {
+    if ((mutationStateGenerations.get(ref) ?? 0) === pending.mutationGeneration)
+      discoveryReadGenerations.set(ref, pending.mutationGeneration);
+    else discoveryReadGenerations.delete(ref);
+  } else {
+    discoveryReadGenerations.delete(ref);
+  }
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;
   // The authoritative read has succeeded, so the replay gate opens HERE — in
@@ -8933,7 +9016,11 @@ export async function settleBackgroundTranscriptsForTests(): Promise<void> {
 
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */
 export async function settleEntryTranscriptForTests(ref: string): Promise<void> {
-  await trackedHydrationCompletions.get(ref);
+  // The recovery chain registers under trackedHydrationCompletions too, but a
+  // newer plain hydration displaces that registration while the chain is
+  // still pending. Await the chain's own span as well, so a caller that
+  // settles at that instant still waits for the convergence it observes.
+  await Promise.all([trackedHydrationCompletions.get(ref), openingRecoveryCompletion(ref)]);
   await entryTranscriptRoute(ref)?.repository?.settled();
 }
 
@@ -9103,6 +9190,7 @@ export function resetThreadsStoreForTests(): void {
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();
   mutationStateGenerations.clear();
+  discoveryReadGenerations.clear();
   dispatchableMutationRefs.clear();
   for (const cancelRetry of transientRefusalCancels.values()) cancelRetry();
   transientRefusalCancels.clear();

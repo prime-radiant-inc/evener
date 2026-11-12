@@ -1258,6 +1258,18 @@ type Session struct {
 	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
 	// Reset at each turn start.
 	attentionCoveredIDs map[string]struct{}
+	// attentionCoverageActive marks that the session is inside a turn's model
+	// round loop, so mid-turn compactions suppress attentionCoveredIDs while
+	// idle between-turn compactions keep still-pending turns intact. Guarded by
+	// attentionMu.
+	attentionCoverageActive bool
+	// attentionFoldedCovered holds pending attention turns that a mid-turn
+	// compaction suppressed from re-injection because a settled round of this
+	// turn already presented them (attentionCoveredIDs). If any remain
+	// durably unconsumed when the turn exits, settleFoldedCoveredAttention
+	// restores them into history so the retry wake still sees their content.
+	// Guarded by attentionMu; reset with attentionCoveredIDs at turn start.
+	attentionFoldedCovered []foldedCoveredAttentionTurn
 	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
 	// attentionCoveredIDs only when the round's call settles, so a failed

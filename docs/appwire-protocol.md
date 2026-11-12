@@ -2961,6 +2961,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `generation_id` | string |  |  |
 | `targets` | [][appwire.NavigationInvalidationTarget](#navigationinvalidationtarget) |  |  |
+| `deferred` | bool | yes |  |
 
 
 ### `NavigationReadBase`
