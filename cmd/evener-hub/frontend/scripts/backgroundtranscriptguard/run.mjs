@@ -2470,35 +2470,51 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error("two-tab delete: the target remains readable on the source after deletion");
     }
     // The sibling's fresh acquisition must not resurrect the deleted session:
-    // the deletion fence refuses the hydration and no route or durable row
-    // appears. Poll the real condition (the ref acquired no route) rather than
-    // sleeping a fixed interval.
+    // the deletion fence refuses the hydration, so a ref with no route before
+    // the open still has none after it and no durable row appears. Record that
+    // pre-open route: a sibling that had the ref mounted already holds one,
+    // and retention is not evidence that this acquisition opened it (#4794).
+    // Only a genuinely fresh acquisition is polled toward the refusal; a
+    // retained route is read once and recorded as such.
+    const routeBefore = await evaluate(
+      tab.send,
+      `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+    );
     await call(tab.send, "open", ref);
-    const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
     let routePresent = await evaluate(
       tab.send,
       `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
     );
-    while (routePresent !== false && Date.now() < refusalDeadline) {
-      await delay(100);
-      routePresent = await evaluate(
-        tab.send,
-        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
-      );
+    if (routeBefore.present === false) {
+      const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
+      while (routePresent !== false && Date.now() < refusalDeadline) {
+        await delay(100);
+        routePresent = await evaluate(
+          tab.send,
+          `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
+        );
+      }
     }
     const resurrected = await durable(tab.send, ref);
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
-    driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
-    if (routePresent === true) {
+    const route = await evaluate(
+      tab.send,
+      `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+    );
+    driver.milestone("two-tab-delete-refusal", {
+      ref,
+      routeBeforePresent: routeBefore.present,
+      routeBeforeHistoryKey: routeBefore.historyKey,
+      routePresent,
+      routeHistoryKey: route.historyKey,
+      rowsAfterOpen: resurrectedRows,
+    });
+    if (routeBefore.present === false && routePresent === true) {
       // Name the route state that survived the refusal: which open status it
       // reported, whether a store model exists, and its history key distinguish
       // a resurrected repository from a route object that never had one.
-      const route = await evaluate(
-        tab.send,
-        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
-      );
       throw new Error(
-        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ routeBefore, route, rowsAfterOpen: resurrectedRows })}`,
       );
     }
     if (resurrectedRows !== 0) {
