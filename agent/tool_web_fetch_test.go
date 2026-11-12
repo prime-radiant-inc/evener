@@ -857,11 +857,9 @@ func TestWebFetchTool_TitleOnlyHTMLReachesModelAndRenderedCache(t *testing.T) {
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
-	var captured []llm.Request
 	adapter := &agenttest.ModelTrackingAdapter{
 		Provider: "openai",
 		Respond: func(req llm.Request) (llm.Response, error) {
-			captured = append(captured, req)
 			return agenttest.FinalResponse(answerSentinel), nil
 		},
 	}
@@ -893,7 +891,8 @@ func TestWebFetchTool_TitleOnlyHTMLReachesModelAndRenderedCache(t *testing.T) {
 	if !strings.Contains(string(rendered), titleSentinel) {
 		t.Fatalf("rendered.md missing <title> %s: %q", titleSentinel, string(rendered))
 	}
-	if len(captured) != 1 || !requestMessagesContainText(captured[0].Messages, titleSentinel) {
-		t.Fatalf("cheap model request missing <title> %s: %+v", titleSentinel, captured)
+	reqs := adapter.Requests()
+	if len(reqs) != 1 || !requestMessagesContainText(reqs[0].Messages, titleSentinel) {
+		t.Fatalf("cheap model request missing <title> %s: %+v", titleSentinel, reqs)
 	}
 }

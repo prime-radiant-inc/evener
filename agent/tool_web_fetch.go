@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -51,94 +50,106 @@ func htmlToMarkdown(rawHTML string) (string, error) {
 		return "", err
 	}
 	md := string(mdBytes)
-	if title == "" || headingHasTitle || strings.EqualFold(strings.TrimSpace(md), title) {
+	trimmed := strings.TrimSpace(md)
+	if title == "" || headingHasTitle || strings.EqualFold(trimmed, title) {
 		return md, nil
 	}
-	if strings.TrimSpace(md) == "" {
+	if trimmed == "" {
 		return "# " + title, nil
 	}
 	return "# " + title + "\n\n" + md, nil
 }
 
-// inspectHTMLTitle walks doc iteratively before ConvertNode mutates it,
-// returning the first non-empty HTML <title> (ignoring foreign namespaces such
-// as <svg>/<math> and inert containers such as <template>) and whether any body
-// heading already matches that title case-insensitively.
+// inspectHTMLTitle finds the first non-empty HTML <title> before ConvertNode
+// mutates doc (ignoring foreign namespaces such as <svg>/<math> and inert
+// containers such as <template>) and reports whether any body heading already
+// matches that title case-insensitively.
 func inspectHTMLTitle(doc *html.Node) (title string, headingHasTitle bool) {
-	type frame struct {
-		node   *html.Node
-		inHead bool
-	}
-	var headings []string
-	stack := []frame{{node: doc}}
-	for len(stack) > 0 {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		n := cur.node
-		if n.Type == html.ElementNode {
-			if n.Namespace != "" {
-				continue
-			}
-			switch n.Data {
-			case "script", "style", "noscript", "iframe", "template":
-				continue
-			case "head":
-				cur.inHead = true
-			case "title":
-				if title == "" {
-					title = collapseHTMLWhitespace(htmlNodeText(n))
-				}
-				continue
-			case "h1", "h2", "h3", "h4", "h5", "h6":
-				if !cur.inHead {
-					if h := collapseHTMLWhitespace(htmlNodeText(n)); h != "" {
-						headings = append(headings, h)
-					}
-				}
-			}
-		}
-		for child := n.LastChild; child != nil; child = child.PrevSibling {
-			stack = append(stack, frame{node: child, inHead: cur.inHead})
-		}
-	}
+	title = extractHTMLTitle(doc)
 	if title == "" {
 		return "", false
 	}
-	return title, slices.ContainsFunc(headings, func(h string) bool {
-		return strings.EqualFold(h, title)
-	})
+	return title, hasMatchingBodyHeading(doc, title)
+}
+
+func extractHTMLTitle(doc *html.Node) string {
+	stack := []*html.Node{doc}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if isInertHTMLElement(n) {
+			continue
+		}
+		if n.Type == html.ElementNode && n.Data == "title" {
+			if t := collapseHTMLWhitespace(htmlNodeText(n)); t != "" {
+				return t
+			}
+			continue
+		}
+		stack = pushHTMLChildren(stack, n)
+	}
+	return ""
+}
+
+func hasMatchingBodyHeading(doc *html.Node, title string) bool {
+	stack := []*html.Node{doc}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if isInertHTMLElement(n) || (n.Type == html.ElementNode && n.Data == "head") {
+			continue
+		}
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "h1", "h2", "h3", "h4", "h5", "h6":
+				if strings.EqualFold(collapseHTMLWhitespace(htmlNodeText(n)), title) {
+					return true
+				}
+			}
+		}
+		stack = pushHTMLChildren(stack, n)
+	}
+	return false
 }
 
 func htmlNodeText(root *html.Node) string {
 	var b strings.Builder
-	stack := []*html.Node{root}
+	stack := pushHTMLChildren(nil, root)
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if n == root {
-			for child := n.LastChild; child != nil; child = child.PrevSibling {
-				stack = append(stack, child)
-			}
-			continue
-		}
 		if n.Type == html.TextNode {
 			b.WriteString(n.Data)
 			continue
 		}
-		if n.Type == html.ElementNode {
-			if n.Namespace != "" {
-				continue
-			}
-			switch n.Data {
-			case "script", "style", "noscript", "iframe", "template":
-				continue
-			}
+		if isInertHTMLElement(n) {
+			continue
 		}
-		for child := n.LastChild; child != nil; child = child.PrevSibling {
-			stack = append(stack, child)
-		}
+		stack = pushHTMLChildren(stack, n)
 	}
 	return b.String()
+}
+
+func isInertHTMLElement(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	if n.Namespace != "" {
+		return true
+	}
+	switch n.Data {
+	case "script", "style", "noscript", "iframe", "template":
+		return true
+	default:
+		return false
+	}
+}
+
+func pushHTMLChildren(stack []*html.Node, n *html.Node) []*html.Node {
+	for child := n.LastChild; child != nil; child = child.PrevSibling {
+		stack = append(stack, child)
+	}
+	return stack
 }
 
 func collapseHTMLWhitespace(s string) string {
@@ -247,7 +258,8 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	isHTML := strings.Contains(strings.ToLower(contentType), "text/html")
+	rawExt := extFromContentType(contentType)
+	isHTML := rawExt == ".html"
 	sizeBytes := len(body)
 
 	// Per-fetch cache directory (absolute XDG path).
@@ -257,7 +269,6 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	// Write raw file.
-	rawExt := extFromContentType(contentType)
 	rawName := "raw" + rawExt
 	rawPath := filepath.Join(fetchDir, rawName)
 	if err := rt.writeFile(rawPath, body, 0o644); err != nil {
