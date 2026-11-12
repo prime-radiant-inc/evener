@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -1099,6 +1100,219 @@ func TestAPIHealthQuotaClassCountsExplicitQuotaExceeded(t *testing.T) {
 	}
 	if res.ErrorsByClass[apiErrorClassRetryable] != 0 {
 		t.Fatalf("retryable errors = %d, want 0", res.ErrorsByClass[apiErrorClassRetryable])
+	}
+}
+
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndTurnsRan(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 1})
+	// 0-byte API log file as created by NewSessionOwnershipAPILogger when discardRecords is true
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
+func TestRenderAPIHealth_OmitsUnrecordedOnZeroValuedStructWithAttempts(t *testing.T) {
+	// A struct literal omitting APILogEnabled must not render api_log=not_recorded
+	// when attempts were made.
+	res := APIHealthResult{
+		SessionID: "s1",
+		Attempts:  6,
+		ErrorsByClass: map[string]int{
+			apiErrorClassQuota:     0,
+			apiErrorClassPermanent: 0,
+			apiErrorClassRetryable: 0,
+		},
+	}
+	human := RenderAPIHealth(res)
+	if strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth rendered api_log=not_recorded for struct with attempts:\n%s", human)
+	}
+	if !strings.Contains(human, "session s1: attempts=6") {
+		t.Errorf("RenderAPIHealth missing 'session s1: attempts=6':\n%s", human)
+	}
+}
+
+func TestAPIHealth_MissingAPILogFileHandledAsUnrecorded(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	// No .api.jsonl file created
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 1})
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("APIHealth failed on missing api log: %v", err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled || !res.Unrecorded || res.Status != "not_recorded" {
+		t.Errorf("got api_log_enabled=%t unrecorded=%t status=%q, want false/true/not_recorded",
+			res.APILogEnabled, res.Unrecorded, res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
+func TestAPIHealth_RecordedWhenZeroAttemptsAndNoTurnsRan(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if !res.APILogEnabled {
+		t.Errorf("api_log_enabled = false, want true")
+	}
+	if res.Unrecorded {
+		t.Errorf("unrecorded = true, want false")
+	}
+	if res.Status != "recorded" {
+		t.Errorf("status = %q, want recorded", res.Status)
+	}
+}
+
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndAssistantTurnInTranscript(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	// Meta has TurnCount: 0, but transcript has assistant turn
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
+func TestAPIHealth_UnrecordedWhenZeroAttemptsAndTurnFailureInTranscript(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	// Meta TurnCount is 0, but transcript records a TurnFailure from a rejected initial request
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnFailure, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{assistantText("provider 401 unauthorized")}}),
+	}
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 0})
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled {
+		t.Errorf("api_log_enabled = true, want false")
+	}
+	if !res.Unrecorded {
+		t.Errorf("unrecorded = false, want true")
+	}
+	if res.Status != "not_recorded" {
+		t.Errorf("status = %q, want not_recorded", res.Status)
+	}
+}
+
+func TestAPIHealth_MalformedTranscriptPropagatesError(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+	// Overwrite transcript with invalid json
+	transcriptPath := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte("invalid json line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	apiPath := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := APIHealth(context.Background(), base, sidA)
+	if err == nil {
+		t.Fatal("expected error for malformed transcript, got nil")
+	}
+}
+
+func TestAPIHealth_HonorsContextCancellation(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{TurnCount: 0})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := APIHealth(ctx, base, sidA)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 

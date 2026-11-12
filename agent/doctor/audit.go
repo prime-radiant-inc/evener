@@ -937,6 +937,10 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
 			}
+			if apiHealthRes.Unrecorded {
+				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: "API logging not recorded for session"})
+				continue
+			}
 			source.apiHealth = apiHealthRes
 			source.haveAPIHealth = true
 		}
