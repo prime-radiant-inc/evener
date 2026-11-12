@@ -148,6 +148,14 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 		}
 		w.Active = false
 		w.EndReason = e.Watch.EndReason
+		w.EndedAt = e.TS
+		maxSeq := 0
+		for _, other := range watches {
+			if other != nil && other.EndedSeq > maxSeq {
+				maxSeq = other.EndedSeq
+			}
+		}
+		w.EndedSeq = maxSeq + 1
 		if e.Watch.Deliveries > 0 {
 			w.Deliveries = e.Watch.Deliveries
 		}

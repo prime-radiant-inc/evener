@@ -697,21 +697,22 @@ func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
 	if err != nil {
 		return err
 	}
-	var watchIDs []string
-	for id, rec := range watches {
-		if rec == nil || rec.Active {
+	var ended []*jobstore.WatchRecord
+	for _, rec := range watches {
+		if rec == nil || rec.Active || rec.EndReason == "runtime_lost" {
 			continue
 		}
-		watchIDs = append(watchIDs, id)
+		ended = append(ended, rec)
 	}
-	sort.Strings(watchIDs)
-	if len(watchIDs) > watchHistoryCap {
-		watchIDs = watchIDs[len(watchIDs)-watchHistoryCap:]
+	sort.SliceStable(ended, func(i, j int) bool {
+		return ended[i].EndedSeq < ended[j].EndedSeq
+	})
+	if len(ended) > watchHistoryCap {
+		ended = ended[len(ended)-watchHistoryCap:]
 	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	for _, id := range watchIDs {
-		rec := watches[id]
+	for _, rec := range ended {
 		target := rec.Target
 		if target == runtimeMessageAliasCaller || target == "caller" {
 			target = "self"
@@ -723,6 +724,10 @@ func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
 		if source == runtimeMessageAliasCaller || source == "caller" {
 			source = "self"
 		}
+		endedAt := rec.EndedAt
+		if endedAt.IsZero() {
+			endedAt = jm.now()
+		}
 		jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
 			id:                 rec.WatchID,
 			source:             source,
@@ -733,7 +738,7 @@ func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
 			receiverDelegateID: rec.ReceiverDelegateID,
 			deliveries:         rec.Deliveries,
 			endReason:          rec.EndReason,
-			endedAt:            jm.now(),
+			endedAt:            endedAt,
 		})
 	}
 	if len(jm.watchHistory) > watchHistoryCap {
@@ -791,10 +796,11 @@ func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:       key,
-			cfg:       cfg,
-			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
-			endReason: "job_manager_closed",
+			key:        key,
+			cfg:        cfg,
+			terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			endReason:  "job_manager_closed",
+			deliveries: cfg.deliveries,
 		})
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)

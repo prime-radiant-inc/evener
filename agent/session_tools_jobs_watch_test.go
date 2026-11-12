@@ -1531,7 +1531,10 @@ func TestJobWatch_ProgressIntervalOnSourceSelfRejected(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("job_watch create progress on self succeeded, want error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "progress_interval_ms is a job progress trigger; for a timer use repeat_seconds") {
-		t.Fatalf("error output = %q, want progress_interval_ms rejected on self", res.Output)
+	if s.jobManager.watchCount() != 0 {
+		t.Fatalf("watchCount = %d, want 0", s.jobManager.watchCount())
+	}
+	if len(s.jobManager.recentWatchSummaries()) != 0 {
+		t.Fatalf("recentWatchSummaries = %+v, want empty", s.jobManager.recentWatchSummaries())
 	}
 }

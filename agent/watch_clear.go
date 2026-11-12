@@ -16,19 +16,21 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	if key.SendTo != "" {
 		cfg := jm.watches[key]
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:       key,
-			cfg:       cfg,
-			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-			endReason: "cleared",
+			key:        key,
+			cfg:        cfg,
+			terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+			endReason:  "cleared",
+			deliveries: cfg.deliveries,
 		})
 	} else {
 		for existingKey, cfg := range jm.watches {
 			if watchKeyMatchesClearRequest(existingKey, key) {
 				targets = append(targets, watchConfigTerminalSnapshot{
-					key:       existingKey,
-					cfg:       cfg,
-					terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-					endReason: "cleared",
+					key:        existingKey,
+					cfg:        cfg,
+					terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+					endReason:  "cleared",
+					deliveries: cfg.deliveries,
 				})
 			}
 		}
@@ -113,10 +115,11 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 		return watchResult{WatchID: watchID, Watching: false}, nil
 	}
 	targets := []watchConfigTerminalSnapshot{{
-		key:       key,
-		cfg:       cfg,
-		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: endReason,
+		key:        key,
+		cfg:        cfg,
+		terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+		endReason:  endReason,
+		deliveries: cfg.deliveries,
 	}}
 	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
 	teardown.markRejectingLocked()
@@ -394,7 +397,7 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 		jm.mu.Unlock()
 		return jobNotification{}, false
 	}
-	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted"}}
+	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted", deliveries: cfg.deliveries}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
 
@@ -566,9 +569,10 @@ func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now 
 			continue
 		}
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:      key,
-			cfg:      cfg,
-			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now),
+			key:        key,
+			cfg:        cfg,
+			terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now),
+			deliveries: cfg.deliveries,
 		})
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)

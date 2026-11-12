@@ -80,7 +80,7 @@ func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
 	}
 }
 
-func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string) jobstore.Event {
+func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string, deliveries int) jobstore.Event {
 	return jobstore.Event{
 		Kind:    jobstore.EventWatchCleared,
 		TS:      jm.now(),
@@ -88,7 +88,7 @@ func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string) jobst
 		Watch: &jobstore.WatchEvent{
 			Generation: cfg.generation,
 			EndReason:  endReason,
-			Deliveries: cfg.deliveries,
+			Deliveries: deliveries,
 		},
 	}
 }
@@ -100,7 +100,7 @@ func (jm *jobManager) appendWatchReplacementBatch(cfg *watchConfig, targets []wa
 		if target.cfg == nil || target.endReason == "" {
 			continue
 		}
-		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason))
+		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason, target.deliveries))
 	}
 	return jm.appendWatchRegistryEvents(events)
 }
@@ -111,7 +111,7 @@ func (jm *jobManager) appendWatchTeardownBatch(snapshots []watchSendTerminalSnap
 		if target.cfg == nil || target.endReason == "" {
 			continue
 		}
-		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason))
+		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason, target.deliveries))
 	}
 	return jm.appendWatchRegistryEvents(events)
 }

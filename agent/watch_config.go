@@ -344,8 +344,9 @@ func (jm *jobManager) persistWatchReplacementLocked(key watchKey, cfg *watchConf
 	if existing != nil && !equal {
 		targets = append(targets, watchConfigTerminalSnapshot{
 			key: key, cfg: existing,
-			terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
-			endReason: "replaced",
+			terminal:   watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+			endReason:  "replaced",
+			deliveries: existing.deliveries,
 		})
 	}
 	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}

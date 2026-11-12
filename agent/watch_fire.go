@@ -515,7 +515,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	if !matched {
 		registryEvents := []jobstore.Event{
 			watchRegisteredEvent(jm, cfg),
-			watchClearedEvent(jm, cfg, "completed"),
+			watchClearedEvent(jm, cfg, "completed", cfg.deliveries),
 		}
 		if err := jm.appendWatchRegistryEvents(registryEvents); err != nil {
 			return watchResult{}, err
@@ -574,7 +574,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 			},
 		)
 	}
-	registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "completed"))
+	registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "completed", cfg.deliveries))
 	if err := jm.appendWatchRegistryEvents(registryEvents); err != nil {
 		return watchResult{}, err
 	}
