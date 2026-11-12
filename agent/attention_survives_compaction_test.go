@@ -780,14 +780,8 @@ func TestRootDelegateAttentionCoveredAndFoldedMidTurnRestoresWhenTurnFails(t *te
 			}
 		},
 	}
-	client := llm.NewClient()
-	client.Register(main)
-	client.Register(&agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
-	}})
-	stateDir := t.TempDir()
-	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
-	sess = newSession(t, withClient(client), withProfile(profile), withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	sess, _ = newCompactableSession(t)
+	sess.client.Register(main)
 	muteNoteElicitation(sess)
 
 	if _, err := sess.appendDelegateNotificationDurably(coveredID, coveredText); err != nil {

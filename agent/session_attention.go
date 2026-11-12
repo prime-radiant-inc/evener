@@ -1445,21 +1445,21 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if s.isRootDelegateAttentionReceiver() {
 		return s.finishRootDelegateAttentionTurn(ids, turnErr)
 	}
+	consumed := false
+	defer s.settleFoldedCoveredAttention(&consumed)
 	if turnErr != nil {
-		s.restoreFoldedCoveredAttention()
 		return nil
 	}
 	covered := s.unionCoveredAttention(ids)
 	if len(covered) == 0 {
-		s.clearFoldedCoveredAttention()
+		consumed = true
 		return nil
 	}
 	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
 	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
-		s.restoreFoldedCoveredAttention()
 		return err
 	}
-	s.clearFoldedCoveredAttention()
+	consumed = true
 	return nil
 }
 
@@ -1469,6 +1469,8 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 // needs no wake of its own. Failures keep the transcript-owned IDs pending and
 // arrange a paced retry wake.
 func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
+	consumed := false
+	defer s.settleFoldedCoveredAttention(&consumed)
 	// A failed turn never resolves, so on that path the union serves only as
 	// the emptiness gate that arms the paced-retry backstop — and a non-empty
 	// snapshot already passes it. Skip the fold read there; keep it for an
@@ -1484,19 +1486,15 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		ids = s.unionCoveredAttention(ids)
 	}
 	if len(ids) == 0 {
-		if turnErr != nil {
-			s.restoreFoldedCoveredAttention()
-		} else {
-			s.clearFoldedCoveredAttention()
-		}
+		consumed = turnErr == nil
 		return nil
 	}
 	var resolutionErr error
 	if turnErr == nil {
 		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
 		if err == nil {
+			consumed = true
 			s.attentionMu.Lock()
-			s.attentionFoldedCovered = nil
 			s.rootAttentionPaused = false
 			for _, id := range ids {
 				delete(s.rootAttentionWakeIDs, id)
@@ -1510,7 +1508,6 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		}
 		resolutionErr = err
 	}
-	s.restoreFoldedCoveredAttention()
 	// A PERMANENT provider failure — a 401 from a dead credential, a
 	// request the provider will refuse every time — cannot be retried into
 	// success, and the paced retry never gives up on its own: re-arming it
@@ -1711,12 +1708,6 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Unlock()
 }
 
-func (s *Session) clearFoldedCoveredAttention() {
-	s.attentionMu.Lock()
-	s.attentionFoldedCovered = nil
-	s.attentionMu.Unlock()
-}
-
 // splitCoveredAttentionLocked separates attention turns already presented in a
 // settled round of this turn (attentionCoveredIDs) from turns still awaiting
 // presentation. A mid-turn compaction drops the covered turns instead of
@@ -1752,11 +1743,12 @@ func (s *Session) recordFoldedCoveredAttentionLocked(published, covered []schema
 	}
 }
 
-// restoreFoldedCoveredAttention puts back into resident history any pending
-// attention turns that a mid-turn compaction suppressed as covered during a
-// turn that ultimately failed to consume them durably. Fast-paths without a
-// transcript read when no mid-turn fold suppressed a covered turn.
-func (s *Session) restoreFoldedCoveredAttention() {
+// settleFoldedCoveredAttention clears mid-turn folded covered attention turns
+// when the turn consumed its coverage, or restores any still-pending ones back
+// into resident history when the turn failed before durable resolution.
+// Fast-paths without a transcript read when no mid-turn fold suppressed a
+// covered turn.
+func (s *Session) settleFoldedCoveredAttention(consumed *bool) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	if len(s.attentionFoldedCovered) == 0 {
@@ -1764,6 +1756,9 @@ func (s *Session) restoreFoldedCoveredAttention() {
 	}
 	folded := s.attentionFoldedCovered
 	s.attentionFoldedCovered = nil
+	if *consumed {
+		return
+	}
 	pendingTurns, err := s.pendingAttentionTurnsLocked()
 	if err != nil {
 		for i, turn := range folded {

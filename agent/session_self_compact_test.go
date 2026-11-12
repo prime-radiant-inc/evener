@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1114,14 +1115,13 @@ func TestForceCompact_EnqueuesSingleTaskListReminder(t *testing.T) {
 	t.Parallel()
 	sess, _ := newCompactableSession(t)
 	muteNoteElicitation(sess)
-	rawArgs := json.RawMessage(`{"add":[{"type":"implement","description":"Fix compaction dedupe","prompt":"Ensure single task reminder"}]}`)
-	if res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "t1", Name: "task_list", Arguments: rawArgs}); res.IsError {
-		t.Fatalf("seed task_list: %s", res.Output)
+	if _, err := sess.getOrCreateTaskStore().Append([]taskpkg.TaskInput{{
+		Type:        taskpkg.TaskTypeImplement,
+		Description: "Fix compaction dedupe",
+		Prompt:      "Ensure single task reminder",
+	}}); err != nil {
+		t.Fatalf("seed taskStore: %v", err)
 	}
-	// Clear any pre-compaction steering so only the compaction flush's reminders remain.
-	sess.mu.Lock()
-	sess.steeringQueue = nil
-	sess.mu.Unlock()
 
 	seedNumberedSessionHistory(t, sess, 12)
 	if err := sess.requestForceCompact("summarize earlier rounds"); err != nil {

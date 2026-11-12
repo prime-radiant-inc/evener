@@ -1005,10 +1005,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
 		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
-		if len(pendingCompactionTurns) > 0 && !superseded {
-			s.steerCompactionTaskReminderForFold(commit.publishedRevision)
-		}
 		if artifactProduced && !superseded {
+			s.steerCompactionTaskReminderForFold(commit.publishedRevision)
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
 		if noteCommit != nil {
