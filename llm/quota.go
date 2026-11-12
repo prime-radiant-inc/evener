@@ -174,7 +174,9 @@ func (c *QuotaCoordinator) Wait(ctx context.Context, req QuotaWait, sleep SleepF
 			// The state store became unusable mid-wait. The attempt has already
 			// announced its retry, so wait out the rest of this session's own
 			// cooldown rather than dispatching immediately.
-			return waitOutCooldown(ctx, sleep, req, waited)
+			slept, waitErr := waitOutCooldown(ctx, sleep, req, waited)
+			waited += slept
+			return waitErr
 		}
 		if claimedNow {
 			claimed = true
@@ -221,23 +223,27 @@ func quotaContext(ctx context.Context, budget, spent time.Duration) (context.Con
 }
 
 // waitOutCooldown sleeps whatever remains of this group's own cooldown after a
-// state-store failure mid-wait, clipped to the budget left for the wait. A
+// state-store failure mid-wait, clipped to the budget left for the wait, and
+// reports how long it slept so cleanup is bounded by what is left afterward. A
 // retry must not dispatch before the backoff it already announced.
-func waitOutCooldown(ctx context.Context, sleep SleepFunc, req QuotaWait, waited time.Duration) error {
+func waitOutCooldown(ctx context.Context, sleep SleepFunc, req QuotaWait, waited time.Duration) (time.Duration, error) {
 	left := req.Cooldown - waited
 	if left <= 0 {
-		return nil
+		return 0, nil
 	}
 	if req.Budget > 0 {
 		remaining, ok := quotaBudgetRemaining(req.Budget, waited)
 		if !ok {
-			return errQuotaWaitExhausted
+			return 0, errQuotaWaitExhausted
 		}
 		if left > remaining {
 			left = remaining
 		}
 	}
-	return sleep(ctx, left)
+	if err := sleep(ctx, left); err != nil {
+		return 0, err
+	}
+	return left, nil
 }
 
 // reportAndEnqueue pushes this group's cooldown and joins the waiter queue in
