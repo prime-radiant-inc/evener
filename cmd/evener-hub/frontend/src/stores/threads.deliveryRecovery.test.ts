@@ -764,6 +764,45 @@ test("periodic discovery recovers reconciliation after the final durable record 
   }
 });
 
+// A waiting message keeps its ref discoverable while it waits: its accepted
+// display copy is the only durable record, and the periodic scan keeps naming
+// the ref. Discovery must not re-read the transcript for that, since the
+// client already holds the model and a current authoritative snapshot.
+test("the discovery interval does not re-read a hydrated ref whose outbox is empty", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "waiting-send" });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", clientMutationId: "waiting-send", input: [{ type: "text", text: "waiting" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "waiting" }] },
+    });
+    await storage.markAttempted("waiting-send");
+    await storage.settleReceipt("waiting-send", "pending", ["entry-waiting"]);
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    expect(await storage.listTargetRefs()).toEqual(["ref_a"]);
+    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+    await vi.advanceTimersByTimeAsync(2000);
+    await settleCallerContinuations();
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test.each(["active", "idle"])(
   "recovered %s descendant without uncertain messages permits new sends",
   async (status) => {
