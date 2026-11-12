@@ -11,6 +11,13 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 )
 
+// RepairArgs normalizes args against the tool's JSON-Schema parameter object.
+// Re-exported so packages outside agent/internal/ can apply the same
+// argument normalization and aliasing the live path uses.
+func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []repair.Change) {
+	return repair.RepairArgs(params, args, keep...)
+}
+
 // MaxToolArgumentBytes is the same byte cap the live path enforces before
 // parsing tool arguments. Re-exported so the projection side can apply the
 // same size gate before extracting intent from oversized valid JSON.

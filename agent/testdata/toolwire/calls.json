@@ -997,7 +997,7 @@
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_add",
-      "output": "Added 3 task(s). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "output": "Added 3 task(s) (#1, #2, #3). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
       "status": "completed",
       "completedAt": 1790625602000,
       "raw": [

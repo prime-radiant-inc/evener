@@ -1243,3 +1243,63 @@ func TestTaskTool_UpdateDependsOnSameCallAddRejected(t *testing.T) {
 		t.Fatal("rejected combined call must apply nothing (atomicity)")
 	}
 }
+
+// TestTaskTool_AddReturnsAssignedIDs pins issue #6189: task_list(add=[...])
+// reports the newly assigned task IDs in its output, and newly added tasks
+// start in open status.
+func TestTaskTool_AddReturnsAssignedIDs(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p0"}})
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"type": "research", "description": "second task", "prompt": "do research"},
+			map[string]any{"type": "fix", "description": "third task", "prompt": "fix issue"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add call failed: %s", res.FullOutput)
+	}
+	wantPrefix := "Added 2 task(s) (#2, #3)."
+	if !strings.Contains(res.FullOutput, wantPrefix) {
+		t.Fatalf("output = %q, want prefix containing %q", res.FullOutput, wantPrefix)
+	}
+	tasks := h.store.View()
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	if tasks[1].Status != taskpkg.TaskOpen || tasks[2].Status != taskpkg.TaskOpen {
+		t.Fatalf("newly added tasks must start in open status: %+v", tasks)
+	}
+}
+
+// TestTaskTool_AddAcceptsTitleAliasAndDefaultType pins issue #6189: task_list.add
+// accepts "title" as an alias for "description" and defaults "type" to "implement".
+func TestTaskTool_AddAcceptsTitleAliasAndDefaultType(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"title": "step one", "prompt": "first prompt"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add with title and default type failed: %s", res.FullOutput)
+	}
+	wantPrefix := "Added 1 task(s) (#1)."
+	if !strings.Contains(res.FullOutput, wantPrefix) {
+		t.Fatalf("output = %q, want prefix containing %q", res.FullOutput, wantPrefix)
+	}
+	tasks := h.store.View()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Description != "step one" {
+		t.Fatalf("task description = %q, want %q", tasks[0].Description, "step one")
+	}
+	if tasks[0].Type != taskpkg.TaskTypeImplement {
+		t.Fatalf("task type = %q, want %q", tasks[0].Type, taskpkg.TaskTypeImplement)
+	}
+	if tasks[0].Status != taskpkg.TaskOpen {
+		t.Fatalf("task status = %q, want open", tasks[0].Status)
+	}
+}

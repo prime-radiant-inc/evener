@@ -96,6 +96,17 @@ func formatMutationAck(added int, updates []taskpkg.TaskUpdate) string {
 	return "Updated " + detail + "."
 }
 
+func formatAddedTaskIDs(added []taskpkg.Task) string {
+	if len(added) == 0 {
+		return ""
+	}
+	parts := make([]string, len(added))
+	for i, t := range added {
+		parts[i] = fmt.Sprintf("#%d", t.ID)
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
 // taskToolState is the task-list mutation snapshot carried to human clients.
 // Started is present for every in_progress task in a mutation snapshot. It is
 // true only when this call transitioned that task into progress (explicitly or
@@ -181,11 +192,18 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			return nil, nil, err
 		}
 		var input taskpkg.TaskInput
-		if t, ok := m["type"].(string); ok {
+		if t, ok := m["type"].(string); ok && t != "" {
 			input.Type = taskpkg.TaskType(t)
+		} else {
+			input.Type = taskpkg.TaskTypeImplement
 		}
 		description, ok := m["description"].(string)
-		if !ok {
+		if !ok || description == "" {
+			if title, ok := m["title"].(string); ok && title != "" {
+				description = title
+			}
+		}
+		if description == "" {
 			return nil, nil, fmt.Errorf("add entry %d requires the field named description as a string; valid add shape: {type, description, prompt}", i)
 		}
 		input.Description = description
@@ -277,7 +295,7 @@ func validateTaskListItemFields(kind string, index int, item map[string]any) err
 	allowed := map[string]bool{}
 	switch kind {
 	case "add":
-		for _, field := range []string{"type", "description", "prompt", "depends_on", "reasoning_effort"} {
+		for _, field := range []string{"type", "description", "title", "prompt", "depends_on", "reasoning_effort"} {
 			allowed[field] = true
 		}
 	case "update":
@@ -328,7 +346,9 @@ func validateTaskListArgs(args map[string]any) error {
 			}
 			if kind == "add" {
 				if _, ok := item["description"]; !ok {
-					return fmt.Errorf("add entry %d requires the field named description; valid add shape: {type, description, prompt}", i)
+					if _, hasTitle := item["title"]; !hasTitle {
+						return fmt.Errorf("add entry %d requires the field named description; valid add shape: {type, description, prompt}", i)
+					}
 				}
 			}
 		}
@@ -399,8 +419,55 @@ var updatePlaceholders = map[string]func(any) bool{
 // it under this normalized form. Dispatch, the fingerprint and decoding all
 // run it, which keeps the placeholder rule in one place. It never fails.
 func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
+	var cleanedAdds []any
+	if rawAdds, hasAdd := args["add"].([]any); hasAdd && len(rawAdds) > 0 {
+		for i, raw := range rawAdds {
+			entry, isObject := raw.(map[string]any)
+			if !isObject {
+				if cleanedAdds != nil {
+					cleanedAdds = append(cleanedAdds, raw)
+				}
+				continue
+			}
+			clean := maps.Clone(entry)
+			modified := false
+
+			// Alias title to description if description is absent or empty.
+			title, hasTitle := clean["title"]
+			desc, hasDesc := clean["description"]
+			if hasTitle {
+				if !hasDesc || desc == nil || desc == "" {
+					clean["description"] = title
+				}
+				delete(clean, "title")
+				modified = true
+			}
+
+			// Default type to "implement" if absent or empty.
+			t, hasType := clean["type"]
+			if !hasType || t == nil || t == "" {
+				clean["type"] = string(taskpkg.TaskTypeImplement)
+				modified = true
+			}
+
+			if modified {
+				if cleanedAdds == nil {
+					cleanedAdds = append([]any(nil), rawAdds...)
+				}
+				cleanedAdds[i] = clean
+			} else if cleanedAdds != nil {
+				cleanedAdds = append(cleanedAdds, raw)
+			}
+		}
+	}
+
 	rawUpdates, isList := args["update"].([]any)
 	if !isList || len(rawUpdates) == 0 {
+		if cleanedAdds != nil {
+			normalized := maps.Clone(args)
+			normalized["add"] = cleanedAdds
+			return normalized, nil
+		}
 		return args, nil
 	}
 	cleanedUpdates := make([]any, 0, len(rawUpdates))
@@ -432,6 +499,9 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 	addList, addIsList := rawAdd.([]any)
 	otherWork := len(kept) > 0 || (hasAdd && (!addIsList || len(addList) > 0))
 	normalized := maps.Clone(args)
+	if cleanedAdds != nil {
+		normalized["add"] = cleanedAdds
+	}
 	switch {
 	case !otherWork:
 		normalized["update"] = cleanedUpdates
@@ -524,16 +594,17 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					if err != nil {
 						return nil, err
 					}
-					// Adds only: terse acknowledgement. The current task is
-					// announced via a separate SYSTEM-REMINDER steering message
-					// when the agent actually transitions one to in_progress,
-					// either manually or via auto-advance.
+					// Adds only: terse acknowledgement with assigned task IDs.
+					// Newly added tasks stay open until started. The current
+					// task is announced via a separate SYSTEM-REMINDER steering
+					// message when the agent actually transitions one to
+					// in_progress, either manually or via auto-advance.
 					tasks := store.View()
 					summary := taskpkg.Summarize(tasks)
 					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 					deps.emit(taskUpdate)
 					return tool.StateResult{
-						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
+						Output: fmt.Sprintf("Added %d task(s)%s. Progress: %s.", len(added), formatAddedTaskIDs(added), summary.ProgressText()),
 						State:  tasks,
 					}, nil
 				}

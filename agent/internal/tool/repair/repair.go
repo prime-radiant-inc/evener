@@ -7,6 +7,7 @@
 package repair
 
 import (
+	"fmt"
 	"maps"
 	"math"
 	"slices"
@@ -90,6 +91,48 @@ func applyAliases(params, args map[string]any) []Change {
 		delete(args, alias)
 		changes = append(changes, Change{Kind: ChangeAlias, Field: canonical, Detail: alias + "→" + canonical})
 	}
+
+	// Nested item aliases for task-bearing tools:
+	// 1. task_list: add[i].title -> add[i].description
+	if rawAdds, ok := args["add"].([]any); ok {
+		for i, raw := range rawAdds {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			title, hasTitle := item["title"]
+			desc, hasDesc := item["description"]
+			if hasTitle && (!hasDesc || desc == nil || desc == "") {
+				item["description"] = title
+				delete(item, "title")
+				field := fmt.Sprintf("add[%d].description", i)
+				changes = append(changes, Change{Kind: ChangeAlias, Field: field, Detail: "title→description"})
+			} else if hasTitle && hasDesc {
+				delete(item, "title")
+			}
+		}
+	}
+
+	// 2. delegate: task_list[i].description -> task_list[i].title
+	if rawTasks, ok := args["task_list"].([]any); ok {
+		for i, raw := range rawTasks {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			desc, hasDesc := item["description"]
+			title, hasTitle := item["title"]
+			if hasDesc && (!hasTitle || title == nil || title == "") {
+				item["title"] = desc
+				delete(item, "description")
+				field := fmt.Sprintf("task_list[%d].title", i)
+				changes = append(changes, Change{Kind: ChangeAlias, Field: field, Detail: "description→title"})
+			} else if hasDesc && hasTitle {
+				delete(item, "description")
+			}
+		}
+	}
+
 	return changes
 }
 

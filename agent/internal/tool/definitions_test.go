@@ -394,6 +394,19 @@ func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	}
 }
 
+func TestDefTaskListDescriptionStatesNewlyAddedOpen(t *testing.T) {
+	def := DefTaskList(nil)
+	want := "Newly added tasks stay open until started."
+	if !strings.Contains(def.Description, want) {
+		t.Fatalf("DefTaskList description = %q, want to contain %q", def.Description, want)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	addDesc, _ := props["add"].(map[string]any)["description"].(string)
+	if !strings.Contains(addDesc, want) {
+		t.Fatalf("add description = %q, want to contain %q", addDesc, want)
+	}
+}
+
 func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 	def := DefTaskList([]string{"low", "medium", "high"})
 	want := []string{"low", "medium", "high", "inherit"}
@@ -1124,8 +1137,8 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	}
 	addItems := add.(map[string]any)["items"].(map[string]any)
 	addReq, ok := addItems["required"].([]string)
-	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
-		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
+	if !ok || len(addReq) != 2 || addReq[0] != "description" || addReq[1] != "prompt" {
+		t.Fatalf("add item required = %v, want [description prompt]", addItems["required"])
 	}
 	if addItems["additionalProperties"] != false {
 		t.Fatalf("add item additionalProperties = %v, want false", addItems["additionalProperties"])
