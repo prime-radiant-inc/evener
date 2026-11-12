@@ -252,7 +252,7 @@ func TestResumeWriter_MissingHeader(t *testing.T) {
 // splitTranscriptLines splits a transcript file's bytes into non-empty lines.
 func splitTranscriptLines(data []byte) []string {
 	var lines []string
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		if len(line) > 0 {
 			lines = append(lines, string(line))
 		}
