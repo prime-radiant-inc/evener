@@ -108,19 +108,19 @@ func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time
 		return
 	}
 	l.lastLogged = now
-	l.log.Info("navigation build", stats.attrs()...)
+	l.log.Info("navigation build", append([]any{"event", "completed"}, stats.attrs()...)...)
 }
 
 func (l *navigationBuildStatsLog) timedOut(stats navigationBuildStats) {
 	if l.log == nil {
 		return
 	}
-	l.log.Info("navigation build timed out", append([]any{"phase", stats.phase}, stats.attrs()...)...)
+	l.log.Info("navigation build timed out", append([]any{"event", "timeout", "phase", stats.phase}, stats.attrs()...)...)
 }
 
 func (l *navigationBuildStatsLog) failed(stats navigationBuildStats, err error) {
 	if l.log == nil {
 		return
 	}
-	l.log.Info("navigation build failed", append(append([]any{"phase", stats.phase}, stats.attrs()...), "error", err)...)
+	l.log.Info("navigation build failed", append(append([]any{"event", "failed", "phase", stats.phase}, stats.attrs()...), "error", err)...)
 }

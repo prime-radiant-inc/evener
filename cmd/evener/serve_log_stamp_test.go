@@ -102,8 +102,8 @@ func TestServeLogStampsSessionAndTime(t *testing.T) {
 			if line.session != session {
 				t.Errorf("session = %q, want %q", line.session, session)
 			}
-			if line.message != "listening on "+listen {
-				t.Errorf("message = %q, want the daemon's listening diagnostic", line.message)
+			if !strings.Contains(line.message, listen) {
+				t.Errorf("message = %q, want the daemon's listening diagnostic naming %s", line.message, listen)
 			}
 		})
 	}

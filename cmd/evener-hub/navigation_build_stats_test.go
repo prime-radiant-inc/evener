@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +15,7 @@ import (
 func buildRecords(logs *logCapture) []capturedLog {
 	var out []capturedLog
 	for _, rec := range logs.all() {
-		if strings.HasPrefix(rec.message, "navigation build") {
+		if _, ok := rec.attrs["event"]; ok {
 			out = append(out, rec)
 		}
 	}
@@ -68,6 +67,9 @@ func TestNavigationBuildLogsCountsForFixture(t *testing.T) {
 		t.Fatalf("build records = %+v, want exactly one", records)
 	}
 	attrs := records[0].attrs
+	if got := attrs["event"]; got != "completed" {
+		t.Errorf("event = %v, want completed", got)
+	}
 	want := map[string]int64{
 		"metas":                            8,
 		"subagents":                        2,
@@ -191,7 +193,7 @@ func TestNavigationBuildTimeoutAlwaysLogs(t *testing.T) {
 		t.Fatal("refresh of a blocked capture succeeded")
 	}
 	records := buildRecords(logs)
-	if len(records) != 1 || records[0].message != "navigation build timed out" || records[0].attrs["phase"] != "capture" {
+	if len(records) != 1 || records[0].attrs["event"] != "timeout" || records[0].attrs["phase"] != "capture" {
 		t.Fatalf("build records = %+v, want one timeout record naming the capture phase", records)
 	}
 	if got := records[0].attrs["restarts"]; got != int64(0) {
@@ -217,7 +219,7 @@ func TestNavigationBuildTimeoutNamesProjectionPhase(t *testing.T) {
 		t.Fatal("refresh with a stuck projection succeeded")
 	}
 	records := buildRecords(logs)
-	if len(records) != 1 || records[0].attrs["phase"] != "projection" {
+	if len(records) != 1 || records[0].attrs["event"] != "timeout" || records[0].attrs["phase"] != "projection" {
 		t.Fatalf("build records = %+v, want one timeout record naming projection", records)
 	}
 }
@@ -267,8 +269,8 @@ func TestNavigationBuildFailureLogsPhaseAndError(t *testing.T) {
 			if len(records) != 1 {
 				t.Fatalf("log records = %+v, want one failure record carrying phase, stats and error", records)
 			}
-			if got := records[0].message; got != "navigation build failed" {
-				t.Errorf("logged message = %q, want the failure message", got)
+			if got := records[0].attrs["event"]; got != "failed" {
+				t.Errorf("logged event = %v, want failed", got)
 			}
 			if got := records[0].attrs["phase"]; got != tc.phase {
 				t.Errorf("logged phase = %v, want %q", got, tc.phase)
