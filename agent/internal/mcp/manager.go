@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/mcphttp"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
@@ -701,7 +702,7 @@ func (c *conn) swap(newSess *mcpsdk.ClientSession) (old *mcpsdk.ClientSession, c
 // with underscores. MCP servers often use hyphens in tool names, but LLM
 // providers only accept [a-zA-Z0-9_].
 func sanitizeToolName(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
+	return toolname.SanitizeMCPToolName(name)
 }
 
 // mcpSchemaToParams converts an MCP tool's InputSchema (any) to our

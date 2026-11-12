@@ -7,9 +7,9 @@ import "testing"
 func FuzzToolNameTranslations(f *testing.F) {
 	for _, name := range []string{
 		"Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task",
-		"WebFetch", "WebSearch", "NotebookEdit", "AskUserQuestion",
-		"read_file", "write_file", "edit_file", "shell", "delegate",
-		"mcp__server__tool", "unknown", "",
+		"WebFetch", "WebSearch", "NotebookEdit", "AskUserQuestion", "Skill",
+		"read_file", "write_file", "edit_file", "shell", "delegate", "use_skill",
+		"mcp__server__tool", "mcp__plugin_superpowers-chrome_chrome__use_browser", "unknown", "",
 	} {
 		f.Add(name)
 	}
@@ -31,6 +31,10 @@ func FuzzToolNameTranslations(f *testing.F) {
 		}
 		if _, known := evenerToClaude[name]; !known && EvenerToClaude(name) != name {
 			t.Fatalf("unknown Evener tool %q did not pass through", name)
+		}
+		imported := ImportClaudeToolName(name)
+		if mapped, known := claudeToEvener[name]; known && imported != mapped {
+			t.Fatalf("ImportClaudeToolName(%q) = %q, want %q", name, imported, mapped)
 		}
 	})
 }

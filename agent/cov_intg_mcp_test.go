@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+		"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
@@ -140,6 +141,96 @@ func TestIntg_InitMCP_PluginProvidedServerMerges(t *testing.T) {
 	}
 	if out := intg_mcpEcho(t, sess, want, "plugin-hello"); out != "echo: plugin-hello" {
 		t.Errorf("tool output = %q, want %q", out, "echo: plugin-hello")
+	}
+}
+
+func TestIntg_PluginAgentRetainsAndExecutesMappedMCPToolAtSpawn(t *testing.T) {
+	t.Parallel()
+	bin := intg_buildMCPServer(t)
+
+	dir := makePluginDir(t, "mcp-plug")
+	pluginBin := filepath.Join(dir, "intgmcpserver")
+	binBytes, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatalf("read mcp server binary: %v", err)
+	}
+	if err := os.WriteFile(pluginBin, binBytes, 0o755); err != nil {
+		t.Fatalf("stage plugin mcp server binary: %v", err)
+	}
+	mcpJSON, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"svc": map[string]any{"command": "${CLAUDE_PLUGIN_ROOT}/intgmcpserver"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal .mcp.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), mcpJSON, 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	agentMD := `---
+name: worker
+description: Uses plugin MCP server
+tools: Read, Skill, mcp__plugin_mcp-plug_svc__echo, mcp__offline-svc__missing
+---
+Use the echo tool.
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "worker.md"), []byte(agentMD), 0o644); err != nil {
+		t.Fatalf("write worker.md: %v", err)
+	}
+
+	const wantMCP = "plugin_mcp_plug_svc__echo"
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("done")}
+			},
+		},
+	})
+
+	workDir := t.TempDir()
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
+		PluginDirs:       []string{dir},
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+		testOnly: testConfig{
+			sandboxProber: sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: workDir, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	summary := sess.defaultToolSummaryForAgent(sess.pluginAgents["mcp-plug:worker"])
+	if !strings.Contains(summary, "`"+wantMCP+"`") || !strings.Contains(summary, "`use_skill`") {
+		t.Fatalf("parent summary = %q, want %s and use_skill", summary, wantMCP)
+	}
+	if strings.Contains(summary, "offline_svc__missing") {
+		t.Fatalf("parent summary = %q, unexpectedly included unconnected MCP tool", summary)
+	}
+
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "echo", AgentType: "mcp-plug:worker"})
+	waitForRuntimeSubagent(t, sess, agentID)
+
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatal("subagent not found")
+	}
+	if sub.sess.reg.Get(wantMCP) == nil {
+		t.Fatalf("spawned plugin subagent missing mapped MCP tool %q; got %v", wantMCP, sub.sess.reg.Names())
+	}
+	if sub.sess.reg.Get("use_skill") == nil {
+		t.Fatalf("spawned plugin subagent missing use_skill; got %v", sub.sess.reg.Names())
+	}
+	if out := intg_mcpEcho(t, sub.sess, wantMCP, "child-hello"); out != "echo: child-hello" {
+		t.Errorf("child MCP echo = %q, want %q", out, "echo: child-hello")
 	}
 }
 

@@ -267,8 +267,7 @@ Body.
 	if agent.AllTools {
 		t.Error("AllTools should be false")
 	}
-	// Names without a evener canonical equivalent ("Skill", mcp__*) pass through unchanged.
-	want := []string{"read_file", "grep", "glob", "Skill", "mcp__plugin_superpowers-chrome_chrome__use_browser"}
+	want := []string{"read_file", "grep", "glob", "use_skill", "plugin_superpowers_chrome_chrome__use_browser"}
 	if len(agent.Tools) != len(want) {
 		t.Fatalf("Tools = %v, want %v", agent.Tools, want)
 	}
