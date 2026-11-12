@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,6 +182,124 @@ func assertNoAgentsDocNotification(t *testing.T, client *appwire.Client) {
 	case notification := <-client.Notifications():
 		t.Fatalf("unexpected second notification %q", notification.Method)
 	default:
+	}
+}
+
+// TestAgentsDocStoreSerializesSaveThroughItsCommit pins the lock boundary that
+// keeps broadcast order equal to write order: while the first save's commit
+// callback is running, a second save must not land its file or run its own
+// callback. Otherwise the first save's older content could be broadcast after
+// the second's, leaving every client on content the file does not hold.
+func TestAgentsDocStoreSerializesSaveThroughItsCommit(t *testing.T) {
+	path := agentsDocPath(t.TempDir())
+	store := newAgentsDocStore(path)
+	var calls atomic.Int32
+	order := make(chan string, 2)
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	defer release()
+	store.OnCommitted(func(resp appwire.AgentsDocResponse) {
+		first := calls.Add(1) == 1
+		order <- resp.Content
+		if first {
+			<-releaseFirst
+		}
+	})
+
+	type saveResult struct {
+		resp appwire.AgentsDocResponse
+		err  error
+	}
+	firstDone := make(chan saveResult, 1)
+	go func() {
+		resp, err := store.Set("first")
+		firstDone <- saveResult{resp: resp, err: err}
+	}()
+	if got := <-order; got != "first" {
+		t.Fatalf("first commit content = %q, want first", got)
+	}
+	secondDone := make(chan saveResult, 1)
+	go func() {
+		resp, err := store.Set("second")
+		secondDone <- saveResult{resp: resp, err: err}
+	}()
+	select {
+	case second := <-secondDone:
+		t.Fatalf("second save completed while the first commit was still running: %+v", second)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	first := <-firstDone
+	second := <-secondDone
+	if first.err != nil || second.err != nil {
+		t.Fatalf("saves failed: first=%v second=%v", first.err, second.err)
+	}
+	if got := <-order; got != "second" {
+		t.Fatalf("second commit content = %q, want second", got)
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if string(onDisk) != second.resp.Content {
+		t.Fatalf("file = %q, final save = %q, want the last save's content", onDisk, second.resp.Content)
+	}
+}
+
+// TestHubRPCAgentsDocConcurrentSavesLeaveTheFinalNotificationMatchingTheFile
+// drives simultaneous saves through the handler and checks the invariant the
+// lock boundary protects: the last notification a subscriber receives names the
+// content the file holds.
+func TestHubRPCAgentsDocConcurrentSavesLeaveTheFinalNotificationMatchingTheFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "evener")
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
+	defer hub.Close()
+	observer := dialHubRPC(t, hub)
+	defer observer.Close()
+	mustInitializeHubClient(t, observer)
+
+	const saves = 6
+	clients := make([]*appwire.Client, saves)
+	for i := range clients {
+		clients[i] = dialHubRPC(t, hub)
+		defer clients[i].Close()
+		mustInitializeHubClient(t, clients[i])
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, saves)
+	for i, client := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var resp appwire.AgentsDocResponse
+			err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet,
+				appwire.AgentsDocSetParams{Content: fmt.Sprintf("save-%d", i)}, &resp)
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent set: %v", err)
+	}
+
+	onDisk, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	var last appwire.AgentsDocResponse
+	for range saves {
+		last = receiveAgentsDocChanged(t, observer)
+	}
+	assertNoAgentsDocNotification(t, observer)
+	if last.Content != string(onDisk) {
+		t.Fatalf("final notification = %q, file = %q, want the last notification to name the file's content", last.Content, onDisk)
 	}
 }
 

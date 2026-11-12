@@ -161,8 +161,9 @@ func saveAgentsDoc(path, content string) (appwire.AgentsDocResponse, error) {
 
 // agentsDocStore owns the personal AGENTS.md file: one mutex serializes every
 // read and save, and a save that reached the file emits exactly one committed
-// event after the lock is released. The store is the only writer, so a handler
-// cannot save without announcing it.
+// event while that lock is still held, so the broadcast order matches the write
+// order. The store is the only writer, so a handler cannot save without
+// announcing it.
 type agentsDocStore struct {
 	path string
 
@@ -176,8 +177,10 @@ func newAgentsDocStore(path string) *agentsDocStore {
 
 // OnCommitted registers the store's one post-commit sink. It runs after a save
 // that applied - including one whose read back failed, which still landed the
-// new bytes - with the response the save answered. The callback runs after the
-// store unlocks, so it may broadcast.
+// new bytes - with the response the save answered. The callback runs inside the
+// save's critical section, so it must not call back into the store; it exists to
+// broadcast, and holding the lock across it keeps concurrent saves' broadcasts
+// in the same order as their writes.
 func (s *agentsDocStore) OnCommitted(fn func(appwire.AgentsDocResponse)) {
 	if s == nil {
 		return
@@ -201,18 +204,18 @@ func (s *agentsDocStore) Get() (appwire.AgentsDocResponse, error) {
 // Set writes content and announces a save that applied. The broadcast carries
 // the response the save answered: when the read back failed after the rename,
 // that response describes the bytes the write landed, which is the state every
-// other client needs even though the requester still gets the error.
+// other client needs even though the requester still gets the error. The save,
+// its read back, and its commit callback are one critical section, so a later
+// save cannot land its file and broadcast before this one has broadcast.
 func (s *agentsDocStore) Set(content string) (appwire.AgentsDocResponse, error) {
 	if s == nil || s.path == "" {
 		return appwire.AgentsDocResponse{}, errNoAgentsDocPath
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	resp, err := saveAgentsDoc(s.path, content)
-	committed := writeDidApply(err)
-	onCommitted := s.onCommitted
-	s.mu.Unlock()
-	if committed && onCommitted != nil {
-		onCommitted(resp)
+	if writeDidApply(err) && s.onCommitted != nil {
+		s.onCommitted(resp)
 	}
 	return resp, err
 }
