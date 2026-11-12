@@ -687,6 +687,49 @@ func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	}
 }
 
+func TestMetricSourceResolve_AssistantFabrications(t *testing.T) {
+	t.Parallel()
+
+	emptySrc := metricSource{health: HealthResult{}}
+	for _, path := range []string{
+		"assistant_fabrications",
+		"assistant_fabrications.harness_envelope",
+		"assistant_fabrications.tool_markup",
+	} {
+		got, err := emptySrc.resolve(path)
+		if err != nil || got != 0 {
+			t.Fatalf("empty resolve(%q) = (%v, %v), want (0, nil)", path, got, err)
+		}
+	}
+
+	populated := metricSource{
+		health: HealthResult{
+			AssistantFabrications: 3,
+			AssistantFabricationsByKind: map[string]int{
+				fabricationKindHarnessEnvelope: 2,
+				fabricationKindToolMarkup:      1,
+			},
+		},
+	}
+	if got, err := populated.resolve("assistant_fabrications"); err != nil || got != 3 {
+		t.Fatalf("resolve(assistant_fabrications) = (%v, %v), want (3, nil)", got, err)
+	}
+	if got, err := populated.resolve("assistant_fabrications.harness_envelope"); err != nil || got != 2 {
+		t.Fatalf("resolve(harness_envelope) = (%v, %v), want (2, nil)", got, err)
+	}
+	if got, err := populated.resolve("assistant_fabrications.tool_markup"); err != nil || got != 1 {
+		t.Fatalf("resolve(tool_markup) = (%v, %v), want (1, nil)", got, err)
+	}
+	for _, invalid := range []string{
+		"assistant_fabrications.bogus",
+		"assistant_fabrications.harness_envelope.extra",
+	} {
+		if _, err := populated.resolve(invalid); err == nil {
+			t.Fatalf("resolve(%q) succeeded, want loud error", invalid)
+		}
+	}
+}
+
 // TestRunAudit_SinceAuditsLegacyNamedBuckets proves the --since audit set
 // covers buckets whose directory names the agent ref grammar cannot consume
 // (round 3's refFor emits no TranscriptRef for them): the session is audited

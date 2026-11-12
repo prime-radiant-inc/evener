@@ -452,6 +452,15 @@ func (m metricSource) resolve(path string) (any, error) {
 			return nil, fmt.Errorf("metric %q: user_corrections takes no further path segments", path)
 		}
 		return m.health.UserCorrections, nil
+	case "assistant_fabrications":
+		switch rest {
+		case "":
+			return m.health.AssistantFabrications, nil
+		case fabricationKindHarnessEnvelope, fabricationKindToolMarkup:
+			return m.health.AssistantFabricationsByKind[rest], nil
+		default:
+			return nil, fmt.Errorf("unknown metric %q", path)
+		}
 	case "steering":
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected steering.<kind>", path)
