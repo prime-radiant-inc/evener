@@ -82,7 +82,8 @@ type WebConfig struct {
 	// other. nil falls back to a fresh plugins.NewManager(PluginRoot); every
 	// test that never builds a server leaves this nil and gets that fallback.
 	PluginManager       *plugins.Manager
-	MCPConfigPath       string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	MCPConfigPath       string            // explicit session-local MCP config file the settings overview probes in addition to the discovered layers; a missing file is the empty state
+	MCPDiscoveryDir     string            // working directory whose project layer (.evener/mcp.json at its git root) the settings overview merges; empty uses the process working directory
 	Registry            *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
 	ProvidersConfigPath string            // path to providers.toml; the instances pane is its only writer
 	CredentialsPath     string            // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG

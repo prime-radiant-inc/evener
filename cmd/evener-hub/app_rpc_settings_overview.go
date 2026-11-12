@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/mcpprobe"
 	"primeradiant.com/evener/appwire"
@@ -73,24 +74,22 @@ func settingsAgentRoster() []appwire.SettingsAgentEntry {
 	return agents
 }
 
-// settingsMCPOverview probes the configured MCP servers, mirroring
-// web_settings.go's discoverMCPsForSettings: a missing config file is the
-// empty state, not an error; a parse failure surfaces as Error; each probe
+// settingsMCPOverview probes the merged MCP configuration a session would use,
+// through the same mcpconfig.Discover path as Session.initMCP: the user-global
+// config, the project config at the discovery directory's git root, and the
+// explicit session-local file (cfg.MCPConfigPath), with later layers shadowing
+// earlier ones by server name.
+//
+// A missing file is the empty state, not an error. A malformed explicit
+// session-local file surfaces as Error, as it does for a session (Discover
+// treats CLI-supplied files as fatal). A malformed user-global or project
+// layer is skipped by Discover with a warning, exactly as a session skips it,
+// so the probed set stays the set a session connects to. Each probe
 // (agent/mcpprobe.Probe) runs under its own bounded timeout in parallel with
 // the others, so this never blocks the response beyond that per-probe bound
 // regardless of how many servers are configured.
 func settingsMCPOverview(ctx context.Context, cfg hubcore.WebConfig) *appwire.SettingsMCPOverview {
-	path := cfg.MCPConfigPath
-	if path == "" {
-		path = defaultMCPConfigPath()
-	}
-	if path == "" {
-		return &appwire.SettingsMCPOverview{}
-	}
-	if _, err := os.Stat(path); err != nil {
-		return &appwire.SettingsMCPOverview{} //nolint:nilerr // a missing MCP config file is the empty state, not an error
-	}
-	configs, err := mcpconfig.LoadFile(path)
+	configs, _, err := mcpconfig.Discover(mcpOverviewDiscoveryEnv(cfg), mcpOverviewExtraFiles(cfg), nil)
 	if err != nil {
 		return &appwire.SettingsMCPOverview{Error: err.Error()}
 	}
@@ -106,4 +105,32 @@ func settingsMCPOverview(ctx context.Context, cfg hubcore.WebConfig) *appwire.Se
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	return &appwire.SettingsMCPOverview{Servers: servers}
+}
+
+// mcpOverviewDiscoveryEnv is the environment whose working directory supplies
+// Discover's project layer. A nil environment suppresses that layer, which is
+// Discover's own contract.
+func mcpOverviewDiscoveryEnv(cfg hubcore.WebConfig) execenv.ExecutionEnvironment {
+	dir := cfg.MCPDiscoveryDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	if dir == "" {
+		return nil
+	}
+	return execenv.NewLocalExecutionEnvironment(dir)
+}
+
+// mcpOverviewExtraFiles is Discover's CLI-file layer: the session-local MCP
+// config the hub was given. A missing explicit file is the empty state, not an
+// error, matching the single-file probe this replaced; the user-global layer is
+// not listed here because Discover loads it itself.
+func mcpOverviewExtraFiles(cfg hubcore.WebConfig) []string {
+	if cfg.MCPConfigPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(cfg.MCPConfigPath); err != nil {
+		return nil
+	}
+	return []string{cfg.MCPConfigPath}
 }

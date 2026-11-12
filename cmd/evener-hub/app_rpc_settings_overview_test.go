@@ -29,6 +29,17 @@ func requestSettingsOverview(t *testing.T, hubCfg hubcore.WebConfig) appwire.Set
 	return resp
 }
 
+// writeMCPConfigLayer writes one MCP config file, creating its directory.
+func writeMCPConfigLayer(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("creating MCP config directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing MCP config %s: %v", path, err)
+	}
+}
+
 // TestHubRPCSettingsOverview_HubAndStorage covers the General/Hub/Storage
 // sections' field bag against real hub state: a real listen address (the
 // httptest server's own), a real run dir, a real bearer-token file (age
@@ -65,7 +76,8 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		// Hermetic: an empty MCPConfigPath would fall back to the ambient
 		// machine's ~/.config/evener/mcp.json, which this test has no business
 		// touching (this test isn't about MCP at all).
-		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPConfigPath:   filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPDiscoveryDir: t.TempDir(),
 	}
 
 	hub := newHubRPCTestServer(t, cfg)
@@ -128,7 +140,8 @@ func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
 	// ambient machine's ~/.config/evener/mcp.json.
 	resp := requestSettingsOverview(t, hubcore.WebConfig{
-		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPConfigPath:   filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPDiscoveryDir: t.TempDir(),
 	})
 	if resp.Hub == nil {
 		t.Fatal("Hub = nil, want populated")
@@ -146,8 +159,9 @@ func TestHubRPCSettingsOverview_Agents(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
 	// ambient machine's ~/.config/evener/mcp.json.
 	resp := requestSettingsOverview(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
+		Past:            hubcore.NewPastIndex(""),
+		MCPConfigPath:   filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPDiscoveryDir: t.TempDir(),
 	})
 
 	want := []appwire.SettingsAgentEntry{
@@ -177,8 +191,9 @@ func TestHubRPCSettingsOverview_MCPDiscovered(t *testing.T) {
 	path := writeMCPFixture(t, dir, "true", refusedURL(t))
 
 	resp := requestSettingsOverview(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		MCPConfigPath: path,
+		Past:            hubcore.NewPastIndex(""),
+		MCPConfigPath:   path,
+		MCPDiscoveryDir: t.TempDir(),
 	})
 
 	if resp.McpDiscovered == nil {
@@ -211,8 +226,9 @@ func TestHubRPCSettingsOverview_MCPDiscovered(t *testing.T) {
 // discoverMCPsForSettings's own contract.
 func TestHubRPCSettingsOverview_MCPDiscoveredEmptyWhenConfigMissing(t *testing.T) {
 	resp := requestSettingsOverview(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		MCPConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
+		Past:            hubcore.NewPastIndex(""),
+		MCPConfigPath:   filepath.Join(t.TempDir(), "does-not-exist.json"),
+		MCPDiscoveryDir: t.TempDir(),
 	})
 
 	if resp.McpDiscovered == nil {
@@ -223,6 +239,113 @@ func TestHubRPCSettingsOverview_MCPDiscoveredEmptyWhenConfigMissing(t *testing.T
 	}
 	if len(resp.McpDiscovered.Servers) != 0 {
 		t.Errorf("McpDiscovered.Servers = %+v, want empty", resp.McpDiscovered.Servers)
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredMergedSet proves the overview probes
+// the same layered set a session's initMCP builds: user-global, project, and
+// session-local configs merged with later layers shadowing earlier ones by
+// server name. Each layer also contributes a name no other layer defines.
+func TestHubRPCSettingsOverview_MCPDiscoveredMergedSet(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	refused := refusedURL(t)
+
+	// The user-global layer lives at $XDG_CONFIG_HOME/evener/mcp.json.
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeMCPConfigLayer(t, filepath.Join(xdg, "evener", "mcp.json"), `{"mcpServers": {
+		"shared": {"command": "true"},
+		"project-shadow": {"type": "http", "url": "`+refused+`"},
+		"user-only": {"command": "true"}
+	}}`)
+
+	// The project layer is .evener/mcp.json at the git root. It shadows the
+	// user layer's project-shadow and defines a name of its own. Its version of
+	// shared is unreachable, so a merged result that reads available proves the
+	// session-local layer shadowed it.
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("creating project .git directory: %v", err)
+	}
+	writeMCPConfigLayer(t, filepath.Join(repo, ".evener", "mcp.json"), `{"mcpServers": {
+		"shared": {"type": "http", "url": "`+refused+`"},
+		"project-only": {"command": "true"},
+		"project-shadow": {"command": "true"}
+	}}`)
+
+	// The session-local layer is the highest-precedence config file Discover's
+	// CLI layer carries.
+	sessionConfig := filepath.Join(t.TempDir(), "session-mcp.json")
+	writeMCPConfigLayer(t, sessionConfig, `{"mcpServers": {
+		"shared": {"command": "true"},
+		"session-only": {"command": "true"}
+	}}`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:            hubcore.NewPastIndex(""),
+		MCPConfigPath:   sessionConfig,
+		MCPDiscoveryDir: repo,
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if resp.McpDiscovered.Error != "" {
+		t.Errorf("McpDiscovered.Error = %q, want empty", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 5 {
+		t.Fatalf("McpDiscovered.Servers = %+v, want 5 merged rows", resp.McpDiscovered.Servers)
+	}
+	got := make(map[string]appwire.SettingsMCPServerEntry, len(resp.McpDiscovered.Servers))
+	for _, server := range resp.McpDiscovered.Servers {
+		got[server.Name] = server
+	}
+	want := []struct {
+		name      string
+		transport string
+		status    string
+	}{
+		{name: "project-only", transport: "stdio", status: "available"},
+		{name: "project-shadow", transport: "stdio", status: "available"},
+		{name: "session-only", transport: "stdio", status: "available"},
+		{name: "shared", transport: "stdio", status: "available"},
+		{name: "user-only", transport: "stdio", status: "available"},
+	}
+	for _, w := range want {
+		server, ok := got[w.name]
+		if !ok {
+			t.Errorf("merged set is missing %q; got %+v", w.name, resp.McpDiscovered.Servers)
+			continue
+		}
+		if server.Transport != w.transport || server.Status != w.status {
+			t.Errorf("%s row = %+v, want {%s %s}", w.name, server, w.transport, w.status)
+		}
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredErrorOnMalformedSessionConfig pins
+// the error contract: an explicitly configured session-local file that fails to
+// parse surfaces as Error, the same failure a session's initMCP returns.
+func TestHubRPCSettingsOverview_MCPDiscoveredErrorOnMalformedSessionConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken-mcp.json")
+	writeMCPConfigLayer(t, path, `{"mcpServers":`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:            hubcore.NewPastIndex(""),
+		MCPConfigPath:   path,
+		MCPDiscoveryDir: t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if resp.McpDiscovered.Error == "" {
+		t.Error("McpDiscovered.Error = \"\", want a parse failure for the explicit session config")
+	}
+	if len(resp.McpDiscovered.Servers) != 0 {
+		t.Errorf("McpDiscovered.Servers = %+v, want empty on fatal discovery error", resp.McpDiscovered.Servers)
 	}
 }
 
