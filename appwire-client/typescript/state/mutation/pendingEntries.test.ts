@@ -9,6 +9,7 @@ import {
   ownPendingSend,
   ownPendingTurnInput,
   parseImagePlaceholder,
+  pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
 } from "./pendingEntries";
@@ -42,6 +43,17 @@ test("queueEntryPreviewText prefers normalized text and falls back to images", (
   expect(queueEntryPreviewText("", 0)).toBe("");
 });
 
+test("pendingEntryPreview preserves the entry's own line structure", () => {
+  const entry = {
+    text: "step 1:\n    do the thing\n\nstep 2:\n    do the next thing",
+    imageCount: 0,
+    skillNames: ["fixer"],
+    commandNames: [] as string[],
+  };
+  expect(pendingEntryPreview(entry)).toBe("step 1:\n    do the thing\n\nstep 2:\n    do the next thing [skill: fixer]");
+  // A blank text still composes to the image placeholder.
+  expect(pendingEntryPreview({ ...entry, text: "   ", skillNames: [] })).toBe("");
+});
 function outbox(
   clientMutationId: string,
   method = "turn/start",

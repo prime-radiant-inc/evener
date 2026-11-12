@@ -117,7 +117,10 @@ function PendingMessageRowActions({
     case "canceled":
       if (handlers.canEdit(row)) actions.push({ verb: "edit", label: "Edit message", disabled: busy });
       if (handlers.canRemove(row)) actions.push({ verb: "remove", label: "Remove from queue", disabled: busy });
-      if (handlers.canRetry(row)) actions.push({ verb: "retry", label: "Retry", disabled: busy });
+      // Busy retries use the aria-disabled refusal, not the native attribute:
+      // disabling the mounted button makes Chrome blur it, so a retry that
+      // fails returns enabled with the keyboard focus already lost.
+      if (handlers.canRetry(row)) actions.push({ verb: "retry", label: "Retry", disabled: false, ariaDisabled: busy });
       break;
     case "refused":
       if (row.interrupt === true) {

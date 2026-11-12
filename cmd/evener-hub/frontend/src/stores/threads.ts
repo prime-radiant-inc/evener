@@ -44,6 +44,7 @@ import {
   ClientNotReadyError,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
+  compareBootGeneration,
   errorText,
   frontierFromCursor,
   historyFallback,
@@ -6866,9 +6867,19 @@ function handleNotification(n: AnyNotification): void {
       n.method === "history/updated" && typeof n.params.epoch === "number" ? n.params.epoch : undefined;
     const staleEpoch =
       frameEpoch !== undefined && settledModel?.history?.epoch !== undefined && frameEpoch < settledModel.history.epoch;
+    // The shared history authority (reducer.ts's classifySignal) ignores an
+    // older-boot frame even at an equal or higher epoch, so the frame's items
+    // never enter the model. The fallback here must agree: a frame from a
+    // boot this history already replaced names identities it cannot prove.
+    const heldHistory = settledModel?.history;
+    const staleBoot =
+      n.method === "history/updated" &&
+      heldHistory !== undefined &&
+      compareBootGeneration(heldHistory.bootGeneration, n.params.bootGeneration) === "ignore";
     const frameNamesIdentity =
       n.method === "history/updated" &&
       !staleEpoch &&
+      !staleBoot &&
       (n.params.items ?? []).some(
         (item) => "clientMutationId" in item && mutationIdentities.includes(String(item.clientMutationId)),
       );

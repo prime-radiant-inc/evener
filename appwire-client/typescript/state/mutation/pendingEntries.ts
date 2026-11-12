@@ -93,9 +93,12 @@ export function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
-// The one entry-body composition the pending stack renders: the matching
-// text-plus-markers preview. Contentless input still composes to "" - the
-// matching-key contract queueEntryPreviewText carries above.
+// The one entry-body composition the pending stack renders. The bubble body
+// keeps the entry's own line structure: an indented code block renders
+// flattened by neither this nor the delivered form, and the daemon's queue
+// preview is a label, not the body. Only the ends trim; interior whitespace
+// survives. Contentless input still composes to "" - the matching-key
+// contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
   text: string;
   imageCount: number;
@@ -103,7 +106,7 @@ export function pendingEntryPreview(entry: {
   commandNames?: readonly string[];
 }): string {
   return [
-    queueEntryPreviewText(entry.text, entry.imageCount),
+    entry.text.trim() || imagePlaceholder(entry.imageCount),
     skillMarkers(entry.skillNames),
     commandMarkers(entry.commandNames ?? []),
   ]

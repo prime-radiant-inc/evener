@@ -258,12 +258,12 @@ test("an ignored history frame keeps the accepted copy until a visible item sett
   await threadsStore.getState().ensureThread("ref_a");
   const settleSpy = vi.spyOn(storage, "settleApplied");
 
-  const history = (epoch: number) => ({
+  const history = (epoch: number, bootGeneration = "1") => ({
     method: "history/updated" as const,
     params: {
       threadId: "thr_ref_a",
       ref: "ref_a",
-      bootGeneration: "1",
+      bootGeneration,
       epoch,
       snapshot: { incarnation: "inc-1", length: 1 },
       turns: [{ id: "turn_m1", status: "inProgress", itemsView: "full", version: 1 }],
@@ -283,6 +283,14 @@ test("an ignored history frame keeps the accepted copy until a visible item sett
   // An older epoch is ignored by the history state machine, so the item never
   // enters the model. Settlement must not delete the only pending copy.
   fake.emitNotification(history(0));
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+
+  // An older boot generation is ignored by the same state machine even at an
+  // equal epoch: its snapshot is from a daemon this history already replaced,
+  // so the frame proves nothing about what the current transcript holds.
+  fake.emitNotification(history(1, "0"));
   await flushIndexedDBUntil(() => false);
   expect(settleSpy).not.toHaveBeenCalled();
   expect(await storage.getOptimistic("m1")).toBeDefined();
