@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -24,6 +26,56 @@ func TestTypedSubagentPolicyKeepsUseSkill(t *testing.T) {
 	_, allowed, _ := baseSubagentToolPolicy(&plugin.Agent{Tools: []string{"read_file"}}, false)
 	if !slices.Contains(allowed, "use_skill") {
 		t.Fatalf("typed agent allow-list = %v, want use_skill in it", allowed)
+	}
+}
+
+func TestRootSystemPromptRetainsProjectDocsAndAvailableAgentsWithoutSkills(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	const docSentinel = "SENTINEL-ROOT-DOC-AGENTS-MD"
+	writeTestFile(t, filepath.Join(dir, "AGENTS.md"), docSentinel+"\n")
+
+	s := newSession(t,
+		withDir(dir),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 2,
+			StateDir:         t.TempDir(),
+			testOnly: testConfig{
+				skipGitSnapshot: true,
+			},
+		}),
+	)
+	s.delegationAllowance = 1
+	// Zero skills: clear skill entries so data.Skills is empty.
+	s.skills = skill.Catalog{}
+
+	data, _ := s.buildPromptData(s.env)
+	if data.IsSubagent {
+		t.Fatal("expected root session to have IsSubagent=false")
+	}
+	if len(data.Skills) != 0 {
+		t.Fatalf("expected 0 skills, got %d", len(data.Skills))
+	}
+	if len(data.AvailableAgents) == 0 {
+		t.Fatal("expected AvailableAgents to be populated for root with delegationAllowance=1")
+	}
+	if len(data.ProjectDocs) == 0 {
+		t.Fatal("expected ProjectDocs to be populated from AGENTS.md")
+	}
+
+	prompt, warning, _ := s.renderSystemPrompt(s.env)
+	if warning != "" {
+		t.Fatalf("renderSystemPrompt warning: %s", warning)
+	}
+	if strings.Contains(prompt, "<skill-catalog>") {
+		t.Error("prompt unexpectedly contains <skill-catalog> when zero skills exist")
+	}
+	if !strings.Contains(prompt, "<available_agents>") || !strings.Contains(prompt, "</available_agents>") {
+		t.Error("prompt missing <available_agents> when zero skills exist")
+	}
+	if !strings.Contains(prompt, docSentinel) {
+		t.Error("prompt missing ProjectDocs sentinel when zero skills exist")
 	}
 }
 
