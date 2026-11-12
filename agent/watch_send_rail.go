@@ -906,7 +906,8 @@ type watchConfigTerminalSnapshot struct {
 	// endReason, when set, is recorded to the watch history ring as the config is
 	// detached from the active set (cleared / budget_exhausted). Left empty by
 	// snapshot callers that are not removing an active watch.
-	endReason string
+	endReason  string
+	deliveries int
 }
 
 func terminalSnapshots(targets []watchConfigTerminalSnapshot) []watchSendTerminalSnapshot {
