@@ -2163,6 +2163,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// profile (contextMgr.SetProfile above) may already exceed its
 	// compaction threshold. Blocking the switch would strand users on
 	// expensive models; the marker just warns.
+		var usage ContextMetrics
+		var contextPressure float64
 	contextWarningPct := 0
 	contextWarning := false
 	contextWindowAssumed := false
@@ -2172,12 +2174,12 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		// is measured against is the unknown-window assumption, so the marker
 		// can name the assumption instead of presenting a percentage of 128K as
 		// a fact about the new model's real window (#4598 follow-up).
-		usage := s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
+			usage = s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
 		if usage.Window > 0 {
-			pressure := float64(usage.Used) / float64(usage.Window)
-			if pressure >= s.contextMgr.CheckpointThreshold {
+				contextPressure = float64(usage.Used) / float64(usage.Window)
+				if contextPressure >= s.contextMgr.CheckpointThresholdFor(nextProfile) {
 				contextWarning = true
-				contextWarningPct = int(pressure*100 + 0.5)
+					contextWarningPct = int(contextPressure*100 + 0.5)
 				contextWindowAssumed = usage.Assumed
 				assumedWindowTokens = usage.Window
 			}
@@ -2190,14 +2192,16 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	droppedFallbacks := append([]string(nil), s.lastDroppedModelFallbacks...)
 	s.mu.Unlock()
 	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:              commitPrev,
-		nextProfile:             nextProfile,
-		contextWarning:          contextWarning,
-		contextWarningPct:       contextWarningPct,
-		contextWindowAssumed:    contextWindowAssumed,
-		assumedWindowTokens:     assumedWindowTokens,
-		droppedFallbacks:        droppedFallbacks,
-		orphanedToolResultMedia: orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
+			oldProfile:                commitPrev,
+			nextProfile:               nextProfile,
+			contextWarning:            contextWarning,
+			contextWarningPct:         contextWarningPct,
+			contextUsedTokens:         usage.Used,
+			compactionThresholdTokens: usage.CompactionThreshold,
+			contextWindowAssumed:      contextWindowAssumed,
+			assumedWindowTokens:       assumedWindowTokens,
+			droppedFallbacks:          droppedFallbacks,
+			orphanedToolResultMedia:   orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
 	})
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
@@ -2222,6 +2226,11 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
 		SupportsReasoning:     nextProfile.SupportsReasoning(),
 		MarkerText:            markerText,
+			ContextUsed:           usage.Used,
+			ContextWindow:         usage.Window,
+			ContextPressure:       contextPressure,
+			ContextAssumed:        usage.Assumed,
+			CompactionThreshold:   usage.CompactionThreshold,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
@@ -2360,10 +2369,12 @@ func (s *Session) VisionModel() string {
 // modelSwitchMarkerParams collects the inputs to buildModelSwitchMarkerText so
 // the call site names each field rather than relying on positional order.
 type modelSwitchMarkerParams struct {
-	oldProfile        *provider.Profile
-	nextProfile       *provider.Profile
-	contextWarning    bool
-	contextWarningPct int
+	oldProfile                *provider.Profile
+	nextProfile               *provider.Profile
+	contextWarning            bool
+	contextWarningPct         int
+	contextUsedTokens         int
+	compactionThresholdTokens int
 	// contextWindowAssumed and assumedWindowTokens describe the window the
 	// warning percentage is measured against when it is the unknown-window
 	// assumption, not a size anything vouches for.
@@ -2380,7 +2391,9 @@ type modelSwitchMarkerParams struct {
 func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", p.oldProfile.ID(), p.oldProfile.Model(), p.nextProfile.ID(), p.nextProfile.Model())}
 	if p.contextWarning {
-		if p.contextWindowAssumed {
+		if p.compactionThresholdTokens > 0 {
+			lines = append(lines, fmt.Sprintf("Warning: context usage (~%d tokens) is over %s/%s's compaction threshold (%d tokens).", p.contextUsedTokens, p.nextProfile.ID(), p.nextProfile.Model(), p.compactionThresholdTokens))
+		} else if p.contextWindowAssumed {
 			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's assumed context window (~%d tokens), over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID(), p.assumedWindowTokens))
 		} else {
 			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID()))

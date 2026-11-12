@@ -279,6 +279,20 @@ func (p *Profile) ContextWindowSource() string {
 	return registry.ContextWindowSource(p.res.Provenance["ContextWindow"])
 }
 
+// CompactionThreshold is the row's auto-compaction trigger in input tokens, or
+// 0 when the row sets none, the profile inherited another row's facts
+// (withModelID), or the threshold reaches or exceeds the row's hard input
+// ceiling.
+func (p *Profile) CompactionThreshold() int {
+	if p == nil || p.rowFactsInherited || p.res.Caps.CompactionThreshold == nil || *p.res.Caps.CompactionThreshold <= 0 {
+		return 0
+	}
+	if ceiling := p.res.Caps.InputCeiling(); ceiling > 0 && *p.res.Caps.CompactionThreshold >= ceiling {
+		return 0
+	}
+	return *p.res.Caps.CompactionThreshold
+}
+
 // CheapContextWindowSize is the configured cheap model's window, or 0 when no
 // cheap model is configured or its row names no window.
 func (p *Profile) CheapContextWindowSize() int {

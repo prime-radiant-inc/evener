@@ -376,3 +376,52 @@ func TestContextWindowSourceOfRefreshedCatalog(t *testing.T) {
 		t.Fatalf("source = %q, want snapshot", got)
 	}
 }
+
+func TestProfileCompactionThreshold(t *testing.T) {
+	if got := (*Profile)(nil).CompactionThreshold(); got != 0 {
+		t.Fatalf("nil profile CompactionThreshold() = %d, want 0", got)
+	}
+
+	base := mustResolve(t, fixtureRegistry(t), "work/glm-5")
+	if got := base.CompactionThreshold(); got != 0 {
+		t.Fatalf("unset CompactionThreshold() = %d, want 0", got)
+	}
+
+	withCaps := func(cw, maxIn, ct *int) *Profile {
+		res := base.Resolved()
+		res.Caps.ContextWindow = cw
+		res.Caps.MaxInputTokens = maxIn
+		res.Caps.CompactionThreshold = ct
+		return base.WithResolved(res)
+	}
+
+	valid := withCaps(new(1_000_000), nil, new(250_000))
+	if got := valid.CompactionThreshold(); got != 250_000 {
+		t.Fatalf("valid CompactionThreshold() = %d, want 250000", got)
+	}
+
+	inherited := valid.withModelID("other-model")
+	if got := inherited.CompactionThreshold(); got != 0 {
+		t.Fatalf("inherited rowFacts CompactionThreshold() = %d, want 0", got)
+	}
+
+	nonPositive := withCaps(new(1_000_000), nil, new(0))
+	if got := nonPositive.CompactionThreshold(); got != 0 {
+		t.Fatalf("zero CompactionThreshold() = %d, want 0", got)
+	}
+
+	atWindow := withCaps(new(250_000), nil, new(250_000))
+	if got := atWindow.CompactionThreshold(); got != 0 {
+		t.Fatalf("CompactionThreshold() at ContextWindow = %d, want 0", got)
+	}
+
+	aboveMaxInput := withCaps(new(1_000_000), new(200_000), new(250_000))
+	if got := aboveMaxInput.CompactionThreshold(); got != 0 {
+		t.Fatalf("CompactionThreshold() above MaxInputTokens ceiling = %d, want 0", got)
+	}
+
+	unknownWindow := withCaps(nil, nil, new(250_000))
+	if got := unknownWindow.CompactionThreshold(); got != 250_000 {
+		t.Fatalf("unknown window CompactionThreshold() = %d, want 250000", got)
+	}
+}

@@ -67,16 +67,17 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := estimatePressure()
+	th := s.cm.thresholdsFor(prof)
 	// Window-independent tripwire (issue #4564): force at least checkpoint
 	// pressure when it fires; see unknownWindowTripwireFires.
-	if s.cm.unknownWindowTripwireFires(prof) && p < s.cm.CheckpointThreshold {
-		p = s.cm.CheckpointThreshold
+	if s.cm.unknownWindowTripwireFires(prof) && p < th.checkpoint {
+		p = th.checkpoint
 	}
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
 	// between-layer pressure() calls use char/4 (reflects in-place mutations).
-	if p >= s.cm.CheckpointThreshold {
+	if p >= th.checkpoint {
 		s.cm.resetMeasurement()
 	}
 
@@ -84,7 +85,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// pass's checkpoint folded, which a summary completing the same fold reads
 	// the partner's messages from.
 	var checkpointed []schema.Turn
-	if p >= s.cm.CheckpointThreshold {
+	if p >= th.checkpoint {
 		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
 			var folded []schema.Turn
 			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
@@ -93,10 +94,11 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		}, true)
 		compacted = true
 		p, prof = estimatePressure()
+		th = s.cm.thresholdsFor(prof)
 	}
 
 	// Layer 2: LLM summarization fallback.
-	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
+	if p >= th.summarize && s.cm.client != nil {
 		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
 		}, true) {
