@@ -294,6 +294,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Model:                 data.NewModel,
 			ReasoningEffortLevels: data.ReasoningEffortLevels,
 			SupportsReasoning:     data.SupportsReasoning,
+			ContextUsed:           data.ContextUsed,
+			ContextWindow:         data.ContextWindow,
+			ContextPressure:       data.ContextPressure,
+			ContextAssumed:        data.ContextAssumed,
+			CompactionThreshold:   data.CompactionThreshold,
 		})}
 	case events.EventReasoningEffortChanged:
 		data := eventData[events.ReasoningEffortChangedData](event.Data)

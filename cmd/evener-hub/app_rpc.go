@@ -1788,6 +1788,22 @@ func instanceRemoveError(err error) (bool, error) {
 	return false, err
 }
 
+func instanceWriteResult[T any](server *appserver.Server, originClientID string, run func() (T, error)) (T, error) {
+	var zero T
+	res, err := run()
+	if writeDidApply(err) {
+		if err != nil {
+			notifyInstanceUpdated(server, "")
+		} else {
+			notifyInstanceUpdated(server, originClientID)
+		}
+	}
+	if err != nil {
+		return zero, err
+	}
+	return res, nil
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1814,18 +1830,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// create or edit passes its lock-scoped capture (see create and edit); the
 	// rest answer with a fresh List() via listAfter.
 	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
-		list, err := apply()
-		if writeDidApply(err) {
-			if err != nil {
-				notifyInstanceUpdated(server, "")
-			} else {
-				notifyInstanceUpdated(server, originClientId)
-			}
-		}
-		if err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		return list, nil
+		return instanceWriteResult(server, originClientId, apply)
 	}
 	listAfter := func(mutate func() error) func() (appwire.InstanceListResponse, error) {
 		return func() (appwire.InstanceListResponse, error) {
@@ -1891,6 +1896,18 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceModelGet, func(_ context.Context, params appwire.InstanceModelGetParams) (appwire.InstanceModelDetailResponse, error) {
+		return instancesController.GetModel(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceModelEdit, func(_ context.Context, params appwire.InstanceModelEditParams) (appwire.InstanceModelEditResponse, error) {
+		return instanceWriteResult(server, params.OriginClientId, func() (appwire.InstanceModelEditResponse, error) {
+			var resp appwire.InstanceModelEditResponse
+			if err := instancesController.EditModel(params, &resp); err != nil {
+				return appwire.InstanceModelEditResponse{}, err
+			}
+			return resp, nil
+		})
 	})
 }
 
