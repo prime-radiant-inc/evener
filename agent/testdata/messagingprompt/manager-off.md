@@ -321,7 +321,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
   },
   {
     "Name": "model_list",
-    "Description": "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated."
+    "Description": "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated."
   },
   {
     "Name": "read_transcript",

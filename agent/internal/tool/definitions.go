@@ -441,14 +441,14 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 func DefModelList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "model_list",
-		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the next field of the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 512, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
 		},
 	}
@@ -1059,7 +1059,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep; since=<dur>, bucket=<id>), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1098,8 +1098,8 @@ func DefDoctorEvener() llm.ToolDefinition {
 				},
 				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
 				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
-				"since":     map[string]any{"type": "string", "description": "sessions/audit/turnids: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit and turnids have no default."},
-				"bucket":    map[string]any{"type": "string", "description": "sessions/turnids: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit has no default."},
+				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
 				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
 				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
 			},
