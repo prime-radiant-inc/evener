@@ -8933,7 +8933,11 @@ export async function settleBackgroundTranscriptsForTests(): Promise<void> {
 
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */
 export async function settleEntryTranscriptForTests(ref: string): Promise<void> {
-  await trackedHydrationCompletions.get(ref);
+  // The recovery chain registers under trackedHydrationCompletions too, but a
+  // newer plain hydration displaces that registration while the chain is
+  // still pending. Await the chain's own span as well, so a caller that
+  // settles at that instant still waits for the convergence it observes.
+  await Promise.all([trackedHydrationCompletions.get(ref), openingRecoveryCompletion(ref)]);
   await entryTranscriptRoute(ref)?.repository?.settled();
 }
 
