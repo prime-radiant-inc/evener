@@ -98,7 +98,7 @@ func (p perAddrProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
 // rather than the 500 a bare http.FileServer returns for fs.ErrInvalid. A
 // merely-missing asset must also be 404. (Surfaced by FuzzWebHandler.)
 func TestAssetsInvalidPathIs404(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	handler := web.Handler()
 	for _, p := range []string{"/assets/%99", "/assets/%ff%fe", "/assets/missing.css"} {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
@@ -171,7 +171,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	}
 
 	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
@@ -234,7 +234,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 	}
 
 	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
@@ -257,7 +257,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 
 // TestWeb_SessionImage_BadSha verifies that non-hex sha paths get 400.
 func TestWeb_SessionImage_BadSha(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    hubcore.NewPastIndex(""),
@@ -298,7 +298,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
 
 	allZeros := strings.Repeat("0", 64)
 	req := httptest.NewRequest(http.MethodGet, "/s/02wMz5TxvKDoXaaLN6ENX1/images/"+allZeros, nil)
@@ -471,7 +471,7 @@ func testRawJSON(t *testing.T, v any) json.RawMessage {
 }
 
 func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    hubcore.NewPastIndex(""),
@@ -489,7 +489,7 @@ func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
 }
 
 func TestWeb_APIHealth(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  "/tmp/evener-run",
 		Past:    hubcore.NewPastIndex("/tmp/state/projects/*"),
@@ -522,7 +522,7 @@ func TestWeb_APIHealth(t *testing.T) {
 
 func TestWeb_APIHealthExposesAssetIdentity(t *testing.T) {
 	// Verify /api/health includes frontend asset hash and backend git SHA.
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)

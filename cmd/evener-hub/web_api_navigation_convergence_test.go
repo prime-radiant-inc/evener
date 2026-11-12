@@ -27,7 +27,7 @@ func TestAppWireArchiveNavigationTicketConvergesWithPublisherBroadcast(t *testin
 	source.mu.Lock()
 	source.inputs.Tree.Projects[0].Key = project.ID
 	source.mu.Unlock()
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
 	})
 	web.navigation = newTestNavigationService(t, source)
@@ -82,7 +82,7 @@ func TestAppWireArchiveNavigationTicketConvergesWithPublisherBroadcast(t *testin
 func TestAppWireArchiveNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	dir := t.TempDir()
-	web := NewWebServer(hubcore.WebConfig{
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		Favorite: hubcore.NewFavoriteStore(dir + "/favorites.db"),
 		Archive:  hubcore.NewArchiveStore(dir + "/archive.db"),
 	})
