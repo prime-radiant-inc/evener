@@ -356,9 +356,12 @@ func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult
 	}
 	f, err := os.Open(paths.APILogPath)
 	if err != nil {
-		return APIHealthResult{}, fmt.Errorf("open API log %s: %w", paths.APILogPath, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return APIHealthResult{}, fmt.Errorf("open API log %s: %w", paths.APILogPath, err)
+		}
+	} else {
+		defer func() { _ = f.Close() }()
 	}
-	defer func() { _ = f.Close() }()
 
 	res := APIHealthResult{
 		SessionID:                paths.SessionID,
@@ -380,34 +383,36 @@ func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult
 		return g
 	}
 
-	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
-	for {
-		if err := ctx.Err(); err != nil {
-			return APIHealthResult{}, err
-		}
-		record, decodeErr := decoder.Next()
-		if errors.Is(decodeErr, io.EOF) {
-			break
-		}
-		if errors.Is(decodeErr, apilog.ErrPartialTail) {
-			break
-		}
-		if decodeErr != nil {
-			return APIHealthResult{}, fmt.Errorf("decode API log %s: %w", paths.APILogPath, decodeErr)
-		}
-		switch record := record.(type) {
-		case apilog.APIAttemptRecord:
-			res.Attempts++
-			groupFor(record.AttemptGroupID).attempts++
-			row := rowFromAttempt(record)
-			if row.Empty {
-				res.RecordedEmpty++
+	if f != nil {
+		decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
+		for {
+			if err := ctx.Err(); err != nil {
+				return APIHealthResult{}, err
 			}
-			if row.Outcome != apilog.AttemptSuccess {
-				res.ErrorsByClass[classifyAPIErrorClass(row.Outcome, row.StatusCode, row.ErrorClass)]++
+			record, decodeErr := decoder.Next()
+			if errors.Is(decodeErr, io.EOF) {
+				break
 			}
-		case apilog.APIAttemptGroupSettlement:
-			groupFor(record.AttemptGroupID).settled = true
+			if errors.Is(decodeErr, apilog.ErrPartialTail) {
+				break
+			}
+			if decodeErr != nil {
+				return APIHealthResult{}, fmt.Errorf("decode API log %s: %w", paths.APILogPath, decodeErr)
+			}
+			switch record := record.(type) {
+			case apilog.APIAttemptRecord:
+				res.Attempts++
+				groupFor(record.AttemptGroupID).attempts++
+				row := rowFromAttempt(record)
+				if row.Empty {
+					res.RecordedEmpty++
+				}
+				if row.Outcome != apilog.AttemptSuccess {
+					res.ErrorsByClass[classifyAPIErrorClass(row.Outcome, row.StatusCode, row.ErrorClass)]++
+				}
+			case apilog.APIAttemptGroupSettlement:
+				groupFor(record.AttemptGroupID).settled = true
+			}
 		}
 	}
 
@@ -419,30 +424,30 @@ func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult
 			res.UnsettledGroups++
 		}
 	}
-		if res.Attempts == 0 {
-			ranTurns := false
-			if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && meta.TurnCount > 0 {
-				ranTurns = true
-			} else if doc, err := loadTranscriptContext(ctx, paths.TranscriptPath); err == nil {
-				for _, entry := range doc.Entries {
-					if entry.Turn.Kind == schema.TurnAssistant || entry.Turn.Message.Role == llm.RoleAssistant {
-						ranTurns = true
-						break
-					}
+	if res.Attempts == 0 {
+		ranTurns := false
+		if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && meta.TurnCount > 0 {
+			ranTurns = true
+		} else if doc, err := loadTranscriptContext(ctx, paths.TranscriptPath); err == nil {
+			for _, entry := range doc.Entries {
+				if entry.Turn.Kind == schema.TurnAssistant || entry.Turn.Message.Role == llm.RoleAssistant {
+					ranTurns = true
+					break
 				}
 			}
-			if ranTurns {
-				res.APILogEnabled = false
-				res.Unrecorded = true
-				res.Status = "not_recorded"
-			} else {
-				res.APILogEnabled = true
-				res.Status = "recorded"
-			}
+		}
+		if ranTurns {
+			res.APILogEnabled = false
+			res.Unrecorded = true
+			res.Status = "not_recorded"
 		} else {
 			res.APILogEnabled = true
 			res.Status = "recorded"
 		}
+	} else {
+		res.APILogEnabled = true
+		res.Status = "recorded"
+	}
 	return res, nil
 }
 
@@ -520,7 +525,7 @@ func classifyAPIErrorClass(outcome apilog.AttemptOutcomeClass, statusCode *int, 
 // the provider surfaced as a rejection, in a log new enough to record it."
 func RenderAPIHealth(r APIHealthResult) string {
 	var b strings.Builder
-	if r.Unrecorded || !r.APILogEnabled {
+	if (r.Unrecorded || r.Status == "not_recorded") && r.Attempts == 0 {
 		fmt.Fprintf(&b, "session %s: api_log=not_recorded attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
 			r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
 			r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])

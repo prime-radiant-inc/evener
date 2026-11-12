@@ -1138,6 +1138,54 @@ func TestAPIHealth_UnrecordedWhenZeroAttemptsAndTurnsRan(t *testing.T) {
 	}
 }
 
+func TestRenderAPIHealth_OmitsUnrecordedOnZeroValuedStructWithAttempts(t *testing.T) {
+	// A struct literal omitting APILogEnabled must not render api_log=not_recorded
+	// when attempts were made.
+	res := APIHealthResult{
+		SessionID: "s1",
+		Attempts:  6,
+		ErrorsByClass: map[string]int{
+			apiErrorClassQuota:     0,
+			apiErrorClassPermanent: 0,
+			apiErrorClassRetryable: 0,
+		},
+	}
+	human := RenderAPIHealth(res)
+	if strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth rendered api_log=not_recorded for struct with attempts:\n%s", human)
+	}
+	if !strings.Contains(human, "session s1: attempts=6") {
+		t.Errorf("RenderAPIHealth missing 'session s1: attempts=6':\n%s", human)
+	}
+}
+
+func TestAPIHealth_MissingAPILogFileHandledAsUnrecorded(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	// No .api.jsonl file created
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 1})
+
+	res, err := APIHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("APIHealth failed on missing api log: %v", err)
+	}
+	if res.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", res.Attempts)
+	}
+	if res.APILogEnabled || !res.Unrecorded || res.Status != "not_recorded" {
+		t.Errorf("got api_log_enabled=%t unrecorded=%t status=%q, want false/true/not_recorded",
+			res.APILogEnabled, res.Unrecorded, res.Status)
+	}
+	human := RenderAPIHealth(res)
+	if !strings.Contains(human, "api_log=not_recorded") {
+		t.Errorf("RenderAPIHealth missing api_log=not_recorded:\n%s", human)
+	}
+}
+
 func TestAPIHealth_RecordedWhenZeroAttemptsAndNoTurnsRan(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
