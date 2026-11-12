@@ -10,8 +10,12 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 	if cfg == nil {
 		return nil
 	}
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	snapshot := &jobstore.WatchConfigSnapshot{
-		Target:                   cfg.target,
+		Target:                   target,
 		OutputMatch:              cfg.outputMatch,
 		ProgressIntervalMS:       cfg.progressIntervalMS,
 		Events:                   append([]string(nil), cfg.events...),
@@ -71,6 +75,7 @@ func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
 			ConfigHash:       cfg.configHash,
 			Condition:        watchConditionSummary(cfg),
 			Config:           watchConfigSnapshot(cfg),
+			Deliveries:       cfg.deliveries,
 		},
 	}
 }
@@ -83,6 +88,7 @@ func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string) jobst
 		Watch: &jobstore.WatchEvent{
 			Generation: cfg.generation,
 			EndReason:  endReason,
+			Deliveries: cfg.deliveries,
 		},
 	}
 }

@@ -682,7 +682,64 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		_ = store.Close()
 		return nil, err
 	}
+	if err := jm.rehydrateHistoricalWatchesFromLog(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return jm, nil
+}
+
+func (jm *jobManager) rehydrateHistoricalWatchesFromLog() error {
+	if jm.store == nil {
+		return nil
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
+	var watchIDs []string
+	for id, rec := range watches {
+		if rec == nil || rec.Active {
+			continue
+		}
+		watchIDs = append(watchIDs, id)
+	}
+	sort.Strings(watchIDs)
+	if len(watchIDs) > watchHistoryCap {
+		watchIDs = watchIDs[len(watchIDs)-watchHistoryCap:]
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, id := range watchIDs {
+		rec := watches[id]
+		target := rec.Target
+		if target == runtimeMessageAliasCaller || target == "caller" {
+			target = "self"
+		}
+		source := rec.Source
+		if source == "" {
+			source = watchPublicSource(source, target)
+		}
+		if source == runtimeMessageAliasCaller || source == "caller" {
+			source = "self"
+		}
+		jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
+			id:                 rec.WatchID,
+			source:             source,
+			target:             target,
+			condition:          rec.Condition,
+			sendTo:             rec.SendTo,
+			receiverSessionID:  rec.ReceiverSessionID,
+			receiverDelegateID: rec.ReceiverDelegateID,
+			deliveries:         rec.Deliveries,
+			endReason:          rec.EndReason,
+			endedAt:            jm.now(),
+		})
+	}
+	if len(jm.watchHistory) > watchHistoryCap {
+		jm.watchHistory = jm.watchHistory[len(jm.watchHistory)-watchHistoryCap:]
+	}
+	return nil
 }
 
 func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, error) {

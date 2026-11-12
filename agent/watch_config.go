@@ -485,7 +485,7 @@ func validateWatchTriggerShape(a watchArgs) error {
 			}
 		}
 	}
-	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
+	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
 	}
 	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {

@@ -1373,6 +1373,20 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 	if docView.WatchID != matched.WatchID || docView.Active || docView.EndReason != "completed" || docView.Target != rec.JobID {
 		t.Fatalf("doctor watch view = %+v, want WatchID=%s Active=false EndReason=completed Target=%s", docView, matched.WatchID, rec.JobID)
 	}
+	if docView.DistinctDeliveries != 1 || docView.Delivered != 1 {
+		t.Fatalf("doctor watch view deliveries = %d/%d, want 1/1", docView.DistinctDeliveries, docView.Delivered)
+	}
+
+	reopenedJM, err := newJobManager(stateDir, s.ID(), func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen jobManager: %v", err)
+	}
+	defer reopenedJM.closeRuntimeState(context.Background())
+
+	inspectedAfterRestore := reopenedJM.inspectWatchByID(matched.WatchID)
+	if inspectedAfterRestore.WatchID != matched.WatchID || inspectedAfterRestore.Deliveries != 1 || inspectedAfterRestore.EndReason != "completed" {
+		t.Fatalf("inspect after restore = %+v, want WatchID=%s Deliveries=1 EndReason=completed", inspectedAfterRestore, matched.WatchID)
+	}
 
 	// Non-matching terminal catch-up also returns a watch_id, records history, and is inspectable.
 	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1459,5 +1473,65 @@ func TestSourceSelfPersistsAsSelfAndRendersSelf(t *testing.T) {
 	rendered := doctor.RenderWatches(docReport)
 	if !strings.Contains(rendered, "target=self") || strings.Contains(rendered, "target=caller") {
 		t.Fatalf("doctor RenderWatches must contain target=self and not target=caller:\n%s", rendered)
+	}
+}
+
+func TestSession_TimerWatchIsLive_PublicSourceSelf(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch_timer",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"self","repeat_seconds":60}`),
+	})
+	if watchRes.IsError {
+		t.Fatalf("job_watch create timer: %s", watchRes.Output)
+	}
+	var created struct {
+		WatchID string `json:"watch_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(watchRes), &created); err != nil {
+		t.Fatalf("unmarshal timer create: %v", err)
+	}
+	if created.WatchID == "" {
+		t.Fatal("timer create returned empty watch_id")
+	}
+
+	if !s.timerWatchIsLive(created.WatchID) {
+		t.Fatalf("timerWatchIsLive(%q) = false, want true for timer created via public job_watch source=self", created.WatchID)
+	}
+
+	// Verify filterDeliverableJobNotifications keeps a tick from this live timer.
+	tick := jobNotification{
+		Kind:            jobNotificationKindWatch,
+		WatchID:         created.WatchID,
+		IntervalSeconds: 60,
+		Fires:           1,
+		Reason:          "Timer fired (every 60s), 1 times since your last turn.",
+	}
+	survivors, err, _ := s.filterDeliverableJobNotifications([]jobNotification{tick})
+	if err != nil {
+		t.Fatalf("filterDeliverableJobNotifications: %v", err)
+	}
+	if len(survivors) != 1 {
+		t.Fatalf("filterDeliverableJobNotifications dropped live timer tick: %+v", survivors)
+	}
+}
+
+func TestJobWatch_ProgressIntervalOnSourceSelfRejected(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch_prog",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"self","progress_interval_ms":1000}`),
+	})
+	if !res.IsError {
+		t.Fatalf("job_watch create progress on self succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "progress_interval_ms is a job progress trigger; for a timer use repeat_seconds") {
+		t.Fatalf("error output = %q, want progress_interval_ms rejected on self", res.Output)
 	}
 }

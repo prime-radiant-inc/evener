@@ -526,20 +526,61 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return result, nil
 	}
 	result.Fired = true
+	matchReason := "output_match: " + last
+	now := jm.now()
 	if a.Send == nil {
 		cfg.deliveries = 1
+		cfg.deliveryTimes = append(cfg.deliveryTimes, now)
 	}
 	registryEvents := []jobstore.Event{
 		watchRegisteredEvent(jm, cfg),
-		watchClearedEvent(jm, cfg, "completed"),
 	}
+	if a.Send == nil {
+		deliveryID := jobstore.NewWatchSendDeliveryID()
+		target := cfg.target
+		if target == runtimeMessageAliasCaller {
+			target = "self"
+		}
+		sendKey := jobstore.WatchSendKey{
+			VisibleSessionID:        jm.sessionID,
+			WatchID:                 cfg.watchID,
+			WatchTarget:             target,
+			ResolvedWatchedIdentity: key.Target,
+			ResolvedSendTo:          watchSendTo(cfg),
+			WatchGeneration:         cfg.generation,
+		}
+		sendState := &jobstore.WatchSendState{
+			Key:                sendKey,
+			DeliveryID:         deliveryID,
+			TriggerIdentity:    key.Target,
+			TriggerReason:      matchReason,
+			ReceiverSessionID:  cfg.receiverSessionID,
+			ReceiverDelegateID: cfg.receiverDelegateID,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		}
+		registryEvents = append(registryEvents,
+			jobstore.Event{
+				Kind:      jobstore.EventWatchSendPending,
+				TS:        now,
+				WatchID:   cfg.watchID,
+				WatchSend: sendState,
+			},
+			jobstore.Event{
+				Kind:      jobstore.EventWatchSendDelivered,
+				TS:        now,
+				WatchID:   cfg.watchID,
+				WatchSend: sendState,
+			},
+		)
+	}
+	registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "completed"))
 	if err := jm.appendWatchRegistryEvents(registryEvents); err != nil {
 		return watchResult{}, err
 	}
 	jm.mu.Lock()
 	jm.recordWatchEndedLocked(key, cfg, "completed")
 	jm.mu.Unlock()
-	matchReason := "output_match: " + last
 
 	if a.Send == nil {
 		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, matchReason, jobProvenanceForWatch(jm, key.Target))})
