@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -36,6 +37,10 @@ disabled = true
 
 [providers.work.models."same-alias"]
 alias_of = "claude-sonnet-4-6"
+
+[providers.work.models."disabled-same-alias"]
+alias_of = "claude-opus-4-6"
+max_output_tokens = 16000
 
 [providers.work.models."cross-alias"]
 alias_of = "openai/gpt-5.4"
@@ -108,6 +113,20 @@ context_window = 500000
 	}
 	if sameAlias.Provenance["Surface"] != "alias" {
 		t.Fatalf("sameAlias.Provenance[Surface] = %q, want alias", sameAlias.Provenance["Surface"])
+	}
+
+	disabledSameAlias, err := f.ctl.GetModel(appwire.InstanceModelGetParams{Name: "work", Model: "disabled-same-alias"})
+	if err != nil {
+		t.Fatalf("GetModel(disabled-same-alias): %v", err)
+	}
+	if !disabledSameAlias.Disabled || disabledSameAlias.DisabledLockstepTarget != "claude-opus-4-6" {
+		t.Fatalf("disabledSameAlias lockstep = %+v", disabledSameAlias)
+	}
+	if disabledSameAlias.Effective.MaxOutputTokens == nil || *disabledSameAlias.Effective.MaxOutputTokens != 16_000 || disabledSameAlias.Provenance["MaxOutputTokens"] != "config" || disabledSameAlias.Effective.AliasOf != "claude-opus-4-6" {
+		t.Fatalf("disabledSameAlias lost its own MaxOutputTokens override: %+v", disabledSameAlias)
+	}
+	if disabledSameAlias.Effective.CompactionThreshold == nil || *disabledSameAlias.Effective.CompactionThreshold != 180_000 || disabledSameAlias.Provenance["CompactionThreshold"] != "provider" {
+		t.Fatalf("disabledSameAlias CompactionThreshold = %v (%q), want 180000 (provider)", disabledSameAlias.Effective.CompactionThreshold, disabledSameAlias.Provenance["CompactionThreshold"])
 	}
 
 	crossAlias, err := f.ctl.GetModel(appwire.InstanceModelGetParams{Name: "work", Model: "cross-alias"})
@@ -257,6 +276,21 @@ api_key = "sk-work"
 	if err != nil || !exists {
 		t.Fatalf("ReadConfigFile: exists=%v err=%v", exists, err)
 	}
+	workProv, ok := parsedLayer.Providers["work"]
+	if !ok {
+		t.Fatalf("providers.toml missing [providers.work]: %+v", parsedLayer.Providers)
+	}
+	flashRow, ok := workProv.Models["deepseek/deepseek-4.1-flash"]
+	if !ok {
+		t.Fatalf("providers.toml missing deepseek/deepseek-4.1-flash row: %+v", workProv.Models)
+	}
+	if flashRow.Caps.CompactionThreshold == nil || *flashRow.Caps.CompactionThreshold != 250_000 ||
+		flashRow.Protocol != "openai-chat" ||
+		!slices.Equal(flashRow.Caps.InputModalities, []string{"text", "image"}) ||
+		!slices.Equal(flashRow.Caps.EffortValues, []string{"low", "high"}) {
+		t.Fatalf("persisted deepseek/deepseek-4.1-flash row = %+v", flashRow)
+	}
+
 	antProv, ok := parsedLayer.Providers["anthropic"]
 	if !ok {
 		t.Fatalf("providers.toml missing [providers.anthropic]: %+v", parsedLayer.Providers)
@@ -277,6 +311,8 @@ base = "anthropic"
 api_key = "sk-work"
 
 [providers.work.models."claude-opus-4-6"]
+base_url = "https://custom-model.example.test/v1"
+endpoint = "/custom-messages"
 headers = { "X-Custom" = "keep-me" }
 compaction_threshold = 200000
 fields = { "temperature" = true }
@@ -294,6 +330,33 @@ output = 7.5
 	}
 
 	var resp appwire.InstanceModelEditResponse
+	targetedCT := 220_000
+	targetedMaxOut := 16_000
+	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                "work",
+		Model:               "claude-opus-4-6",
+		CompactionThreshold: &targetedCT,
+		MaxOutputTokens:     &targetedMaxOut,
+	}, &resp); err != nil {
+		t.Fatalf("EditModel(targeted): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "work")
+	row, ok := p.Models["claude-opus-4-6"]
+	if !ok {
+		t.Fatal("claude-opus-4-6 row missing after targeted EditModel")
+	}
+	if row.Caps.CompactionThreshold == nil || *row.Caps.CompactionThreshold != 220_000 ||
+		row.Caps.MaxOutputTokens == nil || *row.Caps.MaxOutputTokens != 16_000 {
+		t.Fatalf("targeted EditModel did not update fields: %+v", row.Caps)
+	}
+	if row.Headers["X-Custom"] != "keep-me" ||
+		row.Caps.Cost == nil || row.Caps.Cost.Input != 1.5 || row.Caps.Cost.Output != 7.5 ||
+		!row.Caps.Fields["temperature"] ||
+		row.Caps.ChatTemplateKwargs["enable_thinking"] != true ||
+		row.Transport == nil || row.Transport.BaseURL != "https://custom-model.example.test/v1" || row.Transport.Endpoint != "/custom-messages" {
+		t.Fatalf("hand-authored fields or transport lost on targeted EditModel: %+v (transport=%+v)", row, row.Transport)
+	}
+
 	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
 		Name:     "work",
 		Model:    "claude-opus-4-6",
@@ -301,16 +364,20 @@ output = 7.5
 	}, &resp); err != nil {
 		t.Fatalf("EditModel(ResetAll): %v", err)
 	}
-	p := authoredEntry(t, f.tomlPath, "work")
-	row, ok := p.Models["claude-opus-4-6"]
+	p = authoredEntry(t, f.tomlPath, "work")
+	row, ok = p.Models["claude-opus-4-6"]
 	if !ok {
 		t.Fatal("claude-opus-4-6 row deleted despite hand-authored headers/cost/fields/chat_template_kwargs")
 	}
-	if row.Caps.CompactionThreshold != nil {
-		t.Fatalf("CompactionThreshold survived ResetAll: %v", row.Caps.CompactionThreshold)
+	if row.Caps.CompactionThreshold != nil || row.Caps.MaxOutputTokens != nil {
+		t.Fatalf("UI-editable fields survived ResetAll: %+v", row.Caps)
 	}
-	if row.Headers["X-Custom"] != "keep-me" || row.Caps.Cost == nil || row.Caps.Cost.Input != 1.5 || !row.Caps.Fields["temperature"] || row.Caps.ChatTemplateKwargs["enable_thinking"] != true {
-		t.Fatalf("hand-authored fields lost on ResetAll: %+v", row)
+	if row.Headers["X-Custom"] != "keep-me" ||
+		row.Caps.Cost == nil || row.Caps.Cost.Input != 1.5 || row.Caps.Cost.Output != 7.5 ||
+		!row.Caps.Fields["temperature"] ||
+		row.Caps.ChatTemplateKwargs["enable_thinking"] != true ||
+		row.Transport == nil || row.Transport.BaseURL != "https://custom-model.example.test/v1" || row.Transport.Endpoint != "/custom-messages" {
+		t.Fatalf("hand-authored fields or transport lost on ResetAll: %+v (transport=%+v)", row, row.Transport)
 	}
 
 	// Shadow implicit anthropic by setting CompactionThreshold on claude-opus-4-6, then clear it.
@@ -505,6 +572,13 @@ alias_of = "claude-opus-4-6"
 		CompactionThreshold: &ctTooHigh,
 	}, nil)
 	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterTooHighBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile after ctTooHigh: %v", err)
+	}
+	if !bytes.Equal(afterTooHighBytes, savedBytes) {
+		t.Fatalf("providers.toml changed after rejected CompactionThreshold >= ContextWindow:\ngot:\n%s\nwant:\n%s", afterTooHighBytes, savedBytes)
+	}
 
 	// 2. Lowering ContextWindow to 200_000 below existing CompactionThreshold (250_000) is rejected and leaves providers.toml unchanged.
 	cw200k := 200_000
@@ -514,6 +588,13 @@ alias_of = "claude-opus-4-6"
 		ContextWindow: &cw200k,
 	}, nil)
 	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterLoweredWindowBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile after cw200k: %v", err)
+	}
+	if !bytes.Equal(afterLoweredWindowBytes, savedBytes) {
+		t.Fatalf("providers.toml changed after rejected ContextWindow <= CompactionThreshold:\ngot:\n%s\nwant:\n%s", afterLoweredWindowBytes, savedBytes)
+	}
 
 	// 3. Clearing ContextWindow when underlying catalog window (200_000 on claude-haiku-4-5) is <= CompactionThreshold (250_000) rolls back via writeAndReload validator.
 	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
@@ -538,10 +619,114 @@ alias_of = "claude-opus-4-6"
 	if err != nil {
 		t.Fatalf("ReadFile after rollback: %v", err)
 	}
-	if string(afterBytes) != string(haikuBytes) {
+	if !bytes.Equal(afterBytes, haikuBytes) {
 		t.Fatalf("providers.toml changed after rollback:\ngot:\n%s\nwant:\n%s", afterBytes, haikuBytes)
 	}
-	_ = savedBytes
+
+	// 4. Disabled same-provider alias: ceiling validation and post-reload rollback still enforce inherited limits.
+	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:     "work",
+		Model:    "claude-haiku-4-5",
+		ResetAll: true,
+	}, nil); err != nil {
+		t.Fatalf("EditModel(reset claude-haiku-4-5): %v", err)
+	}
+	if err := f.ctl.SetModelDisabled(appwire.InstanceSetModelDisabledParams{
+		Name:     "work",
+		Model:    "claude-haiku-4-5",
+		Disabled: true,
+	}); err != nil {
+		t.Fatalf("SetModelDisabled(claude-haiku-4-5): %v", err)
+	}
+	beforeDisabledAliasCreateBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile beforeDisabledAliasCreateBytes: %v", err)
+	}
+	// Creating disabled-haiku-alias with CompactionThreshold = 250k (>= inherited 200k window of disabled target) must be rejected and rolled back.
+	err = f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                "work",
+		Model:               "disabled-haiku-alias",
+		Create:              true,
+		AliasOf:             "claude-haiku-4-5",
+		CompactionThreshold: &ct250k,
+	}, nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterRejectedCreateBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile afterRejectedCreateBytes: %v", err)
+	}
+	if !bytes.Equal(afterRejectedCreateBytes, beforeDisabledAliasCreateBytes) {
+		t.Fatalf("providers.toml changed after rejected disabled-alias create:\ngot:\n%s\nwant:\n%s", afterRejectedCreateBytes, beforeDisabledAliasCreateBytes)
+	}
+
+	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                "work",
+		Model:               "disabled-haiku-alias",
+		Create:              true,
+		AliasOf:             "claude-haiku-4-5",
+		ContextWindow:       &cw1M,
+		CompactionThreshold: &ct250k,
+	}, nil); err != nil {
+		t.Fatalf("EditModel(create disabled-haiku-alias): %v", err)
+	}
+	disabledAliasBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile disabledAliasBytes: %v", err)
+	}
+	// Direct pre-write ceiling rejection on disabled-haiku-alias.
+	err = f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                "work",
+		Model:               "disabled-haiku-alias",
+		CompactionThreshold: &ctTooHigh,
+	}, nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterDisabledAliasTooHighBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile after disabled-alias ctTooHigh: %v", err)
+	}
+	if !bytes.Equal(afterDisabledAliasTooHighBytes, disabledAliasBytes) {
+		t.Fatalf("providers.toml changed after disabled-alias ctTooHigh:\ngot:\n%s\nwant:\n%s", afterDisabledAliasTooHighBytes, disabledAliasBytes)
+	}
+	// Clearing ContextWindow on disabled-haiku-alias exposes inherited 200k ceiling <= 250k threshold and must be rejected and rolled back.
+	err = f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:               "work",
+		Model:              "disabled-haiku-alias",
+		ClearContextWindow: true,
+	}, nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterDisabledAliasClearBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile after disabled-alias ClearContextWindow: %v", err)
+	}
+	if !bytes.Equal(afterDisabledAliasClearBytes, disabledAliasBytes) {
+		t.Fatalf("providers.toml changed after disabled-alias ClearContextWindow rejection:\ngot:\n%s\nwant:\n%s", afterDisabledAliasClearBytes, disabledAliasBytes)
+	}
+	// Clear both overrides so disabled-haiku-alias inherits the disabled target's 200k window, then verify setting CompactionThreshold = 250k is rejected in memory by checkModelCeilingPreWrite.
+	if err := f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                     "work",
+		Model:                    "disabled-haiku-alias",
+		ClearContextWindow:       true,
+		ClearCompactionThreshold: true,
+	}, nil); err != nil {
+		t.Fatalf("EditModel(clear window and threshold on disabled-haiku-alias): %v", err)
+	}
+	bareDisabledAliasBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile bareDisabledAliasBytes: %v", err)
+	}
+	err = f.ctl.EditModel(appwire.InstanceModelEditParams{
+		Name:                "work",
+		Model:               "disabled-haiku-alias",
+		CompactionThreshold: &ct250k,
+	}, nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+	afterBareDisabledAliasRejectBytes, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile afterBareDisabledAliasRejectBytes: %v", err)
+	}
+	if !bytes.Equal(afterBareDisabledAliasRejectBytes, bareDisabledAliasBytes) {
+		t.Fatalf("providers.toml changed after pre-write rejection on disabled-haiku-alias:\ngot:\n%s\nwant:\n%s", afterBareDisabledAliasRejectBytes, bareDisabledAliasBytes)
+	}
 }
 
 func TestInstances_ModelEditEndpointFingerprintAndEffectiveAccess(t *testing.T) {

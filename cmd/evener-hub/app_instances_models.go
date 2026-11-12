@@ -71,9 +71,6 @@ func (c *hubInstancesController) modelDetailLocked(r *registry.Registry, name, m
 	}
 
 	res, err := r.ResolveInstanceModelFacts(name, model)
-	if errors.Is(err, registry.ErrModelDisabled) && disabledLockstepTarget != "" {
-		res, err = r.ResolveInstanceModelFacts(name, disabledLockstepTarget)
-	}
 	if err != nil {
 		return appwire.InstanceModelDetailResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -317,9 +314,6 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	validate := func(reloaded *registry.Registry) error {
 		resAfter, err := reloaded.ResolveInstanceModelFacts(name, model)
 		if err != nil {
-			if errors.Is(err, registry.ErrModelDisabled) {
-				return nil
-			}
 			return err
 		}
 		if resAfter.Provenance["CompactionThreshold"] == "derived" &&

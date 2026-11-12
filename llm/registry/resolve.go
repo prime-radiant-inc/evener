@@ -850,9 +850,6 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 				// never apply — a target the user disabled cannot resolve
 				// through the alias at all. Remember the verdict now; the
 				// replay below is reverted to it.
-				if BoolValue(target.Model.Disabled) {
-					return Resolved{}, fmt.Errorf("%s/%s: %w (alias of %s)", rec.name, ref.Model, ErrModelDisabled, row.AliasOf)
-				}
 				aliasLockstep = true
 				aliasDisabled = clonePointer(target.Model.Disabled)
 			} else {

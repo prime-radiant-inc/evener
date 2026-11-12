@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -213,6 +214,26 @@ alias_of = "claude-opus-4-6"
 	}
 	if aliased.Provenance["CompactionThreshold"] != "config/row" {
 		t.Fatalf("my-alias CompactionThreshold provenance = %q, want target's config/row", aliased.Provenance["CompactionThreshold"])
+	}
+
+	// ResolveInstanceModelFacts on a same-provider alias whose target is disabled still returns the alias's resolved facts and clamping warnings while Resolve rejects it with ErrModelDisabled.
+	rDisabledAlias := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "sk"}, `
+[providers.anthropic.models."claude-haiku-4-5"]
+disabled = true
+
+[providers.anthropic.models."disabled-haiku-alias"]
+alias_of = "claude-haiku-4-5"
+compaction_threshold = 250000
+`)
+	if _, err := rDisabledAlias.Resolve("anthropic/disabled-haiku-alias"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(disabled-haiku-alias) = %v, want ErrModelDisabled", err)
+	}
+	disabledAliasFacts, err := rDisabledAlias.ResolveInstanceModelFacts("anthropic", "disabled-haiku-alias")
+	if err != nil {
+		t.Fatalf("ResolveInstanceModelFacts(disabled-haiku-alias): %v", err)
+	}
+	if !BoolValue(disabledAliasFacts.Model.Disabled) || disabledAliasFacts.Caps.ContextWindow == nil || *disabledAliasFacts.Caps.ContextWindow != 200000 || disabledAliasFacts.Caps.CompactionThreshold != nil || disabledAliasFacts.Provenance["CompactionThreshold"] != "derived" {
+		t.Fatalf("disabled-haiku-alias facts = %+v", disabledAliasFacts)
 	}
 
 	// Clamping when *CompactionThreshold >= InputCeiling() clears to nil, marks provenance "derived", and emits a warning without failing Load.
