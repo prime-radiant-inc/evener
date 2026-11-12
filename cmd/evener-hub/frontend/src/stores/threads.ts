@@ -6082,7 +6082,12 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     // overlapping tracked publication re-asks for the same ref; the
     // dispatcher coalesces that.
     if (recorded.size > 0) {
-      void runtime.dispatcher.reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(response));
+      void runtime.dispatcher.reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(response)).catch(() => {
+        // A replay that failed (transient backpressure on the journal ask)
+        // resolved nothing: a later read with the SAME identities must ask
+        // again, not skip on the memo this pass already claimed.
+        acceptedCopyReplayKeys.delete(ref);
+      });
     }
   }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
@@ -6364,7 +6369,9 @@ async function publishAndReconcileThreadHydration(
       // an absent retained source was delivered, so storage and routing
       // retire alongside the projection.
       if (recorded.size > 0) {
-        void runtime.dispatcher.reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(hydration.response));
+        void runtime.dispatcher
+          .reconcileAcceptedCopies(ref, collectAuthoritativeMutationIds(hydration.response))
+          .catch(() => acceptedCopyReplayKeys.delete(ref));
       }
     }
   }

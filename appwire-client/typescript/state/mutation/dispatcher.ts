@@ -197,7 +197,11 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   async #reconcileAcceptedCopiesLoop(targetRef: string, first: ReadonlySet<string>): Promise<void> {
     let ids = first;
     for (;;) {
-      await this.#reconcileAcceptedCopiesNow(targetRef, ids);
+      const failed = await this.#reconcileAcceptedCopiesNow(targetRef, ids);
+      // A pass whose journal ask failed resolved nothing for the copy it
+      // tried: report the failure to the caller (the store's replay memo)
+      // rather than resolving as though the replay had settled.
+      if (failed) throw new Error("accepted-copy replay failed");
       const next = this.#acceptedCopyReplayAuthority.get(targetRef);
       this.#acceptedCopyReplayAuthority.delete(targetRef);
       // Every caller passes a freshly built set, so identity never proves
@@ -212,9 +216,10 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     }
   }
 
-  async #reconcileAcceptedCopiesNow(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+  async #reconcileAcceptedCopiesNow(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<boolean> {
     const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
-    if (!accepted) return;
+    if (!accepted) return false;
+    let failed = false;
     await Promise.all(
       accepted
         .filter(
@@ -236,9 +241,11 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
             await this.reconcileIdentities([record.clientMutationId]);
           } catch {
             // No terminal evidence: keep the display copy for the next read.
+            failed = true;
           }
         }),
     );
+    return failed;
   }
 
   #dispatchTarget(targetRef: string): Promise<void> {
