@@ -244,3 +244,21 @@ func TestListDirToolStopsTheWalkAtTheRenderedCharacterBudget(t *testing.T) {
 		t.Fatalf("footer claimed the exhaustive total of 70 from a walk the character budget stopped at 61:\n%s", footer)
 	}
 }
+
+func TestListDirToolUsesProviderWireNameInPaginationFooter(t *testing.T) {
+	t.Parallel()
+	env, root := listdirBudget_flat(t)
+	sess := newSession(t, withDir(root), withProfile(newGeminiProfile("gemini-2.5-pro")))
+
+	res := listdirBudget_call(t.Context(), t, sess.reg, env, map[string]any{"path": root, "limit": 2.0, "depth": 1.0})
+	if res.IsError {
+		t.Fatalf("list_dir on Gemini profile errored: %s", res.Output)
+	}
+	_, footer := listdirBudget_body(res.Output)
+	if !strings.Contains(footer, "list_directory(offset=2)") {
+		t.Fatalf("Gemini pagination footer must use wire name list_directory(offset=2), got:\n%s", footer)
+	}
+	if strings.Contains(footer, "list_dir(") {
+		t.Fatalf("Gemini pagination footer leaked canonical list_dir name:\n%s", footer)
+	}
+}

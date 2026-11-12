@@ -133,7 +133,9 @@ function listTarget(args: Record<string, unknown>): { path: string; pattern?: st
 // the last line, so only the last line is read, and only the whole footer
 // (agent/session_tools_shell.go's formatDirListing) counts: an entry named
 // like a count ("2 entries.md", "2 entries (notes)") never reads as one.
-const LIST_DIR_COUNT_RE = /^(\d+)(?: of \d+ entries \(offset \d+\)(?: — more with list_dir\(offset=\d+\))?| entries)$/;
+const LIST_DIR_COUNT_RE =
+  /^(\d+)(?:(?: of \d+)? entries \(offset \d+\)(?: — more with list_(?:dir|directory)\(offset=\d+\))?| entries)$/;
+const LIST_DIR_STOP_NOTE_RE = /\nThe (?:walk|listing) stopped after (?:visiting its cap of )?\d+ entries\b[^\n]*$/;
 
 function entries(n: number | string): string {
   return `${n} ${String(n) === "1" ? "entry" : "entries"}`;
@@ -142,10 +144,11 @@ function entries(n: number | string): string {
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
   // The footer is the last line of the tool's own output, which may be
-  // followed by an intervention the registry appended.
+  // followed by a walk-stop note line or an intervention the registry appended.
   const tails = outputTails(output);
   for (const tail of tails) {
-    const stated = LIST_DIR_COUNT_RE.exec(lastLine(tail.trimEnd()))?.[1];
+    const withoutNote = tail.trimEnd().replace(LIST_DIR_STOP_NOTE_RE, "");
+    const stated = LIST_DIR_COUNT_RE.exec(lastLine(withoutNote))?.[1];
     if (stated !== undefined) return entries(stated);
   }
   // No footer: the listing's own lines, without an intervention after it.

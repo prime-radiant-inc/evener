@@ -68,6 +68,10 @@ type DirListBudget struct {
 	// walkStopped marks that the need cap, not the subtree's end, stopped
 	// the walk, so the listing is partial and its totals are lower bounds.
 	walkStopped bool
+	// windowClamped marks that the requested limit reached or exceeded
+	// maxListDirWalkEntries, so hitting b.window reflects the safety cap
+	// rather than a smaller caller-requested page size.
+	windowClamped bool
 	// listings counts the directories the walk has listed. Honest
 	// accounting for tests to read through the package boundary; the work
 	// bound on listings is glob's, charged through b.glob.
@@ -96,13 +100,21 @@ func NewDirListBudget(offset, limit, charBudget int) *DirListBudget {
 		limit = 1
 	}
 	window := maxListDirWalkEntries
+	windowClamped := true
 	if limit < maxListDirWalkEntries {
 		window = limit + 1
+		windowClamped = false
 	}
 	if charBudget < 0 {
 		charBudget = 0
 	}
-	return &DirListBudget{glob: newGlobBudget("list_dir"), skip: offset, window: window, charBudget: charBudget}
+	return &DirListBudget{
+		glob:          newGlobBudget("list_dir"),
+		skip:          offset,
+		window:        window,
+		charBudget:    charBudget,
+		windowClamped: windowClamped,
+	}
 }
 
 // TruncatedAt reports the visit position where the walk stopped short of the
@@ -115,6 +127,13 @@ func (b *DirListBudget) TruncatedAt() int {
 		return b.visited
 	}
 	return 0
+}
+
+// HitWalkCap reports whether the walk stopped because it reached the
+// maxListDirWalkEntries retention ceiling rather than an ordinary page limit or
+// rendered character budget.
+func (b *DirListBudget) HitWalkCap() bool {
+	return b.walkStopped && b.windowClamped && !b.charFull
 }
 
 // Visited reports how many entries the walk charged in total. For a walk

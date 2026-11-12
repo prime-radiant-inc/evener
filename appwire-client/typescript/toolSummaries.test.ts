@@ -471,6 +471,12 @@ test("says the count list_dir states, one entry or many", () => {
   expect(listed("b.go\t3\nc.go\t4\n\n2 of 5 entries (offset 0) — more with list_dir(offset=2)")).toBe(
     "Listed a · 2 entries",
   );
+  expect(listed("0 of 5 entries (offset 5) — more with list_directory(offset=5)")).toBe("Listed a · 0 entries");
+  expect(
+    listed(
+      "b.go\t3\nc.go\t4\n\n0 entries (offset 2) — more with list_directory(offset=2)\nThe walk stopped after 2 entries once this page filled; total count was not enumerated.",
+    ),
+  ).toBe("Listed a · 0 entries");
   expect(listed("d.go\t3\n\n1 of 5 entries (offset 4)")).toBe("Listed a · 1 entry");
   // An entry named like a count is an entry: only the footer, after the blank
   // line (or alone, for an empty directory), is the count.
