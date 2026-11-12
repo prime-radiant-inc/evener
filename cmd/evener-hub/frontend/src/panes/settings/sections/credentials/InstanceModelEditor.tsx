@@ -185,6 +185,8 @@ export function InstanceModelEditor({
       return;
     }
     let cancelled = false;
+    const requestedIdentity = draftIdentity(instance);
+    const requestedFingerprint = instance.endpointFingerprint;
     setLoading(true);
     setFormError(null);
     void credentialsStore
@@ -192,14 +194,13 @@ export function InstanceModelEditor({
       .getModel({ name: instance.name, model })
       .then((loaded) => {
         if (cancelled) return;
-        const latest = credentialsStore.getState().instances.find((i) => i.name === instance.name) ?? instance;
         setDetail(loaded);
         const seeded = seedModelDraft(loaded);
         setInitial(seeded);
         setDraft(seeded);
         setRoutingOpen(hasRoutingOverrides(loaded.authored));
-        seededIdentity.current = draftIdentity(latest);
-        seededFingerprint.current = latest.endpointFingerprint;
+        seededIdentity.current = requestedIdentity;
+        seededFingerprint.current = requestedFingerprint;
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -251,6 +252,8 @@ export function InstanceModelEditor({
     }
     seededIdentity.current = null;
     seededFingerprint.current = undefined;
+    const requestedIdentity = draftIdentity(targetInstance);
+    const requestedFingerprint = targetInstance.endpointFingerprint;
     const tokenAtReload = viewTokenRef.current;
     setLoading(true);
     void credentialsStore
@@ -258,15 +261,13 @@ export function InstanceModelEditor({
       .getModel({ name: targetInstance.name, model })
       .then((loaded) => {
         if (viewTokenRef.current !== tokenAtReload) return;
-        const latest =
-          credentialsStore.getState().instances.find((i) => i.name === targetInstance.name) ?? targetInstance;
         setDetail(loaded);
         const seeded = seedModelDraft(loaded);
         setInitial(seeded);
         setDraft(seeded);
         setRoutingOpen(hasRoutingOverrides(loaded.authored));
-        seededIdentity.current = draftIdentity(latest);
-        seededFingerprint.current = latest.endpointFingerprint;
+        seededIdentity.current = requestedIdentity;
+        seededFingerprint.current = requestedFingerprint;
         setLoading(false);
       })
       .catch((err: unknown) => {

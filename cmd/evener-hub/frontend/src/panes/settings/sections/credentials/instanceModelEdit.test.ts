@@ -425,10 +425,23 @@ describe("summary and placeholder helpers", () => {
     expect(wireIdPlaceholder(configDetail)).not.toContain("custom-wire-v1");
     expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("128K");
     expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("115K");
-    expect(reasoningOptions(configDetail)[0]?.label).not.toContain("On");
-    expect(reasoningOptions(configDetail)[0]?.label).not.toContain("Off");
-    expect(defaultEffortOptions(configDetail)[0]?.label).not.toContain("High");
-    expect(toolCallingOptions(configDetail)[0]?.label).not.toContain("Supported");
+    expect(
+      reasoningOptions({ ...configDetail, effective: { ...configDetail.effective, reasoning: true } })[0]?.label,
+    ).toBe(reasoningOptions({ ...configDetail, effective: { ...configDetail.effective, reasoning: false } })[0]?.label);
+    expect(reasoningOptions(configDetail)[0]?.label).not.toBe(
+      reasoningOptions({ ...configDetail, provenance: { ...configDetail.provenance, Reasoning: "catalog" } })[0]?.label,
+    );
+    expect(defaultEffortOptions(configDetail)[0]?.label).toBe(defaultEffortOptions(null)[0]?.label);
+    expect(defaultEffortOptions(configDetail)[0]?.label).not.toBe(
+      defaultEffortOptions({ ...configDetail, provenance: { ...configDetail.provenance, DefaultEffort: "catalog" } })[0]
+        ?.label,
+    );
+    expect(
+      toolCallingOptions({ ...configDetail, effective: { ...configDetail.effective, tools: true } })[0]?.label,
+    ).toBe(toolCallingOptions({ ...configDetail, effective: { ...configDetail.effective, tools: false } })[0]?.label);
+    expect(toolCallingOptions(configDetail)[0]?.label).not.toBe(
+      toolCallingOptions({ ...configDetail, provenance: { ...configDetail.provenance, Tools: "catalog" } })[0]?.label,
+    );
     expect(modelProtocolOptions(configDetail)[0]?.label).not.toContain("openai-chat");
     expect(modelSurfaceOptions(configDetail)[0]?.label).not.toContain("generic");
     expect(thinkingFormatOptions(configDetail)[0]?.label).not.toContain("deepseek");

@@ -1023,4 +1023,80 @@ describe("per-model summary rows and drill-in editor", () => {
     expect(toastKinds()).toContain("error");
     expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
   });
+
+  test("does not bind an in-flight modelGet response to a same-name replacement that arrived before modelGet resolved", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const initialInst: InstanceEntry = {
+      ...entry(),
+      providerId: "openai",
+      protocol: "openai-chat",
+      endpointFingerprint: "fp-old",
+      models: [{ id: "gpt-5.5" }],
+    };
+    const replacementInst: InstanceEntry = {
+      ...initialInst,
+      providerId: "anthropic",
+      protocol: "anthropic",
+      endpointFingerprint: "fp-new",
+      models: [{ id: "gpt-5.5" }],
+    };
+    let modelGetCount = 0;
+    let resolveFirstGet: ((detail: InstanceModelDetailResponse) => void) | undefined;
+    fake.on("evener/instance/modelGet", () => {
+      modelGetCount += 1;
+      if (modelGetCount === 1) {
+        return new Promise<InstanceModelDetailResponse>((resolve) => {
+          resolveFirstGet = resolve;
+        });
+      }
+      return new Promise<InstanceModelDetailResponse>(() => {});
+    });
+    fake.on(
+      "evener/instance/modelEdit",
+      (): InstanceModelEditResponse => ({
+        list: { instances: [replacementInst], availableProviders: [] },
+        detail: modelDetailFixture(),
+      }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({
+      instances: [initialInst],
+      availableProviders: [],
+      listingFromPreviousConnection: false,
+    });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    // 1. Open Configure gpt-5.5 while initialInst (fp-old) is active; modelGet is delayed
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    await waitFor(() => expect(resolveFirstGet).toBeDefined());
+
+    // 2. While modelGet is in flight, the same-name instance is replaced in store with replacementInst (fp-new)
+    act(() => {
+      credentialsStore.setState({
+        instances: [replacementInst],
+        availableProviders: [],
+        listingFromPreviousConnection: false,
+      });
+    });
+
+    // 3. Resolve the first modelGet (which was requested for initialInst)
+    await act(async () => {
+      resolveFirstGet?.(modelDetailFixture());
+    });
+
+    // 4. Edit threshold and click Save -> must refuse with instance-replaced and zero modelEdit calls
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    await user.type(thresholdInput, "250k");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(document.querySelector('[role="alert"][data-reason="instance-replaced"]')).not.toBeNull();
+    expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
+  });
 });
