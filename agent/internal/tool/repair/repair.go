@@ -93,47 +93,126 @@ func applyAliases(params, args map[string]any) []Change {
 	}
 
 	// Nested item aliases for task-bearing tools:
-	// 1. task_list: add[i].title -> add[i].description
-	if rawAdds, ok := args["add"].([]any); ok {
-		for i, raw := range rawAdds {
-			item, ok := raw.(map[string]any)
-			if !ok {
-				continue
+	// 1. task_list: add[i].title -> add[i].description (only when schema declares description and not title)
+	if itemSchemaDeclaresOnly(params, "add", "description", "title") {
+		if rawAdds, ok := args["add"].([]any); ok {
+			var repairedAdds []any
+			for i, raw := range rawAdds {
+				item, ok := raw.(map[string]any)
+				if !ok {
+					if repairedAdds != nil {
+						repairedAdds = append(repairedAdds, raw)
+					}
+					continue
+				}
+				title, hasTitle := item["title"]
+				desc, hasDesc := item["description"]
+				if !hasTitle {
+					if repairedAdds != nil {
+						repairedAdds = append(repairedAdds, raw)
+					}
+					continue
+				}
+				cleanItem := maps.Clone(item)
+				if isBlank(title) {
+					delete(cleanItem, "title")
+					changes = append(changes, Change{Kind: ChangeDropUnknown, Field: fmt.Sprintf("add[%d].title", i), Detail: "dropped blank alias title"})
+				} else if !hasDesc || isBlank(desc) {
+					cleanItem["description"] = title
+					delete(cleanItem, "title")
+					changes = append(changes, Change{Kind: ChangeAlias, Field: fmt.Sprintf("add[%d].description", i), Detail: "title→description"})
+				} else {
+					delete(cleanItem, "title")
+					changes = append(changes, Change{Kind: ChangeDropUnknown, Field: fmt.Sprintf("add[%d].title", i), Detail: "dropped duplicate alias title"})
+				}
+				if repairedAdds == nil {
+					repairedAdds = slices.Clone(rawAdds[:i])
+				}
+				repairedAdds = append(repairedAdds, cleanItem)
 			}
-			title, hasTitle := item["title"]
-			desc, hasDesc := item["description"]
-			if hasTitle && (!hasDesc || desc == nil || desc == "") {
-				item["description"] = title
-				delete(item, "title")
-				field := fmt.Sprintf("add[%d].description", i)
-				changes = append(changes, Change{Kind: ChangeAlias, Field: field, Detail: "title→description"})
-			} else if hasTitle && hasDesc {
-				delete(item, "title")
+			if repairedAdds != nil {
+				args["add"] = repairedAdds
 			}
 		}
 	}
 
-	// 2. delegate: task_list[i].description -> task_list[i].title
-	if rawTasks, ok := args["task_list"].([]any); ok {
-		for i, raw := range rawTasks {
-			item, ok := raw.(map[string]any)
-			if !ok {
-				continue
+	// 2. delegate: task_list[i].description -> task_list[i].title (only when schema declares title and not description)
+	if itemSchemaDeclaresOnly(params, "task_list", "title", "description") {
+		if rawTasks, ok := args["task_list"].([]any); ok {
+			var repairedTasks []any
+			for i, raw := range rawTasks {
+				item, ok := raw.(map[string]any)
+				if !ok {
+					if repairedTasks != nil {
+						repairedTasks = append(repairedTasks, raw)
+					}
+					continue
+				}
+				desc, hasDesc := item["description"]
+				title, hasTitle := item["title"]
+				if !hasDesc {
+					if repairedTasks != nil {
+						repairedTasks = append(repairedTasks, raw)
+					}
+					continue
+				}
+				cleanItem := maps.Clone(item)
+				if isBlank(desc) {
+					delete(cleanItem, "description")
+					changes = append(changes, Change{Kind: ChangeDropUnknown, Field: fmt.Sprintf("task_list[%d].description", i), Detail: "dropped blank alias description"})
+				} else if !hasTitle || isBlank(title) {
+					cleanItem["title"] = desc
+					delete(cleanItem, "description")
+					changes = append(changes, Change{Kind: ChangeAlias, Field: fmt.Sprintf("task_list[%d].title", i), Detail: "description→title"})
+				} else {
+					delete(cleanItem, "description")
+					changes = append(changes, Change{Kind: ChangeDropUnknown, Field: fmt.Sprintf("task_list[%d].description", i), Detail: "dropped duplicate alias description"})
+				}
+				if repairedTasks == nil {
+					repairedTasks = slices.Clone(rawTasks[:i])
+				}
+				repairedTasks = append(repairedTasks, cleanItem)
 			}
-			desc, hasDesc := item["description"]
-			title, hasTitle := item["title"]
-			if hasDesc && (!hasTitle || title == nil || title == "") {
-				item["title"] = desc
-				delete(item, "description")
-				field := fmt.Sprintf("task_list[%d].title", i)
-				changes = append(changes, Change{Kind: ChangeAlias, Field: field, Detail: "description→title"})
-			} else if hasDesc && hasTitle {
-				delete(item, "description")
+			if repairedTasks != nil {
+				args["task_list"] = repairedTasks
 			}
 		}
 	}
 
 	return changes
+}
+
+func itemSchemaDeclaresOnly(params map[string]any, arrayKey, targetProp, aliasProp string) bool {
+	props := schemaProps(params)
+	if props == nil {
+		return false
+	}
+	arraySchema, ok := props[arrayKey].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemsSchema, ok := arraySchema["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemProps := schemaProps(itemsSchema)
+	if itemProps == nil {
+		return false
+	}
+	_, hasTarget := itemProps[targetProp]
+	_, hasAlias := itemProps[aliasProp]
+	return hasTarget && !hasAlias
+}
+
+func isBlank(v any) bool {
+	if v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(s) == ""
 }
 
 func schemaProps(params map[string]any) map[string]any {

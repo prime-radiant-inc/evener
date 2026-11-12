@@ -159,6 +159,22 @@ func TestNormalizeDelegateArgs_TaskListDescriptionAndDependsOn(t *testing.T) {
 	}
 }
 
+func TestDecodeDelegateArgs_TaskListWhitespaceTitleWithDescription(t *testing.T) {
+	t.Parallel()
+	a, err := decodeDelegateArgs(map[string]any{
+		"prompt": "brief",
+		"task_list": []any{
+			map[string]any{"title": "   ", "description": "inspect", "prompt": "p"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(a.TaskList) != 1 || a.TaskList[0].Title != "inspect" {
+		t.Fatalf("TaskList = %+v, want Title=inspect", a.TaskList)
+	}
+}
+
 // The parent's task_list is frozen into the delegate descriptor at creation,
 // so launch and every later resume seed the child's task list from it.
 func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {

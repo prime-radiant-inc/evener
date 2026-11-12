@@ -982,8 +982,8 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("combined call: %s", res.FullOutput)
 	}
-	if !strings.Contains(res.FullOutput, "Added 1 task(s); updated 1→in_progress") {
-		t.Fatalf("output should combine add+update ack: %q", res.FullOutput)
+	if !strings.Contains(res.FullOutput, "Added 1 task(s) (#2); updated 1→in_progress") {
+		t.Fatalf("output should combine add+update ack with assigned IDs: %q", res.FullOutput)
 	}
 	view := h.store.View()
 	if len(view) != 2 || view[0].Status != taskpkg.TaskInProgress || view[1].Status != taskpkg.TaskOpen {
@@ -1301,5 +1301,18 @@ func TestTaskTool_AddAcceptsTitleAliasAndDefaultType(t *testing.T) {
 	}
 	if tasks[0].Status != taskpkg.TaskOpen {
 		t.Fatalf("task status = %q, want open", tasks[0].Status)
+	}
+}
+
+func TestTaskTool_AddNullTitleRejected(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"title": nil, "prompt": "p"},
+		},
+	})
+	if !res.IsError {
+		t.Fatalf("add with null title must be rejected: %s", res.FullOutput)
 	}
 }

@@ -265,11 +265,17 @@ func normalizeDelegateArgs(args map[string]any) (map[string]any, error) {
 			desc, hasDesc := clean["description"]
 			title, hasTitle := clean["title"]
 			if hasDesc {
-				if !hasTitle || title == nil || title == "" {
+				if isBlankString(desc) {
+					delete(clean, "description")
+					modified = true
+				} else if !hasTitle || isBlankString(title) {
 					clean["title"] = desc
+					delete(clean, "description")
+					modified = true
+				} else {
+					delete(clean, "description")
+					modified = true
 				}
-				delete(clean, "description")
-				modified = true
 			}
 
 			// If depends_on is supplied, strip it so additionalProperties: false doesn't fail.

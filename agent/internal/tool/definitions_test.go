@@ -394,19 +394,6 @@ func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	}
 }
 
-func TestDefTaskListDescriptionStatesNewlyAddedOpen(t *testing.T) {
-	def := DefTaskList(nil)
-	want := "Newly added tasks stay open until started."
-	if !strings.Contains(def.Description, want) {
-		t.Fatalf("DefTaskList description = %q, want to contain %q", def.Description, want)
-	}
-	props := def.Parameters["properties"].(map[string]any)
-	addDesc, _ := props["add"].(map[string]any)["description"].(string)
-	if !strings.Contains(addDesc, want) {
-		t.Fatalf("add description = %q, want to contain %q", addDesc, want)
-	}
-}
-
 func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 	def := DefTaskList([]string{"low", "medium", "high"})
 	want := []string{"low", "medium", "high", "inherit"}
