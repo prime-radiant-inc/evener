@@ -837,7 +837,6 @@ type RestoreSessionConfig struct {
 	CommitProvenance        string
 	LLMRetryPolicy          *llm.RetryPolicy
 	LLMSleep                llm.SleepFunc
-	QuotaCoordinator        *llm.QuotaCoordinator
 	spawn                   spawnConfig
 	resumeHistory           []schema.Turn
 	deferRestoreSideEffects bool
@@ -1028,7 +1027,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
-	cfg.QuotaCoordinator = restoreCfg.QuotaCoordinator
 	if restoreCfg.clock != nil {
 		cfg.clock = restoreCfg.clock
 	}

@@ -60,21 +60,6 @@ type RetryPolicy struct {
 	// the package default reserve.
 	RateLimitShutdownReserve time.Duration
 
-	// Quota, when non-nil, shares a rate-limit cooldown with other sessions
-	// retrying the same provider instance (see QuotaCoordinator). Only
-	// wall-budgeted rate limits consult it; every other error keeps its
-	// existing behavior.
-	Quota *QuotaCoordinator
-
-	// QuotaKey names the provider instance whose cooldown Quota coordinates.
-	// Empty disables coordination.
-	QuotaKey string
-
-	// QuotaLane is the priority this group's attempts claim at. The zero
-	// value is root; delegates set QuotaLaneDelegate so a waiting root turn
-	// takes the next opening.
-	QuotaLane QuotaLane
-
 	// OnRetry is invoked before sleeping for a retry attempt.
 	OnRetry func(err error, attempt int, delay time.Duration)
 }

@@ -104,7 +104,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		ModelFallbacks:          append([]string(nil), descriptor.Config.ModelFallbacks...),
 		LLMRetryPolicy:          s.cfg.LLMRetryPolicy,
 		LLMSleep:                s.cfg.LLMSleep,
-		QuotaCoordinator:        s.cfg.QuotaCoordinator,
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
 		// The personal doc belongs to whoever runs the tree now, not to the run that froze this delegate.
