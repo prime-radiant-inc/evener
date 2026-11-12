@@ -44,14 +44,26 @@ import {
   safeCredentialTestResult,
   unconfiguredLabel,
 } from "@evener/appwire-client";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Chip, FormRow, InlineNotice, Input, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Chip,
+  ConfirmDialog,
+  FormRow,
+  InlineNotice,
+  Input,
+  Sheet,
+  StatusDot,
+  Switch,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ConnectionFacts, ConnectionSettingsDisclosure, connectionSettingsFields } from "./ConnectionFacts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
 import type { FormError } from "./formError";
+import { InstanceModelEditor } from "./InstanceModelEditor";
 import styles from "./InstanceSheet.module.css";
 import { draftFor, type InstanceDraft, instanceEditParams, varRows } from "./instanceEdit";
 import {
@@ -62,6 +74,7 @@ import {
   supersededSaveLanded,
   untouchedIdentityMatches,
 } from "./instanceLanding";
+import { formatModelRowSummary } from "./instanceModelEdit";
 import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
@@ -74,6 +87,10 @@ const CLASS = {
   fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
+  modelHeaderActions: requireClass(styles.modelHeaderActions, "InstanceSheet.module.css", "modelHeaderActions"),
+  modelRow: requireClass(styles.modelRow, "InstanceSheet.module.css", "modelRow"),
+  modelMeta: requireClass(styles.modelMeta, "InstanceSheet.module.css", "modelMeta"),
+  modelSummary: requireClass(styles.modelSummary, "InstanceSheet.module.css", "modelSummary"),
 };
 
 const LITERAL_HEADER_ERROR =
@@ -245,6 +262,28 @@ export function InstanceSheet({
   const [formError, setFormError] = useState<FormError<FormErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
+  const [activeModelView, setActiveModelView] = useState<{ mode: "edit"; model: string } | { mode: "create" } | null>(
+    null,
+  );
+  const [modelEditorState, setModelEditorState] = useState<{ busy: boolean; canSave: boolean }>({
+    busy: false,
+    canSave: false,
+  });
+  const [pendingRemoveModel, setPendingRemoveModel] = useState<{
+    name: string;
+    model: string;
+    expectedEndpointFingerprint?: string;
+  } | null>(null);
+  const [removeModelBusy, setRemoveModelBusy] = useState(false);
+  const modelSaveRef = useRef<(() => Promise<void>) | null>(null);
+  const overviewRef = useRef<HTMLDivElement>(null);
+  const savedScrollTop = useRef(0);
+  const returnFocusTarget = useRef<{ kind: "configure"; model: string } | { kind: "add" } | null>(null);
+  const addCustomModelBtnRef = useRef<HTMLButtonElement>(null);
+
+  const handleModelEditorStateChange = useCallback((next: { busy: boolean; canSave: boolean }) => {
+    setModelEditorState((prev) => (prev.busy === next.busy && prev.canSave === next.canSave ? prev : next));
+  }, []);
   // The sheet is the editor, so its full connection settings start open; the
   // disclosure still folds them away when the reader wants the actions.
   const [settingsOpen, setSettingsOpen] = useState(true);
@@ -316,8 +355,102 @@ export function InstanceSheet({
     setDraft(seeded);
     setFormError(null);
     setModelSearch("");
+    setActiveModelView(null);
+    setPendingRemoveModel(null);
+    savedScrollTop.current = 0;
+    returnFocusTarget.current = null;
     seededIdentity.current = draftIdentity(inst);
     seededFingerprint.current = inst.endpointFingerprint;
+  }
+
+  function reanchorFromModelSave(landed: InstanceEntry): void {
+    if (shownName.current !== landed.name) return;
+    seededIdentity.current = draftIdentity(landed);
+    seededFingerprint.current = landed.endpointFingerprint;
+    const landedTemplate = credentialsStore.getState().availableProviders.find((p) => p.id === landed.providerId);
+    const landedDraft = draftFor(landed, landedTemplate);
+    const prevInitial = initial;
+    setInitial(landedDraft);
+    setDraft((prevDraft) => {
+      if (prevDraft === null || prevInitial === null) return landedDraft;
+      const nextVars: Record<string, string> = { ...landedDraft.vars };
+      for (const [key, val] of Object.entries(prevDraft.vars)) {
+        if (val.trim() !== (prevInitial.vars[key] ?? "").trim()) {
+          nextVars[key] = val;
+        }
+      }
+      return {
+        name: prevDraft.name.trim() !== prevInitial.name.trim() ? prevDraft.name : landedDraft.name,
+        baseUrl: prevDraft.baseUrl.trim() !== prevInitial.baseUrl.trim() ? prevDraft.baseUrl : landedDraft.baseUrl,
+        protocol: prevDraft.protocol !== prevInitial.protocol ? prevDraft.protocol : landedDraft.protocol,
+        surface: prevDraft.surface !== prevInitial.surface ? prevDraft.surface : landedDraft.surface,
+        vars: nextVars,
+        apiKeyEnv:
+          prevDraft.apiKeyEnv.trim() !== prevInitial.apiKeyEnv.trim() ? prevDraft.apiKeyEnv : landedDraft.apiKeyEnv,
+        credentialHeader:
+          prevDraft.credentialHeader.trim() !== prevInitial.credentialHeader.trim()
+            ? prevDraft.credentialHeader
+            : landedDraft.credentialHeader,
+      };
+    });
+  }
+
+  function openConfigureModel(modelId: string): void {
+    if (renameGap) {
+      refuseDuringRename();
+      return;
+    }
+    savedScrollTop.current = overviewRef.current?.parentElement?.scrollTop ?? 0;
+    returnFocusTarget.current = { kind: "configure", model: modelId };
+    setActiveModelView({ mode: "edit", model: modelId });
+  }
+
+  function openAddCustomModel(): void {
+    if (renameGap) {
+      refuseDuringRename();
+      return;
+    }
+    savedScrollTop.current = overviewRef.current?.parentElement?.scrollTop ?? 0;
+    returnFocusTarget.current = { kind: "add" };
+    setActiveModelView({ mode: "create" });
+  }
+
+  function backToOverview(): void {
+    setActiveModelView(null);
+  }
+
+  async function handleConfirmRemoveCustomModel(): Promise<void> {
+    if (!pendingRemoveModel) return;
+    setRemoveModelBusy(true);
+    try {
+      await credentialsStore.getState().editModel({
+        name: pendingRemoveModel.name,
+        model: pendingRemoveModel.model,
+        removeCustom: true,
+        ...(pendingRemoveModel.expectedEndpointFingerprint
+          ? { expectedEndpointFingerprint: pendingRemoveModel.expectedEndpointFingerprint }
+          : {}),
+      });
+      const refreshed = credentialsStore.getState().instances.find((i) => i.name === pendingRemoveModel.name);
+      if (refreshed !== undefined) reanchorFromModelSave(refreshed);
+      const removedModel = pendingRemoveModel.model;
+      setPendingRemoveModel(null);
+      setActiveModelView(null);
+      toast.push("success", `Removed ${removedModel}`);
+    } catch (err) {
+      if (isStaleListingRefusal(err)) {
+        setPendingRemoveModel(null);
+        toast.push("warning", CONNECTION_REPLACED_ERROR);
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
+      toast.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
+    } finally {
+      setRemoveModelBusy(false);
+    }
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different instance opens; a refresh of the same instance must not clobber in-progress edits
@@ -327,6 +460,8 @@ export function InstanceSheet({
       setDraft(null);
       setFormError(null);
       setModelSearch("");
+      setActiveModelView(null);
+      setPendingRemoveModel(null);
       return;
     }
     seed(instance);
@@ -377,6 +512,32 @@ export function InstanceSheet({
   useLayoutEffect(() => {
     shownName.current = name;
   }, [name]);
+
+  useLayoutEffect(() => {
+    const body = overviewRef.current?.parentElement ?? null;
+    if (!body) return;
+    if (activeModelView !== null) {
+      body.scrollTop = 0;
+      return;
+    }
+    body.scrollTop = savedScrollTop.current;
+    const target = returnFocusTarget.current;
+    returnFocusTarget.current = null;
+    if (target === null) return;
+    if (target.kind === "configure") {
+      const buttons = overviewRef.current?.querySelectorAll<HTMLButtonElement>("[data-configure-model]");
+      const match = buttons
+        ? Array.from(buttons).find((btn) => btn.getAttribute("data-configure-model") === target.model)
+        : undefined;
+      if (match && !match.disabled) {
+        match.focus();
+        return;
+      }
+    }
+    if (addCustomModelBtnRef.current && !addCustomModelBtnRef.current.disabled) {
+      addCustomModelBtnRef.current.focus();
+    }
+  }, [activeModelView]);
 
   const open = name !== null && instance !== undefined;
 
@@ -739,281 +900,371 @@ export function InstanceSheet({
   const headingState = instance === undefined ? undefined : credentialState(instance, undefined);
 
   return (
-    <Sheet
-      open={open}
-      onClose={onClose}
-      title={instance?.name ?? ""}
-      side={isMobile ? "bottom" : "right"}
-      size="wide"
-      footer={
-        instance !== undefined && (
-          <Button onClick={() => void handleSave()} aria-disabled={busy} disabled={!dirty || writesRefused}>
-            Save
-          </Button>
-        )
-      }
-    >
-      {instance !== undefined && (
-        <>
-          <div className={CLASS.headingRow} data-credential-state={headingState}>
-            {headingState !== undefined && <StatusDot state={CREDENTIAL_DOT[headingState]} />}
-            {instance.isDefault && <Chip kind="default">★ default</Chip>}
-            {fromEnvironment(instance) && <Chip kind="environment">from environment</Chip>}
-          </div>
-          {draft !== null && (
-            <form
-              className={CLASS.form}
-              aria-label={`Edit ${instance.name}`}
-              data-rename={renameKind}
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleSave();
-              }}
+    <>
+      <Sheet
+        open={open}
+        onClose={onClose}
+        title={instance?.name ?? ""}
+        side={isMobile ? "bottom" : "right"}
+        size="wide"
+        footer={
+          instance !== undefined &&
+          (activeModelView !== null ? (
+            <Button
+              onClick={() => void modelSaveRef.current?.()}
+              aria-disabled={modelEditorState.busy}
+              disabled={!modelEditorState.canSave || writesRefused}
             >
-              <ConnectionFacts
-                data-testid="connection-facts"
-                rows={[
-                  {
-                    key: "name",
-                    label: "Name",
-                    htmlFor: `${ids}-name`,
-                    value: (
-                      <Input
-                        id={`${ids}-name`}
-                        value={draft.name}
-                        onChange={(event) => update({ name: event.target.value })}
-                        disabled={busy}
-                      />
-                    ),
-                    help: nameHelp,
-                  },
-                  {
-                    key: "base-provider",
-                    label: "Base provider",
-                    value: <span data-testid="base-provider">{instance.providerId}</span>,
-                  },
-                  {
-                    key: "base-url",
-                    label: "Base URL",
-                    htmlFor: `${ids}-baseurl`,
-                    value: (
-                      <Input
-                        id={`${ids}-baseurl`}
-                        value={draft.baseUrl}
-                        onChange={(event) => update({ baseUrl: event.target.value })}
-                        placeholder="https://…"
-                        disabled={busy}
-                      />
-                    ),
-                    help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
-                  },
-                ]}
-              />
-              <ConnectionSettingsDisclosure
-                open={settingsOpen}
-                onOpenChange={setSettingsOpen}
-                data-testid="connection-settings"
-                fields={
-                  settingsOpen
-                    ? connectionSettingsFields({
-                        idPrefix: ids,
-                        variableRows: varRows(draft, template),
-                        values: {
-                          vars: draft.vars,
-                          protocol: draft.protocol,
-                          surface: draft.surface,
-                          apiKeyEnv: draft.apiKeyEnv,
-                          credentialHeader: draft.credentialHeader,
-                        },
-                        disabled: busy,
-                        copy: {
-                          apiKeyEnvLabel: "API key environment variable",
-                          credentialHeaderPlaceholder: "Authorization=Bearer $VAR",
-                          credentialHeaderHelp:
-                            "NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.",
-                        },
-                        onVariableChange: updateVar,
-                        onFieldChange: (field, value) => update({ [field]: value }),
-                      })
-                    : []
-                }
-              />
-              {formError !== null && (
-                <InlineNotice tone="danger" data-reason={formError.reason}>
-                  {formError.message}
-                </InlineNotice>
+              Save
+            </Button>
+          ) : (
+            <Button onClick={() => void handleSave()} aria-disabled={busy} disabled={!dirty || writesRefused}>
+              Save
+            </Button>
+          ))
+        }
+      >
+        {instance !== undefined && (
+          <>
+            <div ref={overviewRef} hidden={activeModelView !== null}>
+              <div className={CLASS.headingRow} data-credential-state={headingState}>
+                {headingState !== undefined && <StatusDot state={CREDENTIAL_DOT[headingState]} />}
+                {instance.isDefault && <Chip kind="default">★ default</Chip>}
+                {fromEnvironment(instance) && <Chip kind="environment">from environment</Chip>}
+              </div>
+              {draft !== null && (
+                <form
+                  className={CLASS.form}
+                  aria-label={`Edit ${instance.name}`}
+                  data-rename={renameKind}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleSave();
+                  }}
+                >
+                  <ConnectionFacts
+                    data-testid="connection-facts"
+                    rows={[
+                      {
+                        key: "name",
+                        label: "Name",
+                        htmlFor: `${ids}-name`,
+                        value: (
+                          <Input
+                            id={`${ids}-name`}
+                            value={draft.name}
+                            onChange={(event) => update({ name: event.target.value })}
+                            disabled={busy}
+                          />
+                        ),
+                        help: nameHelp,
+                      },
+                      {
+                        key: "base-provider",
+                        label: "Base provider",
+                        value: <span data-testid="base-provider">{instance.providerId}</span>,
+                      },
+                      {
+                        key: "base-url",
+                        label: "Base URL",
+                        htmlFor: `${ids}-baseurl`,
+                        value: (
+                          <Input
+                            id={`${ids}-baseurl`}
+                            value={draft.baseUrl}
+                            onChange={(event) => update({ baseUrl: event.target.value })}
+                            placeholder="https://…"
+                            disabled={busy}
+                          />
+                        ),
+                        help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
+                      },
+                    ]}
+                  />
+                  <ConnectionSettingsDisclosure
+                    open={settingsOpen}
+                    onOpenChange={setSettingsOpen}
+                    data-testid="connection-settings"
+                    fields={
+                      settingsOpen
+                        ? connectionSettingsFields({
+                            idPrefix: ids,
+                            variableRows: varRows(draft, template),
+                            values: {
+                              vars: draft.vars,
+                              protocol: draft.protocol,
+                              surface: draft.surface,
+                              apiKeyEnv: draft.apiKeyEnv,
+                              credentialHeader: draft.credentialHeader,
+                            },
+                            disabled: busy,
+                            copy: {
+                              apiKeyEnvLabel: "API key environment variable",
+                              credentialHeaderPlaceholder: "Authorization=Bearer $VAR",
+                              credentialHeaderHelp:
+                                "NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.",
+                            },
+                            onVariableChange: updateVar,
+                            onFieldChange: (field, value) => update({ [field]: value }),
+                          })
+                        : []
+                    }
+                  />
+                  {formError !== null && (
+                    <InlineNotice tone="danger" data-reason={formError.reason}>
+                      {formError.message}
+                    </InlineNotice>
+                  )}
+                </form>
               )}
-            </form>
-          )}
-          {/* A standing status of the credential, not a message about an
+              {/* A standing status of the credential, not a message about an
               action just taken: a named status, which assistive tech reads
               when the sheet is read rather than announcing it on open. */}
-          {authError ? (
-            <InlineNotice tone="danger" live="status" aria-label="Credential error">
-              {authError}
-            </InlineNotice>
-          ) : null}
-          {unconfigured !== null ? (
-            <p className={CLASS.unconfigured}>{unconfigured}</p>
-          ) : (
-            <div className={CLASS.layers}>
-              {layers.map((layer) => (
-                <div key={layer.source} className={CLASS.layer} data-source={layer.source}>
-                  <span>↳ {layer.label}</span>
-                  <Chip tone={layer.effective ? "alive" : "neutral"} kind={layer.effective ? "effective" : "shadowed"}>
-                    {layer.effective ? "effective" : "shadowed"}
-                  </Chip>
+              {authError ? (
+                <InlineNotice tone="danger" live="status" aria-label="Credential error">
+                  {authError}
+                </InlineNotice>
+              ) : null}
+              {unconfigured !== null ? (
+                <p className={CLASS.unconfigured}>{unconfigured}</p>
+              ) : (
+                <div className={CLASS.layers}>
+                  {layers.map((layer) => (
+                    <div key={layer.source} className={CLASS.layer} data-source={layer.source}>
+                      <span>↳ {layer.label}</span>
+                      <Chip
+                        tone={layer.effective ? "alive" : "neutral"}
+                        kind={layer.effective ? "effective" : "shadowed"}
+                      >
+                        {layer.effective ? "effective" : "shadowed"}
+                      </Chip>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-          {/* Every action below takes Save's `busy` gate, not just the form:
+              )}
+              {/* Every action below takes Save's `busy` gate, not just the form:
               the write in flight may be a rename, and until it settles the
               sheet still shows the instance under its old name. An action
               fired in that window goes out against the name the write is
               moving away from - and the credential ones would recreate under
               it the orphan the rename just moved. */}
-          {instance !== undefined && (
-            <>
-              <h3>Models</h3>
-              <div className={CLASS.fullRow}>
-                {/* Refresh is a read: the RPC deliberately skips
+              {instance !== undefined && (
+                <>
+                  <h3>Models</h3>
+                  <div className={CLASS.modelHeaderActions}>
+                    {/* Refresh is a read: the RPC deliberately skips
                     refuseWhenBroken, so it stays available while
                     providers.toml cannot be written. The rename gap is
                     different - it would read the row the selection names,
                     not the instance on screen, and cache another instance's
                     models under a name this sheet cannot yet trust. */}
-                <Button
-                  variant="quiet"
-                  onClick={renameGap ? refuseDuringRename : onRefreshModels}
-                  aria-disabled={modelsRefreshing}
-                  disabled={busy}
-                >
-                  {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
-                </Button>
-              </div>
-              <div className={CLASS.actionRows}>
-                {(models.length > MODEL_LIST_CAP || modelSearch !== "") && (
-                  <FormRow label="Search models" htmlFor={`${ids}-model-search`}>
-                    <Input
-                      id={`${ids}-model-search`}
-                      type="search"
-                      value={modelSearch}
-                      onChange={(event) => setModelSearch(event.target.value)}
-                    />
-                  </FormRow>
-                )}
-                {shownModels.map((row) => (
-                  <div key={row.id} className={CLASS.fullRow}>
-                    <Switch
-                      label={row.id}
-                      checked={!row.disabled}
-                      pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
-                      disabled={busy || writesRefused}
-                      onChange={(checked) => (renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked))}
-                    />
-                  </div>
-                ))}
-                {modelQuery !== "" && matchingModels.length === 0 && (
-                  <p className={CLASS.modelNote} data-reason="no-match">
-                    No matching models.
-                  </p>
-                )}
-                {shownModels.length < matchingModels.length && (
-                  <p className={CLASS.modelNote}>
-                    Showing {shownModels.length} of {matchingModels.length} models — search to narrow.
-                  </p>
-                )}
-              </div>
-            </>
-          )}
-          <div className={CLASS.actionRows}>
-            <div className={CLASS.fullRow}>
-              <Button
-                variant="quiet"
-                onClick={renameGap ? refuseDuringRename : onTestCredentials}
-                aria-disabled={testCredentialsPending}
-                disabled={busy}
-              >
-                {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
-              </Button>
-            </div>
-            {safeTestResult && (
-              <InlineNotice data-state={safeTestResult.status}>
-                {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
-              </InlineNotice>
-            )}
-            {supportsApiKey && (
-              <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
-                  {instance.hasStoredFile ? "Replace key" : "Set key"}
-                </Button>
-              </div>
-            )}
-            {supportsCredentialJson && (
-              <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetCredentialJson} disabled={busy}>
-                  {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
-                </Button>
-              </div>
-            )}
-            {supportsOAuth && (
-              <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
-                  {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
-                </Button>
-              </div>
-            )}
-            {!instance.isDefault && (
-              <div className={CLASS.fullRow}>
-                <Button
-                  variant="quiet"
-                  onClick={renameGap ? refuseDuringRename : onSetDefault}
-                  disabled={busy || writesRefused}
-                >
-                  ★ make default
-                </Button>
-              </div>
-            )}
-          </div>
-          {showDangerZone && (
-            <>
-              <hr className={CLASS.divider} />
-              <div className={CLASS.actionRows}>
-                {showClearStoredKey && (
-                  <div className={CLASS.fullRow}>
                     <Button
-                      variant="dangerQuiet"
-                      onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                      variant="quiet"
+                      onClick={renameGap ? refuseDuringRename : onRefreshModels}
+                      aria-disabled={modelsRefreshing}
                       disabled={busy}
                     >
-                      {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
+                      {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
                     </Button>
-                  </div>
-                )}
-                {showClear && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="dangerQuiet" onClick={renameGap ? refuseDuringRename : onClear} disabled={busy}>
-                      Clear
-                    </Button>
-                  </div>
-                )}
-                {!fromEnvironment(instance) && (
-                  <div className={CLASS.fullRow}>
                     <Button
-                      variant="danger"
-                      onClick={renameGap ? refuseDuringRename : onRemove}
+                      ref={addCustomModelBtnRef}
+                      variant="quiet"
+                      onClick={openAddCustomModel}
                       disabled={busy || writesRefused}
                     >
-                      Remove
+                      + Add custom model
+                    </Button>
+                  </div>
+                  <div className={CLASS.actionRows}>
+                    {(models.length > MODEL_LIST_CAP || modelSearch !== "") && (
+                      <FormRow label="Search models" htmlFor={`${ids}-model-search`}>
+                        <Input
+                          id={`${ids}-model-search`}
+                          type="search"
+                          value={modelSearch}
+                          onChange={(event) => setModelSearch(event.target.value)}
+                        />
+                      </FormRow>
+                    )}
+                    {shownModels.map((row) => {
+                      const summaryText = formatModelRowSummary(row);
+                      return (
+                        <div key={row.id} className={CLASS.modelRow}>
+                          <Switch
+                            label={row.id}
+                            checked={!row.disabled}
+                            pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
+                            disabled={busy || writesRefused}
+                            onChange={(checked) => (renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked))}
+                          />
+                          <div className={CLASS.modelMeta}>
+                            {row.customized && <Chip kind="customized">customized</Chip>}
+                            {summaryText !== "" && <span className={CLASS.modelSummary}>{summaryText}</span>}
+                            <Button
+                              variant="quiet"
+                              size="sm"
+                              aria-label={`Configure ${row.id}`}
+                              data-configure-model={row.id}
+                              disabled={busy}
+                              onClick={() => openConfigureModel(row.id)}
+                            >
+                              Configure ›
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {modelQuery !== "" && matchingModels.length === 0 && (
+                      <p className={CLASS.modelNote} data-reason="no-match">
+                        No matching models.
+                      </p>
+                    )}
+                    {shownModels.length < matchingModels.length && (
+                      <p className={CLASS.modelNote}>
+                        Showing {shownModels.length} of {matchingModels.length} models — search to narrow.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+              <div className={CLASS.actionRows}>
+                <div className={CLASS.fullRow}>
+                  <Button
+                    variant="quiet"
+                    onClick={renameGap ? refuseDuringRename : onTestCredentials}
+                    aria-disabled={testCredentialsPending}
+                    disabled={busy}
+                  >
+                    {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
+                  </Button>
+                </div>
+                {safeTestResult && (
+                  <InlineNotice data-state={safeTestResult.status}>
+                    {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
+                  </InlineNotice>
+                )}
+                {supportsApiKey && (
+                  <div className={CLASS.fullRow}>
+                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
+                      {instance.hasStoredFile ? "Replace key" : "Set key"}
+                    </Button>
+                  </div>
+                )}
+                {supportsCredentialJson && (
+                  <div className={CLASS.fullRow}>
+                    <Button
+                      variant="quiet"
+                      onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
+                      disabled={busy}
+                    >
+                      {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
+                    </Button>
+                  </div>
+                )}
+                {supportsOAuth && (
+                  <div className={CLASS.fullRow}>
+                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
+                      {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
+                    </Button>
+                  </div>
+                )}
+                {!instance.isDefault && (
+                  <div className={CLASS.fullRow}>
+                    <Button
+                      variant="quiet"
+                      onClick={renameGap ? refuseDuringRename : onSetDefault}
+                      disabled={busy || writesRefused}
+                    >
+                      ★ make default
                     </Button>
                   </div>
                 )}
               </div>
-            </>
-          )}
-        </>
-      )}
-    </Sheet>
+              {showDangerZone && (
+                <>
+                  <hr className={CLASS.divider} />
+                  <div className={CLASS.actionRows}>
+                    {showClearStoredKey && (
+                      <div className={CLASS.fullRow}>
+                        <Button
+                          variant="dangerQuiet"
+                          onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                          disabled={busy}
+                        >
+                          {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
+                        </Button>
+                      </div>
+                    )}
+                    {showClear && (
+                      <div className={CLASS.fullRow}>
+                        <Button
+                          variant="dangerQuiet"
+                          onClick={renameGap ? refuseDuringRename : onClear}
+                          disabled={busy}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    )}
+                    {!fromEnvironment(instance) && (
+                      <div className={CLASS.fullRow}>
+                        <Button
+                          variant="danger"
+                          onClick={renameGap ? refuseDuringRename : onRemove}
+                          disabled={busy || writesRefused}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            {activeModelView !== null && (
+              <InstanceModelEditor
+                instance={instance}
+                mode={activeModelView.mode}
+                model={activeModelView.mode === "edit" ? activeModelView.model : undefined}
+                writesRefused={writesRefused}
+                renameGap={renameGap}
+                pendingToggles={pendingToggles}
+                saveRef={modelSaveRef}
+                onStateChange={handleModelEditorStateChange}
+                onBack={backToOverview}
+                onToggleModel={onToggleModel}
+                onRefuseDuringRename={refuseDuringRename}
+                onModelSaved={(landed, createdModelId) => {
+                  if (landed !== undefined) reanchorFromModelSave(landed);
+                  if (createdModelId !== undefined) {
+                    returnFocusTarget.current = { kind: "configure", model: createdModelId };
+                    setActiveModelView({ mode: "edit", model: createdModelId });
+                  }
+                }}
+                onRequestRemoveCustom={(targetModel, expectedEndpointFingerprint) =>
+                  setPendingRemoveModel({
+                    name: instance.name,
+                    model: targetModel,
+                    expectedEndpointFingerprint,
+                  })
+                }
+                draftIdentity={draftIdentity}
+                draftIdentityWithoutEndpoint={draftIdentityWithoutEndpoint}
+              />
+            )}
+          </>
+        )}
+      </Sheet>
+      <ConfirmDialog
+        open={pendingRemoveModel !== null}
+        title="Remove custom model"
+        confirmLabel="Remove"
+        busy={removeModelBusy}
+        onConfirm={() => void handleConfirmRemoveCustomModel()}
+        onCancel={() => setPendingRemoveModel(null)}
+      >
+        {`Remove custom model "${pendingRemoveModel?.model ?? ""}" from "${pendingRemoveModel?.name ?? ""}"?`}
+      </ConfirmDialog>
+    </>
   );
 }

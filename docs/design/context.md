@@ -270,12 +270,25 @@ a note the compaction hands back carrying the folded id verbatim
 
 Two layers, applied progressively as pressure rises. The checkpoint trigger is the
 user setting `compact_at_percent` (CLI `--compact-at-percent`, launch.toml
-`compact_at_percent`; default 90, accepted range 20-100):
+`compact_at_percent`; default 90, accepted range 20-100) or the active model's
+`compaction_threshold` token count in `providers.toml` (`>= 4096` and below the
+model's input ceiling):
 
 | Layer | Threshold | Method | Destructiveness |
 |-------|-----------|--------|-----------------|
-| **Checkpoint** | >= `compact_at_percent` (default 90%) | Deterministic state snapshot | Replaces old history with structured summary |
+| **Checkpoint** | >= `compact_at_percent` (default 90%) or `compaction_threshold / window` | Deterministic state snapshot | Replaces old history with structured summary |
 | **LLM Summarize** | >= 95%, or the trigger when that is higher | LLM-generated narrative summary | Replaces old history with LLM prose |
+
+When a model sets `compaction_threshold` in `providers.toml`, `Manager.thresholdsFor`
+derives the per-profile `checkpoint` fraction as `compaction_threshold / EffectiveWindow(prof)`
+(unless an explicit session `compact_at_percent` sets a tighter fraction), scales `warn`
+below `checkpoint` (`lead = min(0.15, fraction * 0.20)`), and scales `summarize`
+proportionally (`fraction * 0.95 / 0.90`, capped at `max(fraction, 0.95)`). Meanwhile,
+wire token admission in `llm.ApplyTokenBudget` continues reading the physical
+`context_window`, `max_input_tokens`, and `max_output_tokens`. When `context_window` is
+unknown (`0`) and `compaction_threshold` is set, `EffectiveWindow` derives an assumed
+window of `max(128000, ceil(compaction_threshold / 0.90))` and suppresses the
+assumed-window warning and unknown-window tripwire.
 
 Both layers preserve the most recent `PreserveRecentTurns` turns (default 6) to
 maintain conversation coherence.
@@ -428,7 +441,7 @@ estimation uses the stale window size.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `WarnThreshold` | 0.75 | Pressure (0.05 below the trigger when the trigger is at or below 0.75) at which the agent is nudged to self-compact (best-effort, one-shot per compaction cycle) |
-| `CheckpointThreshold` | 0.90 | Pressure threshold for deterministic checkpoint; the `compact_at_percent` setting, applied with `Manager.SetCompactAt` |
+| `CheckpointThreshold` | 0.90 | Pressure threshold for deterministic checkpoint; the `compact_at_percent` setting (`Manager.SetCompactAt` / `SetExplicitCompactAt`), overridden per model when `Profile.CompactionThreshold()` is set |
 | `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization; raised to the trigger when the trigger is above 0.95 |
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
 | `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (test-only; clamped to a 0.20 floor) |
