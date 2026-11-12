@@ -49,6 +49,24 @@ func TestScriptReplacePreservesCursor(t *testing.T) {
 	}
 }
 
+// Reset replaces AND rewinds: a caller rerunning the same script per
+// iteration gets the first step again, unlike Replace.
+func TestScriptResetRewindsCursor(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
+	if _, ok := s.Next(); !ok {
+		t.Fatal("first Next() not ok")
+	}
+	s.Reset([]func(req llm.Request) llm.Response{stepAt("three"), stepAt("four")})
+	step, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() after Reset not ok")
+	}
+	if got := step(llm.Request{}).Message.Text(); got != "three" {
+		t.Errorf("Next() after Reset answered %q, want the first step of the new sequence %q", got, "three")
+	}
+}
+
 func TestScriptShiftConsumesFromTheFront(t *testing.T) {
 	var s Script[func(req llm.Request) llm.Response]
 	s.Append(stepAt("one"), stepAt("two"))
