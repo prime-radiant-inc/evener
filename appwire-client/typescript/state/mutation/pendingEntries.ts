@@ -139,13 +139,17 @@ export function queueEntryAt(
 } {
   const fullText = queue.texts?.[index];
   const preview = queue.preview?.[index];
+  // A preview is the daemon's compact label, so a literal text message whose
+  // own text IS "[image]" must not classify its row as image-bearing: the
+  // placeholder grammar speaks only when no full text says otherwise.
+  const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
   return {
     entryId: queue.ids?.[index],
     clientMutationId: queue.clientMutationIds?.[index],
     fullText,
     text: fullText ?? preview ?? "",
     preview,
-    imageCount: parseImagePlaceholder(preview),
+    imageCount,
     skillNames: canonicalSkillNames(queue.skillNames?.[index] ?? []),
     commandNames: canonicalSkillNames(queue.commandNames?.[index] ?? []),
   };

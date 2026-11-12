@@ -217,7 +217,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 
   async #reconcileAcceptedCopiesNow(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<boolean> {
-    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
+    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => "unavailable" as const);
+    if (accepted === "unavailable") {
+      // A storage read that failed proves nothing either way: report it as a
+      // failed pass so the caller clears its replay memo and a later read
+      // with the same identities asks the journal again once storage returns.
+      return true;
+    }
     if (!accepted) return false;
     let failed = false;
     await Promise.all(

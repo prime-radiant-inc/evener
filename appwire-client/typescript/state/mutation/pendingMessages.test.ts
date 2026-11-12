@@ -807,6 +807,23 @@ test("two identical legacy queue rows pair with two local rows in order", () => 
   expect(rows.every((row) => row.queueEntryId !== undefined)).toBe(true);
 });
 
+test("a queue row whose literal text is the image placeholder stays text-bearing", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["[image]"],
+      preview: ["[image]"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  // The message is ordinary text a user can still Edit, not an image-bearing
+  // row the Edit rule refuses.
+  expect(rows[0]).toMatchObject({ state: "queued", text: "[image]", imageCount: 0, textComplete: true });
+});
+
 test("a legacy queue row merges with an accepted local copy", () => {
   const model = threadModel({
     queue: {

@@ -340,11 +340,14 @@ describe("accepted-copy journal replay", () => {
       fake.on("thread/unsubscribe", () => ({}));
       let queueCalls = 0;
       let heldThreadId = "";
+      const listOptimistic = storage.listOptimistic.bind(storage);
+      let wedgeStorage = false;
+      vi.spyOn(storage, "listOptimistic").mockImplementation(async (ref) => {
+        if (wedgeStorage) throw new Error("the database is busy");
+        return listOptimistic(ref);
+      });
       fake.on("turn/queue", () => {
         queueCalls += 1;
-        // The tracked-hydration read may ask first; both it and the first
-        // end-disposition ask fail under the transient backpressure, so the
-        // failure the memo must survive lands on the memo-gated path.
         if (queueCalls <= 2) throw new Error("journal busy");
         return {
           receipt: {
@@ -368,6 +371,16 @@ describe("accepted-copy journal replay", () => {
       fake.emitNotification({ method: "overlay/end", params: { ref: selected, threadId, roundId: "first" } });
       await vi.waitFor(() => expect(queueCalls).toBe(2));
       await fixture.settled();
+      expect(await storage.getOptimistic("m1")).toBeDefined();
+
+      // A storage read that fails during the end-disposition replay proves
+      // nothing: the memo it claimed must reopen for the next read too, or
+      // the copy stays stuck once storage recovers.
+      wedgeStorage = true;
+      fake.emitNotification({ method: "overlay/end", params: { ref: selected, threadId, roundId: "wedged" } });
+      await vi.waitFor(() => expect(queueCalls).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      wedgeStorage = false;
       expect(await storage.getOptimistic("m1")).toBeDefined();
 
       // A second end disposition with the SAME authoritative identities must

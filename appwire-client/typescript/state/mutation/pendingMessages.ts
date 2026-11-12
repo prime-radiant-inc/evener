@@ -732,7 +732,10 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     const fullText = queue?.texts?.[index];
     const text = fullText ?? queue?.preview?.[index] ?? "";
     const preview = queue?.preview?.[index];
-    const imageCount = parseImagePlaceholder(preview);
+    // The placeholder grammar speaks only when no full text says otherwise, so
+    // a text-only message whose literal text is "[image]" stays text-bearing
+    // and keeps its Edit affordance (queueEntryAt applies the same rule).
+    const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
     const skillNames = canonicalSkillNames(queue?.skillNames?.[index] ?? []);
     const commandNames = canonicalSkillNames(queue?.commandNames?.[index] ?? []);
     const queueMentions = queue?.mentions?.[index];
