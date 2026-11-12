@@ -1141,8 +1141,8 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	}
 	addItems := add.(map[string]any)["items"].(map[string]any)
 	addReq, ok := addItems["required"].([]string)
-	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
-		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
+	if !ok || len(addReq) != 2 || addReq[0] != "description" || addReq[1] != "prompt" {
+		t.Fatalf("add item required = %v, want [description prompt]", addItems["required"])
 	}
 	if addItems["additionalProperties"] != false {
 		t.Fatalf("add item additionalProperties = %v, want false", addItems["additionalProperties"])
