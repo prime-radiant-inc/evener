@@ -2976,6 +2976,29 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
   });
 
+  test("a landing on something already in view ends bottom-following without moving the reader", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.holdPosition());
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    // New output must not carry the reader off what they chose to look at.
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("a jump to a row lands there and ends bottom-following, so nothing pulls the reader back", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);

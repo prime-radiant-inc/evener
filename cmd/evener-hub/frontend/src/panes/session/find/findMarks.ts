@@ -74,19 +74,35 @@ function highlightRegistry(): { set(name: string, highlight: unknown): void; del
   return (CSS as unknown as { highlights?: ReturnType<typeof highlightRegistry> }).highlights ?? null;
 }
 
+// Lowercased text with, for each of its code units, the offset in the
+// original it came from. Lowercasing can change length ("İ" becomes two
+// units), so an offset found in the lowercased text is not an offset on screen.
+function lowered(text: string): { text: string; origin: (offset: number) => number } {
+  const whole = text.toLowerCase();
+  if (whole.length === text.length) return { text: whole, origin: (offset) => offset };
+  const origins: number[] = [];
+  let out = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const piece = text.charAt(index).toLowerCase();
+    out += piece;
+    for (let unit = 0; unit < piece.length; unit += 1) origins.push(index);
+  }
+  return { text: out, origin: (offset) => origins[offset] ?? text.length };
+}
+
 function rangesIn(element: HTMLElement, needle: string, budget: number): Range[] {
   const ranges: Range[] = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node !== null && ranges.length < budget; node = walker.nextNode()) {
-    const text = (node.nodeValue ?? "").toLowerCase();
+    const { text, origin } = lowered(node.nodeValue ?? "");
     for (
       let at = text.indexOf(needle);
       at >= 0 && ranges.length < budget;
       at = text.indexOf(needle, at + needle.length)
     ) {
       const range = document.createRange();
-      range.setStart(node, at);
-      range.setEnd(node, at + needle.length);
+      range.setStart(node, origin(at));
+      range.setEnd(node, origin(at + needle.length - 1) + 1);
       ranges.push(range);
     }
   }

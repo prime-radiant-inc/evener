@@ -57,6 +57,7 @@ interface FindInSessionOptions {
   disclosureScope: string;
   listRef: RefObject<VirtualListHandle | null>;
   jumpToRow(index: number): void;
+  holdPosition(): void;
   markGesture(readerIntent?: boolean, beforeOffset?: number): void;
   /** null is the confirmed start of history; undefined is "not known yet". */
   olderPageKey: string | null | undefined;
@@ -94,6 +95,7 @@ export function useFindInSession({
   disclosureScope,
   listRef,
   jumpToRow,
+  holdPosition,
   markGesture,
   olderPageKey,
   olderLoading,
@@ -102,7 +104,13 @@ export function useFindInSession({
   findOlder,
   cancelFindOlder,
   ownsKeyboard,
-}: FindInSessionOptions): { view: FindView | null; open(): void } {
+}: FindInSessionOptions): {
+  view: FindView | null;
+  open(): void;
+  /** The reader left history for the live end: a search into older history
+   * stops, so a late match cannot pull them back. Find stays open. */
+  leaveHistory(): void;
+} {
   const [state, setState] = useState<FindState | null>(null);
   const find = state?.ref === ref ? state : null;
   const isOpen = find !== null;
@@ -125,7 +133,12 @@ export function useFindInSession({
       next.length === previous.length &&
       next.every((hit, index) => {
         const before = previous[index];
-        return before !== undefined && before.key === hit.key && before.rowIndex === hit.rowIndex;
+        return (
+          before !== undefined &&
+          before.key === hit.key &&
+          before.rowIndex === hit.rowIndex &&
+          before.opens.join("\0") === hit.opens.join("\0")
+        );
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
@@ -286,13 +299,20 @@ export function useFindInSession({
     if (port.scrollTop !== before) markGesture(true, before);
   };
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match jumps; rows prepending above it keep it in view
+  // A landing is owed for a new current match, for new words inside the same
+  // entry (the place in it moves), and when what hides the entry changes (a
+  // finished turn folding its calls). Rows prepending above it are not one.
+  const currentOpens = current?.opens.join("\0") ?? "";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
       settle.current = null;
       return;
     }
     for (const id of current.opens) setDisclosureOpen(scopedDisclosureId(disclosureScope, id), true);
+    // The reader chose this place, in view or not: output arriving later
+    // must not carry them off it.
+    holdPosition();
     settle.current = {
       key: current.key,
       until: performance.now() + SETTLE_WINDOW_MS,
@@ -306,11 +326,14 @@ export function useFindInSession({
       if (settle.current !== null) settleFrame.current = requestAnimationFrame(tick);
     };
     if (settleFrame.current === null) settleFrame.current = requestAnimationFrame(tick);
-  }, [currentKey, jumpEpoch]);
+  }, [currentKey, jumpEpoch, needle, currentOpens]);
   // Marks are document state, not React output, so they follow what is
   // mounted: the virtual list mounting a row, a fold opening, a streamed
   // reply growing. One pass per frame at most; closing Find, or this
-  // conversation unmounting, takes them away.
+  // conversation unmounting, takes them away. The scroll port exists only
+  // once the transcript has rows, which can be after Find opened.
+  const hasRows = rows.length > 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasRows stands for the port mounting
   useLayoutEffect(() => {
     if (!isOpen) return;
     const port = listRef.current?.getScrollElement();
@@ -339,7 +362,7 @@ export function useFindInSession({
       settle.current = null;
       markTranscript(port, [], null, "");
     };
-  }, [isOpen, listRef]);
+  }, [isOpen, listRef, hasRows]);
   // Marking is safe inside a commit; only the scroll waits for a frame.
   useLayoutEffect(() => {
     if (!isOpen) return;
@@ -362,7 +385,12 @@ export function useFindInSession({
     });
   }, [open]);
 
-  if (find === null) return { view: null, open };
+  const leaveHistory = useCallback(() => {
+    settle.current = null;
+    setState((previous) => (previous?.ref === ref && previous.seek !== null ? { ...previous, seek: null } : previous));
+  }, [ref]);
+
+  if (find === null) return { view: null, open, leaveHistory };
 
   let status: FindStatus;
   if (needle === "") status = "idle";
@@ -372,6 +400,7 @@ export function useFindInSession({
 
   return {
     open,
+    leaveHistory,
     view: {
       query,
       status,

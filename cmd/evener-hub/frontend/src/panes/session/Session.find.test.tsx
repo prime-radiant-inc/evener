@@ -13,7 +13,7 @@ import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
@@ -200,4 +200,53 @@ test("a request from the menu or the palette opens Find on the named item", asyn
   expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("quokka");
   expect(bar.getAttribute("data-find-position")).toBe("2");
   await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
+});
+
+test("calls that fold into a run after a match was found are opened again when the reader steps back to it", async () => {
+  // While the turn runs its calls are separate rows; once it completes they
+  // fold into one closed run, with the same entries on the same row.
+  let status: "inProgress" | "completed" = "inProgress";
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status,
+          itemsView: "full",
+          items: [
+            message("turn_1", "userMessage", "read the quokka files"),
+            call("turn_1", 0, "plain"),
+            call("turn_1", 1, "the quokka lives here"),
+            call("turn_1", 2, "plain"),
+          ],
+        },
+      ],
+    }),
+  }));
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused />
+    </ClientProvider>,
+  );
+  await screen.findByText("read the quokka files");
+  pressFind();
+  const field = screen.getByRole("searchbox");
+  fireEvent.change(field, { target: { value: "quokka" } });
+  expect(screen.getByTestId("find-bar").getAttribute("data-find-count")).toBe("2");
+
+  status = "completed";
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_a");
+  });
+  await waitFor(() => expect(screen.getByTestId("tool-run")).toBeTruthy());
+  // Stepping away and back lands on the call inside the run that now hides it.
+  fireEvent.keyDown(field, { key: "Enter" });
+  fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
+  await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
+  expect(marked()?.getAttribute(FIND_CURRENT_ATTRIBUTE)).toBe("entry");
 });

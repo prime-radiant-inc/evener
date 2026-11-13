@@ -120,6 +120,9 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
+// Below this viewport height the session menu cannot hold one more row.
+const FIND_MENU_MIN_VIEWPORT_HEIGHT = 480;
+
 export function SessionChrome({
   ref: sessionRef,
   paneId: owningPaneId,
@@ -377,7 +380,14 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
-            onFind={() => requestFindInSession(sessionRef, { target: paneId })}
+            // The menu must show every item without scrolling on a landscape
+            // phone, and it has no row to spare there; Find stays reachable
+            // through the palette. Read when the menu's items are built.
+            onFind={
+              window.innerHeight < FIND_MENU_MIN_VIEWPORT_HEIGHT
+                ? undefined
+                : () => requestFindInSession(sessionRef, { target: paneId })
+            }
             // The composer's two row mounts carry the turn verbs (the
             // header comment on the prop says why the footer and rail
             // mounts must never): the engaged inline chrome, and the

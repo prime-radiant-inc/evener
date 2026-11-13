@@ -9,8 +9,11 @@ import {
   type ItemModel,
   itemFindTexts,
   type ProjectedEntry,
+  projectThread,
+  type ThreadModel,
+  type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
+import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { foldTurnEntries, intentGroupId } from "../transcript/toolRuns";
 
 export interface FindHit {
@@ -23,7 +26,8 @@ export interface FindHit {
   readonly rowIndex: number;
   /** The disclosures that stand between the reader and the matching words,
    * outermost first: the fold hiding the entry (a tool run or an action
-   * group), then the entry's own body when it is a tool call or a thought.
+   * group), then the entry's own disclosures when it is a tool call or a
+   * thought.
    * A message has none. */
   readonly opens: readonly string[];
 }
@@ -60,7 +64,9 @@ function hit(entry: ProjectedEntry, rowIndex: number, fold?: string): FindHit {
   const key = entryDisplayKey(entry);
   const itemId = entry.kind === "intent" ? entry.sourceItemId : entry.item.id;
   const opens = fold === undefined ? [] : [fold];
-  if (!(entry.kind === "item" && entry.isMessage)) opens.push(...new Set([itemId, key]));
+  // A tool call keeps what it was asked behind its summary disclosure and
+  // what came back behind its body; a thought's body goes by its display key.
+  if (!(entry.kind === "item" && entry.isMessage)) opens.push(...new Set([itemId, key, `summary:${itemId}`]));
   return { key, itemId, rowIndex, opens };
 }
 
@@ -102,4 +108,11 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string): Fin
     }
   });
   return hits;
+}
+
+/** The source items of `model` that hold `query` in an entry `config` shows:
+ * the items a caller outside the transcript can send Find to. */
+export function findableItemIds(model: ThreadModel, config: TranscriptDisplayConfigV1, query: string): Set<string> {
+  const rows = transcriptRowsForProjection(projectThread(model, config));
+  return new Set(findHits(rows, query).map((found) => found.itemId));
 }

@@ -69,6 +69,7 @@ function scriptHistory(client: FakeClient, recent: Turn[], pages: string[]): Scr
 }
 
 const jumps: number[] = [];
+let holds = 0;
 let ownsKeyboard = true;
 
 function Harness() {
@@ -89,6 +90,9 @@ function Harness() {
     disclosureScope: "pane_a",
     listRef: list,
     jumpToRow: (index) => jumps.push(index),
+    holdPosition: () => {
+      holds += 1;
+    },
     markGesture: () => {},
     olderPageKey: transcript.olderPageKey,
     olderLoading: transcript.loadingOlder,
@@ -105,6 +109,9 @@ function Harness() {
       </button>
       <button type="button" data-testid="reader-older" onClick={() => void transcript.loadOlder().catch(() => {})}>
         reader older
+      </button>
+      <button type="button" data-testid="jump-latest" onClick={() => find.leaveHistory()}>
+        latest
       </button>
       {find.view && <FindBar view={find.view} />}
       <div ref={port} data-testid="port">
@@ -165,6 +172,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetFindRequestsForTests();
   jumps.length = 0;
+  holds = 0;
   ownsKeyboard = true;
 });
 
@@ -490,4 +498,80 @@ test("a match that arrives while Find is open joins the count without moving the
   expect(state().position).toBe(2);
   expect(currentAnchor()).toBe("t1-item");
   expect(jumps).toEqual([]);
+});
+
+test("jumping to latest during a search into older history ends that search", async () => {
+  vi.useFakeTimers();
+  const client = connectReadyFakeClient();
+  client.on("thread/read", () => ({ thread: thread([turn("t1", "hello")]), olderCursor: "page-0" }));
+  let attempts = 0;
+  client.on("thread/turns/list", () => {
+    attempts += 1;
+    throw new Error("temporary");
+  });
+  await mount(client);
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+  openFind();
+  type("needle");
+  older();
+  await settle();
+  expect(state().status).toBe("searching");
+
+  // The reader chose the live end: an older match arriving later must not
+  // pull them back into history.
+  fireEvent.click(screen.getByTestId("jump-latest"));
+  expect(state().status).toBe("unsearched");
+  await settle();
+  const after = attempts;
+  await settle();
+  expect(attempts).toBe(after);
+  // Find itself stays open on the same words.
+  expect((field() as HTMLInputElement).value).toBe("needle");
+});
+
+test("every landing tells the scroll owner the reader left the live end, even with the match already in view", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle one"), turn("t2", "needle two")], []);
+  await mount(client);
+  openFind();
+  type("needle");
+  await waitFor(() => expect(holds).toBe(1));
+  older();
+  await waitFor(() => expect(holds).toBe(2));
+  // Both entries are mounted, so no row jump was needed for either.
+  expect(jumps).toEqual([]);
+});
+
+test("refining the words inside the same entry lands on the new place", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle and, much further down, needle thread")], []);
+  await mount(client);
+  const el = screen.getByTestId("port");
+  // jsdom lays nothing out: give the port a viewport and put the entry far
+  // below it, so a landing has somewhere to scroll to.
+  el.getBoundingClientRect = () => ({ top: 0, bottom: 500, height: 500, left: 0, right: 100, width: 100 }) as DOMRect;
+  openFind();
+  type("needle");
+  const anchor = document.querySelector('[data-view-anchor-id="t1-item"]') as HTMLElement;
+  anchor.getBoundingClientRect = () =>
+    ({
+      top: 2000 - el.scrollTop,
+      bottom: 2100 - el.scrollTop,
+      height: 100,
+      left: 0,
+      right: 100,
+      width: 100,
+    }) as DOMRect;
+  await waitFor(() => expect(el.scrollTop).toBeGreaterThan(0));
+
+  // Long after that landing settled, the reader is elsewhere and types more.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+  });
+  el.scrollTop = 0;
+  type("needle thread");
+  await waitFor(() => expect(el.scrollTop).toBeGreaterThan(0));
 });

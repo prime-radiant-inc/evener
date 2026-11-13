@@ -202,7 +202,10 @@ Find searches the conversation in a session pane or a cascade's active column.
 It opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
 **Find in session…** in the session menu, from the palette's **Find in session**
 command, and by choosing an **In session** result in the palette, which opens
-Find on the typed words at that item.
+Find on the typed words at that item. The palette offers only matches the
+conversation's verbosity shows, so every result has a place to land. The menu
+row is left out where the viewport is too short for the menu to hold it
+without scrolling (a landscape phone); the palette command remains.
 
 - **What matches.** A match is one transcript entry the current verbosity
   shows: a message, a thought, or a tool call, searched by its text, what the
@@ -213,8 +216,9 @@ Find on the typed words at that item.
   steps older; Shift+Enter or the down control steps newer. The position counts
   from the newest match, so it does not shift as older pages arrive.
 - **Folds.** Landing on a match inside a folded tool run or action group opens
-  the fold, and a tool call's or thought's own body, so the words are on
-  screen. They stay open, as a reader's own toggle would.
+  the fold, and a tool call's summary and body or a thought's body, so the
+  words are on screen. They stay open, as a reader's own toggle would. A match
+  in tool output its row never renders is still counted (#6340).
 - **Marks.** The current entry is outlined. Matching words are painted with the
   CSS Custom Highlight API, which changes no transcript DOM; where a browser
   lacks it, the outline alone marks the match.
@@ -234,8 +238,12 @@ Find on the typed words at that item.
   composer when that element is gone). Changing the words also withdraws the
   search for the old ones. The reader's own paging demand is untouched.
 - **Scrolling.** The transcript's scroll owner moves the reader
-  (`useTranscriptScroll`'s `jumpToRow`): a landing ends bottom-following and
-  supersedes any retained placement.
+  (`useTranscriptScroll`'s `jumpToRow`, or `holdPosition` when the match is
+  already in view): every landing ends bottom-following and supersedes any
+  retained placement, so later output offers the way back to latest instead of
+  carrying the reader off the match. Jumping to latest ends a search into older
+  history, so a match arriving later cannot pull the reader back; Find stays
+  open.
 - **Phone.** The bar docks above the transcript, so the on-screen keyboard,
   which lifts the composer, never puts it over the send control.
 

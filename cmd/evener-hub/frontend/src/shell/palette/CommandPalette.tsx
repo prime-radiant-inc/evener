@@ -20,6 +20,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
+import { findableItemIds } from "../../panes/session/find/findHits";
 import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
@@ -30,6 +31,7 @@ import {
 } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
   Chip,
   Dialog,
@@ -954,7 +956,12 @@ function buildView(args: {
     pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    const inSession = model ? findInSessionMatches(model, trimmed) : [];
+    // Only what the conversation's verbosity shows is offered: every row
+    // here has a place for the session's Find to land.
+    const findable = model
+      ? findableItemIds(model, transcriptDisplayStore.getState().effective(), trimmed)
+      : new Set<string>();
+    const inSession = model ? findInSessionMatches(model, trimmed).filter((match) => findable.has(match.itemId)) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {

@@ -180,6 +180,10 @@ export interface UseTranscriptScrollResult {
    * for: it ends bottom-following and supersedes any pending placement, so
    * neither pulls them back off the row. */
   jumpToRow: (index: number) => void;
+  /** Keeps the reader where they chose to look: the same transition as
+   * jumpToRow, for a place that is already in view. New output then offers
+   * the way back to latest instead of carrying them off. */
+  holdPosition: () => void;
   markGesture: (readerIntent?: boolean, beforeOffset?: number) => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
@@ -525,19 +529,24 @@ export function useTranscriptScroll({
     setPillArrowDirection("down");
   }, []);
 
+  const holdPosition = useCallback(() => {
+    pendingViewAnchorRef.current = null;
+    pendingBottomJumpRef.current = null;
+    readerGestureRef.current = undefined;
+    readerCallbacksRef.current.onReaderIntent?.();
+    // Wherever the reader is held, it is not the bottom until measured
+    // geometry says so.
+    wasAtBottomRef.current = false;
+    endFollowIntentRef.current = false;
+    setAwayFromBottom(true);
+  }, []);
+
   const jumpToRow = useCallback(
     (index: number) => {
-      pendingViewAnchorRef.current = null;
-      pendingBottomJumpRef.current = null;
-      readerGestureRef.current = undefined;
-      readerCallbacksRef.current.onReaderIntent?.();
+      holdPosition();
       listRef.current?.scrollToIndex(index, { align: "start" });
-      // The landing is not the bottom until measured geometry says so.
-      wasAtBottomRef.current = false;
-      endFollowIntentRef.current = false;
-      setAwayFromBottom(true);
     },
-    [listRef],
+    [holdPosition, listRef],
   );
 
   const jumpToBottom = useCallback(() => {
@@ -1393,6 +1402,7 @@ export function useTranscriptScroll({
     isFollowingBottom,
     jumpToBottom,
     jumpToRow,
+    holdPosition,
     captureViewAnchor,
     restoreViewAnchorAfterMeasurement,
   };

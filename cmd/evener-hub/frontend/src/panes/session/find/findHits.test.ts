@@ -1,8 +1,15 @@
-import type { ItemModel, ProjectedEntry, ProjectedTurn, TurnModel } from "@evener/appwire-client";
+import {
+  type ItemModel,
+  makeTranscriptDisplayConfig,
+  type ProjectedEntry,
+  type ProjectedTurn,
+  type ThreadModel,
+  type TurnModel,
+} from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
 import "../transcript/tools";
-import { findHits } from "./findHits";
+import { findableItemIds, findHits } from "./findHits";
 
 type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
@@ -73,7 +80,9 @@ test("a message has nothing to open; a lone tool call opens its own body", () =>
   const rows = [turnRow("t1", [message("a1", "needle"), tool("x", { output: "a needle in the output" })])];
   const [inMessage, inTool] = findHits(rows, "needle");
   expect(inMessage?.opens).toEqual([]);
-  expect(inTool?.opens).toEqual(["x"]);
+  // A call's request sits behind its own summary disclosure, its result
+  // behind the body.
+  expect(inTool?.opens).toEqual(["x", "summary:x"]);
   expect(inTool?.itemId).toBe("x");
 });
 
@@ -82,13 +91,13 @@ test("a call folded into a run opens the run first, then its own body", () => {
   const rows = [turnRow("t1", [message("u", "go", "userMessage"), ...run, message("done", "ok")])];
   const hits = findHits(rows, "needle");
   expect(hits.map((hit) => hit.key)).toEqual(["b"]);
-  expect(hits[0]?.opens).toEqual(["run:a", "b"]);
+  expect(hits[0]?.opens).toEqual(["run:a", "b", "summary:b"]);
 });
 
 test("a running turn's calls are not folded, so there is no run to open", () => {
   const run = [tool("a"), tool("b", { output: "needle" }), tool("c")];
   const rows = [turnRow("t1", run, "inProgress")];
-  expect(findHits(rows, "needle")[0]?.opens).toEqual(["b"]);
+  expect(findHits(rows, "needle")[0]?.opens).toEqual(["b", "summary:b"]);
 });
 
 test("an action inside a group opens the group, whether the group is a row or sits inside a turn", () => {
@@ -123,4 +132,26 @@ test("a redacted thought is found by what it shows, never by its hidden text", (
   expect(findHits([turnRow("t1", [critical(true)])], "needle")).toEqual([]);
   expect(findHits([turnRow("t1", [critical(true)])], "thinking failed")).toHaveLength(1);
   expect(findHits([turnRow("t1", [critical(false)])], "needle")).toHaveLength(1);
+});
+
+test("only what the current verbosity shows can be found in a thread", () => {
+  const model = {
+    ref: "r",
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          { id: "u", turnId: "t1", type: "userMessage", text: "find the quokka", status: "completed" },
+          { id: "c", turnId: "t1", type: "reasoning", text: "Where would a quokka be?", status: "completed" },
+          { id: "a", turnId: "t1", type: "agentMessage", text: "No quokka to report.", status: "completed" },
+        ],
+      },
+    ],
+  } as unknown as ThreadModel;
+  const shown = (level: "chat" | "full") =>
+    [...findableItemIds(model, makeTranscriptDisplayConfig({ kind: "preset", level }), "quokka")].sort();
+  expect(shown("full")).toEqual(["a", "c", "u"]);
+  // Chat verbosity leaves settled thoughts out, so the thought is not a destination.
+  expect(shown("chat")).toEqual(["a", "u"]);
 });

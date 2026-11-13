@@ -373,16 +373,6 @@ function LiveConversationBody({
     heldVisible: pendingVisible,
     heldEpoch: pendingEpoch,
   });
-  // Per-pane keyboard scroll registers against the shared registry and
-  // declines unless the hosting pane is the focused one.
-  useTranscriptScrollKeys({
-    paneId: seat.keyboardScrollPaneId,
-    listRef: virtualListRef,
-    jumpToBottom: flow.jumpToBottom,
-    markGesture: flow.markGesture,
-    onPositioningCommand: seat.readView?.supersedePositioning,
-  });
-
   // Find shares the transcript's rows, its scroll owner and its paging owner.
   // The chord reaches only the conversation the keyboard is in, read at keydown.
   const keyboardPaneId = seat.keyboardScrollPaneId;
@@ -397,6 +387,7 @@ function LiveConversationBody({
     disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
     listRef: virtualListRef,
     jumpToRow: flow.jumpToRow,
+    holdPosition: flow.holdPosition,
     markGesture: flow.markGesture,
     olderPageKey,
     olderLoading: loadingOlder,
@@ -405,6 +396,24 @@ function LiveConversationBody({
     findOlder,
     cancelFindOlder,
     ownsKeyboard,
+  });
+  // Going to the live end also ends Find's search into older history, so a
+  // match arriving later cannot pull the reader back up.
+  const { leaveHistory } = find;
+  const { jumpToBottom } = flow;
+  const jumpToLatest = useCallback(() => {
+    leaveHistory();
+    jumpToBottom();
+  }, [leaveHistory, jumpToBottom]);
+
+  // Per-pane keyboard scroll registers against the shared registry and
+  // declines unless the hosting pane is the focused one.
+  useTranscriptScrollKeys({
+    paneId: seat.keyboardScrollPaneId,
+    listRef: virtualListRef,
+    jumpToBottom: jumpToLatest,
+    markGesture: flow.markGesture,
+    onPositioningCommand: seat.readView?.supersedePositioning,
   });
 
   // Each floating slot mounts only while its control would actually render
@@ -524,7 +533,7 @@ function LiveConversationBody({
               needsYou={flow.pillNeedsYou}
               error={flow.pillError}
               pillArrowDirection={flow.pillArrowDirection}
-              onClick={flow.jumpToBottom}
+              onClick={jumpToLatest}
             />
           ) : undefined
         }
