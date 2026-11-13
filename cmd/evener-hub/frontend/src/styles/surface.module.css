@@ -47,20 +47,33 @@
 .toolRunSegment > * {
   border-inline: 1px solid var(--edge);
   border-top: 1px solid var(--edge);
+  border-radius: var(--tool-card-radius-top) var(--tool-card-radius-top) var(--tool-card-radius-bottom)
+    var(--tool-card-radius-bottom);
   background: var(--surface-1);
 }
 
-.toolRunSegment[data-tool-card="first"] > *,
-.toolRunSegment[data-tool-card="only"] > * {
-  border-top-left-radius: var(--radius-pane);
-  border-top-right-radius: var(--radius-pane);
+/* The slice's corners are custom properties on the wrapper, so a row root
+ * that paints to the card's edge from inside a shadow-slotted element (a
+ * details' summary and content) can take the same corners: `inherit` stops
+ * at the slot, an inherited custom property does not. */
+.toolRunSegment {
+  --tool-card-radius-top: 0;
+  --tool-card-radius-bottom: 0;
+}
+
+.toolRunSegment[data-tool-card="first"],
+.toolRunSegment[data-tool-card="only"] {
+  --tool-card-radius-top: var(--radius-pane);
+}
+
+.toolRunSegment[data-tool-card="last"],
+.toolRunSegment[data-tool-card="only"] {
+  --tool-card-radius-bottom: var(--radius-pane);
 }
 
 .toolRunSegment[data-tool-card="last"] > *,
 .toolRunSegment[data-tool-card="only"] > * {
   border-bottom: 1px solid var(--edge);
-  border-bottom-left-radius: var(--radius-pane);
-  border-bottom-right-radius: var(--radius-pane);
   box-shadow: var(--shadow-card);
 }
 

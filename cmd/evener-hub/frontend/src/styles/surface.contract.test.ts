@@ -82,9 +82,15 @@ test("a tool card drawn across sibling rows is the same surface, sliced by posit
   expect(slice).toMatch(/border-inline:\s*1px solid var\(--edge\)/);
   expect(slice).toMatch(/border-top:\s*1px solid var\(--edge\)/);
   expect(slice).toMatch(/background:\s*var\(--surface-1\)/);
-  // The outer corners and the lift belong to the card's first and last rows.
+  // The outer corners belong to the card's first and last rows. They are
+  // custom properties on the wrapper, which a row root inside a details can
+  // still read; the slice draws them.
+  expect(slice).toMatch(/border-radius:[^;]*var\(--tool-card-radius-top\)[^;]*var\(--tool-card-radius-bottom\)/);
   expect(surface).toMatch(
-    /\.toolRunSegment\[data-tool-card="first"\] > \*,\s*\.toolRunSegment\[data-tool-card="only"\] > \*\s*\{[^}]*border-top-left-radius:\s*var\(--radius-pane\)/,
+    /\.toolRunSegment\[data-tool-card="first"\],\s*\.toolRunSegment\[data-tool-card="only"\]\s*\{[^}]*--tool-card-radius-top:\s*var\(--radius-pane\)/,
+  );
+  expect(surface).toMatch(
+    /\.toolRunSegment\[data-tool-card="last"\],\s*\.toolRunSegment\[data-tool-card="only"\]\s*\{[^}]*--tool-card-radius-bottom:\s*var\(--radius-pane\)/,
   );
   expect(surface).toMatch(
     /\.toolRunSegment\[data-tool-card="last"\] > \*,\s*\.toolRunSegment\[data-tool-card="only"\] > \*\s*\{[^}]*box-shadow:\s*var\(--shadow-card\)/,

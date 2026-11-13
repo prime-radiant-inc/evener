@@ -4,11 +4,14 @@
  * tool rows it stands in for: a count and one name, at the UI step, with the
  * same inset a tool row takes so its edge lines up with their seats. Open, it
  * is the header of the rows it stands for, which follow inside the same card
- * behind hairline dividers. The card's corners clip the last row's evidence
- * band, so nothing inside draws a second card edge. */
+ * behind hairline dividers. The card does not clip, because a row's Open
+ * control overhangs its line by more than the row's padding on a phone.
+ * What paints to the card's edge takes the card's corners instead, read from
+ * the segment's corner properties (styles/surface.module.css): the summary
+ * while it is the whole row, and the last row of an open run, whose evidence
+ * band inherits them. */
 .group {
   min-width: 0;
-  overflow: clip;
 }
 
 .summary {
@@ -17,6 +20,8 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--tool-card-row-pad) var(--tool-card-inset);
+  border-radius: var(--tool-card-radius-top, 0) var(--tool-card-radius-top, 0) var(--tool-card-radius-bottom, 0)
+    var(--tool-card-radius-bottom, 0);
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -24,6 +29,11 @@
   /* Suppress the UA's own disclosure triangle: this summary draws the app's
    * shared Chevron instead (widgets/chevron). */
   list-style: none;
+}
+
+.group[open] > .summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .summary::-webkit-details-marker {
@@ -34,7 +44,7 @@
   background: var(--hover-1);
 }
 
-/* Inset: the card clips at its own edge, and the summary spans it. */
+/* Inset: the summary spans the card, so an outset ring would sit on its edge. */
 .summary:focus-visible {
   outline: var(--focus-ring);
   outline-offset: -2px;
@@ -82,4 +92,10 @@
 .body {
   composes: groupedRows from "../../../styles/surface.module.css";
   border-top: 1px solid var(--edge);
+}
+
+.body,
+.body > :last-child {
+  border-bottom-left-radius: var(--tool-card-radius-bottom, 0);
+  border-bottom-right-radius: var(--tool-card-radius-bottom, 0);
 }
