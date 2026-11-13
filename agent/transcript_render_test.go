@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -1594,6 +1596,33 @@ func TestWriteAssistantContentPreservesPartOrderWithCommunicateAfterTool(t *test
 				t.Fatalf("order violated: plan=%d, shell=%d, summary=%d (want plan < shell < summary)\ncontent=%s", planIdx, shellIdx, summaryIdx, content)
 			}
 		})
+	}
+}
+
+func TestWriteAssistantContentZeroProseBudgetPreservesOriginalElidedCount(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("a", 205000)
+	entries := []transcript.Entry{
+		makeEntry(schema.NewTurn(schema.TurnAssistant, llm.Assistant(body))),
+	}
+	opt := renderOpts{
+		proseBudget: map[int]int{0: 0},
+	}
+	content, meta := renderTranscript(transcript.Header{}, entries, "0-0", opt)
+	if !meta.Truncated {
+		t.Fatalf("want truncated=true, got %+v", meta)
+	}
+	re := regexp.MustCompile(`_… (\d+) characters elided from this oversized turn`)
+	match := re.FindStringSubmatch(content)
+	if match == nil {
+		t.Fatalf("elision notice not found in content:\n%s", content)
+	}
+	count, err := strconv.Atoi(match[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count < 200000 {
+		t.Fatalf("elision count was clobbered to %d, want > 200000:\n%s", count, content)
 	}
 }
 

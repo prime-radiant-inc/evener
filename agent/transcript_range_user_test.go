@@ -251,6 +251,39 @@ func TestTranscriptRangeOversizedAssistantOverHardCapWithPairedResultTailAnchor(
 	}
 }
 
+func TestTranscriptRangeOrphanMultiResultTurnStaysWithinConvBudget(t *testing.T) {
+	t.Parallel()
+	longLine := strings.Repeat("x", 290)
+	resultContent := strings.Repeat(longLine+"\n", 31) // ~9 KB per result × 4 ≈ 36 KB
+	entries := []transcript.Entry{
+		toolCallEntry(
+			call("c1", "read_file", `{"file_path":"a.txt"}`),
+			call("c2", "read_file", `{"file_path":"b.txt"}`),
+			call("c3", "read_file", `{"file_path":"c.txt"}`),
+			call("c4", "read_file", `{"file_path":"d.txt"}`),
+		),
+		makeEntry(schema.Turn{
+			Kind: schema.TurnToolResults,
+			Message: llm.Message{
+				Role: llm.RoleTool,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolResult, ToolResult: result("c1", "read_file", resultContent, false)},
+					{Kind: llm.ContentToolResult, ToolResult: result("c2", "read_file", resultContent, false)},
+					{Kind: llm.ContentToolResult, ToolResult: result("c3", "read_file", resultContent, false)},
+					{Kind: llm.ContentToolResult, ToolResult: result("c4", "read_file", resultContent, false)},
+				},
+			},
+		}),
+	}
+	content, meta := renderTranscript(transcript.Header{}, entries, "1-1", renderOpts{})
+	if len(content) > convBudgetChars {
+		t.Fatalf("len(content)=%d exceeds budget %d:\n%s", len(content), convBudgetChars, content)
+	}
+	if meta.TurnsRendered != 1 || !meta.Truncated {
+		t.Fatalf("accounting=%+v, want rendered=1 truncated=true", meta)
+	}
+}
+
 func TestTranscriptRangeHardCapCannotHideUserAfterPin(t *testing.T) {
 	t.Parallel()
 	const datum = "u4362-cap-4d18"
