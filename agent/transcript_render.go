@@ -905,11 +905,17 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 		if isFrontAnchored(rangeSpec) {
 			anchor = start
 		}
+		if as, hasOwner := inRangeOwningAssistant(entries, anchor, start, end); hasOwner {
+			anchor = as
+		}
 		if entries[anchor].Turn.Kind != schema.TurnUserInput {
 			selected[anchor] = true
 			pairedResults := inRangePairedResults(entries, anchor, start, end)
 			for _, rs := range pairedResults {
 				selected[rs] = true
+			}
+			if entries[anchor].Turn.Kind == schema.TurnAssistant {
+				opt.proseBudget[anchor] = 0
 			}
 			opt.entryBudget[anchor] = convBudgetChars - 400
 			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
@@ -1455,87 +1461,109 @@ func wantFullTurn(opt renderOpts, seq int) bool {
 // ID-paired cards under a single "**Tools**" block per spec §Tool Call
 // Condensation.
 func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultTool string, idx *resultIndex, opt renderOpts) {
-	prose := formatAssistantProse(t, resultTool, idx)
-	tools := formatAssistantTools(seq, t, resultTool, idx, opt)
-
-	if !wantFullTurn(opt, seq) {
-		proseLimit := -1
-		if opt.proseBudget != nil {
-			if limit, ok := opt.proseBudget[seq]; ok {
-				proseLimit = limit
-			}
-		}
-		if proseLimit >= 0 {
-			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
-			bounded, _, _ := boundTurnEvidenceBytes(prose, proseLimit, hint)
-			if bounded != prose {
-				prose = bounded
-				if opt.anyTruncated != nil {
-					*opt.anyTruncated = true
-				}
-			}
+	proseLimit := -1
+	if !wantFullTurn(opt, seq) && opt.proseBudget != nil {
+		if limit, ok := opt.proseBudget[seq]; ok {
+			proseLimit = limit
 		}
 	}
 
-	b.WriteString(prose)
-	b.WriteString(tools)
-}
+	type prosePartInfo struct {
+		partIdx  int
+		rendered string
+	}
 
-func formatAssistantProse(t schema.Turn, resultTool string, idx *resultIndex) string {
-	var b strings.Builder
+	var proseParts []prosePartInfo
+	totalProseLen := 0
 	for i := range t.Message.Content {
 		p := &t.Message.Content[i]
+		var s string
+		isProse := false
 		switch p.Kind {
 		case llm.ContentThinking:
 			if p.Thinking != nil && p.Thinking.Text != "" {
-				fmt.Fprintf(&b, "*(thinking)* %s\n\n", p.Thinking.Text)
+				s = fmt.Sprintf("*(thinking)* %s\n\n", p.Thinking.Text)
+				isProse = true
 			}
-
 		case llm.ContentRedThinking:
-			b.WriteString("*(redacted thinking)*\n\n")
-
+			s = "*(redacted thinking)*\n\n"
+			isProse = true
 		case llm.ContentText:
 			if p.Text != "" {
-				b.WriteString(p.Text)
-				b.WriteString("\n")
+				s = p.Text + "\n"
+				isProse = true
 			}
-
 		case llm.ContentToolCall:
-			if p.ToolCall == nil {
-				continue
-			}
-			if p.ToolCall.Name == resultTool {
+			if p.ToolCall != nil && p.ToolCall.Name == resultTool {
+				var sb strings.Builder
 				if idx != nil {
 					idx.consumed[p.ToolCall.ID] = true
 					paired, hasResult := idx.byCallID[p.ToolCall.ID]
 					if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
 						continue
 					}
-					writeResultToolMessage(&b, p.ToolCall, hasResult && !paired.result.IsError)
+					writeResultToolMessage(&sb, p.ToolCall, hasResult && !paired.result.IsError)
 				} else {
-					writeResultToolMessage(&b, p.ToolCall, true)
+					writeResultToolMessage(&sb, p.ToolCall, true)
 				}
+				s = sb.String()
+				isProse = true
 			}
 		}
+		if isProse {
+			proseParts = append(proseParts, prosePartInfo{partIdx: i, rendered: s})
+			totalProseLen += len(s)
+		}
 	}
-	return b.String()
-}
 
-func formatAssistantTools(seq int, t schema.Turn, resultTool string, idx *resultIndex, opt renderOpts) string {
-	var b strings.Builder
+	if proseLimit >= 0 && totalProseLen > proseLimit {
+		if opt.anyTruncated != nil {
+			*opt.anyTruncated = true
+		}
+		hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+		for totalProseLen > proseLimit {
+			maxIdx, maxLen := -1, -1
+			for j, info := range proseParts {
+				if len(info.rendered) > maxLen {
+					maxLen = len(info.rendered)
+					maxIdx = j
+				}
+			}
+			if maxIdx == -1 || maxLen <= 0 {
+				break
+			}
+			excess := totalProseLen - proseLimit
+			target := max(0, maxLen-excess)
+			bounded, _, _ := boundTurnEvidenceBytes(proseParts[maxIdx].rendered, target, hint)
+			delta := len(proseParts[maxIdx].rendered) - len(bounded)
+			if delta <= 0 {
+				break
+			}
+			totalProseLen -= delta
+			proseParts[maxIdx].rendered = bounded
+		}
+	}
+
+	boundedByPart := make(map[int]string, len(proseParts))
+	for _, info := range proseParts {
+		boundedByPart[info.partIdx] = info.rendered
+	}
+
 	wroteToolsHeader := false
 	for i := range t.Message.Content {
 		p := &t.Message.Content[i]
-		if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.Name == resultTool {
+		if s, isProse := boundedByPart[i]; isProse {
+			b.WriteString(s)
 			continue
 		}
-		if !wroteToolsHeader {
-			b.WriteString("\n**Tools**\n")
-			wroteToolsHeader = true
+		if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name != resultTool {
+			if !wroteToolsHeader {
+				b.WriteString("\n**Tools**\n")
+				wroteToolsHeader = true
+			}
+			writeToolCard(b, seq, p.ToolCall, idx, opt)
 		}
-		writeToolCard(&b, seq, p.ToolCall, idx, opt)
 	}
-	return b.String()
 }
 
 // writeToolCard renders one tool call as a condensed card with its paired result

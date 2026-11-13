@@ -1557,6 +1557,46 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 	}
 }
 
+func TestWriteAssistantContentPreservesPartOrderWithCommunicateAfterTool(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		makeEntry(schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "plan"}},
+					{Kind: llm.ContentToolCall, ToolCall: call("c1", "shell", `{"command":"echo hi"}`)},
+					{Kind: llm.ContentToolCall, ToolCall: call("comm", "communicate", `{"message":"final summary"}`)},
+				},
+			},
+		}),
+		toolResultEntry(
+			result("c1", "shell", "hi\n", false),
+			result("comm", "communicate", `{"accepted":true}`, false),
+		),
+	}
+	for _, budgeted := range []bool{false, true} {
+		name := fmt.Sprintf("budgeted=%v", budgeted)
+		t.Run(name, func(t *testing.T) {
+			opt := renderOpts{}
+			if budgeted {
+				opt.proseBudget = map[int]int{0: 2000}
+			}
+			content, _ := renderTranscript(transcript.Header{}, entries, "0-1", opt)
+			planIdx := strings.Index(content, "plan")
+			shellIdx := strings.Index(content, "`shell`")
+			summaryIdx := strings.Index(content, "final summary")
+			if planIdx == -1 || shellIdx == -1 || summaryIdx == -1 {
+				t.Fatalf("missing expected elements: plan=%d shell=%d summary=%d\ncontent=%s", planIdx, shellIdx, summaryIdx, content)
+			}
+			if planIdx >= shellIdx || shellIdx >= summaryIdx {
+				t.Fatalf("order violated: plan=%d, shell=%d, summary=%d (want plan < shell < summary)\ncontent=%s", planIdx, shellIdx, summaryIdx, content)
+			}
+		})
+	}
+}
+
 // TestRenderTranscript_BudgetKeepsAtLeastOneTurn verifies that when even a single
 // turn exceeds the conversation budget, a tail-anchored render keeps that one
 // turn (does not drop everything) and stays within the hard cap.

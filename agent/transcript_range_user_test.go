@@ -227,6 +227,30 @@ func TestTranscriptRangeOmittedAssistantOmitsPairedToolResults(t *testing.T) {
 	}
 }
 
+func TestTranscriptRangeOversizedAssistantOverHardCapWithPairedResultTailAnchor(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		toolCallEntry(call("c1", "exec_command", `{"command":"pwd"}`)),
+		toolResultEntry(result("c1", "exec_command", "r1-output", false)),
+	}
+	entries[0].Turn.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentText, Text: strings.Repeat("x", hardCapChars+5000)}}, entries[0].Turn.Message.Content...)
+
+	for _, spec := range []string{"last:2", ""} {
+		t.Run("spec="+spec, func(t *testing.T) {
+			content, meta := renderTranscript(transcript.Header{}, entries, spec, renderOpts{})
+			if !strings.Contains(content, "## Turn 0 — Assistant") || !strings.Contains(content, "r1-output") {
+				t.Fatalf("spec=%q lost Turn 0 heading or r1-output:\n%s", spec, content)
+			}
+			if meta.TurnsRendered != 2 || meta.ElidedTurns != 0 {
+				t.Fatalf("spec=%q accounting=%+v, want rendered=2 elided=0", spec, meta)
+			}
+			if len(content) > convBudgetChars {
+				t.Fatalf("spec=%q len(content)=%d exceeds budget %d", spec, len(content), convBudgetChars)
+			}
+		})
+	}
+}
+
 func TestTranscriptRangeHardCapCannotHideUserAfterPin(t *testing.T) {
 	t.Parallel()
 	const datum = "u4362-cap-4d18"
