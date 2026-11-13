@@ -709,7 +709,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
-		QuotaCoordinator:            hostQuotaCoordinator(),
 	}
 	applyMaxSubagentDepth(&sessionCfg, *lf.maxSubagentDepth)
 	if *lf.maxConcurrentDelegates >= 0 {
@@ -763,7 +762,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
-			QuotaCoordinator:            sessionCfg.QuotaCoordinator,
 			// See RestoreSessionConfig.ExportATIFPath.
 			ExportATIFPath:            sessionCfg.ExportATIFPath,
 			ExportATIFProviderHandles: sessionCfg.ExportATIFProviderHandles,
@@ -1338,7 +1336,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 	if raw == "" {
 		return "", nil
 	}
-	if strings.EqualFold(raw, "off") {
+	if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "disabled") {
 		return "off", nil
 	}
 	if prov, model, ok := strings.Cut(raw, "/"); ok {

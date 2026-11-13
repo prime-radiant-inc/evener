@@ -73,9 +73,11 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "Surface": "snapshot/row",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:llama-3.3-70b-instruct"
   },
   "credential_source": "env:AZURE_API_KEY",

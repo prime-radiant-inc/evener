@@ -117,7 +117,7 @@ export interface UseTranscriptScrollOptions {
   heldVisible?: boolean;
   /**
    * The held-steering ghost stack's arrival counter (Session's
-   * useHeldSteerEpoch). Same role as askDockActivationEpoch: a held steer
+   * usePendingArrivalEpoch). Same role as askDockActivationEpoch: a held steer
    * APPEARING changes no turn/item shape, so this carries the arrival edge
    * for the pill. Removals never bump it (announced, not counted), so a
    * departure leaves the pill alone.
@@ -247,6 +247,15 @@ export function useTranscriptScroll({
   // One predicate for every following-bottom decision: reflow captures, the
   // re-anchor, and appended content must agree on whether the reader follows.
   const isFollowingBottom = useCallback(() => endFollowIntentRef.current || wasAtBottomRef.current, []);
+  // The offset an upward wheel started from, until the re-anchor reads it, the
+  // reader returns to the end, or the session changes. A wheel's own scroll can
+  // land a frame or more after the input under load; the marker's one-frame
+  // veto can have cleared by then, so this longer-lived record lets the
+  // geometry say the reader left the end.
+  const wheelAwayOffsetRef = useRef<number | null>(null);
+  const noteWheelAway = useCallback((beforeOffset: number) => {
+    wheelAwayOffsetRef.current = beforeOffset;
+  }, []);
   const pendingInitialEndRef = useRef<string | null>(null);
   const pendingViewAnchorRef = useRef<PendingViewAnchor | null>(null);
   // Reader-gesture state for the bottom-hold correction (see the scroll
@@ -265,8 +274,8 @@ export function useTranscriptScroll({
   // marker is pending while this is above zero.
   const gestureFramesLeftRef = useRef(0);
   const readerGestureRef = useRef<{ beforeOffset: number; admitted: boolean } | undefined>(undefined);
-  const readerCallbacksRef = useRef({ onReaderIntent, onReaderMovement });
-  readerCallbacksRef.current = { onReaderIntent, onReaderMovement };
+  const readerCallbacksRef = useRef({ onReaderIntent, onReaderMovement, onReaderAway: noteWheelAway });
+  readerCallbacksRef.current = { onReaderIntent, onReaderMovement, onReaderAway: noteWheelAway };
   const pendingBottomJumpRef = useRef<{
     element: HTMLElement;
     scrollHeight: number;
@@ -713,6 +722,7 @@ export function useTranscriptScroll({
       pendingInitialEndRef.current = null;
       pendingViewAnchorRef.current = null;
       pendingBottomJumpRef.current = null;
+      wheelAwayOffsetRef.current = null;
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;
@@ -838,6 +848,18 @@ export function useTranscriptScroll({
       // taken when the gap is already past the at-bottom threshold, so the
       // assignment genuinely moves scrollTop and the browser dispatches for it.
       const atBottom = isAtBottom(m);
+      if (atBottom) wheelAwayOffsetRef.current = null;
+      // A wheel that started at the end can have its own scroll arrive after
+      // the marker's frame. If that movement has landed before any re-anchor
+      // consumed the record, retire follow here too: a content growth below may
+      // fire this listener without a resize/font trigger.
+      const wheelAwayOffset = wheelAwayOffsetRef.current;
+      if (wheelAwayOffset !== null && m.scrollTop < wheelAwayOffset) {
+        wheelAwayOffsetRef.current = null;
+        endFollowIntentRef.current = false;
+        wasAtBottomRef.current = false;
+        readerCallbacksRef.current.onReaderMovement?.(wheelAwayOffset);
+      }
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
       if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
@@ -992,6 +1014,26 @@ export function useTranscriptScroll({
     function reanchorIfEndLeftView() {
       if (!el) return;
       const m = measure(el);
+      const wheelAwayOffset = wheelAwayOffsetRef.current;
+      if (wheelAwayOffset !== null && m.scrollTop < wheelAwayOffset) {
+        wheelAwayOffsetRef.current = null;
+        // At the true end the record is stale: the reader is back where they
+        // were, so following stays.
+        if (!isAtBottom(m)) {
+          // A wheel whose own scroll landed after the marker's one frame still
+          // took the reader away; a resize/font re-anchor must not pin them
+          // back.
+          endFollowIntentRef.current = false;
+          wasAtBottomRef.current = false;
+          // The marker expired before this movement was classified, so report
+          // it here: the virtual list's backward-movement rule must protect the
+          // reading point when a partially visible row later measures.
+          readerCallbacksRef.current.onReaderMovement?.(wheelAwayOffset);
+          // The re-anchor runs inside the resize observer; mirror the away
+          // state after that callback rather than re-rendering inside it.
+          queueMicrotask(() => setAwayFromBottom(true));
+        }
+      }
       const followingEnd = isFollowingBottom();
       // The same gesture veto the scroll listener applies, but READ rather than
       // consumed: this is not the event a pending gesture caused (content

@@ -42,12 +42,30 @@ export function withDetail(words: StepWords, detail: string | undefined): StepWo
 /** The header read_file puts before an image or a document's base64 data. */
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
+const NUMBERED_LINE = /^(?: {0,3}\d{1,4}|\d{5,})\t/;
+
+function numberedLineNo(line: string): number | undefined {
+  if (!NUMBERED_LINE.test(line)) return undefined;
+  return Number.parseInt(line, 10);
+}
+
+function numberedOrRawLineCount(output: string): number {
+  const firstLine = numberedLineNo(output);
+  if (firstLine === undefined) return lineCount(output);
+  let lastLine = firstLine;
+  for (const line of output.split("\n")) {
+    const num = numberedLineNo(line);
+    if (num !== undefined && num > lastLine) lastLine = num;
+  }
+  return lastLine - firstLine + 1;
+}
+
 /** A read's line range from its requested bounds or the output it returned. */
 export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
   const limitArg = args.limit;
-  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(output);
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : numberedOrRawLineCount(output);
   if (count > 0) return `lines ${offset}-${offset + count - 1}`;
   return output === "" ? undefined : `lines ${offset}`;
 }

@@ -2,7 +2,6 @@ package appsource
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -28,85 +27,58 @@ type inverseNativeFixture struct {
 }
 
 func (f *inverseNativeFixture) dial(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
-	transport := newScriptedAppwireTransport(nil)
-	transport.send = func(_ context.Context, msg appwire.Message) error {
-		if msg.Request == nil {
-			return nil
-		}
-		request := msg.Request
-		if request.Method == appwire.MethodThreadRead {
-			items := f.items
-			if f.complete != nil {
-				items = f.complete
-			}
-			olderCursor := ""
-			if f.readBounded {
-				var params appwire.ThreadReadParams
-				if err := json.Unmarshal(request.Params, &params); err != nil {
-					return err
-				}
-				limit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
-				if err != nil {
-					return err
-				}
-				candidates, err := localDaemonItemCandidates([]appwire.Turn{{ID: "turn-1", Items: items}})
-				if err != nil {
-					return err
-				}
-				selected, older, err := appitempaging.SelectCandidates(candidates, nil, limit)
-				if err != nil {
-					return err
-				}
-				items = make([]appwire.ThreadItem, len(selected))
-				for i, candidate := range selected {
-					items[i] = candidate.Item
-				}
-				if older {
-					olderCursor, err = appitempaging.EncodeCursor(f.identity, selected[0].Position)
-					if err != nil {
-						return err
-					}
-				}
-			}
-			transport.recv <- appwire.ResponseMessage(request.ID, appwire.ThreadReadResponse{
-				Thread:      appwire.Thread{ID: "thread-1", Turns: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment}}},
-				OlderCursor: olderCursor,
-			})
-			return nil
-		}
-		if request.Method != appwire.MethodThreadTurnsList {
-			transport.recv <- appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion})
-			return nil
-		}
-		var params appwire.ThreadTurnsListParams
-		if err := json.Unmarshal(request.Params, &params); err != nil {
-			return err
-		}
-		response, err := f.page(params)
-		if err != nil {
-			wire, ok := errors.AsType[appwire.WireError](err)
-			if !ok {
-				return err
-			}
-			message := appwire.ErrorMessage(request.ID, wire)
-			if f.jsonErrors {
-				encoded, err := json.Marshal(message)
-				if err != nil {
-					return err
-				}
-				var decoded appwire.Message
-				if err := json.Unmarshal(encoded, &decoded); err != nil {
-					return err
-				}
-				message = decoded
-			}
-			transport.recv <- message
-		} else {
-			transport.recv <- appwire.ResponseMessage(request.ID, response)
-		}
-		return nil
+	return newScriptedItemTransport(
+		func(params appwire.ThreadReadParams) (any, error) { return f.read(params) },
+		func(params appwire.ThreadTurnsListParams) (any, error) { return f.page(params) },
+		f.jsonErrors,
+	), nil
+}
+
+// read answers an item-mode read. With readBounded it applies native cursor
+// selection so tests can drive the source's bounded-read conversion.
+func (f *inverseNativeFixture) read(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	items := f.items
+	if f.complete != nil {
+		items = f.complete
 	}
-	return transport, nil
+	olderCursor := ""
+	if f.readBounded {
+		limit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		windowed, older, err := f.window(items, nil, limit)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		items, olderCursor = windowed, older
+	}
+	return itemReadResponse(items, olderCursor), nil
+}
+
+// window selects one native item page from items, before an optional cursor
+// boundary, and returns the page's items and the older cursor when one exists.
+func (f *inverseNativeFixture) window(items []appwire.ThreadItem, before *appwire.ThreadItemPosition, limit int) ([]appwire.ThreadItem, string, error) {
+	candidates, err := localDaemonItemCandidates([]appwire.Turn{{ID: "turn-1", Items: items}})
+	if err != nil {
+		return nil, "", err
+	}
+	selected, older, err := appitempaging.SelectCandidates(candidates, before, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	windowed := make([]appwire.ThreadItem, len(selected))
+	for i, candidate := range selected {
+		windowed[i] = candidate.Item
+	}
+	if !older {
+		return windowed, "", nil
+	}
+	cursor, err := appitempaging.EncodeCursor(f.identity, selected[0].Position)
+	if err != nil {
+		return nil, "", err
+	}
+	return windowed, cursor, nil
 }
 
 // page returns native RPC errors; dial frames them without treating a valid
@@ -129,23 +101,9 @@ func (f *inverseNativeFixture) page(params appwire.ThreadTurnsListParams) (appwi
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	candidates, err := localDaemonItemCandidates([]appwire.Turn{{ID: "turn-1", Items: items}})
+	items, next, err = f.window(items, &before, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
-	}
-	selected, older, err := appitempaging.SelectCandidates(candidates, &before, params.ItemLimit)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	items = make([]appwire.ThreadItem, len(selected))
-	for i, c := range selected {
-		items[i] = c.Item
-	}
-	if older {
-		next, err = appitempaging.EncodeCursor(f.identity, selected[0].Position)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
-		}
 	}
 	if f.nextBoundary != nil {
 		next, err = appitempaging.EncodeCursor(f.identity, *f.nextBoundary)

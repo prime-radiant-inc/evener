@@ -59,6 +59,37 @@ whole-attempt deadline with `llm.AdapterTimeout.Request`; its default is zero
 (disabled). `StreamRead` now controls response-byte idle time for both streaming
 and nonstreaming bodies. No default total request cap is imposed.
 
+## Request-path recovery guarantees
+
+Streaming retries never republish content the caller already saw. The
+no-replay boundary is exact: an attempt is committed — and high-level retries
+stop — once a nonempty normalized payload (text, reasoning, tool-call
+arguments, object delta) or an explicitly content-bearing provider passthrough
+has been forwarded
+([`streamEventCommitsAttempt`](../llm/stream_generate.go)). Adapters mark the
+passthrough frames that carry model output by setting
+[`ContentBearing`](../llm/stream.go) on the `StreamEvent`; control and
+lifecycle frames leave it false. A raw provider event the adapter cannot
+classify — unknown or custom `Raw` frames — therefore commits nothing and
+remains retryable: a truncation after such a frame is retried like any other,
+and the frame may be delivered again. Treating opaque payloads as committed
+content would suppress that recovery, so the guarantee stops at normalized and
+explicitly classified content.
+
+Image rejections recover automatically as well. When a provider definitively
+rejects a request over its images — an HTTP 400/422 whose message names image
+normalization, classified by
+[`IsImageNormalizationError`](../llm/errors.go) — the chat-completions
+adapter retries the same endpoint and model: first with a color-managed
+conversion of a disposable copy (ICC profile to sRGB, EXIF orientation
+applied), then, if that is rejected too, with a fresh profile-free copy of
+the original image. Original attachments are never modified, and a recovery
+that could only strip the profile makes the reduced color fidelity explicit —
+a caveat part travels beside that image in the request and an
+`image_color_unmanaged` warning is returned with the response. The full
+trigger matrix, repair limits, and per-stage behavior live in
+[Image recovery](llm-providers.md#image-recovery).
+
 ## Credentials store
 
 `credentials.toml` holds one section per instance:
@@ -94,6 +125,15 @@ The hub and `evener providers add`/`probe --write` write `providers.toml`
 through the registry's config writer, which writes exactly the entries it's
 given — a resolved credential is never persisted, only what the user
 authored (`api_key = "$VAR"` literals and `credential_headers` references).
+
+The loader keeps a literal credential value as written: an `api_key` or
+`credential_headers` entry whose value is the key material itself (not a
+`$VAR` reference or `$(...)` command) loads verbatim, with no rejection,
+warning, or normalization. The grammar is deliberately lax here
+([`TestLiteralCredentialHeaderValueStays`](../llm/registry/instances_test.go)
+pins it): the file is the author's own, and a literal is trusted exactly like
+an `api_key` literal — the no-material rule judges reference defaults,
+never literals.
 
 There's no separate "credential tag" anymore. The store holds only its file
 layer, keyed by instance name; every environment lookup — the provider's
@@ -204,7 +244,10 @@ write the same `auth/<instance>.json` record the CLI writes. The connector then
 runs its model-list check automatically, with the saved record, and closes on
 success; there is no separate completion or model-picker step. Cancelling the
 sign-in editor retires its poll, and a later token exchange must not complete
-the dismissed flow. A pending sign-in is refused if the instance's destination
+the dismissed flow. The retirement is a client boundary, not a hub-side
+cancellation: a poll or exchange already in flight when the dialog closes can
+still write its record, so access from a cancelled sign-in can be present
+afterwards. A pending sign-in is refused if the instance's destination
 moves before it finishes; the flow reports the changed connection and does not
 write the record.
 

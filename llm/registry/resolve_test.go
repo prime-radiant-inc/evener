@@ -248,6 +248,26 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	}
 }
 
+// The web model editor hides a config-provenance figure from its "Inherited"
+// placeholders only when the reporting row authored it, so the figures an
+// alias imports from a user-configured target must keep the target's
+// provenance while the alias's own row stays unauthored (#6284). ProvenanceSource
+// is the mapping the hub applies for the wire.
+func TestResolve_AliasKeepsTargetConfigProvenance(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-5\"]\ncontext_window = 400000\ncompaction_threshold = 250000\n"+
+		"[providers.anthropic.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
+	res := mustResolve(t, r, "anthropic/claude-prod")
+	if *res.Caps.ContextWindow != 400000 || res.Provenance["ContextWindow"] != "config/row" {
+		t.Fatalf("alias window must keep the target's config provenance: %d %q", *res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+	if *res.Caps.CompactionThreshold != 250000 || res.Provenance["CompactionThreshold"] != "config/row" {
+		t.Fatalf("alias threshold must keep the target's config provenance: %v %q", res.Caps.CompactionThreshold, res.Provenance["CompactionThreshold"])
+	}
+	if ProvenanceSource(res.Provenance["ContextWindow"]) != "config" {
+		t.Fatalf("the hub's layer mapping must report the imported window as config: %q", ProvenanceSource(res.Provenance["ContextWindow"]))
+	}
+}
+
 // An alias of a row whose effort control was derived — not catalog-recorded —
 // must not inherit that control as if it were evidence: the alias derives no
 // google thinking shape, exactly like its target (roborev round 3).

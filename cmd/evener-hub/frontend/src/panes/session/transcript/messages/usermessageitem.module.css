@@ -144,6 +144,16 @@
   color: var(--ink-hi);
 }
 
+/* Pending-row actions: persistent, discoverable on touch, and aligned to the
+ * same content column as the bubble. Delivered rows pass no footer. */
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding-top: var(--space-1);
+}
+
 /* Below the gutter breakpoint the row becomes a grid so the bubble spans the
  * pane under the avatar + header row (the agent side does the same - see
  * agentmessageitem.module.css). The content column dissolves so its header
@@ -162,6 +172,10 @@
   }
 
   .message .body {
+    grid-column: 1 / -1;
+  }
+
+  .message .footer {
     grid-column: 1 / -1;
   }
 }

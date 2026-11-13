@@ -54,6 +54,7 @@
   },
   "provenance": {
     "ContextWindow": "live",
+    "Protocol": "overlay/provider",
     "ReasoningControls": "derived",
     "Surface": "derived",
     "model": "live"

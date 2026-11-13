@@ -3,15 +3,57 @@
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { PendingTurnEntry } from "./pendingEntries";
-import { ownPendingSend, ownPendingTurnInput, queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
+import {
+  imagePlaceholder,
+  normalizeText,
+  ownPendingSend,
+  ownPendingTurnInput,
+  parseImagePlaceholder,
+  pendingEntryPreview,
+  queueEntryPreviewText,
+  reconcilePendingEntries,
+} from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
 
-test("queueEntryPreviewText still returns the empty string for contentless input", () => {
-  expect(queueEntryPreviewText("", 0)).toBe("");
-  expect(queueEntryPreviewText("   ", 0)).toBe("");
+test("normalizeText collapses whitespace and trims", () => {
+  expect(normalizeText("fix   the\n\nlint   errors")).toBe("fix the lint errors");
+  expect(normalizeText("  hello world  ")).toBe("hello world");
+  expect(normalizeText("   \n\t  ")).toBe("");
 });
 
+test("imagePlaceholder names the image count", () => {
+  expect(imagePlaceholder(0)).toBe("");
+  expect(imagePlaceholder(1)).toBe("[image]");
+  expect(imagePlaceholder(2)).toBe("[2 images]");
+  expect(imagePlaceholder(8)).toBe("[8 images]");
+});
+
+test("parseImagePlaceholder reads the same grammar", () => {
+  expect(parseImagePlaceholder(undefined)).toBe(0);
+  expect(parseImagePlaceholder("hello")).toBe(0);
+  expect(parseImagePlaceholder("[image]")).toBe(1);
+  expect(parseImagePlaceholder(" [2 images] ")).toBe(2);
+});
+
+test("queueEntryPreviewText prefers normalized text and falls back to images", () => {
+  expect(queueEntryPreviewText("  Fix the lint errors  ", 3)).toBe("Fix the lint errors");
+  expect(queueEntryPreviewText("", 1)).toBe("[image]");
+  expect(queueEntryPreviewText("   ", 2)).toBe("[2 images]");
+  expect(queueEntryPreviewText("", 0)).toBe("");
+});
+
+test("pendingEntryPreview preserves the entry's own line structure", () => {
+  const entry = {
+    text: "step 1:\n    do the thing\n\nstep 2:\n    do the next thing",
+    imageCount: 0,
+    skillNames: ["fixer"],
+    commandNames: [] as string[],
+  };
+  expect(pendingEntryPreview(entry)).toBe("step 1:\n    do the thing\n\nstep 2:\n    do the next thing [skill: fixer]");
+  // A blank text still composes to the image placeholder.
+  expect(pendingEntryPreview({ ...entry, text: "   ", skillNames: [] })).toBe("");
+});
 function outbox(
   clientMutationId: string,
   method = "turn/start",
@@ -287,7 +329,7 @@ test("a transcript item with the identity removes the optimistic projection rega
   ).toEqual([]);
 });
 
-test("an authoritative queue identity is rendered by QueueStrip rather than duplicated as pending", () => {
+test("an authoritative queue identity is rendered once rather than duplicated as pending", () => {
   expect(
     reconcilePendingEntries(
       "ref_a",
@@ -358,22 +400,33 @@ test("a promote's display input previews in the entry", () => {
   ]);
 });
 
-test("a promote names the queued entry it steers with; other methods name none", () => {
-  const promote = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
-  const promoteRecord: MutationOutboxRecord = {
-    ...promote,
-    payload: { ...promote.payload, expectedEntryId: "queue_3" },
+test("an active promotion names its expected entry, while a canceled one names only confirmed lineage", () => {
+  const activeBase = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
+  const active: MutationOutboxRecord = {
+    ...activeBase,
+    payload: { ...activeBase.payload, expectedEntryId: "queue_3" },
   };
-  const steer = outbox("mutation_2", "turn/steer", "hello");
-  const steerRecord: MutationOutboxRecord = { ...steer, payload: { ...steer.payload, expectedEntryId: "queue_4" } };
+  const canceledBase = outbox("mutation_2", "turn/promoteQueuedAsSteer", "", "canceled");
+  const canceled: MutationOutboxRecord = {
+    ...canceledBase,
+    payload: { ...canceledBase.payload, expectedEntryId: "queue_4" },
+  };
+  const confirmed: MutationOutboxRecord = {
+    ...outbox("mutation_3", "turn/promoteQueuedAsSteer", "", "canceled"),
+    queueEntryIds: ["queue_5"],
+  };
   const entries = reconcilePendingEntries(
     "ref_a",
-    [promoteRecord, steerRecord],
+    [active, canceled, confirmed],
     model(),
     NOTHING_SUBMITTED_HERE,
     UNATTRIBUTED_ONLY,
   );
-  expect(entries.map((entry) => entry.queueEntryId)).toEqual(["queue_3", undefined]);
+  expect(entries.map((entry) => [entry.id, entry.queueEntryId])).toEqual([
+    ["mutation_1", "queue_3"],
+    ["mutation_2", undefined],
+    ["mutation_3", "queue_5"],
+  ]);
 });
 
 test("a drain names the queue revision it steers with", () => {

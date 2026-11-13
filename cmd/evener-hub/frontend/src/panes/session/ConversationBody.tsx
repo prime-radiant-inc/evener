@@ -19,17 +19,16 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import {
-  useBlockedMutationEntries,
-  usePendingTurnEntries,
-  useQueueStripMutationIds,
-} from "./composer/queue/pendingTurnsStore";
+import { requestComposerFocus } from "./composer/composerFocus";
+import { useBlockedMutationEntries, usePendingMessages } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
+import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
-import { PendingChips } from "./pending/PendingChips";
+import { PendingMessageStack } from "./pending/PendingMessageStack";
+import { usePendingArrivalEpoch, withoutActiveRecovery } from "./pending/pendingMessageLiveEdge";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
@@ -38,7 +37,6 @@ import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
-import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
@@ -188,14 +186,38 @@ function UnavailablePresentationControl() {
   );
 }
 
-function StandardConversationBody({
-  ref,
-  seat,
-  render,
+function StandardConversationBody(props: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+}) {
+  if (props.seat.composerSource === null) return <LiveConversationBody {...props} />;
+  return <WithComposerSubmission {...props} source={props.seat.composerSource} />;
+}
+
+function WithComposerSubmission({
+  source,
+  ...props
 }: {
   ref: string;
   seat: ConversationSeat;
   render(parts: ConversationParts): React.ReactNode;
+  source: ComposerSourceState;
+}) {
+  const submission = useBuiltinSubmission(source, props.seat.viewFallbackId);
+  return <LiveConversationBody {...props} submission={submission} />;
+}
+
+function LiveConversationBody({
+  ref,
+  seat,
+  render,
+  submission,
+}: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+  submission?: ComposerSubmission;
 }) {
   const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
     ref,
@@ -242,27 +264,43 @@ function StandardConversationBody({
   // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
   // the small control, not this whole pane.
   const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
-  const pendingEntries = usePendingTurnEntries(ref);
-  const queueStripIds = useQueueStripMutationIds(ref);
-  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
-  // Spec §1's live gate, complete: the read-only status family, plus the two
-  // fence marks that can hold a session read-only while its status still
-  // reads active/idle.
+  const pendingMessages = usePendingMessages(ref);
+  const activeRecoveryId = submission?.actions.pendingProps?.activeRecoveryId;
+  const visiblePendingMessages = useMemo(
+    () => withoutActiveRecovery(pendingMessages, activeRecoveryId),
+    [pendingMessages, activeRecoveryId],
+  );
+  // Spec §1's live gate still owns the departure announcements. The stack
+  // itself stays visible on a fenced or dormant session so the messages never
+  // lose their one rendering.
   const heldSurfaceLive =
     model !== undefined &&
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
-  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
-  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
+  const pendingVisible = visiblePendingMessages.length > 0;
+  const pendingEpoch = usePendingArrivalEpoch(ref, visiblePendingMessages, pendingVisible);
   const trailingRow =
-    askPending || heldVisible || overlayHeight > 0
+    askPending || pendingVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
-              {heldVisible && <HeldSteerStack ref={ref} />}
+              {pendingVisible && (
+                <PendingMessageStack
+                  ref={ref}
+                  messages={pendingMessages}
+                  context={
+                    submission?.actions.pendingProps
+                      ? {
+                          ...submission.actions.pendingProps,
+                          focusComposer: () => requestComposerFocus(ref, seat.viewFallbackId),
+                        }
+                      : undefined
+                  }
+                />
+              )}
               {overlayHeight > 0 && (
                 <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
               )}
@@ -312,8 +350,8 @@ function StandardConversationBody({
     // signal a scrolled-away reader would get no new-content pill.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
-    heldVisible,
-    heldEpoch,
+    heldVisible: pendingVisible,
+    heldEpoch: pendingEpoch,
   });
   // Per-pane keyboard scroll registers against the shared registry and
   // declines unless the hosting pane is the focused one.
@@ -365,7 +403,12 @@ function StandardConversationBody({
   // A held ghost is mounted content even on a turnless transcript: the
   // dormant empty surface yields to the transcript subtree so the ghost
   // stack and its announcements mount (steering-ghost spec §2).
-  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  // A pending row is only actionable with a composer source to move it back
+  // to. Without one - a remote share, a seat with no composer - the stack
+  // would render rows with no actions and no way to dismiss them, so the
+  // dormant surface keeps the pane instead.
+  const pendingActionable = pendingVisible && submission?.actions.pendingProps !== undefined;
+  const showDormantSurface = isDormantTranscript(model.turns) && !pendingActionable;
   const dormantSurface = showColdStartSkeleton ? (
     <ColdStartSkeleton />
   ) : (
@@ -515,12 +558,12 @@ function StandardConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        <PendingChips sessionRef={ref} />
-        {seat.composerSource && (
+        {seat.composerSource && submission && (
           <Composer
             ref={ref}
             paneId={seat.viewFallbackId}
             source={seat.composerSource}
+            submission={submission}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
             ownsActivityCounts={seat.ownsActivityCounts}

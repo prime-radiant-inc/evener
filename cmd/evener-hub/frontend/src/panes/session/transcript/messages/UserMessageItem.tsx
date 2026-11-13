@@ -38,11 +38,11 @@ const CLASS = {
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
   provisional: requireClass(styles.provisional, "usermessageitem.module.css", "provisional"),
   railmark: requireClass(styles.railmark, "usermessageitem.module.css", "railmark"),
+  footer: requireClass(styles.footer, "usermessageitem.module.css", "footer"),
 };
 
 // A simple line-and-node "fork" glyph (straight lines only, no arcs) -
-// chosen over a Unicode character (unlike QueueStrip.tsx's plain-glyph
-// icons) because there's no broadly-supported code point that reads
+// chosen over a Unicode character because there's no broadly-supported code point that reads
 // unambiguously as "branch/fork"; drawn with currentColor so it inherits
 // IconButton's own variant color exactly like a text glyph would.
 function ForkGlyph() {
@@ -107,6 +107,8 @@ export function UserMessageView({
   timeIso,
   entityText = false,
   provisional,
+  status,
+  footer,
 }: {
   item: ItemModel;
   actions?: ReactNode;
@@ -122,6 +124,12 @@ export function UserMessageView({
   entityText?: boolean;
   /** Held-steer ghost caption (steering-ghost spec §2): presence applies the provisional register and renders in the meta slot; absence renders exactly the delivered form. */
   provisional?: string;
+  /** Pending-row status in the meta slot. Unlike `provisional`, this does not
+   * change the bubble's shape or opacity: the pending stack uses the same row
+   * the delivered message will become. */
+  status?: string;
+  /** Pending-row actions, rendered under the bubble in the same content column. */
+  footer?: ReactNode;
 }) {
   // Missing or invalid server timestamps stay absent rather than showing a guess.
   const time = Date.parse(timeIso ?? item.startedAt ?? "");
@@ -132,6 +140,7 @@ export function UserMessageView({
       data-speaker={speaker}
       data-opens-exchange={opensExchange ? "true" : undefined}
       data-provisional={provisional !== undefined ? "true" : undefined}
+      data-status={status !== undefined ? "true" : undefined}
     >
       <span className={CLASS.avatar}>
         <SpeakerAvatar speaker={speaker} />
@@ -141,7 +150,9 @@ export function UserMessageView({
           <span className={CLASS.name}>
             {item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : name}
           </span>
-          {provisional !== undefined ? (
+          {status !== undefined ? (
+            <span className={CLASS.time}>{status}</span>
+          ) : provisional !== undefined ? (
             <span className={CLASS.time}>{provisional}</span>
           ) : (
             Number.isFinite(time) && (
@@ -157,6 +168,7 @@ export function UserMessageView({
           {provisional !== undefined && <span className={CLASS.railmark} aria-hidden="true" />}
           <ImageGallery images={item.images} />
         </div>
+        {footer !== undefined && <div className={CLASS.footer}>{footer}</div>}
       </div>
     </div>
   );

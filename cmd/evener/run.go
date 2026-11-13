@@ -400,7 +400,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
-		QuotaCoordinator:            hostQuotaCoordinator(),
 	}
 	// --ask-responder attaches a responder for this process only: ask_user is
 	// offered, while the session stays NonInteractive in everything it saves
@@ -454,7 +453,6 @@ func run(ctx context.Context, cfg runConfig) error {
 			CompactAtPercent:            cfg.compactAtPercent,
 			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
-			QuotaCoordinator:            baseSessionCfg.QuotaCoordinator,
 			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
 			// SessionConfig, so restore cannot recover it from the saved meta.
 			ExportATIFPath:            baseSessionCfg.ExportATIFPath,

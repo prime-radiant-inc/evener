@@ -381,7 +381,7 @@ func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*t
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
 	if percent := s.cfg.CompactAtPercent; percent > 0 {
-		s.contextMgr.SetCompactAt(float64(percent) / 100)
+		s.contextMgr.SetExplicitCompactAt(float64(percent) / 100)
 	}
 	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
@@ -837,7 +837,6 @@ type RestoreSessionConfig struct {
 	CommitProvenance        string
 	LLMRetryPolicy          *llm.RetryPolicy
 	LLMSleep                llm.SleepFunc
-	QuotaCoordinator        *llm.QuotaCoordinator
 	spawn                   spawnConfig
 	resumeHistory           []schema.Turn
 	deferRestoreSideEffects bool
@@ -1028,7 +1027,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
-	cfg.QuotaCoordinator = restoreCfg.QuotaCoordinator
 	if restoreCfg.clock != nil {
 		cfg.clock = restoreCfg.clock
 	}
@@ -1784,6 +1782,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	} else {
 		reg = newProfileToolRegistry(s.profile)
+		s.reg = reg
 		if err := s.restoreSideEffect("register_core_tools", func() error { return registerCoreTools(reg, s) }); err != nil {
 			return nil, err
 		}

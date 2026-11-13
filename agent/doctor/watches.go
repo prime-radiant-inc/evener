@@ -176,7 +176,11 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 		v.Generation = rec.Generation
 		v.OwnerSessionID = rec.OwnerSessionID
 		v.VisibleSessionID = rec.VisibleSessionID
-		v.Target = rec.Target
+		target := rec.Target
+		if target == "caller" {
+			target = "self"
+		}
+		v.Target = target
 		v.SendTo = rec.SendTo
 		v.Condition = rec.Condition
 		v.Active = rec.Active
@@ -300,8 +304,12 @@ func RenderWatches(r WatchReport) string {
 			fmt.Fprintf(&b, " [gen %s]", w.Generation)
 		}
 		fmt.Fprintf(&b, "  (%s)\n", status)
-		if w.Target != "" || w.SendTo != "" || w.Condition != "" {
-			fmt.Fprintf(&b, "  target=%s  send_to=%s  condition=%s\n", dash(w.Target), dash(w.SendTo), dash(w.Condition))
+		target := w.Target
+		if target == "caller" {
+			target = "self"
+		}
+		if target != "" || w.SendTo != "" || w.Condition != "" {
+			fmt.Fprintf(&b, "  target=%s  send_to=%s  condition=%s\n", dash(target), dash(w.SendTo), dash(w.Condition))
 		}
 		switch {
 		case w.TargetJob != nil:

@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/identifier"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
@@ -134,6 +135,14 @@ type HostFacts struct {
 	// READ-ONLY, FILE-EXACT, changes no write surface, and loses to the
 	// credential denylist.
 	GitSystemConfigPaths []string
+
+	// GitCeilingDirs are the absolute directories named by the host's
+	// GIT_CEILING_DIRECTORIES. Git stops its repository search before entering
+	// one; the resolver applies the same boundary so a session launched in a
+	// subdirectory of a repository can be scoped to that subdirectory as its own
+	// non-Git workspace (#3724). Relative entries are ignored, as git ignores
+	// them.
+	GitCeilingDirs []string
 
 	// EvenerContentRoots are the installed plugin files in Evener's plugin store
 	// and the user's skills directory at their configured locations.
@@ -366,6 +375,7 @@ func probeHost(system probeSystem) HostFacts {
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GitSystemConfigPaths = probeGitSystemConfigPaths(system)
+	facts.GitCeilingDirs = parseGitCeilingDirs(system.getenv("GIT_CEILING_DIRECTORIES"))
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	storeRoot := userdirs.PluginStore(facts.EvenerConfigRoot)
@@ -827,6 +837,24 @@ func environValue(environ []string, name string) (string, bool) {
 		}
 	}
 	return value, set
+}
+
+// parseGitCeilingDirs parses GIT_CEILING_DIRECTORIES for the workspace search:
+// absolute directories only, relative entries ignored as git ignores them. Each
+// is resolved so the walk compares it against the same spelling
+// ClassifyWorkspaceWithCeilings uses.
+func parseGitCeilingDirs(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var dirs []string
+	for dir := range strings.SplitSeq(value, string(os.PathListSeparator)) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		dirs = append(dirs, identifier.ResolveClean(dir))
+	}
+	return dirs
 }
 
 // gitConfigNoSystem reports whether $GIT_CONFIG_NOSYSTEM tells git to skip the

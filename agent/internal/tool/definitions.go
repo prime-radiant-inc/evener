@@ -29,14 +29,15 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
 	}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	if name == "memory_read" && !strings.Contains(base.Description, "Reading MEMORY.md") {
+		base.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	}
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
 }
 
 func DefMemoryRead() llm.ToolDefinition {
-	read := DefReadFile()
-	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
-	return MemoryDefinition(read, "memory_read")
+	return MemoryDefinition(DefReadFile(), "memory_read")
 }
 
 func DefMemoryDelete() llm.ToolDefinition {
@@ -84,6 +85,31 @@ func DefReadFile() llm.ToolDefinition {
 			"required": []string{"file_path"},
 		},
 	}
+}
+
+// DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
+// nor PDFs run the side-channel. vision_prompt is omitted from advertised
+// properties and the description omits the vision_prompt sentence (#6190).
+func DefReadFileNativeVision() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
+	props := def.Parameters["properties"].(map[string]any)
+	delete(props, "vision_prompt")
+	return def
+}
+
+// DefReadFilePDFVisionOnly returns read_file tailored for Regime 2: images are
+// native inline, while PDFs use the side-channel. vision_prompt is kept and
+// scoped to PDF files in both the tool description and parameter description (#6190).
+func DefReadFilePDFVisionOnly() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
+	props := def.Parameters["properties"].(map[string]any)
+	props["vision_prompt"] = map[string]any{
+		"type":        "string",
+		"description": "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.",
+	}
+	return def
 }
 
 func DefWriteFile() llm.ToolDefinition {
@@ -441,14 +467,14 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 func DefModelList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "model_list",
-		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the next field of the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 512, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
 		},
 	}
@@ -919,7 +945,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. Newly added tasks stay open until started. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
@@ -934,7 +960,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"add": map[string]any{
 					"type":        "array",
-					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
+					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort. Newly added tasks stay open until started.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
@@ -942,7 +968,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"type": map[string]any{
 								"type":        "string",
 								"enum":        []string{"research", "implement", "verify", "fix"},
-								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
+								"description": "Task type (default implement). Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
 							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
@@ -953,7 +979,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							},
 							"reasoning_effort": reasoningSchema,
 						},
-						"required": []string{"type", "description", "prompt"},
+						"required": []string{"description", "prompt"},
 					},
 				},
 				"update": map[string]any{
@@ -1059,7 +1085,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep; since=<dur>, bucket=<id>), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1098,8 +1124,8 @@ func DefDoctorEvener() llm.ToolDefinition {
 				},
 				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
 				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
-				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit has no default."},
-				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit/turnids: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit and turnids have no default."},
+				"bucket":    map[string]any{"type": "string", "description": "sessions/turnids: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
 				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
 				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
 			},
@@ -1181,6 +1207,19 @@ func DefManageWorktree() llm.ToolDefinition {
 					"type":        "number",
 					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute. A positive value below the supported minimum (one minute plus the refresh cadence's tick, ~0.00072 days) is refused: the activity evidence a live tree refreshes is only as fresh as that window, so a shorter threshold could release a lane under a running delegate.",
 				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"default":     15,
+					"minimum":     1,
+					"maximum":     15,
+					"description": "For list: maximum worktree entries to return under the managed root (default 15, at most 15).",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"default":     0,
+					"minimum":     0,
+					"description": "For list: 0-based start index into worktrees under the managed root (default 0). Use next_offset to advance.",
+				},
 			},
 			"required": []string{"operation"},
 		},
@@ -1247,7 +1286,7 @@ func DefReadTranscript() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
+				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current (default when omitted), job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
 				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
@@ -1280,7 +1319,7 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "ask_user",
 		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
-			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
+			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.\n" +
 			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
 			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
 			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",

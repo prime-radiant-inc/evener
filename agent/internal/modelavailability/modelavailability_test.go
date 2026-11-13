@@ -375,6 +375,150 @@ func TestCursorRejectsAuthenticatedUnknownAndTrailingFields(t *testing.T) {
 	}
 }
 
+func TestPageOmitsStatusOnContinuationPages(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1", "p1/m2", "p1/m3")
+	s.Status = make(map[string]ProviderStatus)
+	for i := range 10 {
+		s.Status[fmt.Sprintf("provider-%02d", i)] = ProviderStatus{
+			Kind:   StatusSuccess,
+			Detail: "enumeration succeeded with extra descriptive text",
+		}
+	}
+	// Initial page contains Status
+	first, err := s.Page("", 1, 2048)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Status == nil || len(first.Status) != 10 {
+		t.Fatalf("first page status = %#v, want 10 providers", first.Status)
+	}
+	firstBytes, err := json.MarshalIndent(first, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(firstBytes), `"status":`) {
+		t.Fatal("first page JSON must contain status")
+	}
+
+	next, err := s.Page(first.Next, 1, 2048)
+	if err != nil {
+		t.Fatalf("continuation page failed: %v", err)
+	}
+	if next.Status != nil {
+		t.Fatalf("continuation page status = %#v, want nil", next.Status)
+	}
+	nextBytes, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(nextBytes), `"status"`) {
+		t.Fatalf("continuation page JSON must omit status, got:\n%s", string(nextBytes))
+	}
+}
+
+func TestPageEnvelopeBudgetTooSmallIncludesByteFloor(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1")
+	s.Status = map[string]ProviderStatus{
+		"provider": {Kind: StatusSuccess, Detail: strings.Repeat("x", 200)},
+	}
+	_, err := s.Page("", 1, 100)
+	if err == nil || !errors.Is(err, ErrPageEnvelopeBudgetTooSmall) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrPageEnvelopeBudgetTooSmall)", err)
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.RequiredBytes <= 100 {
+		t.Fatalf("budgetErr = %#v, want RequiredBytes > 100", budgetErr)
+	}
+}
+
+func TestPageBudgetErrorFixedPointRetrySucceedsOnFirstAttempt(t *testing.T) {
+	choices := make([]string, 0, 16)
+	status := make(map[string]ProviderStatus, 8)
+	for i := range 8 {
+		p := fmt.Sprintf("provider-%02d", i)
+		status[p] = ProviderStatus{Kind: StatusSuccess, Detail: "enumeration succeeded"}
+		choices = append(choices, p+"/model-a", p+"/model-b")
+	}
+	s := testSnapshot("v1", true, choices...)
+	s.Status = status
+
+	_, err := s.Page("", 128, 512)
+	if err == nil {
+		t.Fatal("s.Page('', 128, 512) should fail with budget error on 8-provider snapshot")
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err = %v, want *PageEnvelopeBudgetError", err)
+	}
+
+	retryPage, err := s.Page("", 128, budgetErr.RequiredBytes)
+	if err != nil {
+		t.Fatalf("retry with RequiredBytes=%d failed: %v", budgetErr.RequiredBytes, err)
+	}
+	if len(retryPage.Choices) < 1 {
+		t.Fatalf("retryPage.Choices = %v, want at least 1 choice", retryPage.Choices)
+	}
+	if len(retryPage.Oversized) != 0 {
+		t.Fatalf("retryPage.Oversized = %v, want 0 oversized", retryPage.Oversized)
+	}
+}
+
+func TestPageBudgetErrorReturnsChoicesFloorNotOversized(t *testing.T) {
+	choices := []string{"provider-00/gpt-5.4-mini", "provider-00/gpt-5.5", "provider-01/gpt-5.4-mini"}
+	status := map[string]ProviderStatus{
+		"provider-00": {Kind: StatusSuccess, Detail: strings.Repeat("x", 120)},
+		"provider-01": {Kind: StatusSuccess, Detail: strings.Repeat("x", 120)},
+	}
+	s := testSnapshot("v1", true, choices...)
+	s.Status = status
+
+	_, err := s.Page("", 128, 512)
+	if err == nil {
+		t.Fatal("s.Page('', 128, 512) should fail with budget error")
+	}
+	var budgetErr *PageEnvelopeBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err = %v, want *PageEnvelopeBudgetError", err)
+	}
+
+	retryPage, err := s.Page("", 128, budgetErr.RequiredBytes)
+	if err != nil {
+		t.Fatalf("retry with RequiredBytes=%d failed: %v", budgetErr.RequiredBytes, err)
+	}
+	if len(retryPage.Choices) == 0 || retryPage.Choices[0] != "provider-00/gpt-5.4-mini" {
+		t.Fatalf("retryPage.Choices = %v, want provider-00/gpt-5.4-mini", retryPage.Choices)
+	}
+	if len(retryPage.Oversized) != 0 {
+		t.Fatalf("retryPage.Oversized = %v, want 0 oversized", retryPage.Oversized)
+	}
+}
+
+func TestPageEmptyStatusPreservesStatusKeyOnFirstPage(t *testing.T) {
+	s := testSnapshot("v1", true, "p1/m1", "p1/m2")
+	p0, err := s.Page("", 1, 1024)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	b0, err := json.MarshalIndent(p0, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b0), `"status": {}`) {
+		t.Fatalf("page 0 with empty status must serialize '\"status\": {}', got:\n%s", string(b0))
+	}
+	p1, err := s.Page(p0.Next, 1, 1024)
+	if err != nil {
+		t.Fatalf("continuation page: %v", err)
+	}
+	b1, err := json.MarshalIndent(p1, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b1), `"status"`) {
+		t.Fatalf("continuation page must omit status, got:\n%s", string(b1))
+	}
+}
+
 func testSnapshot(version string, complete bool, choices ...string) Snapshot {
 	return Snapshot{Version: version, Complete: complete, Choices: choices, key: []byte("test-key")}
 }

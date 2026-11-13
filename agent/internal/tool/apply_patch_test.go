@@ -58,8 +58,16 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
-	if !strings.Contains(out, "b.txt") || !strings.Contains(out, "a.txt") || !strings.Contains(out, "c.txt") {
-		t.Fatalf("output: %q", out)
+	wantLines := []string{
+		"A b.txt",
+		"M a.txt",
+		"R b.txt -> c.txt",
+		"D d.txt",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
 	}
 
 	// a.txt updated
@@ -106,6 +114,31 @@ func TestApplyPatch_DeleteFailureNotReportedAsApplied(t *testing.T) {
 	}
 	if _, statErr := os.Stat(target); statErr != nil {
 		t.Errorf("a failed delete must leave the file in place: %v", statErr)
+	}
+}
+
+func TestApplyPatch_SummaryPrefixesMoveToSamePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := `*** Begin Patch
+*** Update File: same.txt
+*** Move to: same.txt
+@@
+ line1
++line2
+*** End Patch
+`
+	out, err := ApplyPatch(testMutator(dir), patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	if !strings.Contains(out, "M same.txt") {
+		t.Fatalf("expected 'M same.txt' when Move to names the same path, got:\n%s", out)
+	}
+	if strings.Contains(out, "->") {
+		t.Fatalf("unexpected rename arrow when Move to names same path:\n%s", out)
 	}
 }
 

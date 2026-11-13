@@ -647,7 +647,16 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   if (pending) await act(async () => seedPendingSend(mutationStorage));
   expect(emptyStateReasons(document.body)).not.toContain("no-turns");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
-  expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
+  // The degraded-version notice is the alert either way. A waiting send adds
+  // the transcript's trailing pending row, and that mounted content yields the
+  // dormant empty state to the stack so the message keeps its one rendering.
+  expect(screen.getByRole("alert").getAttribute("data-reason")).toBe("version-mismatch");
+  if (pending) {
+    expect(screen.getAllByTestId("pending-message-row")).toHaveLength(1);
+    expect(emptyStateReasons(document.body)).toEqual([]);
+  } else {
+    expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
+  }
 });
 
 test("Send follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {

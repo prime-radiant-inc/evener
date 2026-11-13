@@ -982,8 +982,10 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("combined call: %s", res.FullOutput)
 	}
-	if !strings.Contains(res.FullOutput, "Added 1 task(s); updated 1→in_progress") {
-		t.Fatalf("output should combine add+update ack: %q", res.FullOutput)
+	for _, token := range []string{"#2", "1→in_progress"} {
+		if !strings.Contains(res.FullOutput, token) {
+			t.Fatalf("output missing token %q: %q", token, res.FullOutput)
+		}
 	}
 	view := h.store.View()
 	if len(view) != 2 || view[0].Status != taskpkg.TaskInProgress || view[1].Status != taskpkg.TaskOpen {
@@ -1241,5 +1243,102 @@ func TestTaskTool_UpdateDependsOnSameCallAddRejected(t *testing.T) {
 	}
 	if len(h.store.View()) != 1 {
 		t.Fatal("rejected combined call must apply nothing (atomicity)")
+	}
+}
+
+// TestTaskTool_AddReturnsAssignedIDs pins issue #6189: task_list(add=[...])
+// reports the newly assigned task IDs in its output, and newly added tasks
+// start in open status.
+func TestTaskTool_AddReturnsAssignedIDs(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p0"}})
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"type": "research", "description": "second task", "prompt": "do research"},
+			map[string]any{"type": "fix", "description": "third task", "prompt": "fix issue"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add call failed: %s", res.FullOutput)
+	}
+	for _, idToken := range []string{"#2", "#3"} {
+		if !strings.Contains(res.FullOutput, idToken) {
+			t.Fatalf("output missing assigned ID token %q: %q", idToken, res.FullOutput)
+		}
+	}
+	tasks := h.store.View()
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	if tasks[1].Status != taskpkg.TaskOpen || tasks[2].Status != taskpkg.TaskOpen {
+		t.Fatalf("newly added tasks must start in open status: %+v", tasks)
+	}
+}
+
+// TestTaskTool_AddAcceptsTitleAliasAndDefaultType pins issue #6189: task_list.add
+// accepts "title" as an alias for "description" and defaults "type" to "implement".
+func TestTaskTool_AddAcceptsTitleAliasAndDefaultType(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"title": "step one", "prompt": "first prompt"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add with title and default type failed: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "#1") {
+		t.Fatalf("output missing assigned ID token #1: %q", res.FullOutput)
+	}
+	tasks := h.store.View()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Description != "step one" {
+		t.Fatalf("task description = %q, want %q", tasks[0].Description, "step one")
+	}
+	if tasks[0].Type != taskpkg.TaskTypeImplement {
+		t.Fatalf("task type = %q, want %q", tasks[0].Type, taskpkg.TaskTypeImplement)
+	}
+	if tasks[0].Status != taskpkg.TaskOpen {
+		t.Fatalf("task status = %q, want open", tasks[0].Status)
+	}
+}
+
+func TestTaskTool_AddNullTitleRejected(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"title": nil, "prompt": "p"},
+		},
+	})
+	if !res.IsError {
+		t.Fatalf("add with null title must be rejected: %s", res.FullOutput)
+	}
+}
+
+func TestTaskTool_AddMixedDefaultAndExplicitTypesDoesNotDuplicate(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{
+			map[string]any{"description": "task A", "prompt": "pA"},
+			map[string]any{"type": "verify", "description": "task B", "prompt": "pB"},
+		},
+	})
+	if res.IsError {
+		t.Fatalf("add call failed: %s", res.FullOutput)
+	}
+	tasks := h.store.View()
+	if len(tasks) != 2 {
+		t.Fatalf("len(tasks) = %d, want 2: %+v", len(tasks), tasks)
+	}
+	if tasks[0].Description != "task A" || tasks[0].Type != taskpkg.TaskTypeImplement {
+		t.Fatalf("task 0 = %+v, want description=task A type=implement", tasks[0])
+	}
+	if tasks[1].Description != "task B" || tasks[1].Type != taskpkg.TaskTypeVerify {
+		t.Fatalf("task 1 = %+v, want description=task B type=verify", tasks[1])
 	}
 }

@@ -14,4 +14,7 @@ type ContextMetrics struct {
 	// supplied it ("live", "overlay", "config", or "snapshot", which also
 	// covers the refreshed catalog cache) or "assumed".
 	WindowSource string
+	// CompactionThreshold is the active per-model compaction trigger in tokens,
+	// or 0 when the model has no custom compaction threshold.
+	CompactionThreshold int
 }

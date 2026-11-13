@@ -895,6 +895,7 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		WorkMillis:          2,
 		ActiveTurnStartedAt: 3,
 		ContextAssumed:      true,
+		CompactionThreshold: 250_000,
 		ContextWindowSource: "live",
 	}
 	raw, err := json.Marshal(in)
@@ -907,6 +908,7 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		`"workMillis":2`,
 		`"activeTurnStartedAt":3`,
 		`"contextAssumed":true`,
+		`"compactionThreshold":250000`,
 		`"contextWindowSource":"live"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -924,8 +926,8 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip workMillis/activeTurnStartedAt=%d/%d, want %d/%d",
 			out.WorkMillis, out.ActiveTurnStartedAt, in.WorkMillis, in.ActiveTurnStartedAt)
 	}
-	if !out.ContextAssumed || out.ContextWindowSource != "live" {
-		t.Fatal("roundtrip lost contextAssumed or contextWindowSource")
+	if !out.ContextAssumed || out.CompactionThreshold != 250_000 || out.ContextWindowSource != "live" {
+		t.Fatal("roundtrip lost contextAssumed, compactionThreshold, or contextWindowSource")
 	}
 }
 
@@ -940,7 +942,7 @@ func TestEvenerThreadMetricsOmitEmpty(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(raw)
-	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`, `"cost"`, `"contextAssumed"`, `"contextWindowSource"`} {
+	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`, `"cost"`, `"contextAssumed"`, `"compactionThreshold"`, `"contextWindowSource"`} {
 		if strings.Contains(got, banned) {
 			t.Fatalf("marshal=%s should have omitted %s", got, banned)
 		}
@@ -1011,6 +1013,7 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 	contextWindow := 200_000
 	maxInputTokens := 180_000
+	compactionThreshold := 150_000
 	maxOutputTokens := 8_192
 	supportsTools := true
 	supportsVision := false
@@ -1024,6 +1027,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 		DisplayName:           "Claude Sonnet 4.5",
 		ContextWindow:         &contextWindow,
 		MaxInputTokens:        &maxInputTokens,
+		CompactionThreshold:   &compactionThreshold,
 		SupportsTools:         &supportsTools,
 		SupportsVision:        &supportsVision,
 		MaxOutputTokens:       &maxOutputTokens,
@@ -1041,6 +1045,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 		`"displayName":"Claude Sonnet 4.5"`,
 		`"contextWindow":200000`,
 		`"maxInputTokens":180000`,
+		`"compactionThreshold":150000`,
 		`"supportsTools":true`,
 		`"supportsVision":false`,
 		`"supportsWebSearch":false`,
@@ -1109,6 +1114,202 @@ func TestTurnUsageCostOmitEmpty(t *testing.T) {
 		if strings.Contains(got, banned) {
 			t.Fatalf("marshal=%s should have omitted %s", got, banned)
 		}
+	}
+}
+
+func TestInstanceModelWireTypesJSONRoundTrip(t *testing.T) {
+	cw := 1_000_000
+	ct := 250_000
+	maxIn := 900_000
+	maxOut := 64_000
+	reasoning := true
+	tools := false
+
+	entry := InstanceModelEntry{
+		ID:                  "deepseek/deepseek-4.1-flash",
+		Disabled:            true,
+		Customized:          true,
+		ContextWindow:       &cw,
+		CompactionThreshold: &ct,
+	}
+	entryRaw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal InstanceModelEntry: %v", err)
+	}
+	for _, want := range []string{
+		`"id":"deepseek/deepseek-4.1-flash"`,
+		`"disabled":true`,
+		`"customized":true`,
+		`"contextWindow":1000000`,
+		`"compactionThreshold":250000`,
+	} {
+		if !strings.Contains(string(entryRaw), want) {
+			t.Fatalf("marshal InstanceModelEntry=%s missing %s", entryRaw, want)
+		}
+	}
+	var entryOut InstanceModelEntry
+	if err := json.Unmarshal(entryRaw, &entryOut); err != nil {
+		t.Fatalf("unmarshal InstanceModelEntry: %v", err)
+	}
+	if !reflect.DeepEqual(entryOut, entry) {
+		t.Fatalf("InstanceModelEntry roundtrip=%+v, want %+v", entryOut, entry)
+	}
+
+	bareEntryRaw, err := json.Marshal(InstanceModelEntry{ID: "gpt-5"})
+	if err != nil {
+		t.Fatalf("marshal bare InstanceModelEntry: %v", err)
+	}
+	if string(bareEntryRaw) != `{"id":"gpt-5"}` {
+		t.Fatalf("bare InstanceModelEntry=%s, want {\"id\":\"gpt-5\"}", bareEntryRaw)
+	}
+
+	detail := InstanceModelDetailResponse{
+		Name:                   "work",
+		Model:                  "claude-opus-4-5[1m]",
+		Disabled:               false,
+		DisabledLockstepTarget: "claude-opus-4-5",
+		AuthoredOnly:           true,
+		Effective: InstanceModelEffective{
+			ContextWindow:       &cw,
+			MaxInputTokens:      &maxIn,
+			CompactionThreshold: &ct,
+			MaxOutputTokens:     &maxOut,
+			Reasoning:           &reasoning,
+			DefaultEffort:       "high",
+			EffortValues:        []string{"low", "medium", "high"},
+			InputModalities:     []string{"text", "image"},
+			Tools:               &tools,
+			Protocol:            "anthropic",
+			Surface:             "anthropic",
+			ThinkingFormat:      "anthropic",
+			ThinkingShape:       "budget+effort",
+			WireID:              "claude-opus-4-5-20251101",
+			AliasOf:             "claude-opus-4-5",
+		},
+		Provenance: map[string]string{
+			"ContextWindow":       "overlay",
+			"CompactionThreshold": "config",
+			"Protocol":            "provider",
+		},
+		Authored: InstanceModelAuthored{
+			CompactionThreshold: &ct,
+			Tools:               &tools,
+		},
+		ThinkingFormats: []string{"anthropic", "openai"},
+		ThinkingShapes:  []string{"adaptive", "budget", "budget+effort", "level"},
+		Warnings:        []string{"warning 1"},
+	}
+	detailRaw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal InstanceModelDetailResponse: %v", err)
+	}
+	var detailOut InstanceModelDetailResponse
+	if err := json.Unmarshal(detailRaw, &detailOut); err != nil {
+		t.Fatalf("unmarshal InstanceModelDetailResponse: %v", err)
+	}
+	if !reflect.DeepEqual(detailOut, detail) {
+		t.Fatalf("InstanceModelDetailResponse roundtrip=%+v, want %+v", detailOut, detail)
+	}
+
+	editSet := InstanceModelEditParams{
+		Name:                        "work",
+		Model:                       "deepseek/deepseek-4.1-flash",
+		Create:                      true,
+		CompactionThreshold:         &ct,
+		ContextWindow:               &cw,
+		MaxOutputTokens:             &maxOut,
+		Reasoning:                   &reasoning,
+		DefaultEffort:               "high",
+		EffortValues:                []string{"low", "high"},
+		InputModalities:             []string{"text", "image"},
+		Tools:                       &tools,
+		Protocol:                    "openai-chat",
+		Surface:                     "generic",
+		ThinkingFormat:              "openai",
+		ThinkingShape:               "level",
+		WireID:                      "deepseek-v4.1",
+		AliasOf:                     "openai/gpt-5",
+		ExpectedEndpointFingerprint: "fp-1",
+		OriginClientId:              "tab-1",
+	}
+	editSetRaw, err := json.Marshal(editSet)
+	if err != nil {
+		t.Fatalf("marshal InstanceModelEditParams(set): %v", err)
+	}
+	var editSetOut InstanceModelEditParams
+	if err := json.Unmarshal(editSetRaw, &editSetOut); err != nil {
+		t.Fatalf("unmarshal InstanceModelEditParams(set): %v", err)
+	}
+	if !reflect.DeepEqual(editSetOut, editSet) {
+		t.Fatalf("InstanceModelEditParams(set) roundtrip=%+v, want %+v", editSetOut, editSet)
+	}
+
+	editClears := InstanceModelEditParams{
+		Name:                     "work",
+		Model:                    "deepseek/deepseek-4.1-flash",
+		ClearCompactionThreshold: true,
+		ClearContextWindow:       true,
+		ClearMaxOutputTokens:     true,
+		ClearReasoning:           true,
+		ClearDefaultEffort:       true,
+		ClearEffortValues:        true,
+		ClearInputModalities:     true,
+		ClearTools:               true,
+		ClearProtocol:            true,
+		ClearSurface:             true,
+		ClearThinkingFormat:      true,
+		ClearThinkingShape:       true,
+		ClearWireID:              true,
+		ClearAliasOf:             true,
+	}
+	editClearsRaw, err := json.Marshal(editClears)
+	if err != nil {
+		t.Fatalf("marshal InstanceModelEditParams(clears): %v", err)
+	}
+	var editClearsOut InstanceModelEditParams
+	if err := json.Unmarshal(editClearsRaw, &editClearsOut); err != nil {
+		t.Fatalf("unmarshal InstanceModelEditParams(clears): %v", err)
+	}
+	if !reflect.DeepEqual(editClearsOut, editClears) {
+		t.Fatalf("InstanceModelEditParams(clears) roundtrip=%+v, want %+v", editClearsOut, editClears)
+	}
+}
+
+func TestThreadModelChangedParamsContextFieldsJSONRoundTrip(t *testing.T) {
+	in := ThreadModelChangedParams{
+		ThreadID:              "th_1",
+		Ref:                   "local:th_1",
+		ModelProvider:         "work",
+		Model:                 "deepseek/deepseek-4.1-flash",
+		ReasoningEffortLevels: []string{"low", "high"},
+		SupportsReasoning:     true,
+		ContextUsed:           200_000,
+		ContextWindow:         1_000_000,
+		ContextPressure:       0.20,
+		ContextAssumed:        true,
+		CompactionThreshold:   250_000,
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal ThreadModelChangedParams: %v", err)
+	}
+	for _, want := range []string{
+		`"contextUsed":200000`,
+		`"contextWindow":1000000`,
+		`"contextPressure":0.2`,
+		`"contextAssumed":true`,
+		`"compactionThreshold":250000`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("marshal ThreadModelChangedParams=%s missing %s", raw, want)
+		}
+	}
+	var out ThreadModelChangedParams
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal ThreadModelChangedParams: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("ThreadModelChangedParams roundtrip=%+v, want %+v", out, in)
 	}
 }
 

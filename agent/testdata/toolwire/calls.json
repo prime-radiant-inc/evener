@@ -658,7 +658,7 @@
       "turnId": "turn_1",
       "toolName": "grep",
       "callId": "call_grep",
-      "output": "tree.go:3:func settle() {}\ntree_test.go:3:func settleForTest() {}",
+      "output": "agent/tree.go:3:func settle() {}\nagent/tree_test.go:3:func settleForTest() {}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -748,7 +748,7 @@
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "output": "applied patch to:\nagent/tree.go\nagent/tree_drain.go",
+      "output": "applied patch to:\nM agent/tree.go\nA agent/tree_drain.go",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -823,7 +823,7 @@
       "turnId": "turn_1",
       "toolName": "job_status",
       "callId": "call_job_status",
-      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "output": "{\"id\":\"job_fixture_1\",\"job_id\":\"job_fixture_1\",\"type\":\"shell\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -833,7 +833,7 @@
       "turnId": "turn_1",
       "toolName": "job_list",
       "callId": "call_job_list",
-      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
+      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · transcript_ref job:job_fixture_2 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · phase process_running · running_for_ms 2000 · quiet_for_ms 2000 · transcript_ref job:job_fixture_1 · 8 bytes]\n\n2 job(s).",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -997,7 +997,7 @@
       "turnId": "turn_1",
       "toolName": "task_list",
       "callId": "call_task_list_add",
-      "output": "Added 3 task(s). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "output": "Added 3 task(s) (#1, #2, #3). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
       "status": "completed",
       "completedAt": 1790625602000,
       "raw": [
@@ -1432,7 +1432,7 @@
       "turnId": "turn_1",
       "toolName": "model_list",
       "callId": "call_model_list_next",
-      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.3\"\n  ],\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": true,\n  \"status\": {\n    \"openai\": {\n      \"kind\": \"success\",\n      \"detail\": \"enumeration succeeded\"\n    },\n    \"router\": {\n      \"kind\": \"failure\",\n      \"detail\": \"enumeration did not complete\"\n    }\n  },\n  \"provenance\": \"startup-frozen\"\n}",
+      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.3\"\n  ],\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": true,\n  \"provenance\": \"startup-frozen\"\n}",
       "status": "completed",
       "completedAt": 1790625602000
     },

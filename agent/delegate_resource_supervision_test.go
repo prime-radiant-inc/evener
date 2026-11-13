@@ -35,22 +35,26 @@ import (
 func TestRouteNoToolCalls(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name          string
-		kind          EntryKind
-		noContent     bool
-		afterTerminal bool
-		want          noCallsRoute
+		name              string
+		kind              EntryKind
+		priorToolActivity bool
+		noContent         bool
+		afterTerminal     bool
+		want              noCallsRoute
 	}{
-		{name: "notification acknowledgement", kind: EntryNotification, want: finishIdle},
+		{name: "notification acknowledgement before tool activity", kind: EntryNotification, want: finishIdle},
+		{name: "notification bare text after prior tool activity", kind: EntryNotification, priorToolActivity: true, want: runNoToolCalls},
 		{name: "notification silence", kind: EntryNotification, noContent: true, want: runNoToolCalls},
 		{name: "notification silence after terminal", kind: EntryNotification, noContent: true, afterTerminal: true, want: finishIdle},
+		{name: "notification silence after terminal and prior tools", kind: EntryNotification, priorToolActivity: true, noContent: true, afterTerminal: true, want: finishIdle},
+		{name: "notification bare text after terminal and prior tools", kind: EntryNotification, priorToolActivity: true, afterTerminal: true, want: finishIdle},
 		{name: "user input", kind: EntryUserInput, want: runNoToolCalls},
 		{name: "continuation", kind: EntryContinuation, want: runNoToolCalls},
 		{name: "delegate attention", kind: EntryDelegateAttention, want: runNoToolCalls},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal); got != tt.want {
+			if got := routeNoToolCalls(tt.kind, tt.priorToolActivity, tt.noContent, tt.afterTerminal); got != tt.want {
 				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
 			}
 		})
@@ -1342,19 +1346,16 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				close(entered)
-				<-release
-				return llm.Response{}, fatalErr
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("unexpected continuation after fatal failure"), nil
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			close(entered)
+			<-release
+			return llm.Response{}, fatalErr
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("unexpected continuation after fatal failure"), nil
+		},
+	})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -1747,28 +1748,25 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal nudge turn", nil, nil)
 	enteredFatalNudge := make(chan struct{})
 	releaseFatalNudge := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.EmptyResponse(), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				close(enteredFatalNudge)
-				<-releaseFatalNudge
-				return llm.Response{}, fatalErr
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.EmptyResponse(), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			close(enteredFatalNudge)
+			<-releaseFatalNudge
+			return llm.Response{}, fatalErr
+		},
+	})
 	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
@@ -1873,14 +1871,11 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal cleanup failure turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
-			close(entered)
-			<-release
-			return llm.Response{}, fatalErr
-		}},
-	}
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+		close(entered)
+		<-release
+		return llm.Response{}, fatalErr
+	}})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -1945,14 +1940,11 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal close-abandon turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
-			close(entered)
-			<-release
-			return llm.Response{}, fatalErr
-		}},
-	}
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+		close(entered)
+		<-release
+		return llm.Response{}, fatalErr
+	}})
 	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)

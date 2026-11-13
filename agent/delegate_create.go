@@ -141,7 +141,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	// Read the overlap before this delegate is prepared or tracked, while the
 	// siblings it would join are still the only running children.
-	sharedWorkspaceAdvisory := s.sharedWorkspaceDelegateWarning(isolationName)
+	sharedWorkspaceAdvisory := s.sharedWorkspaceDelegateWarning(isolationName, &descriptor)
 	reservation, err := s.delegateController.ReserveCreate(actor, descriptor)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -392,7 +392,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
 		Task:                          brief,
-		Description:                   brief,
+		Description:                   "",
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),

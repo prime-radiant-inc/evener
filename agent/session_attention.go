@@ -668,13 +668,34 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	return true, nil
 }
 
+// armDelegateAttention arms one attention ID. It is the single-ID form of
+// armDelegateAttentions.
 func (s *Session) armDelegateAttention(attentionID string) error {
-	if s == nil || attentionID == "" {
+	return s.armDelegateAttentions([]string{attentionID})
+}
+
+// armDelegateAttentions arms one receiver's post-commit wake for several
+// attention IDs. The root receiver reads its pending IDs and notifies once for
+// the batch; the stop's batched acknowledgment retry is the caller that has
+// several IDs.
+func (s *Session) armDelegateAttentions(attentionIDs []string) error {
+	if s == nil {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
-	// The seam is runtime-mutable through updateSessionTestConfig, so its
-	// read shares the setter's session mutex — the convention every
-	// mid-run-mutable test seam follows.
+	ids := attentionIDs
+	if len(ids) == 1 {
+		if ids[0] == "" {
+			return errors.New("delegate attention wake identity is incomplete")
+		}
+	} else {
+		if slices.Contains(ids, "") {
+			return errors.New("delegate attention wake identity is incomplete")
+		}
+		ids = appendUniqueStrings(nil, ids...)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	armFault := s.cfg.testOnly.delegateAttentionArmFault
 	s.mu.Unlock()
@@ -688,17 +709,21 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 		err = armFault()
 	}
 	if err == nil {
-		err = s.armDelegateAttentionOnce(attentionID)
+		err = s.armDelegateAttentionsOnce(ids)
 	}
 	s.attentionMu.Lock()
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
 			s.delegateAttentionArmIDs = make(map[string]struct{})
 		}
-		s.delegateAttentionArmIDs[attentionID] = struct{}{}
+		for _, attentionID := range ids {
+			s.delegateAttentionArmIDs[attentionID] = struct{}{}
+		}
 		s.scheduleDelegateAttentionArmRetryLocked()
 	} else {
-		delete(s.delegateAttentionArmIDs, attentionID)
+		for _, attentionID := range ids {
+			delete(s.delegateAttentionArmIDs, attentionID)
+		}
 		if len(s.delegateAttentionArmIDs) == 0 {
 			s.resetDelegateAttentionArmRetryLocked()
 		}
@@ -707,17 +732,38 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	return err
 }
 
+// armDelegateAttentionsOnce arms a batch for a receiver. Only the root
+// receiver has several IDs to arm; a child receiver's wake is its notify, so
+// the non-root path keeps the single-ID arm for callers that pass one anyway.
+func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
+	if !s.isRootDelegateAttentionReceiver() {
+		for _, attentionID := range attentionIDs {
+			if err := s.armDelegateAttentionOnce(attentionID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return err
+	}
+	surviving := make([]string, 0, len(attentionIDs))
+	for _, attentionID := range attentionIDs {
+		if slices.Contains(pending, attentionID) {
+			surviving = append(surviving, attentionID)
+		}
+	}
+	if len(surviving) == 0 {
+		return nil
+	}
+	s.armRootDelegateAttentions(surviving)
+	return nil
+}
+
 func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	if s.isRootDelegateAttentionReceiver() {
-		ids, err := s.pendingDelegateAttentionIDs()
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(ids, attentionID) {
-			return nil
-		}
-		s.armRootDelegateAttention(attentionID)
-		return nil
+		return s.armDelegateAttentionsOnce([]string{attentionID})
 	}
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return errors.New("delegate attention controller identity is incomplete")
@@ -1339,12 +1385,23 @@ func (s *Session) isRootDelegateAttentionReceiver() bool {
 	return isRoot
 }
 
-// armRootDelegateAttention caches one already-durable root attention ID and
-// coalesces an autonomous notification wake. The cache is never authority: an
-// append/readback succeeds before admission here, and restart replaces it from
-// the receiver transcript fold.
-func (s *Session) armRootDelegateAttention(attentionID string) {
-	if attentionID == "" || !s.isRootDelegateAttentionReceiver() {
+// armRootDelegateAttentions caches already-durable root attention IDs and
+// coalesces one autonomous notification wake for the batch. The cache is never
+// authority: an append/readback succeeds before admission here, and restart
+// replaces it from the receiver transcript fold.
+func (s *Session) armRootDelegateAttentions(attentionIDs []string) {
+	if !s.isRootDelegateAttentionReceiver() || len(attentionIDs) == 0 {
+		return
+	}
+	ids := attentionIDs
+	if len(ids) == 1 {
+		if ids[0] == "" {
+			return
+		}
+	} else {
+		ids = appendUniqueStrings(nil, ids...)
+	}
+	if len(ids) == 0 {
 		return
 	}
 	// The parked rail derives from the durable holds
@@ -1356,7 +1413,9 @@ func (s *Session) armRootDelegateAttention(attentionID string) {
 	if s.rootAttentionWakeIDs == nil {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
-	s.rootAttentionWakeIDs[attentionID] = struct{}{}
+	for _, attentionID := range ids {
+		s.rootAttentionWakeIDs[attentionID] = struct{}{}
+	}
 	shouldWake := !s.rootAttentionWake && !parked
 	if shouldWake {
 		s.rootAttentionWake = true

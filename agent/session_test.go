@@ -304,13 +304,24 @@ func (a *streamingAdapter) Counts() (completeCalls int, streamCalls int) {
 }
 
 // fakeErrAdapter is like fakeAdapter but supports steps that return errors.
+// The script lives in the shared engine: the step is read under its mutex and
+// run outside it, so a blocked step never holds the script and no fixture can
+// assign the slice beside a drive.
 type fakeErrAdapter struct {
 	name string
 
+	script agenttest.Script[func(req llm.Request) (llm.Response, error)]
+
 	mu       sync.Mutex
 	requests []llm.Request
-	steps    []func(req llm.Request) (llm.Response, error)
-	i        int
+}
+
+// newFakeErrAdapter builds a scripted adapter over steps. The script owns the
+// cursor and its lock, so a test cannot hand-roll a second cursor beside it.
+func newFakeErrAdapter(name string, steps []func(req llm.Request) (llm.Response, error)) *fakeErrAdapter {
+	a := &fakeErrAdapter{name: name}
+	a.script.Replace(steps)
+	return a
 }
 
 func (a *fakeErrAdapter) Name() string { return a.name }
@@ -318,13 +329,13 @@ func (a *fakeErrAdapter) Name() string { return a.name }
 func (a *fakeErrAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	if a.i >= len(a.steps) {
+	a.mu.Unlock()
+	step, ok := a.script.Next()
+	if !ok {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
-	resp, err := a.steps[a.i](req)
-	a.i++
+	resp, err := step(req)
 	if err != nil {
 		return resp, err
 	}

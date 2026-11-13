@@ -171,6 +171,8 @@ needs it):
 | `steering.<kind>` | `HealthResult.Steering[<kind>]` — the `events.SteeringKind*` vocabulary |
 | `stale_notifications` | `HealthResult.StaleNotifications` |
 | `user_corrections` | `HealthResult.UserCorrections` (a proxy metric — see health.go's own caveat) |
+| `assistant_fabrications` | `HealthResult.AssistantFabrications` — total recorded assistant turns carrying a fabricated harness/user input envelope or unparsed raw tool-call markup outside code spans |
+| `assistant_fabrications.<kind>` | `HealthResult.AssistantFabricationsByKind[<kind>]` — `<kind>` is `harness_envelope` or `tool_markup` |
 | `tool_calls.<tool>` | `HealthResult.ToolCalls[<tool>]` |
 | `tool_errors.<tool>.<class>` | `HealthResult.ToolErrors[<tool>][<class>]` |
 | `apilog.calls` / `.empties` / `.errors` / `.avg_latency_ms` | the session's `APILogTotals` (apilog `summary: true` fields) |

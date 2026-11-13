@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,7 +35,7 @@ func visionRouteRefusal(provider string) error {
 // bytes already travel inline in the tool result. The call must not fire.
 func TestDescribeImage_SkipsCallWhenSessionModelSeesImagesNatively(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
+	openai := newFakeErrAdapter("openai", nil)
 	// The one-registry production shape: the client answers from the same
 	// (embedded) registry the profile resolves on.
 	client := llm.NewClient()
@@ -57,11 +56,11 @@ func TestDescribeImage_SkipsCallWhenSessionModelSeesImagesNatively(t *testing.T)
 // PDFs described out of band (Anthropic delivers them inline, #4465).
 func TestDescribeImage_StillDescribesPDFsWhenSessionModelSeesImages(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("session-described")}, nil
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")))
 
 	result := sess.describeImageCall(context.Background(), tool.ExecResult{
@@ -80,17 +79,12 @@ func TestDescribeImage_StillDescribesPDFsWhenSessionModelSeesImages(t *testing.T
 	}
 }
 
-// A generated description is steering text every later serving model can
-// read; skipping it is safe only while every model that might serve sees the
-// bytes natively. A model_fallbacks entry that cannot (a text-only row) must
-// keep the descriptions coming even when the primary is vision-capable.
-func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T) {
+// Under Jesse's ruling on #6190, when the active primary model sees media inline
+// and VisionModel == "", model_fallbacks entries (including text-only rows) do NOT
+// trigger preventive side-channel calls.
+func TestDescribeImage_FallbackThatCannotSeeImagesDoesNotPreventNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("session-described")}, nil
-		},
-	}}
+	openai := newFakeErrAdapter("openai", nil)
 	// The session's client must answer from the same (embedded) registry the
 	// profile resolves on, the one-registry shape production wires.
 	client := llm.NewClient()
@@ -99,18 +93,39 @@ func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-codex"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("native-vision result = %+v, want success with no description despite text-only fallback", result)
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel fired %d calls, want 0 when active primary sees images inline", len(openai.Requests()))
+	}
+}
+
+// When the active primary model is text-only, the side-channel runs.
+func TestDescribeImage_TextOnlyPrimaryModelRunsSideChannel(t *testing.T) {
+	t.Parallel()
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("session-described")}, nil
+		},
+	})
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-codex")))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "session-described" {
-		t.Fatalf("fallback-chain result = %+v, want the side-channel description for the text-only fallback", result)
+		t.Fatalf("text-only primary result = %+v, want side-channel description", result)
 	}
 	if len(openai.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want the description the fallback needs", len(openai.Requests()))
+		t.Fatalf("side-channel calls = %d, want 1 for text-only primary", len(openai.Requests()))
 	}
 }
 
 // Fallbacks that all see tool-result images natively preserve the skip.
 func TestDescribeImage_FallbacksThatSeeImagesKeepTheNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
+	openai := newFakeErrAdapter("openai", nil)
 	client := llm.NewClient()
 	client.Register(openai)
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
@@ -129,12 +144,12 @@ func TestDescribeImage_FallbacksThatSeeImagesKeepTheNativeSkip(t *testing.T) {
 // when the session model is vision-capable: the ref keeps describing.
 func TestDescribeImage_ExplicitRefStillRunsWhenSessionModelSeesImages(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("routed-vision")}, nil
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -156,16 +171,16 @@ func TestDescribeImage_ExplicitRefStillRunsWhenSessionModelSeesImages(t *testing
 // declared unavailable.
 func TestDescribeImage_FallsBackToSessionModelWhenConfiguredRouteFails(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("session-described")}, nil
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -190,12 +205,12 @@ func TestDescribeImage_FallsBackToSessionModelWhenConfiguredRouteFails(t *testin
 // hallucinated descriptions. Its side-channel failures stay unavailable.
 func TestDescribeImage_NoSessionFallbackWhenSessionModelCannotSeeImages(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -215,16 +230,16 @@ func TestDescribeImage_NoSessionFallbackWhenSessionModelCannotSeeImages(t *testi
 // refuses, the session model describes, no extra attempt appears.
 func TestDescribeImage_RefusalOfConfiguredRouteFallsBackToSession(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("session-described")}, nil
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -242,12 +257,12 @@ func TestDescribeImage_RefusalOfConfiguredRouteFallsBackToSession(t *testing.T) 
 // hallucination hazard in #4213.
 func TestDescribeImage_TextOnlySessionRefusesToDescribeOnRouteRefusal(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -268,12 +283,12 @@ func TestDescribeImage_TextOnlySessionRefusesToDescribeOnRouteRefusal(t *testing
 // unavailable instead of describing with a model that cannot see the document.
 func TestDescribeImage_PDFRouteRefusalNeverFallsBackToAnImageOnlySessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -296,12 +311,12 @@ func TestDescribeImage_PDFRouteRefusalNeverFallsBackToAnImageOnlySessionModel(t 
 // blind repeats the hallucination hazard the gate exists to prevent.
 func TestDescribeImage_PDFRouteFailureDoesNotRetryOnAnImageOnlySessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -325,16 +340,16 @@ func TestDescribeImage_PDFRouteFailureDoesNotRetryOnAnImageOnlySessionModel(t *t
 // reporting the route unavailable.
 func TestDescribeImage_PDFRouteRefusalFallsBackToADocumentCapableSessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("session pdf description")}, nil
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.4")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -358,16 +373,16 @@ func TestDescribeImage_PDFRouteRefusalFallsBackToADocumentCapableSessionModel(t 
 // once before vision is declared unavailable.
 func TestDescribeImage_PDFRouteFailureRetriesOnADocumentCapableSessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("session pdf description")}, nil
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.4")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -385,25 +400,41 @@ func TestDescribeImage_PDFRouteFailureRetriesOnADocumentCapableSessionModel(t *t
 	}
 }
 
-// An unknown same-provider fallback resolves to a synthesized row with no
-// input modalities of its own, so it conservatively keeps the side-channel:
-// the chain check cannot treat the named model as vision-capable when the
-// catalog says nothing about it.
-func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
+// An unknown fallback does not prevent the native skip when the active primary
+// model sees media inline and VisionModel is unset (#6190).
+func TestDescribeImage_UncataloguedFallbackDoesNotPreventNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	}}
+	openai := newFakeErrAdapter("openai", nil)
 	client := llm.NewClient()
 	client.Register(openai)
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-not-in-catalog"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("uncatalogued-fallback result = %+v, want native skip with no description", result)
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(openai.Requests()))
+	}
+}
+
+// When the active primary model is uncatalogued, it does not qualify for native vision
+// and the side-channel runs.
+func TestDescribeImage_UncataloguedPrimaryModelRunsSideChannel(t *testing.T) {
+	t.Parallel()
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	})
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-not-in-catalog")))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("uncatalogued-fallback result = %+v, want the side-channel description", result)
+		t.Fatalf("uncatalogued-primary result = %+v, want side-channel description", result)
 	}
 	if len(openai.Requests()) != 1 {
 		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
@@ -415,7 +446,7 @@ func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
 // text-only session row reports vision unavailable with no adapter call.
 func TestDescribeImage_UnroutableRouteBlindSessionModelReportsUnavailable(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
+	openai := newFakeErrAdapter("openai", nil)
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "nosuchprov/vision-missing"}))
 
@@ -428,47 +459,39 @@ func TestDescribeImage_UnroutableRouteBlindSessionModelReportsUnavailable(t *tes
 	}
 }
 
-// An entry the resolver cannot answer right now may serve later — the round
-// runner re-resolves every entry on each failing round — so an error at
-// decision time must keep the descriptions flowing: an image-stripping
-// fallback that recovers would otherwise inherit history holding neither the
-// image bytes nor their description.
-func TestDescribeImage_UnresolvableFallbackKeepsTheSideChannel(t *testing.T) {
+// Under Jesse's ruling on #6190, when the active primary model sees media inline
+// and VisionModel is unset, fallbacks (even unresolvable ones) do not trigger
+// preventive side-channel calls.
+func TestDescribeImage_UnresolvableFallbackDoesNotPreventNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	}}
+	openai := newFakeErrAdapter("openai", nil)
+	client := llm.NewClient()
+	client.Register(openai)
 	var resolves atomic.Int32
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{
 			ModelFallbacks: []string{"ghostprov/ghost-model"},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
-				// The init validation's one call answers; the chain
-				// check's call is the one that must not vouch.
-				if resolves.Add(1) > 1 {
-					return nil, fmt.Errorf("resolver temporarily broken for %s", ref)
-				}
+				resolves.Add(1)
 				return NewOpenAIProfile("gpt-5.2"), nil
 			},
 		}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("unresolvable-fallback result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("unresolvable-fallback result = %+v, want native skip with no description", result)
 	}
-	if len(openai.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(openai.Requests()))
+	}
+	if got := resolves.Load(); got != 1 {
+		t.Fatalf("resolver calls after describe = %d, want init validation's 1 only", got)
 	}
 }
 
-// The native-vision capability question is metadata about a model that may
-// never serve, so answering it must not resolve the entry the way the round
-// runner serves it: full resolution materializes credentials, and a
-// command-bearing api_key would spend a mint and prompt the user's password
-// manager just to read an image. Facts depth answers with no resolver call
-// and no command executed.
+// The native-vision check runs without resolving fallbacks: when the primary
+// model sees media inline, fallbacks are not resolved and command credentials
+// are never executed.
 func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "minted")
@@ -499,7 +522,7 @@ func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 		t.Fatalf("resolve session profile: %v", err)
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
-	client.Register(&fakeErrAdapter{name: "openai"})
+	client.Register(newFakeErrAdapter("openai", nil))
 	var resolves atomic.Int32
 	sess := newSession(t, withClient(client), withProfile(sessionProfile),
 		withConfig(SessionConfig{
@@ -526,18 +549,11 @@ func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	}
 }
 
-// A gateway namespaces the model ids it serves: a fallback ref like
-// "anthropic/claude-opus-4-5" can be THIS instance's own text-only row, not a
-// switch to the first-party Anthropic row the id also names. The chain check
-// must resolve the ref to the gateway's row — the first-party row's vision
-// capability says nothing about the model that actually serves.
-func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testing.T) {
+// When the active primary model on a gateway sees images inline, fallbacks do not
+// trigger side-channel calls (#6190).
+func TestDescribeImage_NamespacedFallbackOnAGatewayDoesNotBreakTheNativeSkip(t *testing.T) {
 	t.Parallel()
-	gw := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	}}
+	gw := newFakeErrAdapter("gw", nil)
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
@@ -570,11 +586,11 @@ func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testin
 		withConfig(SessionConfig{ModelFallbacks: []string{"anthropic/claude-opus-4-5"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("namespaced-fallback result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("namespaced-fallback result = %+v, want native skip with no description", result)
 	}
-	if len(gw.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	if len(gw.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(gw.Requests()))
 	}
 }
 
@@ -585,12 +601,12 @@ func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testin
 // text-only model and could accept a hallucinated description.
 func TestDescribeImage_RouteFailureDoesNotRetryMediaOnAnInheritedRowProfile(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", nil)
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic),
 		withProfile(NewOpenAIProfile("gpt-5.2").WithModel("anthropic/claude-x")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-route-x"}))
@@ -607,14 +623,10 @@ func TestDescribeImage_RouteFailureDoesNotRetryMediaOnAnInheritedRowProfile(t *t
 	}
 }
 
-// A disabled row on the gateway must not win the current-instance match: the
-func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
+// A disabled row in fallbacks does not prevent native skip when the primary sees images (#6190).
+func TestDescribeImage_DisabledGatewayRowFallbackDoesNotBreakTheNativeSkip(t *testing.T) {
 	t.Parallel()
-	gw := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	}}
+	gw := newFakeErrAdapter("gw", nil)
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
@@ -669,25 +681,44 @@ func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
 		}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("disabled-gateway-row result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("disabled-gateway-row result = %+v, want native skip with no description", result)
 	}
-	if len(gw.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	if len(gw.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(gw.Requests()))
+	}
+}
+
+// VisionSetting off, none, and disabled all skip the side-channel even when the primary is text-only.
+func TestDescribeImage_VisionSettingOffNoneDisabled(t *testing.T) {
+	t.Parallel()
+	for _, setting := range []string{"off", "OFF", "none", "NONE", "disabled", "DISABLED"} {
+		t.Run(setting, func(t *testing.T) {
+			openai := newFakeErrAdapter("openai", nil)
+			sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2-codex")),
+				withConfig(SessionConfig{VisionModel: setting}))
+			result := sess.describeImageCall(context.Background(), visionImageResult())
+			if result.outcome != visionSideChannelSuccess || result.description != "" {
+				t.Fatalf("setting %q result = %+v, want success with no description", setting, result)
+			}
+			if len(openai.Requests()) != 0 {
+				t.Fatalf("setting %q fired %d calls, want 0", setting, len(openai.Requests()))
+			}
+		})
 	}
 }
 
 // A session whose profile was resolved on a different registry than its
 // client's cannot vouch for native vision at all: the profile's facts say
-// nothing about what this client dispatches or how the runner classifies a
-// fallback. The chain check keeps descriptions flowing for such a session.
+// nothing about what this client dispatches. Side-channel descriptions keep
+// flowing for such a session.
 func TestDescribeImage_MismatchedRegistriesKeepTheSideChannel(t *testing.T) {
 	t.Parallel()
-	gwAdapter := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+	gwAdapter := newFakeErrAdapter("gw", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("a png")}, nil
 		},
-	}}
+	})
 	registryFor := func(imageFallback bool) *registry.Registry {
 		mods := []string{"text", "image"}
 		if !imageFallback {
@@ -748,11 +779,11 @@ func TestDescribeImage_MismatchedRegistriesKeepTheSideChannel(t *testing.T) {
 // strips tool-result images.
 func TestDescribeImage_MismatchedRegistryProfileDoesNotSkipForThePrimaryAlone(t *testing.T) {
 	t.Parallel()
-	gwAdapter := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+	gwAdapter := newFakeErrAdapter("gw", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("a png")}, nil
 		},
-	}}
+	})
 	registryFor := func(protocol string) *registry.Registry {
 		r, err := registry.Load(
 			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
@@ -803,11 +834,11 @@ func TestDescribeImage_MismatchedRegistryProfileDoesNotSkipForThePrimaryAlone(t 
 // documents.
 func TestDescribeImage_NormalizesDocumentMediaTypes(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{Message: llm.Assistant("a pdf")}, nil
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")))
 
 	result := sess.describeImageCall(context.Background(), tool.ExecResult{
@@ -830,16 +861,16 @@ func TestDescribeImage_NormalizesDocumentMediaTypes(t *testing.T) {
 // vision path must not add a third.
 func TestDescribeImage_AllModelsRefusedMakesNoExtraSessionAttempt(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("openai")
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -857,11 +888,11 @@ func TestDescribeImage_AllModelsRefusedMakesNoExtraSessionAttempt(t *testing.T) 
 // session model cheapmodel already tried.
 func TestDescribeImage_UnservableRouteReroutesWithoutRetry(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("openai")
 		},
-	}}
+	})
 	// The route's provider does not exist: no override is registered and the
 	// registry cannot resolve it, so CanServe fails and cheapmodel reroutes
 	// the attempt onto the session model before any wire call.
@@ -883,16 +914,16 @@ func TestDescribeImage_UnservableRouteReroutesWithoutRetry(t *testing.T) {
 // session model that already failed.
 func TestDescribeImage_RefusalFallbackFailureDoesNotRetryTheSessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("openai")
 		},
-	}}
-	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+	})
+	anthropic := newFakeErrAdapter("anthropic", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteRefusal("anthropic")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
 
@@ -909,7 +940,7 @@ func TestDescribeImage_RefusalFallbackFailureDoesNotRetryTheSessionModel(t *test
 // fire a doomed second request on the session model under the dead context.
 func TestDescribeImage_OwnedTimeoutDoesNotRetryOnTheSessionModel(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
+	openai := newFakeErrAdapter("openai", nil)
 	anthropic := &contextBlockingAdapter{name: "anthropic", started: make(chan struct{}), canceled: make(chan struct{})}
 	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{
@@ -931,7 +962,7 @@ func TestDescribeImage_OwnedTimeoutDoesNotRetryOnTheSessionModel(t *testing.T) {
 // side-channel call.
 func TestPersistImage_NoSteeringWhenSessionModelSeesImagesNatively(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai"}
+	openai := newFakeErrAdapter("openai", nil)
 	// The one-registry production shape: the client answers from the same
 	// (embedded) registry the profile resolves on.
 	client := llm.NewClient()
@@ -991,11 +1022,11 @@ func visionWarningMessages(sess *Session, f func()) []string {
 // session's own provider) nor the warning.
 func TestDescribeImage_ProviderFailureExposesOnlyStructuredCause(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, visionRouteError("openai")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
 
@@ -1026,12 +1057,12 @@ func TestDescribeImage_ProviderFailureExposesOnlyStructuredCause(t *testing.T) {
 func TestDescribeImage_CredentialEchoStaysOutOfSteeringAndWarning(t *testing.T) {
 	t.Parallel()
 	const echoed = "sk-live-abc123"
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			raw := map[string]any{"error": map[string]any{"code": "invalid_api_key"}}
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "invalid x-api-key "+echoed, raw, nil)
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
 
@@ -1060,11 +1091,11 @@ func TestDescribeImage_CredentialEchoStaysOutOfSteeringAndWarning(t *testing.T) 
 // details an arbitrary error may carry must not reach the warning.
 func TestDescribeImage_UntypedFailureWarningStaysSanitized(t *testing.T) {
 	t.Parallel()
-	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, errors.New("dial https://request.example/secret failed")
 		},
-	}}
+	})
 	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
 		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
 

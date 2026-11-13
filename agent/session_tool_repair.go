@@ -103,7 +103,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		return res
 	}
 	if t.Definition.Name == "ask_user" {
-		normalized, err := normalizeAskArgs(args)
+		normalized, err := tool.NormalizeAskUserArgs(args)
 		if err != nil {
 			res.PrevalErr = err.Error()
 			return res

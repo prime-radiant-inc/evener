@@ -147,9 +147,14 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 			if res.Caps.Cost != nil {
 				cost = fmt.Sprintf("%g/%g", res.Caps.Cost.Input, res.Caps.Cost.Output)
 			}
+			var notes []string
+			if res.Caps.CompactionThreshold != nil {
+				notes = append(notes, fmt.Sprintf("compact=%d", *res.Caps.CompactionThreshold))
+			}
+			notes = append(notes, res.Warnings...)
 			_, _ = fmt.Fprintf(tw, "%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, id, res.Protocol, res.Surface,
 				intOrDash(res.Caps.ContextWindow), orDash(windowSource(res)), yesNo(windowVerified(res)), intOrDash(res.Caps.MaxOutputTokens), cost,
-				strings.Join(res.Caps.EffortValues, ","), strings.Join(res.Warnings, "; "))
+				strings.Join(res.Caps.EffortValues, ","), strings.Join(notes, "; "))
 		}
 	}
 	return tw.Flush()

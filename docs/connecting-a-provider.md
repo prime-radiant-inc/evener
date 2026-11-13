@@ -7,13 +7,34 @@ uses this dialog without leaving New session. Settings → Providers & credentia
 manages the same host connections and credentials. If access is already
 configured, choose that connection rather than adding it again.
 
+**The connection dialog is one card, not a flow with modes.** Adding a
+connection, checking it, viewing a saved connection, editing a row, and
+recovering from an error are all the same card in different states: a
+label/value grid with a status chip and a footer holding one primary action
+([`ProviderConnection.tsx`](../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/ProviderConnection.tsx)).
+Adding is the card with empty name, endpoint URL, and key fields; a saved
+connection is the card with values and one local action per row (edit the
+endpoint, replace the key, test again); a row being edited becomes that row
+with an input and inline Save/Cancel. There is no step rail, wizard mode, or
+separate management card, and the full editor is a disclosure on the card
+itself — **All connection settings**, holding protocol, surface, template
+variables, API key env, and credential header — not a navigation to another
+pane. The same shared grid and field builder
+([`ConnectionFacts.tsx`](../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/ConnectionFacts.tsx))
+also renders the settings sheet's connection section, so the connect dialog
+and Settings → Providers & credentials cannot drift into different controls or
+ids. The sheet keeps its model management, set-default, removal, credential
+clearing, and OAuth sections; those belong to the sheet, not the card.
+
 ## Start your first session
 
 1. Open **New session**. Choose a working directory and, optionally, write your
    task. These stay in the composer while you connect a provider.
 2. Select **Connect provider**, then choose a provider. **Show all providers**
    reveals the complete catalogue and its search; local and custom endpoints have
-   their own routes.
+   their own routes. The popular set also carries **Custom endpoint** — the web
+   label on the `openai-compatible` registry provider — so a non-catalogue
+   endpoint is reachable without opening the full catalogue.
 3. For a standard API connection, paste the **actual API key**, not an
    environment-variable name. The field is masked. Use **Get an API key** beside
    the form, or these provider pages:
@@ -133,8 +154,14 @@ verification** is an explicit unverified route, not a success badge.
 
 **Change provider** returns to discovery; it does not carry your secret to a
 different provider. **Cancel** returns to the originating screen without choosing
-a model or starting a session. Your composer draft remains, but credentials or
-configuration already saved on the host are not rolled back by Cancel.
+a model or starting a session. Cancelling a sign-in retires that dialog's UI
+ownership: a late authorized result is ignored rather than completing the
+dismissed flow — it runs no automatic check, reopens no dialog, and adopts
+no model. The retirement is a UI boundary, not a server-side cancellation: an
+OAuth exchange already in flight may still persist its record on the hub, so
+access saved by a cancelled sign-in can be present the next time you look.
+Your composer draft remains, but credentials or configuration already saved on
+the host are not rolled back by Cancel.
 
 For storage, environment precedence, and launch internals, see the
 [technical provider reference](llm-provider-config-and-launch.md).

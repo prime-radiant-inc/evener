@@ -3,12 +3,12 @@ package hub
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -45,8 +45,9 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 	if ctx.Err() != nil {
 		return
 	}
+	log := componentlog.New("hub")
 	if err := hubRosterWatch(ctx, roster); err != nil && ctx.Err() == nil {
-		fmt.Fprintf(os.Stderr, "[hub] roster watch: %v\n", err)
+		log.Info(fmt.Sprintf("roster watch: %v", err))
 	}
 }
 
@@ -120,15 +121,16 @@ func refreshHubMessageSearch(ctx context.Context, index *hubcore.MessageSearch, 
 	if index == nil || ctx.Err() != nil {
 		return
 	}
+	log := componentlog.New("hub")
 	ticks, stop := hubTicker(interval)
 	defer stop()
 	refresh := func() {
 		failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
 		for _, failure := range failures {
-			fmt.Fprintf(os.Stderr, "[hub] message search: session %s: %v\n", failure.SessionID, failure.Err)
+			log.Info(fmt.Sprintf("message search: session %s: %v", failure.SessionID, failure.Err))
 		}
 		if err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "[hub] message search: %v\n", err)
+			log.Info(fmt.Sprintf("message search: %v", err))
 		}
 	}
 	refresh()
@@ -159,9 +161,9 @@ func watchHubNotices(ctx context.Context, web *WebServer) {
 	}
 	ticks, stop := hubTicker(noticeInterval)
 	defer stop()
-	runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
-		return web.notices.watchRead(ctx, web.appRPC)
-	}, web.appRPC)
+	web.notices.runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
+		return web.notices.watchRead(ctx)
+	})
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go
@@ -173,7 +175,7 @@ func watchHubNotices(ctx context.Context, web *WebServer) {
 func seedHubMarketplaces(ctx context.Context, web *WebServer) {
 	mgr := web.cfg.PluginManager
 	if err := hubSeedDefaults(ctx, mgr); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
+		hubLogFor(web.cfg).Info(fmt.Sprintf("warning: seeding default marketplaces: %v", err))
 	}
 }
 
@@ -186,10 +188,11 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	// migrateMarketplaceNames, which writes both store files finishing a
 	// rename an earlier run left half done.
 	gcMgr := web.cfg.PluginManager
+	log := hubLogFor(web.cfg)
 	if removed, err := hubPluginGC(ctx, gcMgr); err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
+		log.Info(fmt.Sprintf("plugin gc: %v", err))
 	} else if len(removed) > 0 {
-		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d leftover marketplace clone(s)\n", len(removed))
+		log.Info(fmt.Sprintf("plugin gc: removed %d leftover marketplace clone(s)", len(removed)))
 	}
 }
 

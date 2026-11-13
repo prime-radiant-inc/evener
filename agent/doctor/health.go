@@ -129,6 +129,11 @@ type HealthResult struct {
 	// StaleNotifications counts) inflates it too — read it as "activity
 	// after done", not a confirmed correction count.
 	UserCorrections int `json:"user_corrections"`
+	// AssistantFabrications counts recorded ASSISTANT turns whose non-machinery
+	// text carries a fabricated harness/user input envelope or unparsed raw
+	// tool-call markup outside code spans.
+	AssistantFabrications       int            `json:"assistant_fabrications"`
+	AssistantFabricationsByKind map[string]int `json:"assistant_fabrications_by_kind,omitempty"`
 }
 
 // toolCallOccurrence is one structural tool call in transcript order, kept
@@ -202,6 +207,15 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 					}
 					res.ToolErrors[errTool][classifyToolError(text)]++
 				}
+			}
+		}
+		if e.Turn.Kind == schema.TurnAssistant {
+			if kind, ok := inspectAssistantFabrication(e.Turn.Message); ok {
+				res.AssistantFabrications++
+				if res.AssistantFabricationsByKind == nil {
+					res.AssistantFabricationsByKind = map[string]int{}
+				}
+				res.AssistantFabricationsByKind[kind]++
 			}
 		}
 		if e.Turn.Kind == schema.TurnSteering {
@@ -344,6 +358,7 @@ func RenderHealth(r HealthResult) string {
 		renderCounts(r.Jobs.ByTerminalReason), r.Jobs.ZeroOutputTerminal)
 	fmt.Fprintf(&b, "stale_notifications: %d\n", r.StaleNotifications)
 	fmt.Fprintf(&b, "user_corrections (proxy): %d\n", r.UserCorrections)
+	fmt.Fprintf(&b, "assistant_fabrications: %d (%s)\n", r.AssistantFabrications, renderCounts(r.AssistantFabricationsByKind))
 	return b.String()
 }
 

@@ -68,6 +68,7 @@
     "Fields.stream_options": "config/provider",
     "MaxOutputTokens": "config/row",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "config/provider",
     "ReasoningControls": "derived",
     "ReasoningSummary": "overlay/provider",
     "StrictTools": "overlay/provider",

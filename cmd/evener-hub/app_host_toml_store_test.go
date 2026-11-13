@@ -105,7 +105,7 @@ func bootHostManager(t *testing.T, configPath string) *hubHostManager {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, func(string, ...any) {})
+	return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, silentLogger())
 }
 
 // TestHubTOMLRewriteWritesBanner pins that add rewrites hub.toml in place and

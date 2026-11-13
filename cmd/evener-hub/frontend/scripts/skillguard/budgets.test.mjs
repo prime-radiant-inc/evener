@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { ReactionBudget, scaledDeadlineMs } from "./budgets.mjs";
-import { Driver } from "./run.mjs";
+import { Driver, EVALUATE_FAILURE_FAIL_FAST_MS } from "./run.mjs";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -109,5 +109,58 @@ describe("waitPage budgets under an injected slow reaction", () => {
     const rejected = expect(wedged).rejects.toThrow(/timed out after 800ms/);
     await vi.advanceTimersByTimeAsync(2_000);
     await rejected;
+  });
+});
+
+describe("waitPage rejected-poll handling", () => {
+  test("a page that rejects every poll fails on the rejection, before the missing-condition budget", async () => {
+    vi.useFakeTimers();
+    const { driver } = scriptedDriver();
+    const transportSentinel = new Error("Runtime.evaluate transport sentinel");
+    driver.page.send = async () => {
+      throw transportSentinel;
+    };
+    const stopped = driver.waitPage("true", { timeoutMs: 15_000, label: "the panel" });
+    const settled = vi.fn();
+    void stopped.then(settled, settled);
+    // Just inside the fail-fast bound the page is still merely unobserved.
+    await vi.advanceTimersByTimeAsync(EVALUATE_FAILURE_FAIL_FAST_MS - 200);
+    expect(settled).not.toHaveBeenCalled();
+    // The real wait rejects on the rejection itself, long before 15s.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(settled).toHaveBeenCalledTimes(1);
+    await expect(stopped).rejects.toThrow(/Runtime\.evaluate transport sentinel/);
+  });
+
+  test("an isolated rejected poll is unobserved time, not a stopped page", async () => {
+    vi.useFakeTimers();
+    const { driver } = scriptedDriver();
+    let polls = 0;
+    driver.page.send = async () => {
+      polls += 1;
+      if (polls === 2) throw new Error("one CDP hiccup");
+      return { result: { result: { value: polls >= 3 ? true : null } } };
+    };
+    const waited = driver.waitPage("true", { timeoutMs: 15_000, label: "recovers after one hiccup" });
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(waited).resolves.toBe(true);
+  });
+
+  test("a missing condition still times out, and names the failed polls it saw", async () => {
+    vi.useFakeTimers();
+    const { driver } = scriptedDriver();
+    const transportSentinel = new Error("Runtime.evaluate transport sentinel");
+    let polls = 0;
+    driver.page.send = async () => {
+      polls += 1;
+      if (polls % 2 === 0) throw transportSentinel;
+      return { result: { result: { value: null } } };
+    };
+    const missing = driver.waitPage("true", { timeoutMs: 300, label: "the absent panel" });
+    const settled = vi.fn();
+    void missing.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(settled).toHaveBeenCalledTimes(1);
+    await expect(missing).rejects.toThrow(/Runtime\.evaluate transport sentinel/);
   });
 });

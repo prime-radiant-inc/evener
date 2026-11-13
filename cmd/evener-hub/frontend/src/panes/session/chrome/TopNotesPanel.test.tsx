@@ -35,6 +35,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -536,25 +537,26 @@ test("no state carries an affordance hint", async () => {
 });
 
 test("the panel is an inset card with a boundary that cannot clip", () => {
-  // The card sits INSIDE the pane body's padding. It must not cancel that
-  // padding: doing so parked the card's top edge on the scrollport's clip
-  // line, where the top border and both top corners were painted away.
+  // In standalone session panes the card attaches to the header: it cancels
+  // the body's top padding and reads as a continuation of the header's
+  // hairline, so the top is square and the seam is a single line. Cascade
+  // columns render the same panel inside a flush body (bodyNoScroll) with
+  // no padding to cancel — there the margin stays 0 and is scoped to
+  // session bodies only, while a separate geometry guard asserts the
+  // trigger remains visible inside each column's scrollport.
   const css = readModuleCss(import.meta.url, "topnotespanel.module.css");
   const root = topRuleBlock(css, ".topNotesPanel");
-  expect(root).not.toMatch(/margin-top/);
-
-  // One card boundary serves both states: the collapsed bar used to be a
-  // squared, borderless strip whose only edge was a hairline underneath, so
-  // it read as edgeless. The card draws that edge itself now.
-  expect(root).toContain("border: 1px solid var(--edge-strong)");
-  expect(root).toContain("border-radius: var(--radius-panel)");
-
-  // The boundary is a real border, not --shadow-overlay's ring: the ring is a
-  // spread box-shadow, which paints outside the border box and is shaved
-  // wherever a clipping ancestor cuts the card's edge (the pane body's
-  // scrollport, a cascade column's edge); a border paints inside the box.
+  expect(root).toContain("border: 1px solid var(--edge)");
+  expect(root).toContain("border-top: none");
+  expect(root).toContain("border-radius: 0 0 var(--radius-panel)");
   expect(root).not.toContain("--shadow-overlay");
-  expect(root).toContain("box-shadow: 0 8px 28px var(--shadow-color)");
+  expect(root).toContain("box-shadow:");
+  expect(root).toContain("var(--shadow-color)");
+  // The attach-to-header margin must not apply everywhere: only session
+  // bodies have padding to cancel, so it is scoped to [data-pane-scaffold^="session:"]
+  // and the cascade column's trigger geometry is asserted by the browser guard.
+  expect(css).toContain(':global([data-pane-scaffold^="session:"]) .topNotesPanel');
+  expect(css).toContain("margin-top: calc(-1 * var(--space-5))");
 
   // The collapsed trigger must not add a bottom edge of its own: the card
   // already draws that edge, and a second one doubles it.

@@ -114,8 +114,9 @@ func stableJobListCandidates(s *Session, jm *jobManager, filter listFilter, now 
 		}
 	}
 	includeStableDescendants := filter.IncludeNested || filter.IncludeDescendants
+	nameMap := s.currentToolNameMap()
 	for _, visible := range delegateRowsForSession(s, includeStableDescendants) {
-		item := projectDelegateListItem(now, visible)
+		item := projectDelegateListItem(now, visible, nameMap)
 		if stableJobListItemMatches(item, filter) {
 			items = append(items, item)
 		}
@@ -194,15 +195,20 @@ func delegateRowsForSession(s *Session, includeDescendants bool) []delegateVisib
 	return rows
 }
 
-func projectDelegateListItem(now time.Time, visible delegateVisibleRow) jobListEntry {
+func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap ...map[string]string) jobListEntry {
 	snapshot := visible.snapshot
-	status := projectDelegateStatus(now, snapshot)
+	status := projectDelegateStatus(now, snapshot, nameMap...)
 	resumable := snapshot.resumable
+	tools := append([]string(nil), snapshot.descriptor.ToolNameCeiling...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	item := jobListEntry{
 		ID:                   snapshot.id,
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Phase:                string(snapshot.phase),
 		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
@@ -218,7 +224,7 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow) jobListE
 		Depth:                visible.depth,
 		Task:                 snapshot.descriptor.Task,
 		AgentType:            snapshot.descriptor.AgentType,
-		Tools:                append([]string(nil), snapshot.descriptor.ToolNameCeiling...),
+		Tools:                tools,
 		Model:                snapshot.descriptor.ResolvedModel,
 		ReasoningEffort:      snapshot.descriptor.Config.ReasoningEffort,
 		ParentDelegateID:     stringPtrOrNil(snapshot.parentID),
@@ -280,6 +286,9 @@ func formatJobList(out jobListResult, maxChars int) string {
 	labels := make([]jobListLabel, len(out.Items))
 	for i, j := range out.Items {
 		description := j.Description
+		if description == "" && j.Task != "" {
+			description = j.Task
+		}
 		if description == "" && j.Command != nil {
 			description = *j.Command
 		}
@@ -340,13 +349,27 @@ func renderJobList(out jobListResult, labels []jobListLabel, labelLimit int) str
 		if started := shortTimestamp(j.StartedAt); started != "" {
 			detail = append(detail, "started "+started)
 		}
+		if j.Phase != "" {
+			detail = append(detail, "phase "+j.Phase)
+		}
+		if j.RunningForMS != nil {
+			detail = append(detail, fmt.Sprintf("running_for_ms %d", *j.RunningForMS))
+		}
+		if j.QuietForMS != nil {
+			detail = append(detail, fmt.Sprintf("quiet_for_ms %d", *j.QuietForMS))
+		}
+		if j.TranscriptRef != nil && *j.TranscriptRef != "" {
+			detail = append(detail, "transcript_ref "+*j.TranscriptRef)
+		}
 		if j.Reason != nil && *j.Reason != "" {
 			detail = append(detail, *j.Reason)
 		}
 		if j.ExitCode != nil {
 			detail = append(detail, fmt.Sprintf("exit %d", *j.ExitCode))
 		}
-		detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
+		if j.Kind != "delegate" && j.Type != "delegate" {
+			detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
+		}
 		// Surface resumability only when a job actually is resumable; resumable=false
 		// for an ordinary shell job is noise (keeps rows lean).
 		if j.Resumable != nil && *j.Resumable {

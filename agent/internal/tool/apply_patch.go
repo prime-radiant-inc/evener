@@ -68,7 +68,7 @@ func (o addFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string, e
 	if err := fm.WriteFileRaw(o.path, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
-	return []string{o.path}, nil
+	return []string{"A " + o.path}, nil
 }
 
 type deleteFileOp struct {
@@ -79,7 +79,7 @@ func (o deleteFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string
 	if err := fm.RemovePath(o.path); err != nil {
 		return nil, err
 	}
-	return []string{o.path}, nil
+	return []string{"D " + o.path}, nil
 }
 
 type updateFileOp struct {
@@ -151,14 +151,14 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 	if err := fm.WriteFileRaw(o.path, []byte(newText), 0o644); err != nil {
 		return nil, err
 	}
-	paths := []string{o.path}
-	if strings.TrimSpace(o.moveTo) != "" && o.moveTo != o.path {
-		if err := fm.RenamePath(o.path, o.moveTo); err != nil {
+	moveTo := strings.TrimSpace(o.moveTo)
+	if moveTo != "" && moveTo != o.path {
+		if err := fm.RenamePath(o.path, moveTo); err != nil {
 			return nil, err
 		}
-		paths = append(paths, o.moveTo)
+		return []string{fmt.Sprintf("R %s -> %s", o.path, moveTo)}, nil
 	}
-	return paths, nil
+	return []string{"M " + o.path}, nil
 }
 
 func parseV4APatch(patch string) ([]patchOp, error) {

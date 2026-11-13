@@ -1,10 +1,14 @@
 package doctor
 
 import (
+	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -45,7 +49,7 @@ func TestScanTurnIDs_NamesOnlyTheSessionsCarryingEntryIndexReservedIDs(t *testin
 		plainTurn(schema.TurnUserInput, "second ask"),
 	}, nil, schema.SessionMeta{})
 
-	scan, err := ScanTurnIDs(base)
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -87,7 +91,7 @@ func TestScanTurnIDs_SweepsEveryBucketInAStableOrder(t *testing.T) {
 		reservedTurn(schema.TurnUserInput, "ask", "turn_1"),
 	}, nil, schema.SessionMeta{})
 
-	scan, err := ScanTurnIDs(base)
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -117,7 +121,7 @@ func TestScanTurnIDs_FindsReservedIDsOnEveryKindOfAuthoredTurn(t *testing.T) {
 		reservedTurn(schema.TurnFailure, "provider refused", "turn_9"),
 	}, nil, schema.SessionMeta{})
 
-	scan, err := ScanTurnIDs(base)
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -136,7 +140,7 @@ func TestScanTurnIDs_FindsReservedIDsOnEveryKindOfAuthoredTurn(t *testing.T) {
 // An empty state root is a clean answer, not an error: nothing to scan, nothing
 // affected.
 func TestScanTurnIDs_EmptyStateDir(t *testing.T) {
-	scan, err := ScanTurnIDs(t.TempDir())
+	scan, err := ScanTurnIDs(context.Background(), t.TempDir(), TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -152,7 +156,7 @@ func TestScanTurnIDs_SkipsSessionsWithNoTranscript(t *testing.T) {
 	bucket := stateHomeBucket(base, hash1)
 	writeFile(t, filepath.Join(bucket, "sessions", sidA+".meta.json"), `{"id":"`+sidA+`"}`)
 
-	scan, err := ScanTurnIDs(base)
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -175,7 +179,7 @@ func TestScanTurnIDs_ReportsUnreadableTranscriptsInsteadOfCallingThemClean(t *te
 		`{"kind":"header","format_version":2,"session_id":"`+sidB+`"}`+"\n"+
 			`{"kind":"entry","seq":1,"turn":{"kind":"USER_INPUT","invented_field":true}}`+"\n")
 
-	scan, err := ScanTurnIDs(base)
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -269,7 +273,7 @@ func TestScanTurnIDs_LegacyBucketNamesSessionAndReportsRealRoot(t *testing.T) {
 	// Pass the bucket dir as the base — the daemon's per-session state dir
 	// spelling — so resolveBuckets up-walks to the state home and sweeps
 	// every sibling bucket under it.
-	scan, err := ScanTurnIDs(legacyBucket)
+	scan, err := ScanTurnIDs(context.Background(), legacyBucket, TurnIDOpts{})
 	if err != nil {
 		t.Fatalf("ScanTurnIDs: %v", err)
 	}
@@ -343,5 +347,79 @@ func TestRenderTurnIDScan_NamesUnreadableSessionWhenRefEmpty(t *testing.T) {
 	// nothing and read as an artifact, not a location.
 	if strings.Contains(got, "()") {
 		t.Errorf("render emits empty parens for an empty ref:\n%s", got)
+	}
+}
+
+func TestScanTurnIDs_HonorsContextCancellation(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_4"),
+	}, nil, schema.SessionMeta{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ScanTurnIDs(ctx, base, TurnIDOpts{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestScanTurnIDs_BucketFilter(t *testing.T) {
+	base := t.TempDir()
+	one := stateHomeBucket(base, hash1)
+	two := stateHomeBucket(base, hash2)
+	writeRichSession(t, one, sidA, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_4"),
+	}, nil, schema.SessionMeta{})
+	writeRichSession(t, two, sidC, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_1"),
+	}, nil, schema.SessionMeta{})
+
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{Bucket: hash1})
+	if err != nil {
+		t.Fatalf("ScanTurnIDs: %v", err)
+	}
+	if scan.SessionsScanned != 1 {
+		t.Errorf("SessionsScanned = %d, want 1", scan.SessionsScanned)
+	}
+	if len(scan.Sessions) != 1 || scan.Sessions[0].SessionID != sidA {
+		t.Fatalf("Sessions = %#v, want only sidA in hash1", scan.Sessions)
+	}
+
+	// Non-existent bucket must be an explicit error.
+	_, err = ScanTurnIDs(context.Background(), base, TurnIDOpts{Bucket: "missing-bucket"})
+	if err == nil {
+		t.Fatal("expected error for non-existent bucket, got nil")
+	}
+}
+
+func TestScanTurnIDs_SinceFilter(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_4"),
+	}, nil, schema.SessionMeta{})
+	writeRichSession(t, bucket, sidB, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_5"),
+	}, nil, schema.SessionMeta{})
+
+	// Set sidA's transcript mtime to 10 days ago.
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	transcriptA := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
+	if err := os.Chtimes(transcriptA, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	scan, err := ScanTurnIDs(context.Background(), base, TurnIDOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("ScanTurnIDs: %v", err)
+	}
+	if scan.SessionsScanned != 1 {
+		t.Errorf("SessionsScanned = %d, want 1", scan.SessionsScanned)
+	}
+	if len(scan.Sessions) != 1 || scan.Sessions[0].SessionID != sidB {
+		t.Fatalf("Sessions = %#v, want only sidB (recent)", scan.Sessions)
 	}
 }

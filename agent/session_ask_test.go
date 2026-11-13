@@ -3914,6 +3914,40 @@ func TestAskUser_ShorthandSurvivesSessionPrevalidation(t *testing.T) {
 	}
 }
 
+func TestAskUser_ShorthandWithIntentSucceeds(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+	var capturedIntent string
+	sess.reg.Use(func(ctx context.Context, name string, args map[string]any) error {
+		if name == "ask_user" {
+			capturedIntent, _ = args["intent"].(string)
+		}
+		return nil
+	})
+	args := askUserArgsShorthand()
+	args["intent"] = "clarify datastore choice"
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if res.IsError {
+		t.Fatalf("shorthand ask_user with intent errored: %s", res.Output)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("askPendingCount = %d, want 1", got)
+	}
+	if capturedIntent != "clarify datastore choice" {
+		t.Fatalf("captured intent = %q, want %q", capturedIntent, "clarify datastore choice")
+	}
+
+	// Non-shorthand keys must not be dropped by normalization; an unknown key
+	// must survive into schema validation and be rejected by additionalProperties: false.
+	bogusArgs := askUserArgsShorthand()
+	bogusArgs["bogus"] = 1
+	resBogus := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c2", bogusArgs))
+	if !resBogus.IsError {
+		t.Fatal("shorthand ask_user with unknown top-level key succeeded, want schema validation failure")
+	}
+}
+
 // TestAskUser_ShorthandWithAllOptionals verifies shorthand form with all
 // optional fields (header, why, if_unanswered, multi_select) normalizes correctly.
 func TestAskUser_ShorthandWithAllOptionals(t *testing.T) {
@@ -4259,15 +4293,12 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
 	t.Parallel()
 	dir := t.TempDir()
 	ask := askUserCall("ask1", askUserArgsValid())
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
-			},
+	adapter := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
 		},
-	}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))

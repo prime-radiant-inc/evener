@@ -91,6 +91,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "SessionAffinityHeaders": "overlay/provider",
@@ -99,6 +100,7 @@
     "ThinkingFormat": "overlay/provider",
     "ToolChoiceForcing": "overlay/provider",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:anthropic/claude-opus-5"
   },
   "default_model": "anthropic/claude-opus-5",

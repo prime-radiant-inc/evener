@@ -214,6 +214,7 @@ export function threadModelFromCurrentState(
     // The cached field set does not carry the context-assumption flag, and an
     // unrecorded flag is not an assumption (main's own rebuild default).
     contextAssumed: false,
+    compactionThreshold: 0,
     ...admission,
   };
   return withDisplay(model, history, state.overlay);
@@ -279,6 +280,7 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],

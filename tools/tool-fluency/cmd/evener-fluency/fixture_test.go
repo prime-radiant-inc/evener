@@ -145,6 +145,9 @@ func TestRunCLIProbeCutsTheFixtureOffFromAnEnclosingRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := filepath.Join(t.TempDir(), "rep-01", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	err := runCLIProbe(context.Background(), runConfig{evenerBin: bin, model: "openai/m", reasoningEffort: "low"},
 		probeFile{Prompt: "p"}, probeResult{WorkDir: work, StateDir: t.TempDir()}, &stdout, &stderr)
@@ -198,4 +201,87 @@ func fixtureGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// TestResolveProbePathsKeepsBareExecutableNames covers the launcher-cwd
+// anchoring: relative files become absolute, while a bare executable name stays
+// bare so exec.Command keeps its PATH lookup (#6227).
+func TestResolveProbePathsKeepsBareExecutableNames(t *testing.T) {
+	base := t.TempDir()
+	cfg := runConfig{
+		outDir:             "results",
+		evenerBin:          "evener",
+		systemPromptAppend: []string{"prompt.md", filepath.Join(base, "absolute.md"), ""},
+	}
+	if err := resolveProbePathsFrom(&cfg, base); err != nil {
+		t.Fatalf("resolveProbePathsFrom: %v", err)
+	}
+	if want := filepath.Join(base, "results"); cfg.outDir != want {
+		t.Fatalf("outDir = %q, want %q", cfg.outDir, want)
+	}
+	if cfg.evenerBin != "evener" {
+		t.Fatalf("bare evenerBin = %q, want it left for PATH lookup", cfg.evenerBin)
+	}
+	if want := filepath.Join(base, "prompt.md"); cfg.systemPromptAppend[0] != want {
+		t.Fatalf("relative append = %q, want %q", cfg.systemPromptAppend[0], want)
+	}
+	if want := filepath.Join(base, "absolute.md"); cfg.systemPromptAppend[1] != want {
+		t.Fatalf("absolute append = %q, want %q", cfg.systemPromptAppend[1], want)
+	}
+	if cfg.systemPromptAppend[2] != "" {
+		t.Fatalf("empty append = %q, want it left empty", cfg.systemPromptAppend[2])
+	}
+}
+
+// TestRunProbeResolvesRelativePathsAgainstLauncher: a default or relative --out
+// leaves the executable, WorkDir, StateDir and --system-prompt-append relative.
+// The CLI worker starts in WorkDir, so those must be anchored to the launcher's
+// cwd first or the worker cannot exec the binary or read the prompt (#6227).
+// This runs a probe from a relative executable, out dir and append path and
+// checks what the child actually sees.
+func TestRunProbeResolvesRelativePathsAgainstLauncher(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	bin := filepath.Join(base, "bin", "fake-evener")
+	mustWrite(t, bin, `#!/bin/sh
+prompt=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--system-prompt-append) prompt=$2; shift ;;
+	esac
+	shift
+done
+printf 'cwd=%s\n' "$(pwd -P)"
+cat "$prompt"
+`)
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(base, "prompt.md"), "PROMPT\n")
+	cfg := runConfig{
+		harness:            "cli",
+		evenerBin:          "bin/fake-evener",
+		outDir:             "results",
+		model:              "test/model",
+		systemPromptAppend: []string{"prompt.md"},
+	}
+	res := runProbe(cfg, probeFile{ID: "local", Tool: "shell", Prompt: "p"}, 1, map[string]bool{"shell": true}, nil)
+	if res.Error != "" {
+		stderr, _ := os.ReadFile(res.StderrPath)
+		t.Fatalf("runProbe: %s: %s", res.Error, stderr)
+	}
+	got, err := os.ReadFile(res.StdoutPath)
+	if err != nil {
+		t.Fatalf("read probe stdout: %v", err)
+	}
+	wantCwd, err := filepath.EvalSymlinks(res.WorkDir)
+	if err != nil {
+		t.Fatalf("resolve probe WorkDir: %v", err)
+	}
+	if !strings.Contains(string(got), "cwd="+wantCwd) {
+		t.Fatalf("probe worker cwd = %q, want %q:\n%s", strings.TrimSpace(string(got)), wantCwd, got)
+	}
+	if !strings.Contains(string(got), "PROMPT") {
+		t.Fatalf("probe worker did not read the relative --system-prompt-append file:\n%s", got)
+	}
 }

@@ -978,8 +978,8 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	srv := httptest.NewUnstartedServer(nil)
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.RetryWait = retryClock.Wait
-	logged := make(chan string, 16)
-	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	logged := &logCapture{notify: make(chan struct{}, 16)}
+	cfg.Log = logged.logger()
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -1050,7 +1050,9 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	// The cause is recorded in the hub's log: the target, how many re-dials
 	// failed, and the last one's error.
 	select {
-	case line := <-logged:
+	case <-logged.notify:
+		records := logged.all()
+		line := records[len(records)-1].message
 		for _, want := range []string{"codex:" + threadID, "3", "connection refused (3)"} {
 			if !strings.Contains(line, want) {
 				t.Fatalf("give-up log = %q, want it to name %q", line, want)
@@ -1094,8 +1096,8 @@ func TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded(t *testing.
 	srv := httptest.NewUnstartedServer(nil)
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.RetryWait = retryClock.Wait
-	logged := make(chan string, 16)
-	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	logged := &logCapture{notify: make(chan struct{}, 16)}
+	cfg.Log = logged.logger()
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -1146,7 +1148,7 @@ func TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded(t *testing.
 	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 0, "connection refused (3)")
 	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	select {
-	case <-logged:
+	case <-logged.notify:
 	case <-time.After(time.Second):
 		t.Fatal("give-up logged nothing")
 	}
