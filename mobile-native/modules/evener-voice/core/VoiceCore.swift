@@ -70,7 +70,6 @@ public struct VoiceController {
     private var lastSpeech: Double?
     private var followupUntil: Double?
     private var pending: [Data] = []
-    private var quietRing = Data()
     public private(set) var bufferedBytes = 0
     public var cloudMicrophone: Bool { active && admitted }
     public var armed: Bool { state != .disarmed }
@@ -101,7 +100,7 @@ public struct VoiceController {
         guard state == .quiet || state == .conversing || state == .speaking, !active else { return [] }
         sequence += 1; frame = 0; active = true; admitted = false
         startedAt = now; lastSpeech = nil; followupUntil = nil
-        pending.removeAll(); quietRing.removeAll(); bufferedBytes = 0
+        pending.removeAll(); bufferedBytes = 0
         state = .conversing
         return [.cue, .send(.inputStart(sequence))]
     }
@@ -116,30 +115,37 @@ public struct VoiceController {
         return actions
     }
     public mutating func capture(_ pcm: Data, speech: Bool, at now: Double) -> [VoiceAction] {
+        capture({ pcm }, speech: speech, at: now)
+    }
+    /// The device's per-block entry (#5683): the block's PCM is built only
+    /// when this call pulls it, so an armed-quiet path that cannot consume
+    /// audio never pays for the conversion that produced it. A nil pull means
+    /// the device produced no block; it is dropped without touching turn
+    /// state, exactly as a failed block never reached capture before.
+    public mutating func capture(_ supply: () -> Data?, speech: Bool, at now: Double) -> [VoiceAction] {
         guard armed, state != .recovering else { return [] }
         guard active else {
-            // This ring never supplies Talk input. Follow-up onset owns only the current frame.
-            quietRing.append(pcm)
-            if quietRing.count > 96000 { quietRing.removeFirst(quietRing.count - 96000) }
-            if speech, state == .speaking || (followupUntil.map { now < $0 } ?? false) {
-                let actions = talk(at: now)
-                return actions + capture(pcm, speech: speech, at: now)
-            }
-            return []
+            // Follow-up onset owns only the current frame. A block that
+            // cannot start a turn is never pulled (#5683).
+            guard speech, state == .speaking || (followupUntil.map { now < $0 } ?? false) else { return [] }
+            guard let onset = supply() else { return [] }
+            let actions = talk(at: now)
+            return actions + capture(onset, speech: speech, at: now)
         }
         guard now >= startedAt else { return [] }
+        guard let pcm = supply() else { return [] }
         if speech { lastSpeech = now }
         var actions: [VoiceAction] = []
         // Include pending audio in the hub's 24 kHz mono PCM16 budget. Tap
         // timestamps mark block starts, so elapsed time alone can overshoot.
         let maxSamples = policy.maxUtteranceMs * 24
         let samples = min(pcm.count / 2, maxSamples - inputSamples)
-        let pcm = Data(pcm.prefix(samples * 2))
+        let trimmed = Data(pcm.prefix(samples * 2))
         if admitted {
-            actions.append(.send(.audio(sequence, frame, pcm))); frame += 1
+            actions.append(.send(.audio(sequence, frame, trimmed))); frame += 1
         } else {
-            guard bufferedBytes + pcm.count <= 96000 else { return abort(reason: "input_overflow") }
-            pending.append(pcm); bufferedBytes += pcm.count
+            guard bufferedBytes + trimmed.count <= 96000 else { return abort(reason: "input_overflow") }
+            pending.append(trimmed); bufferedBytes += trimmed.count
         }
         inputSamples += samples
         if inputSamples == maxSamples, lastSpeech == nil { return actions + abort(reason: "input_idle") }
@@ -152,13 +158,13 @@ public struct VoiceController {
     }
     public mutating func tick(at now: Double) -> [VoiceAction] {
         if active, lastSpeech == nil, now - startedAt >= Double(policy.idleInputMs) { return abort(reason: "input_idle") }
-        if !active, let until = followupUntil, now >= until { followupUntil = nil; quietRing.removeAll(); state = .quiet }
+        if !active, let until = followupUntil, now >= until { followupUntil = nil; state = .quiet }
         return []
     }
     public mutating func abort(reason: String) -> [VoiceAction] {
         guard active else { return [] }
         let result: [VoiceAction] = [.abort(sequence, reason)]
-        clearInput(); quietRing.removeAll(); followupUntil = nil
+        clearInput(); followupUntil = nil
         if armed { state = .quiet }
         return result
     }
@@ -200,11 +206,11 @@ public struct VoiceController {
         let actions = abort(reason: "capture_interrupted")
         state = .recovering
         if advanceGeneration { minimumGeneration += 1 }
-        quietRing.removeAll(); followupUntil = nil
+        followupUntil = nil
         return actions + [.flushOutput]
     }
     public mutating func disarm() -> [VoiceAction] {
-        clearInput(); quietRing.removeAll(); followupUntil = nil
+        clearInput(); followupUntil = nil
         minimumGeneration += 1; state = .disarmed
         return [.flushOutput, .stopCapture, .send(.disarm)]
     }
@@ -264,5 +270,11 @@ public struct PlaybackTimeline {
     }
     public mutating func endDelivery() { deliveryEnded = true }
     public var allDrained: Bool { deliveryEnded && chunks.allSatisfy { completed.contains($0.item) } }
+    /// Whether progress reporting has anything to work with (#5683): the
+    /// periodic reporter asks the player for its render clock, real work
+    /// that idle time must not pay, so an empty timeline owes no report.
+    public var progressOutstanding: Bool {
+        !chunks.isEmpty
+    }
     public mutating func clear() { self = PlaybackTimeline() }
 }

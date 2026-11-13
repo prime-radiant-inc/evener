@@ -26,7 +26,7 @@ final class VoiceAudioDevice {
     private(set) var running = false
     private(set) var lastCaptureAt: Double = 0
     private(set) var route = ""
-    var capture: ((Data, Bool, Double) -> Void)?
+    var capture: (((() -> Data?), Bool, Double) -> Void)?
     var failed: ((String) -> Void)?
     var interrupted: (() -> Void)?
     var recover: ((_ publicRoute: Bool) -> Void)?
@@ -140,17 +140,29 @@ final class VoiceAudioDevice {
                 defer { self.slots.signal() }
                 guard self.running, generation == self.engineGeneration else { return }
                 do {
-                    let input = try self.convert(copy, with: self.input24)
                     let vad = try self.convert(copy, with: self.input16)
-                    guard let samples = input.floatChannelData?[0], let vadSamples = vad.floatChannelData?[0], let detector = self.detector else { throw VoiceFailure("audio_format_invalid") }
+                    guard let vadSamples = vad.floatChannelData?[0], let detector = self.detector else { throw VoiceFailure("audio_format_invalid") }
                     let mono16 = Array(UnsafeBufferPointer(start: vadSamples, count: Int(vad.frameLength)))
                     let speech = try detector.process(mono16)
                     if self.wakeListening { self.wakeStream?.submit(mono16) }
                     self.capturing = true
                     self.lastCaptureAt = ProcessInfo.processInfo.systemUptime * 1000
-                    var pcm = [Int16](repeating: 0, count: Int(input.frameLength))
-                    for i in pcm.indices { pcm[i] = Int16(max(-32768, min(32767, samples[i] * 32767))).littleEndian }
-                    self.capture?(pcm.withUnsafeBytes { Data($0) }, speech, at)
+                    // The hub PCM conversion is pulled, not pushed (#5683): an
+                    // armed-quiet block that captures nothing never converts to
+                    // 24 kHz and never builds PCM bytes. A conversion failure is
+                    // reported and pulls nil, which the controller drops.
+                    self.capture?({
+                        do {
+                            let input = try self.convert(copy, with: self.input24)
+                            guard let samples = input.floatChannelData?[0] else { throw VoiceFailure("audio_format_invalid") }
+                            var pcm = [Int16](repeating: 0, count: Int(input.frameLength))
+                            for i in pcm.indices { pcm[i] = Int16(max(-32768, min(32767, samples[i] * 32767))).littleEndian }
+                            return pcm.withUnsafeBytes { Data($0) }
+                        } catch {
+                            self.failed?((error as? VoiceFailure)?.code ?? "audio_processing_failed")
+                            return nil
+                        }
+                    }, speech, at)
                 } catch { self.failed?((error as? VoiceFailure)?.code ?? "audio_processing_failed") }
             }
         }
@@ -190,6 +202,9 @@ final class VoiceAudioDevice {
         return timeline.watermarks(renderedOutputSamples: max(0, Int(rendered.sampleTime - outputOrigin) - latency))
     }
     func reportProgress() {
+        // An empty timeline owes no progress (#5683): skip the player render
+        // clock queries that idle time would otherwise pay every 200 ms.
+        guard timeline.progressOutstanding else { return }
         for (item, samples) in watermark() {
             if let (delivery, generation) = itemInfo[item] { played?(PlayedReceipt(delivery: delivery, generation: generation, item: item, samples: samples, complete: false)) }
         }

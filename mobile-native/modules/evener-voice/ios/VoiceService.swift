@@ -12,6 +12,8 @@ final class VoiceService {
     private var configuration: [String: Any]?
     private var listener: (([String: Any]) -> Void)?
     private var timer: DispatchSourceTimer?
+    private var tickInterval = 0
+    private var gate = VoiceSnapshotGate()
     private var expiresAt = Date.distantPast
     private var renewAt = Date.distantFuture
     private var reconnectAt = Date.distantFuture
@@ -47,7 +49,7 @@ final class VoiceService {
             self.wakeTrials.dropped(samples)
             if changed { self.publish() }
         }
-        audio.capture = { [weak self] pcm, speech, at in
+        audio.capture = { [weak self] supply, speech, at in
             guard let self else { return }
             if self.connected, self.controller.state == .recovering {
                 self.controller.ready(generation: self.controller.minimumGeneration); self.publish()
@@ -56,7 +58,7 @@ final class VoiceService {
                 self.perform(self.controller.stopSpeaking(played: self.audio.watermark()))
                 self.controller.outputDrained(at: at)
             }
-            self.perform(self.controller.capture(pcm, speech: speech, at: at))
+            self.perform(self.controller.capture(supply, speech: speech, at: at))
         }
         audio.failed = { [weak self] reason in
             guard let self else { return }
@@ -78,25 +80,40 @@ final class VoiceService {
         }
         socket.received = { [weak self] event in self?.receive(event) }
         socket.failed = { [weak self] in self?.connectionLost() }
-        let timer = DispatchSource.makeTimerSource(queue: worker)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
-        timer.setEventHandler { [weak self] in self?.tick() }
-        timer.resume(); self.timer = timer
     }
     private var now: Double { ProcessInfo.processInfo.systemUptime * 1000 }
-    func observe(_ listener: (([String: Any]) -> Void)?) { worker.async { self.listener = listener; self.publish() } }
+    func observe(_ listener: (([String: Any]) -> Void)?) {
+        // A new listener receives the current snapshot even when it matches the last one emitted.
+        worker.async { self.listener = listener; self.gate = VoiceSnapshotGate(); self.publish() }
+    }
     // The service and its completions stay on the worker. The Expo adapter owns Swift tasks.
     func snapshot(completion: @escaping ([String: Any]) -> Void) { worker.async { completion(self.state()) } }
     private var visibleWakeState: String { audio.wakeListening ? wakeState : "paused" }
-    private func state() -> [String: Any] {
-        ["state": controller.state.rawValue, "capturing": audio.capturing, "cloudMicrophone": controller.cloudMicrophone,
-         "route": audio.route, "speakerConsentRequired": !speakerConsent, "error": error ?? "", "interpreted": interpreted,
-         "custody": custody, "canonical": canonical, "generated": generated, "bindingId": configuration?["bindingId"] as? String ?? "",
-         "wake": ["state": visibleWakeState, "phrase": audio.wakeModels?.phrase ?? "",
-                  "modelId": audio.wakeModels?.id ?? "", "score": (wakeTrials.running ? wakeScore : nil) as Any? ?? NSNull(),
-                  "lastDetectionScore": lastWakeScore as Any? ?? NSNull(), "detections": wakeDetections,
-                  "error": wakeError, "trials": wakeTrials.json]]
+    // The facts are the snapshot's single source (#5684): a field the snapshot
+    // exposes but the facts omit would silently swallow that field's updates,
+    // and a field the facts carry but the snapshot drops would publish diffs
+    // the JS side can never see.
+    private func snapshotFacts() -> VoiceSnapshotFacts {
+        VoiceSnapshotFacts(state: controller.state.rawValue, capturing: audio.capturing, cloudMicrophone: controller.cloudMicrophone,
+                           route: audio.route, speakerConsentRequired: !speakerConsent, error: error ?? "",
+                           interpreted: interpreted, custody: custody, canonical: canonical, generated: generated,
+                           bindingId: configuration?["bindingId"] as? String ?? "",
+                           wakeState: visibleWakeState, wakePhrase: audio.wakeModels?.phrase ?? "",
+                           wakeModelId: audio.wakeModels?.id ?? "",
+                           wakeScore: wakeTrials.running ? wakeScore : nil, lastDetectionScore: lastWakeScore,
+                           detections: wakeDetections, wakeError: wakeError, trialsRevision: wakeTrials.revision)
     }
+    private func state(from facts: VoiceSnapshotFacts) -> [String: Any] {
+        ["state": facts.state, "capturing": facts.capturing, "cloudMicrophone": facts.cloudMicrophone,
+         "route": facts.route, "speakerConsentRequired": facts.speakerConsentRequired, "error": facts.error,
+         "interpreted": facts.interpreted, "custody": facts.custody, "canonical": facts.canonical,
+         "generated": facts.generated, "bindingId": facts.bindingId,
+         "wake": ["state": facts.wakeState, "phrase": facts.wakePhrase,
+                  "modelId": facts.wakeModelId, "score": (facts.wakeScore as Any?) ?? NSNull(),
+                  "lastDetectionScore": (facts.lastDetectionScore as Any?) ?? NSNull(), "detections": facts.detections,
+                  "error": facts.wakeError, "trials": wakeTrials.json]]
+    }
+    private func state() -> [String: Any] { state(from: snapshotFacts()) }
     private func publish() {
         if audio.setWakeListening(connected && audio.capturing && controller.state == .quiet) {
             wakeState = "warming"; wakeScore = nil
@@ -104,7 +121,12 @@ final class VoiceService {
         publishedWakeState = visibleWakeState
         publishedWakeError = wakeError
         lastWakePublish = now
-        listener?(state())
+        scheduleTick()
+        let facts = snapshotFacts()
+        // Coalesce (#5684): a capture burst or a burst of socket messages that
+        // changes nothing the JS side can see costs no bridge event.
+        guard gate.shouldEmit(facts) else { return }
+        listener?(state(from: facts))
     }
     private func heardWake(_ result: WakeWordResult) {
         guard connected, controller.state == .quiet else { return }
@@ -157,6 +179,7 @@ final class VoiceService {
                 self.speakerConsent = true; self.error = nil
                 self.interpreted = ""; self.custody = ""; self.canonical = ""; self.generated = ""
                 self.controller.arm(policy: policy)
+                self.startTick()
                 try self.audio.start()
                 try self.connect()
                 self.publish(); completion(.success(()))
@@ -188,6 +211,25 @@ final class VoiceService {
         perform(controller.disarm())
         socket.close(); configuration = nil; connected = false
         audio.deactivate(); reconnectAt = .distantFuture; renewAt = .distantFuture; recoverAudioAt = .distantFuture
+        stopTick()
+    }
+    // The armed worker's timer lifecycle (#5683): the tick runs only while
+    // armed, fast while a stream is live and slow while merely listening.
+    private func startTick() {
+        let timer = DispatchSource.makeTimerSource(queue: worker)
+        timer.setEventHandler { [weak self] in self?.tick() }
+        self.timer = timer; tickInterval = 0
+        scheduleTick()
+        timer.resume()
+    }
+    private func stopTick() {
+        timer?.cancel(); timer = nil; tickInterval = 0
+    }
+    private func scheduleTick() {
+        let milliseconds = VoiceTickPolicy.intervalMilliseconds(state: controller.state)
+        guard milliseconds != tickInterval else { return }
+        tickInterval = milliseconds
+        timer?.schedule(deadline: .now(), repeating: .milliseconds(milliseconds))
     }
     func allowSpeaker() { worker.async { self.speakerConsent = true; self.publish() } }
     private func perform(_ actions: [VoiceAction]) {
