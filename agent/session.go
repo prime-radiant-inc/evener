@@ -2331,6 +2331,7 @@ func (s *Session) SetVisionModel(ref string) error {
 		return nil
 	}
 	s.cfg.VisionModel = ref
+	s.rebuildToolDefsCache()
 	s.mu.Unlock()
 	s.emit(events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
 	s.maybeAutoSave()
@@ -2340,14 +2341,14 @@ func (s *Session) SetVisionModel(ref string) error {
 // canonicalVisionModelOff normalizes only the complete bare off sentinel.
 // Provider-qualified refs such as "off/model" must remain ordinary refs.
 func canonicalVisionModelOff(ref string) string {
-	if !strings.Contains(ref, "/") && strings.EqualFold(strings.TrimSpace(ref), visionModelOff) {
+	if !strings.Contains(ref, "/") && isVisionDisabledSetting(ref) {
 		return visionModelOff
 	}
 	return ref
 }
 
 func (s *Session) validateVisionModelRefLocked(ref string) error {
-	if ref == "" || strings.EqualFold(ref, visionModelOff) {
+	if ref == "" || (!strings.Contains(ref, "/") && isVisionDisabledSetting(ref)) {
 		return nil
 	}
 	prov, model, ok := strings.Cut(ref, "/")

@@ -29,14 +29,15 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
 	}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	if name == "memory_read" && !strings.Contains(base.Description, "Reading MEMORY.md") {
+		base.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	}
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
 }
 
 func DefMemoryRead() llm.ToolDefinition {
-	read := DefReadFile()
-	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
-	return MemoryDefinition(read, "memory_read")
+	return MemoryDefinition(DefReadFile(), "memory_read")
 }
 
 func DefMemoryDelete() llm.ToolDefinition {
@@ -84,6 +85,31 @@ func DefReadFile() llm.ToolDefinition {
 			"required": []string{"file_path"},
 		},
 	}
+}
+
+// DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
+// nor PDFs run the side-channel. vision_prompt is omitted from advertised
+// properties and the description omits the vision_prompt sentence (#6190).
+func DefReadFileNativeVision() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
+	props := def.Parameters["properties"].(map[string]any)
+	delete(props, "vision_prompt")
+	return def
+}
+
+// DefReadFilePDFVisionOnly returns read_file tailored for Regime 2: images are
+// native inline, while PDFs use the side-channel. vision_prompt is kept and
+// scoped to PDF files in both the tool description and parameter description (#6190).
+func DefReadFilePDFVisionOnly() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
+	props := def.Parameters["properties"].(map[string]any)
+	props["vision_prompt"] = map[string]any{
+		"type":        "string",
+		"description": "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.",
+	}
+	return def
 }
 
 func DefWriteFile() llm.ToolDefinition {
