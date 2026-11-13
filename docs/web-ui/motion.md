@@ -220,7 +220,9 @@ invents progress stay banned.
   during the exit cancels the removal. A closing layer is `inert`, ignores the pointer,
   drops its dialog role and `aria-modal`, and has already returned focus, exactly as an
   unmount would; focus recovery (`useFocusRehome`, `tabbable`) treats an inert subtree as
-  gone. Everything that answers the user (dismissal, focus, `aria-expanded`)
+  gone. Anything else that asks whether an element is showing, in app code or in a browser
+  guard, treats it the same way: an element under `[inert]` keeps its box until its layer's
+  exit ends, so a nonzero size alone does not mean it is there. Everything that answers the user (dismissal, focus, `aria-expanded`)
   keys off the open state, never off the layer still being mounted. A layer its caller
   mounts and unmounts outright, such as the directory picker, has no exit and so no
   entrance either. `afterMotion`, beside it, is that wait on its own; the phone stack

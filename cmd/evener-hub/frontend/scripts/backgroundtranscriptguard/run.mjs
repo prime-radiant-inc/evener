@@ -2294,11 +2294,15 @@ async function waitForResponsiveHost(driver) {
 async function openSessionInCurrentShell(driver, ref) {
   await waitForResponsiveHost(driver);
   const rowSelector = `[data-session-ref='${ref}']`;
+  // A row inside an inert subtree belongs to a Sessions sheet that is
+  // leaving: it keeps its geometry until its exit ends, but it takes no
+  // input and is about to unmount, so it does not count as showing.
   const rowVisible = async () =>
     evaluate(
       driver.send,
       `(() => { const el = document.querySelector(${JSON.stringify(rowSelector)});
-         if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
+         if (!el || el.closest('[inert]')) return false;
+         const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
     ).catch(() => false);
   if (!(await rowVisible())) {
     for (let attempt = 0; attempt < 5; attempt += 1) {
