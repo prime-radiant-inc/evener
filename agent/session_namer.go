@@ -469,7 +469,7 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	} else {
 		s.attentionMu.Unlock()
 	}
-	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
+	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision, false)
 	if isSessionNameCompactionTurn(t) {
 		s.steerCompactionTaskReminderForFold(publishedRevision)
 	}
@@ -490,22 +490,32 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // already flushed its deferred effects: the last-write-wins compaction naming
 // is skipped so a stale parked flush cannot overwrite the newer fold's; the
 // compaction-turn event still runs because it describes published work.
+// withheld marks a turn whose marker a failed staged-tail write took back
+// out: the in-memory fold still stands, so the notes and memory projection
+// resets still run — the turns the fold folded away are gone from what the
+// model sees, and the change gates must forget the last projected state so
+// the next request re-emits it — while the compaction-turn event and the
+// session namer stay suppressed: they announce a marker the transcript
+// never received.
 // publishedRevision is the launching fold's publication sequence
 // (historyRevision at its publish; the fallback path passes the newest
 // published fold revision), re-checked at naming COMPLETION against
 // newestPublishedFoldRevision so an async namer launched before a newer
 // fold published cannot finish later and overwrite the newer fold's name.
-func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
+func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int, withheld bool) {
 	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
-		// Folded-away NOTES_CONTEXT turns are gone from what the model sees, so the
-		// change gate must forget the last projected block and re-emit the current
-		// state (see resetNotesProjectionAfterCompaction).
+		// The projection resets are fold-dependent, not marker-dependent: the
+		// change gate must forget the last projected block and re-emit the
+		// current state (see resetNotesProjectionAfterCompaction), whether or
+		// not the marker announcing the fold survived its staged writes.
 		s.resetNotesProjectionAfterCompaction()
 		s.resetMemoryProjectionAfterCompaction()
-		s.emit(events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		if !withheld {
+			s.emit(events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		}
 	}
-	if superseded {
+	if withheld || superseded {
 		return
 	}
 	s.launchCompactionNamerGated(s.sessionCtx, t, publishedRevision)
