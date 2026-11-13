@@ -749,6 +749,22 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   expect(activitySidebarStore.getState().tab).toBe("jobs");
 });
 
+test("activity tabs show each fraction as a detail line and About stays a single line", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  await screen.findByRole("button", { name: /inspect/ });
+  const tabs = screen.getAllByRole("radio");
+  expect(tabs).toHaveLength(5);
+  for (const tab of tabs.slice(0, 4)) {
+    const spans = tab.querySelectorAll("span");
+    expect(spans).toHaveLength(2);
+    expect(tab.textContent).not.toContain("\n");
+  }
+  expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+});
+
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {
   const user = userEvent.setup();
   connectionStore.getState().connect(activityClient());

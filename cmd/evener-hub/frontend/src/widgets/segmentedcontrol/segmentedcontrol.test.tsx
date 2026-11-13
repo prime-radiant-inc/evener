@@ -336,6 +336,51 @@ describe("disabled behavior and form safety", () => {
   });
 });
 
+describe("stacked detail", () => {
+  const detailed = [
+    { value: "agents", label: "Agents", detail: "1/9", accessibleLabel: "Agents, 1 of 9 active" },
+    { value: "jobs", label: "Jobs", detail: "2/4" },
+    { value: "about", label: "About" },
+  ];
+
+  test("renders the detail as its own element and keeps the accessible name", () => {
+    render(<SegmentedControl label="Kind" value="jobs" options={detailed} onChange={() => {}} />);
+    const agents = screen.getByRole("radio", { name: "Agents, 1 of 9 active" });
+    const spans = agents.querySelectorAll("span");
+    expect(spans).toHaveLength(2);
+    expect(spans[0]?.textContent).toBe("Agents");
+    expect(spans[1]?.textContent).toBe("1/9");
+    expect(screen.getByRole("radio", { name: "Jobs" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  });
+
+  test("applies the stacked shape to the track and every option only when a detail exists", () => {
+    const { unmount } = render(<SegmentedControl label="Kind" value="jobs" options={detailed} onChange={() => {}} />);
+    const stackedTrack = screen.getByRole("radiogroup");
+    const stackedClass = stackedTrack.className.split(" ").find((name) => name.includes("stacked"));
+    expect(stackedClass).toBeTruthy();
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio.className).toContain(stackedClass);
+      expect(radio.className).not.toMatch(/\b(sm|md)\b/);
+    }
+    unmount();
+    render(<SegmentedControl label="Kind" value="chat" options={OPTIONS} onChange={() => {}} />);
+    expect(screen.getByRole("radiogroup").className).not.toContain("stacked");
+    for (const radio of screen.getAllByRole("radio")) expect(radio.className).not.toContain("stacked");
+  });
+
+  test("stacked CSS gives the track pane corners and the thumb the concentric inner radius", () => {
+    const css = cssSource();
+    expect(css).toMatch(/\.track\.stacked\s*\{[^}]*border-radius:\s*var\(--radius-pane\)/s);
+    expect(css).toMatch(
+      /\.option\.stacked\s*\{[^}]*flex-direction:\s*column[^}]*block-size:\s*auto[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
+    );
+    expect(css).toMatch(
+      /\.optionDetail\s*\{[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
+    );
+  });
+});
+
 describe("CSS contract", () => {
   test("uses the complete neutral track, option, density, responsive, and motion contract", () => {
     const css = cssSource();

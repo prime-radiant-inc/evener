@@ -57,6 +57,10 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
     const keyboard = selected("Keyboard focus", "Intent");
     expect(keyboard.option.getAttribute("tabindex")).toBe("0");
 
+    const stacked = selected("Stacked detail", "Jobs, 2 of 201 running");
+    expect(stacked.group.className).toContain("stacked");
+    expect(stacked.option.querySelectorAll("span")).toHaveLength(2);
+
     const frame320 = pane.querySelector('[data-testid="segmentedcontrol-frame-320"]');
     const frame390 = pane.querySelector('[data-testid="segmentedcontrol-frame-390"]');
     expect(frame320).toBeTruthy();

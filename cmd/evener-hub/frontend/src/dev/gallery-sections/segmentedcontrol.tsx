@@ -23,6 +23,31 @@ function InteractiveControl() {
   return <SegmentedControl label="Interactive detail" value={value} options={SHORT_OPTIONS} onChange={setValue} />;
 }
 
+const STACKED_OPTIONS: readonly SegmentedControlOption[] = [
+  { value: "agents", label: "Agents", detail: "18/1069", accessibleLabel: "Agents, 18 of 1069 active" },
+  { value: "jobs", label: "Jobs", detail: "2/201", accessibleLabel: "Jobs, 2 of 201 running" },
+  { value: "watches", label: "Watches", detail: "0/3", accessibleLabel: "Watches, 0 of 3 armed" },
+  { value: "tasks", label: "Tasks", detail: "4/9", accessibleLabel: "Tasks, 4 of 9 settled" },
+  { value: "about", label: "About" },
+];
+
+function StackedControl() {
+  const [value, setValue] = useState("jobs");
+  return (
+    <div className={styles.frameStacked} data-testid="segmentedcontrol-frame-stacked">
+      <SegmentedControl
+        label="Stacked detail"
+        hideLabel
+        size="sm"
+        fullWidth
+        value={value}
+        options={STACKED_OPTIONS}
+        onChange={setValue}
+      />
+    </div>
+  );
+}
+
 function FocusControl() {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -114,6 +139,7 @@ export default function SegmentedControlGallerySection() {
             />
             <FocusControl />
           </div>
+          <StackedControl />
           <div className={styles.frames}>
             <NarrowFrame width={320} />
             <NarrowFrame width={390} />

@@ -97,6 +97,36 @@
   block-size: 32px;
 }
 
+/* Stacked: a label over a quiet detail. The track is a pane-radius rounded
+ * rectangle and each option's radius is the track's minus its padding and
+ * border, so the thumb stays concentric with the track. The track and every
+ * option carry .stacked. */
+.track.stacked {
+  border-radius: var(--radius-pane);
+}
+
+.option.stacked {
+  flex-direction: column;
+  gap: var(--space-half);
+  block-size: auto;
+  padding-block: var(--space-1);
+  /* Five stacked options must fit a 320px phone without clipping a long fraction. */
+  padding-inline: 0;
+  border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
+}
+
+.optionDetail {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-regular);
+}
+
 @media (max-width: 899px), (any-pointer: coarse) {
   .option {
     min-block-size: var(--tap-min);
