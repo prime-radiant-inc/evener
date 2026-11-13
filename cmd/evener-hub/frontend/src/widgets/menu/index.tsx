@@ -230,11 +230,17 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // The trigger's own viewport: a menu in a Dockview popout must flip and
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerDocument.defaultView ?? window;
+    // The popup's size comes from offsetWidth/offsetHeight, not its rect: a
+    // rect is the box after transforms, and in this commit the popup is at
+    // the Float recipe's entrance keyframe, scaled below the size it settles
+    // at. The offset pair is the untransformed layout box. The trigger keeps
+    // its rect: it is wanted in viewport coordinates and is never animating.
     setPosition(
-      computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect(), {
-        width: ownerWindow.innerWidth,
-        height: ownerWindow.innerHeight,
-      }),
+      computeMenuPosition(
+        triggerEl.getBoundingClientRect(),
+        { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
+        { width: ownerWindow.innerWidth, height: ownerWindow.innerHeight },
+      ),
     );
   }, [isOpen, ownerDocument]);
 

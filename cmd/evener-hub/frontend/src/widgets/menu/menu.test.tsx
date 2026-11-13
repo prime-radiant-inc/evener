@@ -565,6 +565,13 @@ test("places a popout menu from the popout window's own viewport", () => {
     if (this.tagName === "UL") return rect(0, 0, 200, 120);
     return rect(0, 0, 0, 0);
   });
+  // The popup's size is read from its layout box, which jsdom never computes.
+  vi.spyOn(win.HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 200 : 0;
+  });
+  vi.spyOn(win.HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 120 : 0;
+  });
   const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
   try {
     const trigger = doc.querySelector("button");
@@ -580,6 +587,58 @@ test("places a popout menu from the popout window's own viewport", () => {
   } finally {
     view.unmount();
     frame.remove();
+  }
+});
+
+// The popup composes the Float motion recipe, so in the commit that mounts it
+// - the one the measuring layout effect runs in - it sits at its entrance
+// keyframe, scale(0.96). getBoundingClientRect() reports the box after
+// transforms, 96% of the size the popup settles at; offsetWidth/offsetHeight
+// report the untransformed layout box. jsdom performs no layout, so both are
+// supplied here with deliberately different values: only one placement can
+// result from each.
+test("places the popup from its untransformed layout box, not its mid-animation rect", () => {
+  const SETTLED = { width: 200, height: 120 };
+  const ANIMATING = { width: SETTLED.width * 0.96, height: SETTLED.height * 0.96 };
+  // Hard against the right edge and the bottom edge of jsdom's 1024x768
+  // viewport, so both axes flip and the popup's own size lands in the
+  // arithmetic. An unflipped placement reads the same either way.
+  const TRIGGER = { left: 900, right: 940, top: 700, bottom: 720 };
+  const TRIGGER_GAP = 4;
+  const rect = (box: { left: number; top: number }, size: { width: number; height: number }): DOMRect =>
+    ({
+      ...size,
+      left: box.left,
+      top: box.top,
+      right: box.left + size.width,
+      bottom: box.top + size.height,
+      x: box.left,
+      y: box.top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  const stubs = [
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this.tagName === "BUTTON") return rect(TRIGGER, { width: 40, height: 20 });
+      if (this.tagName === "UL") return rect({ left: 0, top: 0 }, ANIMATING);
+      return rect({ left: 0, top: 0 }, { width: 0, height: 0 });
+    }),
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.tagName === "UL" ? SETTLED.width : 0;
+    }),
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.tagName === "UL" ? SETTLED.height : 0;
+    }),
+  ];
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    fireEvent.click(screen.getByRole("button"));
+    const popup = screen.getByRole("menu");
+    // Right-aligned to the trigger and opened above it, each by the settled
+    // size. The animating box would give 940 - 192 = 748 and 700 - 4 - 115.2.
+    expect(popup.style.left).toBe(`${TRIGGER.right - SETTLED.width}px`);
+    expect(popup.style.top).toBe(`${TRIGGER.top - TRIGGER_GAP - SETTLED.height}px`);
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
   }
 });
 
