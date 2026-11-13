@@ -1273,9 +1273,22 @@ export function useTranscriptScroll({
   // in flight follows the turn to its new row, or its divider would never
   // enter the window the first request brought in. A landing that has settled
   // is the reader's place, and a row change no longer moves it.
+  //
+  // A landing in flight is also withdrawn when the opening goes back to the
+  // live end: something started waiting there (a question's body restoring
+  // into the dock) before the reply's row rendered.
   useLayoutEffect(() => {
     const pending = pendingViewAnchorRef.current;
-    if (pending?.openingRow === undefined || openAtRow === undefined || pending.openingRow === openAtRow) return;
+    if (pending?.openingRow === undefined || pending.openingRow === openAtRow) return;
+    if (openAtRow === undefined) {
+      pendingViewAnchorRef.current = null;
+      pendingEndTargetRef.current = true;
+      wasAtBottomRef.current = true;
+      endFollowIntentRef.current = true;
+      setAwayFromBottom(false);
+      scrollToLastRow(listRef, renderedRowCountRef.current);
+      return;
+    }
     pending.openingRow = openAtRow;
     listRef.current?.scrollToIndex(openAtRow, { align: "start" });
   }, [openAtRow, listRef]);

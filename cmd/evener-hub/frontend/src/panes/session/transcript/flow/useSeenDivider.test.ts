@@ -233,31 +233,39 @@ test("a dormant model does not lock the decision: the boundary is computed once 
 });
 
 const SETTLED: SeenBoundary = { dividerTurnId: "t2", settled: true };
+const QUIET = { askPending: false, pendingEscalations: [] };
+const NOTHING_WAITS = { thread: QUIET, askDockPending: false, retained: undefined };
 
 test("unseenOpeningTurnId opens at the divider turn when it is settled and nothing waits", () => {
-  expect(unseenOpeningTurnId(SETTLED, { waitingAtEnd: false, retained: undefined })).toBe("t2");
+  expect(unseenOpeningTurnId(SETTLED, NOTHING_WAITS)).toBe("t2");
 });
 
 test("unseenOpeningTurnId does not open at an unsettled boundary", () => {
-  expect(
-    unseenOpeningTurnId({ dividerTurnId: "t2", settled: false }, { waitingAtEnd: false, retained: undefined }),
-  ).toBeNull();
+  expect(unseenOpeningTurnId({ dividerTurnId: "t2", settled: false }, NOTHING_WAITS)).toBeNull();
 });
 
-test("unseenOpeningTurnId yields to something waiting at the live end", () => {
-  expect(unseenOpeningTurnId(SETTLED, { waitingAtEnd: true, retained: undefined })).toBeNull();
+test("unseenOpeningTurnId yields to a question the dock is showing", () => {
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, askDockPending: true })).toBeNull();
+});
+
+// A transcript restored without its bodies knows a question is pending before
+// the dock has the question to show.
+test("unseenOpeningTurnId yields to a pending question the dock has not reconstructed yet", () => {
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, askPending: true } })).toBeNull();
+});
+
+test("unseenOpeningTurnId yields to a pending approval", () => {
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, pendingEscalations: [{}] } })).toBeNull();
 });
 
 test("unseenOpeningTurnId yields to a retained place away from the bottom", () => {
-  expect(unseenOpeningTurnId(SETTLED, { waitingAtEnd: false, retained: { followingBottom: false } })).toBeNull();
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: false } })).toBeNull();
 });
 
 test("unseenOpeningTurnId opens at the divider turn when the retained view was following the bottom", () => {
-  expect(unseenOpeningTurnId(SETTLED, { waitingAtEnd: false, retained: { followingBottom: true } })).toBe("t2");
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: true } })).toBe("t2");
 });
 
 test("unseenOpeningTurnId is null when there is no boundary turn", () => {
-  expect(
-    unseenOpeningTurnId({ dividerTurnId: null, settled: true }, { waitingAtEnd: false, retained: undefined }),
-  ).toBeNull();
+  expect(unseenOpeningTurnId({ dividerTurnId: null, settled: true }, NOTHING_WAITS)).toBeNull();
 });

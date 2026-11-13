@@ -56,13 +56,21 @@ function boundaryFor(ref: string, model: ThreadModel): SeenBoundary {
 
 /** The turn a session opens at instead of the live end: a finished reply this
  * browser has not shown. The live end keeps the opening while something waits
- * there for the reader (a question or an approval), and a reader with a
- * retained place of their own up the transcript returns to it. */
+ * there for the reader, and a reader with a retained place of their own up
+ * the transcript returns to it. What waits is read from the thread as well as
+ * from the question dock: a transcript restored without its bodies knows a
+ * question is pending before the dock has the question to show. */
 export function unseenOpeningTurnId(
   boundary: SeenBoundary,
-  reader: { waitingAtEnd: boolean; retained: { followingBottom: boolean } | undefined },
+  reader: {
+    thread: { askPending: boolean; pendingEscalations: readonly unknown[] } | undefined;
+    askDockPending: boolean;
+    retained: { followingBottom: boolean } | undefined;
+  },
 ): string | null {
-  if (!boundary.settled || reader.waitingAtEnd) return null;
+  if (!boundary.settled) return null;
+  if (reader.askDockPending || reader.thread?.askPending || (reader.thread?.pendingEscalations.length ?? 0) > 0)
+    return null;
   if (reader.retained !== undefined && !reader.retained.followingBottom) return null;
   return boundary.dividerTurnId;
 }

@@ -3990,6 +3990,22 @@ describe("opening at the unseen reply", () => {
     expect(scrollToIndex).not.toHaveBeenCalled();
   });
 
+  test("a landing still in flight yields to the live end when something starts waiting there", () => {
+    // A question surfaces while the reply's row has not rendered: the live
+    // end, where the dock is, takes the opening back.
+    let offset: number | undefined;
+    const { el, result, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset });
+
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: undefined });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "end" });
+    expect(result.current.isFollowingBottom()).toBe(true);
+
+    // The withdrawn landing no longer places the reader.
+    offset = 120;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(0);
+  });
+
   test("a landing measured above the port's top never lands before the start", () => {
     let offset: number | undefined;
     const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });

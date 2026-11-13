@@ -329,7 +329,8 @@ function LiveConversationBody({
   const seenBoundary = useSeenDivider(ref, model);
   const retainedCapture = seat.readView?.getCapture();
   const openingTurnId = unseenOpeningTurnId(seenBoundary, {
-    waitingAtEnd: askPending || approvalPending,
+    thread: model,
+    askDockPending: askPending,
     retained: retainedCapture,
   });
   const openAtRow = useMemo(
