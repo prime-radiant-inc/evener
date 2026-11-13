@@ -9,6 +9,7 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
+import { configForSession, useSessionDetailLevel } from "../../stores/sessionDetailLevel";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { useThreadClaim } from "../../stores/useThreadModel";
@@ -156,7 +157,8 @@ export function ConversationBody({
   const renderParts = (parts: ConversationParts) =>
     render({
       ...parts,
-      footer: parts.state !== "live" && seat.sessionMenu ? <UnavailablePresentationControl /> : parts.footer,
+      footer:
+        parts.state !== "live" && seat.sessionMenu ? <UnavailablePresentationControl sessionRef={ref} /> : parts.footer,
     });
   return (
     <SandboxEscalationOwner key={ref} sessionRef={ref}>
@@ -165,7 +167,7 @@ export function ConversationBody({
   );
 }
 
-function UnavailablePresentationControl() {
+function UnavailablePresentationControl({ sessionRef }: { sessionRef: string }) {
   const [open, setOpen] = useState(false);
   const layout = useTranscriptDisplayStore((state) => state.viewport);
   return (
@@ -177,6 +179,7 @@ function UnavailablePresentationControl() {
         open={open}
         onClose={() => setOpen(false)}
         layout={layout}
+        sessionRef={sessionRef}
         onEditHubDefaults={() => {
           const url = paneToURL("settings", { section: "transcript" });
           if (url !== null) navigate(url);
@@ -312,9 +315,16 @@ function LiveConversationBody({
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
+  // The session's own level, when it has one, replaces what the default shows
+  // and keeps the default's advanced settings.
+  const sessionLevel = useSessionDetailLevel(ref);
   const displayConfig = useMemo(
-    () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
-    [displayHub, displayLocal, displayViewport],
+    () =>
+      configForSession(
+        sessionLevel,
+        resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
+      ),
+    [displayHub, displayLocal, displayViewport, sessionLevel],
   );
   const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);

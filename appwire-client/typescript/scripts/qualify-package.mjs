@@ -350,6 +350,11 @@ assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.adv
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
 assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+const detailLevelStorage = new Map();
+const detailLevels = new client.SessionDetailLevels({ getItemSync: (key) => detailLevelStorage.get(key) ?? null, setItemSync: (key, value) => detailLevelStorage.set(key, value) }, "probe");
+detailLevels.set("s1", "tools");
+assert.equal(new client.SessionDetailLevels({ getItemSync: (key) => detailLevelStorage.get(key) ?? null, setItemSync() {} }, "probe").get("s1"), "tools");
+assert.deepEqual(client.configAtLevel("full", client.shippedMobileConfig).content, { kind: "preset", level: "full" });
 const archivedLists = client.createArchivedListStore({ request: async () => ({ sessions: [], total: 0 }) });
 archivedLists.refresh("projects", "p").then(() => { const { rows, loaded, error } = archivedLists.getState().lists[client.archivedListKey("projects", "p")]; assert.deepEqual({ rows, loaded, error }, { rows: [], loaded: true, error: null }); });
 const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });

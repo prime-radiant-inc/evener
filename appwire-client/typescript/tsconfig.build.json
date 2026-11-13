@@ -78,6 +78,7 @@
     "reducer.ts",
     "sendQueueAvailability.ts",
     "sendQueueGate.ts",
+    "sessionDetailLevels.ts",
     "sessionErrors.ts",
     "stableDelegate.ts",
     "delegateDetails.ts",

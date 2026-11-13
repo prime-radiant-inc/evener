@@ -50,6 +50,11 @@ const LEVEL_OPTIONS: SegmentedControlOption<ContentChoice>[] = [
   { value: "custom", label: "Custom" },
 ];
 
+/** The five preset levels under the names every level picker uses. */
+export const PRESET_LEVEL_OPTIONS: readonly { value: ContentLevel; label: string }[] = LEVEL_OPTIONS.flatMap(
+  ({ value, label, accessibleLabel }) => (value === "custom" ? [] : [{ value, label: accessibleLabel ?? label }]),
+);
+
 const LEVEL_SELECT_OPTIONS: SelectOption[] = LEVEL_OPTIONS.map(({ value, label, accessibleLabel }) => ({
   value,
   label: accessibleLabel ?? label,

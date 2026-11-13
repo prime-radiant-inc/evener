@@ -113,6 +113,50 @@ test("pane-only Verbosity follows Overview, precedes the first separator, and di
   expect(onOpenVerbosity).toHaveBeenCalledOnce();
 });
 
+async function menuItemNames(
+  user: ReturnType<typeof userEvent.setup>,
+  overrides: Partial<SessionMenuProps>,
+): Promise<string[]> {
+  renderMenu(overrides);
+  await openMenu(user);
+  return within(screen.getByRole("menu"))
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent ?? "");
+}
+
+test("a session level is carried into the Verbosity item's name and nowhere else", async () => {
+  const user = userEvent.setup();
+  const without = await menuItemNames(user, { onOpenVerbosity: vi.fn() });
+  cleanup();
+  const withLevel = await menuItemNames(user, { onOpenVerbosity: vi.fn(), verbosityLevel: "Zed" });
+
+  expect(without.some((name) => name.includes("Zed"))).toBe(false);
+  expect(withLevel).toHaveLength(without.length);
+  const changed = withLevel.flatMap((name, index) => (name === without[index] ? [] : [index]));
+  expect(changed).toHaveLength(1);
+  expect(withLevel[changed[0] ?? -1]).toContain("Zed");
+});
+
+test("the level-named Verbosity item keeps its place after Overview and still opens verbosity", async () => {
+  const user = userEvent.setup();
+  const onOpenVerbosity = vi.fn();
+  renderMenu({ onOpenVerbosity, verbosityLevel: "Zed" });
+  await openMenu(user);
+
+  const menu = screen.getByRole("menu");
+  const items = within(menu).getAllByRole("menuitem");
+  const verbosity = items.find((item) => (item.textContent ?? "").includes("Zed"));
+  const overview = items[0];
+  if (!verbosity || !overview) throw new Error("Session menu is missing Overview or Verbosity");
+  expect(overview.compareDocumentPosition(verbosity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  const firstSeparator = within(menu).getAllByRole("separator")[0];
+  if (!firstSeparator) throw new Error("Session menu is missing its first separator");
+  expect(verbosity.compareDocumentPosition(firstSeparator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.click(verbosity);
+  expect(onOpenVerbosity).toHaveBeenCalledOnce();
+});
+
 test("rail-style callers that omit the pane-only callback do not get Verbosity", async () => {
   const user = userEvent.setup();
   renderMenu({ triggerLabel: "Actions for My session" });

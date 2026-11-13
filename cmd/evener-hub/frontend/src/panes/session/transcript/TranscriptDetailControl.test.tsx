@@ -9,7 +9,13 @@ import {
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import {
+  resetSessionDetailLevelsForTests,
+  sessionDetailLevel,
+  setSessionDetailLevel,
+} from "../../../stores/sessionDetailLevel";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { TranscriptDetailControl } from "./TranscriptDetailControl";
@@ -73,13 +79,21 @@ function statusKinds(region: HTMLElement): (string | null)[] {
   return [...region.querySelectorAll("[data-kind]")].map((message) => message.getAttribute("data-kind"));
 }
 
+beforeAll(() => {
+  installLocalStorage(new MemoryStorage());
+});
+
 beforeEach(() => {
+  localStorage.clear();
+  resetSessionDetailLevelsForTests();
   resetTranscriptDisplayStoreForTests();
   seedStore();
 });
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
+  resetSessionDetailLevelsForTests();
   resetTranscriptDisplayStoreForTests();
 });
 
@@ -288,8 +302,10 @@ test("composes the controlled overlay only from shared controls and Dialog/Sheet
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 
-  expect(source).toMatch(/import \{ Button, Dialog, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/);
-  expect(source).not.toMatch(/<button\b/);
+  expect(source).toMatch(
+    /import \{ Button, Dialog, FormRow, Select, type SelectOption, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/,
+  );
+  expect(source).not.toMatch(/<(?:button|select)\b/);
   expect(source.match(/<Button\b/g)).toHaveLength(2);
   expect(source.match(/variant="secondary"/g)).toHaveLength(1);
   expect(source).toMatch(/<Button ref=\{editButtonRef\} size="sm" variant="quiet"/);
@@ -325,4 +341,106 @@ test("CSS keeps the shared overlay body layout-only with no private motion or ch
   expect(css).not.toMatch(/\.detailActions\s+button/);
   expect(css).not.toMatch(/\.detailSheetContent\s+\.detailActions/);
   expect(css).not.toMatch(/\.detailTrigger\s*\{/);
+});
+
+// The session picker is the one select whose options include the "no level of
+// its own" sentinel; every other combobox in the panel is an editor field.
+function sessionPicker(): HTMLSelectElement | null {
+  const picker = screen
+    .queryAllByRole("combobox")
+    .find((select) => [...(select as HTMLSelectElement).options].some((option) => option.value === "default"));
+  return (picker as HTMLSelectElement | undefined) ?? null;
+}
+
+function renderSessionControl(sessionRef: string | undefined = "ref_a", layout: "desktop" | "mobile" = "desktop") {
+  render(
+    <TranscriptDetailControl
+      open
+      onClose={() => {}}
+      layout={layout}
+      onEditHubDefaults={() => {}}
+      sessionRef={sessionRef}
+    />,
+  );
+}
+
+test("offers a session picker only when opened from a session", () => {
+  render(<TranscriptDetailControl open onClose={() => {}} layout="desktop" onEditHubDefaults={() => {}} />);
+  expect(sessionPicker()).toBeNull();
+  cleanup();
+
+  renderSessionControl();
+  const picker = sessionPicker();
+  expect(picker).not.toBeNull();
+  const values = [...(picker as HTMLSelectElement).options].map((option) => option.value);
+  expect(values).toEqual(["default", "chat", "intent", "tools", "activity", "full"]);
+});
+
+test("the session picker is labelled by its form row", () => {
+  renderSessionControl();
+  const picker = sessionPicker() as HTMLSelectElement;
+  expect(picker.id).not.toBe("");
+  expect(picker.labels?.length).toBe(1);
+});
+
+test("choosing a level for the session stores it for that session and leaves the default alone", async () => {
+  const user = userEvent.setup();
+  seedStore({ local: { desktop: config("intent") } });
+  renderSessionControl("ref_a");
+
+  await user.selectOptions(sessionPicker() as HTMLSelectElement, "full");
+
+  expect(sessionDetailLevel("ref_a")).toBe("full");
+  expect(sessionDetailLevel("ref_b")).toBeNull();
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(config("intent"));
+  expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("full");
+});
+
+test("choosing the default value returns the session to the default", async () => {
+  const user = userEvent.setup();
+  renderSessionControl("ref_a");
+  await user.selectOptions(sessionPicker() as HTMLSelectElement, "chat");
+  expect(sessionDetailLevel("ref_a")).toBe("chat");
+
+  await user.selectOptions(sessionPicker() as HTMLSelectElement, "default");
+
+  expect(sessionDetailLevel("ref_a")).toBeNull();
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("default");
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+});
+
+test("the session picker reflects a level stored before the control opened", () => {
+  localStorage.clear();
+  renderSessionControl("ref_a");
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("default");
+  cleanup();
+
+  // Stored through the store so the persisted shape stays the store's own.
+  setSessionDetailLevel("ref_a", "activity", config("tools"));
+  renderSessionControl("ref_a");
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("activity");
+  cleanup();
+  renderSessionControl("ref_b");
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("default");
+});
+
+test("editing the default while the session has its own level does not change the session's level", async () => {
+  const user = userEvent.setup();
+  renderSessionControl("ref_a");
+  await user.selectOptions(sessionPicker() as HTMLSelectElement, "full");
+
+  await user.click(screen.getByRole("radio", { name: "Activity" }));
+
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(config("activity"));
+  expect(sessionDetailLevel("ref_a")).toBe("full");
+  expect((sessionPicker() as HTMLSelectElement).value).toBe("full");
+});
+
+test("the session picker is also offered in the mobile sheet", async () => {
+  const user = userEvent.setup();
+  renderSessionControl("ref_a", "mobile");
+  await user.selectOptions(sessionPicker() as HTMLSelectElement, "chat");
+  expect(sessionDetailLevel("ref_a")).toBe("chat");
+  expect(transcriptDisplayStore.getState().local.mobile).toBeUndefined();
 });

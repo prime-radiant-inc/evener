@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnyNotification, Thread } from "@evener/appwire-client";
+import { type AnyNotification, makeTranscriptDisplayConfig, type Thread } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -15,7 +15,9 @@ import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { resetSessionDetailLevelsForTests, setSessionDetailLevel } from "../../stores/sessionDetailLevel";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
@@ -1179,4 +1181,65 @@ test("the held-steer announcements region lives outside the virtual list", async
   // virtualized remount of the row never re-announces unchanged text.
   const announcements = screen.getByTestId("held-steer-announcements");
   expect(list.contains(announcements)).toBe(false);
+});
+
+// A session's own detail level replaces the default for that session alone,
+// and the tool row is what the level decides: shown at "tools", hidden at
+// "chat".
+test("a session's own detail level changes what its transcript shows and no other session's", async () => {
+  resetTranscriptDisplayStoreForTests();
+  resetSessionDetailLevelsForTests();
+  onTestFinished(() => {
+    resetTranscriptDisplayStoreForTests();
+    resetSessionDetailLevelsForTests();
+  });
+  const toolsDefault = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  act(() => {
+    transcriptDisplayStore.setState({ viewport: "desktop" });
+    transcriptDisplayStore.getState().setLocal("desktop", toolsDefault);
+  });
+
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { id: "item_user", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+            {
+              id: "item_tool",
+              turnId: "turn_1",
+              type: "commandExecution",
+              toolName: "level_probe_tool",
+              callId: "probe-call",
+              argumentsJson: "{}",
+              output: "done",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const toolRows = () => document.querySelectorAll('[data-testid="tool-call-item"][data-tool-name="level_probe_tool"]');
+  await waitFor(() => expect(toolRows().length).toBeGreaterThan(0));
+
+  act(() => setSessionDetailLevel("ref_other", "chat", toolsDefault));
+  expect(toolRows().length).toBeGreaterThan(0);
+
+  act(() => setSessionDetailLevel("ref_a", "chat", toolsDefault));
+  await waitFor(() => expect(toolRows().length).toBe(0));
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(toolsDefault);
+
+  act(() => setSessionDetailLevel("ref_a", null, toolsDefault));
+  await waitFor(() => expect(toolRows().length).toBeGreaterThan(0));
 });

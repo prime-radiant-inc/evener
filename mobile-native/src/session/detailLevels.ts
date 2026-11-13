@@ -8,7 +8,8 @@
 // projected without step lines.
 import {
 	type ContentLevel,
-	makeTranscriptDisplayConfig,
+	configAtLevel,
+	SessionDetailLevels,
 	shippedConfig,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
@@ -59,7 +60,7 @@ export function displayForLevel(
 	// The shared Chat preset keeps a line per step.
 	const chat = level === "chat";
 	return {
-		config: makeTranscriptDisplayConfig({ kind: "preset", level: chat ? "intent" : level }, base.advanced),
+		config: configAtLevel(chat ? "intent" : level, base),
 		justTheConversation: chat,
 	};
 }
@@ -89,63 +90,12 @@ export function levelToast(level: ContentLevel): string {
 }
 
 const storageKey = (hubId: string) => `evener.native.detail-level.${hubId}`;
-const LIMIT = 500;
-const LEVELS = new Set<string>(DETAIL_LEVELS.map((level) => level.level));
-
-function read(storage: SyncStringStorage, hubId: string): [string, ContentLevel][] {
-	try {
-		const raw = storage.getItemSync(storageKey(hubId));
-		const value: unknown = raw ? JSON.parse(raw) : [];
-		if (!Array.isArray(value)) return [];
-		return value.filter(
-			(entry): entry is [string, ContentLevel] =>
-				Array.isArray(entry) &&
-				entry.length === 2 &&
-				typeof entry[0] === "string" &&
-				typeof entry[1] === "string" &&
-				LEVELS.has(entry[1]),
-		);
-	} catch {
-		// Nothing readable: nothing chosen yet.
-		return [];
-	}
-}
 
 /** The level chosen for each session on one hub, newest first. */
-export class DetailLevels {
-	private entries: [string, ContentLevel][];
-	private revision = 0;
-	private listeners = new Set<() => void>();
-
-	constructor(
-		private readonly storage: SyncStringStorage,
-		private readonly hubId: string,
-	) {
-		this.entries = read(storage, hubId);
+export class DetailLevels extends SessionDetailLevels {
+	constructor(storage: SyncStringStorage, hubId: string) {
+		super(storage, storageKey(hubId));
 	}
-
-	get(ref: string): ContentLevel | null {
-		return this.entries.find(([entry]) => entry === ref)?.[1] ?? null;
-	}
-
-	set(ref: string, level: ContentLevel): void {
-		const next: [string, ContentLevel][] = [[ref, level], ...this.entries.filter(([entry]) => entry !== ref)];
-		this.entries = next.slice(0, LIMIT);
-		try {
-			this.storage.setItemSync(storageKey(this.hubId), JSON.stringify(this.entries));
-		} catch {
-			// The in-memory copy still serves this launch.
-		}
-		this.revision += 1;
-		for (const listener of [...this.listeners]) listener();
-	}
-
-	subscribe = (listener: () => void): (() => void) => {
-		this.listeners.add(listener);
-		return () => this.listeners.delete(listener);
-	};
-
-	getRevision = (): number => this.revision;
 }
 
 /** A storage failure throws, like removeHub's other cleanups, so the person

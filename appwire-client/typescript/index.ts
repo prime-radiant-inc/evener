@@ -600,6 +600,8 @@ export type {
 export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
 export type { AttentionClass, AttentionFacts } from "./sessionAttention";
 export { approvalWaiting, attentionNeedsYou, attentionState, normalizeWireState } from "./sessionAttention";
+export type { DetailLevelStorage } from "./sessionDetailLevels";
+export { configAtLevel, SessionDetailLevels } from "./sessionDetailLevels";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";

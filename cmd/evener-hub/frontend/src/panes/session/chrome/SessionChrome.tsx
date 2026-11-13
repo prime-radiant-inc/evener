@@ -55,12 +55,14 @@ import { buildShutdownConvergence } from "../../../stores/navigation/shutdownCon
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { ownerRetainedRef } from "../../../stores/recoveryFence";
 import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
+import { useSessionDetailLevel } from "../../../stores/sessionDetailLevel";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
+import { PRESET_LEVEL_OPTIONS } from "../transcript/TranscriptDetailEditor";
 import { ActivityPanel } from "./ActivityPanel";
 import { activityActionLabel } from "./activityFormat";
 import { StatusRow } from "./StatusRow";
@@ -136,6 +138,8 @@ export function SessionChrome({
   );
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
+  const sessionLevel = useSessionDetailLevel(sessionRef);
+  const sessionLevelLabel = PRESET_LEVEL_OPTIONS.find((option) => option.value === sessionLevel)?.label;
   const toasts = useToasts();
   // The Overview menu item's checked state is the sidebar open ON THIS
   // SESSION (the shared predicate hook). The mobile overlay uses the same
@@ -376,6 +380,7 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            verbosityLevel={sessionLevelLabel}
             // The composer's two row mounts carry the turn verbs (the
             // header comment on the prop says why the footer and rail
             // mounts must never): the engaged inline chrome, and the
@@ -406,6 +411,7 @@ export function SessionChrome({
         open={verbosityOpen}
         onClose={() => setVerbosityOpen(false)}
         layout={isMobile ? "mobile" : "desktop"}
+        sessionRef={sessionRef}
         onEditHubDefaults={() => {
           const url = paneToURL("settings", { section: "transcript" });
           if (url !== null) navigate(url);

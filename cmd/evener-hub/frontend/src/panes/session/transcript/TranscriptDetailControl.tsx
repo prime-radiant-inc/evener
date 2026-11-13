@@ -1,10 +1,11 @@
-import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
+import { type ContentLevel, resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
-import { useRef } from "react";
+import { useId, useRef } from "react";
+import { setSessionDetailLevel, useSessionDetailLevel } from "../../../stores/sessionDetailLevel";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { Button, Dialog, Sheet } from "../../../widgets";
+import { Button, Dialog, FormRow, Select, type SelectOption, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
+import { PRESET_LEVEL_OPTIONS, TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
 
 export interface TranscriptDetailControlProps {
@@ -12,6 +13,23 @@ export interface TranscriptDetailControlProps {
   onClose(): void;
   layout: ViewportClass;
   onEditHubDefaults(): void;
+  /** The session this control was opened from. With one, the control also
+   * offers a level for that session alone; without one it edits only the
+   * default every session shows. */
+  sessionRef?: string;
+}
+
+// The session picker's "no level of its own" choice. Not a ContentLevel, so
+// it can never be stored as one.
+const SESSION_DEFAULT = "default";
+
+const SESSION_LEVEL_OPTIONS: SelectOption[] = [
+  { value: SESSION_DEFAULT, label: "Same as default" },
+  ...PRESET_LEVEL_OPTIONS,
+];
+
+function isPresetLevel(value: string): value is ContentLevel {
+  return PRESET_LEVEL_OPTIONS.some((option) => option.value === value);
 }
 
 const CLASS = {
@@ -32,6 +50,10 @@ interface DetailPanelProps {
   hubError: string | null;
   hubSupport: "unknown" | "supported" | "unsupported";
   storageWarning: string | null;
+  /** The session's own level, when the control was opened from a session:
+   * null while it shows the default. Undefined hides the session picker. */
+  sessionLevel?: ContentLevel | null;
+  onSessionLevelChange(level: ContentLevel | null): void;
   onChange(value: ReturnType<typeof resolveEffectiveConfig>): void;
   onClearLocal(): void;
   onEditHubDefaults(): void;
@@ -73,11 +95,14 @@ function DetailPanel({
   hubError,
   hubSupport,
   storageWarning,
+  sessionLevel,
+  onSessionLevelChange,
   onChange,
   onClearLocal,
   onEditHubDefaults,
   editButtonRef,
 }: DetailPanelProps) {
+  const sessionLevelId = useId();
   const isMobile = layout === "mobile";
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
   const statusMessages: { kind: "hub-loading" | "hub-unsupported"; text: string }[] = [];
@@ -97,6 +122,23 @@ function DetailPanel({
       className={isMobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
       data-testid="transcript-detail-control"
     >
+      {sessionLevel !== undefined && (
+        <FormRow
+          label="This session"
+          htmlFor={sessionLevelId}
+          help="Only this session, in this browser. Everything below is the default, which a session left on Same as default shows."
+        >
+          <Select
+            id={sessionLevelId}
+            value={sessionLevel ?? SESSION_DEFAULT}
+            options={SESSION_LEVEL_OPTIONS}
+            onChange={(event) => {
+              const next = event.target.value;
+              onSessionLevelChange(isPresetLevel(next) ? next : null);
+            }}
+          />
+        </FormRow>
+      )}
       <p className={CLASS.scope} data-testid="transcript-detail-scope" data-scope={localExists ? "local" : "hub"}>
         {localExists ? `Local ${layoutName} view` : "Using hub default"}
       </p>
@@ -129,7 +171,14 @@ function DetailPanel({
   );
 }
 
-export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaults }: TranscriptDetailControlProps) {
+export function TranscriptDetailControl({
+  open,
+  onClose,
+  layout,
+  onEditHubDefaults,
+  sessionRef,
+}: TranscriptDetailControlProps) {
+  const sessionLevel = useSessionDetailLevel(sessionRef);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = layout === "mobile";
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
@@ -163,6 +212,10 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
       hubError={hubError}
       hubSupport={hubSupport}
       storageWarning={storageWarning}
+      sessionLevel={sessionRef === undefined ? undefined : sessionLevel}
+      onSessionLevelChange={(level) => {
+        if (sessionRef !== undefined) setSessionDetailLevel(sessionRef, level, effectiveConfig);
+      }}
       onChange={setLocal}
       onClearLocal={clearLocal}
       onEditHubDefaults={editHubDefaults}

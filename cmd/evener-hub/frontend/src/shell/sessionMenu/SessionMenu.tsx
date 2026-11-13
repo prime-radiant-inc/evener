@@ -86,6 +86,10 @@ export interface SessionMenuProps {
   overviewLabel?: string; // e.g. "Overview · 2 active"; defaults to "Overview"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
+  /** The level this session shows instead of the default, when it has one of
+   * its own: the menu names it, so an overridden session is visible without
+   * opening the control. */
+  verbosityLevel?: string;
   /** Composer-only turn verbs (see the header comment). Rail/sidebar and
    * menu-only callers omit them. */
   turnVerbs?: SessionMenuTurnVerbs;
@@ -112,6 +116,7 @@ export function SessionMenu({
   overviewOpen,
   overviewLabel,
   onOpenVerbosity,
+  verbosityLevel,
   turnVerbs,
   actions,
   triggerTabIndex,
@@ -157,7 +162,11 @@ export function SessionMenu({
     },
   ];
   if (onOpenVerbosity) {
-    inspectionItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
+    inspectionItems.push({
+      id: "verbosity",
+      label: verbosityLevel === undefined ? "Verbosity…" : `Verbosity · ${verbosityLevel}…`,
+      onSelect: onOpenVerbosity,
+    });
   }
   const organizeItems: MenuEntry[] = [
     {
