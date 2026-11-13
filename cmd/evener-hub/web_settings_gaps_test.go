@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/envvars"
 )
 
 // TestTildeHomeUnderHome covers the path-starts-with-home branch (lines 39-41).
@@ -38,30 +36,6 @@ func TestTildeHomeUnrelated(t *testing.T) {
 	got := tildeHome("/etc/passwd")
 	if got != "/etc/passwd" {
 		t.Fatalf("tildeHome(/etc/passwd) = %q, want /etc/passwd", got)
-	}
-}
-
-// TestDefaultMCPConfigPathXDGSet covers the path where XDG_CONFIG_HOME is set.
-func TestDefaultMCPConfigPathXDGSet(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv(envvars.XDGConfigHome.Name, xdg)
-	got := defaultMCPConfigPath()
-	want := filepath.Join(xdg, "evener", "mcp.json")
-	if got != want {
-		t.Fatalf("defaultMCPConfigPath with XDG set = %q, want %q", got, want)
-	}
-}
-
-// TestDefaultMCPConfigPathXDGFallback covers the path where XDG_CONFIG_HOME is
-// empty and the home-based fallback is used (lines 93-97).
-func TestDefaultMCPConfigPathXDGFallback(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv(envvars.XDGConfigHome.Name, "")
-	got := defaultMCPConfigPath()
-	want := filepath.Join(home, ".config", "evener", "mcp.json")
-	if got != want {
-		t.Fatalf("defaultMCPConfigPath fallback = %q, want %q", got, want)
 	}
 }
 

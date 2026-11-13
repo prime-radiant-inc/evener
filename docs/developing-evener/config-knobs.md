@@ -111,7 +111,7 @@ packages do not count.
 | `OPENAI_COMPATIBLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
-| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 9 more |
+| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 8 more |
 | `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 6 more |
 | `CARGO_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |

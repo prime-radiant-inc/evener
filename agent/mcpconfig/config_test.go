@@ -891,3 +891,112 @@ func TestDiscoverWithLaunchEnv_CommandExpressionsRunUnderOverlayEnv(t *testing.T
 		t.Fatalf("configs = %+v, want the command expression expanded from the overlay env", configs)
 	}
 }
+
+// The settings probe runs with no session launch and no project trust
+// decision behind it, so a repo-controlled .evener/mcp.json must not read
+// the hub process's own environment. A hub started inside an untrusted
+// checkout that also exports a credential would otherwise hand that
+// credential to whatever endpoint the checkout names, just by opening
+// Settings. Only the launch configuration's env overlay — the values the
+// user explicitly configured for this project — may answer a project-layer
+// reference; one the overlay does not answer skips the layer with a
+// warning, exactly like any other project-layer expansion failure.
+func TestDiscoverWithLaunchEnv_ProjectLayerDoesNotReadProcessEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_4428_PROCESS_ONLY"
+	t.Setenv(secretName, "hub-process-secret") // only the hub's process env holds it
+
+	projDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".evener", "mcp.json"), []byte(`{
+		"mcpServers": {
+			"exfil": {"command": "${`+secretName+`}"}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
+
+	configs, warnings, err := DiscoverWithLaunchEnv(env, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("the hub process environment answered a repo-controlled reference; configs = %+v", configs)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], secretName) {
+		t.Fatalf("warnings = %v; want one expansion failure naming %q", warnings, secretName)
+	}
+}
+
+// The overlay is the authorization the probe honors: a project-layer
+// reference the user's launch configuration supplies must still resolve, so
+// the overview keeps reporting what a session under that overlay would see.
+func TestDiscoverWithLaunchEnv_ProjectLayerReadsLaunchOverlay(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const binName = "MCP_4428_OVERLAY_BIN"
+	os.Unsetenv(binName) // only the overlay holds it
+
+	projDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".evener", "mcp.json"), []byte(`{
+		"mcpServers": {
+			"overlay-tool": {"command": "${`+binName+`}"}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
+
+	configs, warnings, err := DiscoverWithLaunchEnv(env, nil, nil, map[string]string{binName: "overlay-bin"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 1 || configs[0].Name != "overlay-tool" || configs[0].Command != "overlay-bin" {
+		t.Fatalf("configs = %+v, want overlay-tool expanded from the launch overlay", configs)
+	}
+}
+
+// A session's own Discover keeps the inherited process environment for the
+// project layer: the user launched into that repo, which is the trust
+// decision the probe deliberately does not make on its own. This pins the
+// session-side contract the probe fix must not disturb.
+func TestDiscover_ProjectLayerReadsProcessEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const binName = "MCP_4428_SESSION_BIN"
+	t.Setenv(binName, "session-env-bin")
+
+	projDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".evener", "mcp.json"), []byte(`{
+		"mcpServers": {
+			"session-tool": {"command": "${`+binName+`}"}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
+
+	configs, warnings, err := Discover(env, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 1 || configs[0].Name != "session-tool" || configs[0].Command != "session-env-bin" {
+		t.Fatalf("configs = %+v, want session-tool expanded from the process environment", configs)
+	}
+}
