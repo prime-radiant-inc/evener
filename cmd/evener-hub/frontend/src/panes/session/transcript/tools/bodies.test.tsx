@@ -1,6 +1,7 @@
-import type { ItemModel } from "@evener/appwire-client";
+import { type ItemModel, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { revealForFind } from "../../find/findReveal";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 
@@ -73,7 +74,7 @@ test("a folded output shows the stretch holding the words Find landed on, and sa
   // Folded to its tail, the early words are not on screen.
   expect(view.container.textContent).not.toContain("quokka");
 
-  act(() => revealForFind("found", "early quokka"));
+  act(() => revealForFind("", "found", "early quokka"));
   const text = view.container.textContent ?? "";
   expect(text).toContain("quokka line");
   // Still bounded: the excerpt replaces the tail rather than unfolding it all.
@@ -82,7 +83,7 @@ test("a folded output shows the stretch holding the words Find landed on, and sa
 
   expect(text).toContain("another call");
   // Another call is untouched, and leaving the match restores the fold.
-  act(() => revealForFind(null, ""));
+  act(() => revealForFind("", null, ""));
   expect(view.container.textContent).not.toContain("quokka");
 });
 
@@ -90,19 +91,19 @@ test("a head-clipped output shows words Find landed on past the clip", () => {
   const output = `${"y".repeat(9000)} late quokka ${"z".repeat(9000)}`;
   const view = render(<HeadClippedOutputBody item={item({ id: "clipped", output })} live={false} />);
   expect(view.container.textContent).not.toContain("quokka");
-  act(() => revealForFind("clipped", "quokka"));
+  act(() => revealForFind("", "clipped", "quokka"));
   expect(view.container.textContent).toContain("late quokka");
-  act(() => revealForFind(null, ""));
+  act(() => revealForFind("", null, ""));
 });
 
 test("words already inside the fold leave the output as it was", () => {
   const output = `${"a".repeat(9000)} tail quokka`;
   const view = render(<TailFoldedOutputBody item={item({ id: "tail", output })} live={false} />);
   const before = view.container.textContent;
-  act(() => revealForFind("tail", "quokka"));
+  act(() => revealForFind("", "tail", "quokka"));
   expect(view.container.textContent).toBe(before);
   expect(view.container.querySelector("[data-find-excerpt]")).toBeNull();
-  act(() => revealForFind(null, ""));
+  act(() => revealForFind("", null, ""));
 });
 
 test("an excerpt of many short lines keeps the landed-on words on screen", () => {
@@ -111,7 +112,44 @@ test("an excerpt of many short lines keeps the landed-on words on screen", () =>
   const output = `${"filler\n".repeat(3000)}the quokka line\n${"x\n".repeat(1500)}${"tail\n".repeat(3000)}`;
   const view = render(<TailFoldedOutputBody item={item({ id: "lines", output })} live={false} />);
   expect(view.container.textContent).not.toContain("quokka");
-  act(() => revealForFind("lines", "quokka"));
+  act(() => revealForFind("", "lines", "quokka"));
   expect(view.container.textContent).toContain("the quokka line");
-  act(() => revealForFind(null, ""));
+  act(() => revealForFind("", null, ""));
+});
+
+test("output short enough to show whole is not line-folded away from the words Find landed on", () => {
+  // Well under the character budget, but past the block's own line fold.
+  const output = `the quokka line\n${"x\n".repeat(300)}`;
+  const view = render(<TailFoldedOutputBody item={item({ id: "short", output })} live={false} />);
+  expect(view.container.textContent).not.toContain("quokka");
+  act(() => revealForFind("", "short", "quokka"));
+  expect(view.container.textContent).toContain("the quokka line");
+  act(() => revealForFind("", null, ""));
+  expect(view.container.textContent).not.toContain("quokka");
+});
+
+test("a landing belongs to one transcript view: another view of the same call keeps its fold", () => {
+  const output = `an early quokka ${"b".repeat(20000)} the tail`;
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const body = (scope: string) => (
+    <div data-testid={scope}>
+      <TranscriptRenderProvider config={config} disclosureScope={scope}>
+        <TailFoldedOutputBody item={item({ id: "shared", output })} live={false} />
+      </TranscriptRenderProvider>
+    </div>
+  );
+  render(
+    <>
+      {body("left")}
+      {body("right")}
+    </>,
+  );
+  act(() => revealForFind("left", "shared", "quokka"));
+  expect(screen.getByTestId("left").textContent).toContain("early quokka");
+  expect(screen.getByTestId("right").textContent).not.toContain("quokka");
+  // The other view landing, then leaving, does not disturb this one.
+  act(() => revealForFind("right", "shared", "quokka"));
+  act(() => revealForFind("right", null, ""));
+  expect(screen.getByTestId("left").textContent).toContain("early quokka");
+  act(() => revealForFind("left", null, ""));
 });

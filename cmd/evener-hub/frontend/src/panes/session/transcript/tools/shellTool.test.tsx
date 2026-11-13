@@ -570,10 +570,10 @@ test("a shell body shows the stretch of output Find landed on when its tail does
   const call = withCommand("make test", { id: "shell-found", output });
   const view = render(<Body item={call} live={false} />);
   expect(view.container.textContent).not.toContain("quokka");
-  act(() => revealForFind("shell-found", "early quokka"));
+  act(() => revealForFind("", "shell-found", "early quokka"));
   expect(view.container.textContent).toContain("an early quokka line");
   // The tail the reader already had stays below the excerpt.
   expect(view.container.textContent).toContain("the tail");
-  act(() => revealForFind(null, ""));
+  act(() => revealForFind("", null, ""));
   expect(view.container.textContent).not.toContain("quokka");
 });

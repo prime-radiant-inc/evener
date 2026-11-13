@@ -56,37 +56,28 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   return <FoldedOutput output={output} shown={text} needle={needle} />;
 }
 
-// A folded body normally shows `shown`. While Find is landed on words the
-// fold dropped, it shows the same budget of text around them instead, under a
-// line saying so, so the reader always sees why the call matched.
+// A folded body normally shows `shown`, line-folded by the block. While Find
+// is landed on words in this output it shows them: the block's line fold
+// comes off, and where `shown` dropped the words it gives way to the same
+// budget of text around them, under a line saying so.
 function FoldedOutput({ output, shown, needle }: { output: string; shown: string; needle: string }) {
-  const excerpt = needle === "" ? null : excerptHolding(output, shown, needle);
-  if (excerpt === null) return <CodeBlock text={shown} copyLabel="Copy output" />;
-  return <Excerpt text={excerpt} />;
+  const landing = needle === "" ? null : landingIn(output, shown, needle);
+  if (landing === null) return <CodeBlock text={shown} copyLabel="Copy output" />;
+  if (landing.excerpt === null) return <CodeBlock text={shown} copyLabel="Copy output" fold={false} />;
+  return <Excerpt text={landing.excerpt} />;
 }
 
-/** The stretch of `output` holding the words Find is landed on in this call,
- * when `shown` (what the body renders anyway) does not hold them; nothing
- * otherwise. For a body that keeps its own rendering of the tail. */
-export function FindExcerpt({
-  itemId,
-  output,
-  shown,
-  ansi,
-}: {
-  itemId: string;
-  output: string;
-  shown: string;
-  ansi?: boolean;
-}) {
+/** For a body that keeps its own rendering of the tail: whether Find is
+ * landed on words in this call's output (so its block must not line-fold),
+ * and the stretch holding them when `shown` does not. */
+export function useFindLanding(itemId: string, output: string, shown: string): { excerpt: string | null } | null {
   const needle = useFindReveal(itemId);
-  const excerpt = needle === "" ? null : excerptHolding(output, shown, needle);
-  return excerpt === null ? null : <Excerpt text={excerpt} ansi={ansi} />;
+  return needle === "" ? null : landingIn(output, shown, needle);
 }
 
 // The excerpt is already bounded, so the block's own line fold stays off:
 // folding it to its last lines could hide the match again.
-function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
+export function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
   return (
     <div data-find-excerpt="">
       <CodeBlock text={text} copyLabel="Copy output" fold={false} ansi={ansi} />
@@ -95,17 +86,18 @@ function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
 }
 
 // The needle is whitespace-collapsed and lowercased (findNeedle); in the
-// output its words may be separated by any run of whitespace.
-function excerptHolding(output: string, shown: string, needle: string): string | null {
+// output its words may be separated by any run of whitespace. Null when the
+// output does not hold the words at all (the match is elsewhere in the call).
+function landingIn(output: string, shown: string, needle: string): { excerpt: string | null } | null {
   const words = needle.split(" ").map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const pattern = new RegExp(words.join("\\s+"), "i");
-  if (pattern.test(shown)) return null;
   const match = pattern.exec(output);
   if (match === null) return null;
+  if (pattern.test(shown)) return { excerpt: null };
   const start = Math.max(0, Math.min(match.index - TOOL_BODY_MAX_CHARS / 2, output.length - TOOL_BODY_MAX_CHARS));
   const end = Math.min(output.length, start + TOOL_BODY_MAX_CHARS);
   const note = `showing ${(end - start).toLocaleString("en-US")} chars around the match — the rest of the output is not shown`;
-  return `${note}\n${output.slice(start, end)}`;
+  return { excerpt: `${note}\n${output.slice(start, end)}` };
 }
 
 // EditFileBody synthesizes an edit's diff from its old_string/new_string

@@ -388,9 +388,9 @@ export function useFindInSession({
   const currentItemId = current?.itemId ?? null;
   useEffect(() => {
     if (currentItemId === null) return;
-    revealForFind(currentItemId, needle);
-    return () => revealForFind(null, "");
-  }, [currentItemId, needle]);
+    revealForFind(disclosureScope, currentItemId, needle);
+    return () => revealForFind(disclosureScope, null, "");
+  }, [disclosureScope, currentItemId, needle]);
 
   // The app's find chord. Declining leaves the keydown to the browser, which
   // is how its own find stays available outside a transcript, and inside the

@@ -806,6 +806,23 @@ test("/find asks the focused session's conversation to open Find", () => {
   act(() => resetFindRequestsForTests());
 });
 
+test("/find from a companion pane brings up the session's conversation to show Find in", () => {
+  // Only the tasks pane is open: no conversation is mounted to take the ask.
+  workspaceStore.setState({
+    panes: [{ id: "tasks", type: "sessionTasks", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "tasks",
+  });
+  act(() => {
+    cmd("find").run?.(runContext());
+  });
+  const conversation = workspaceStore.getState().panes.find((pane) => pane.type === "session");
+  expect(conversation).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(conversation?.id);
+  const asked = renderHook(() => useFindRequest("ref_a", conversation?.id ?? ""));
+  expect(asked.result.current).toBeDefined();
+  act(() => resetFindRequestsForTests());
+});
+
 test("/copy-id copies the session ref to the clipboard", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

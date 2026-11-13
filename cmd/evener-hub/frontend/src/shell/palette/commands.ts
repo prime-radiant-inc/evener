@@ -621,7 +621,18 @@ export function buildCommands(): Command[] {
       scope: "session",
       run: (ctx) => {
         if (!ctx.sessionRef) return;
-        requestFindInSession(ctx.sessionRef, { target: ctx.sessionPaneId });
+        // Find lives in the conversation: from a companion pane (tasks,
+        // details) focus the seat that hosts it, or open the session pane,
+        // as the notes command does. The request waits for that pane to mount.
+        const seat = ctx.sessionPaneId
+          ? workspaceStore.getState().panes.find((pane) => pane.id === ctx.sessionPaneId)
+          : undefined;
+        if (seat && (seat.type === "session" || seat.type === "sessionZoom")) {
+          workspaceStore.getState().focusPane(seat.id);
+        } else {
+          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        }
+        requestFindInSession(ctx.sessionRef, { target: seat ? ctx.sessionPaneId : null });
       },
     },
     {

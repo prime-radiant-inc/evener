@@ -59,6 +59,21 @@ describe("the text an item is searched by", () => {
     expect(itemFindTexts(item({ text: "hello" }))).toEqual(["hello"]);
   });
 
+  it("reads the text inside nested arguments, such as a question's wording and options", () => {
+    const ask = item({
+      type: "toolCall",
+      argumentsJSON: JSON.stringify({
+        questions: [{ header: "Deploy", question: "Ship the quokka build?", options: [{ label: "Hold it" }] }],
+      }),
+    });
+    const found = (query: string) => itemFindTexts(ask).some((text) => textMatchesFind(text, findNeedle(query)));
+    expect(found("ship the quokka build")).toBe(true);
+    expect(found("hold it")).toBe(true);
+    // Still by value: the names of the fields are plumbing.
+    expect(found("options")).toBe(false);
+    expect(found("question")).toBe(false);
+  });
+
   it("survives arguments that are not an object", () => {
     expect(itemFindTexts(item({ argumentsJSON: "not json", text: "kept" }))).toEqual(["kept"]);
   });

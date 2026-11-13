@@ -35,7 +35,7 @@ import { useOptionalTranscriptRenderContext } from "../../../../transcriptDispla
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { FindExcerpt, TOOL_BODY_MAX_CHARS } from "./bodies";
+import { Excerpt, TOOL_BODY_MAX_CHARS, useFindLanding } from "./bodies";
 
 // shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
 // toolSummaries.
@@ -64,6 +64,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   }
   buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
+  const landing = useFindLanding(item.id, output, tail.renderedText);
   // The typed exit code's one home is the captured output's trailing footer,
   // but the wire carries the two independently: an output can exist with NO
   // exit trailer of either shape while the typed ItemModel.exitCode is present
@@ -92,13 +93,15 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
-      <FindExcerpt itemId={item.id} output={output} shown={tail.renderedText} ansi />
+      {landing?.excerpt != null && <Excerpt text={landing.excerpt} ansi />}
       {renderedOutput !== undefined && (
         <CodeBlock
           text={live || !tail.truncated ? renderedOutput : `${tailFoldNote(TOOL_BODY_MAX_CHARS)}\n${renderedOutput}`}
           copyText={tail.copyText}
           copyLabel="Copy output"
           ansi
+          // Landed on by Find, the words must not sit behind the line fold.
+          fold={landing === null ? undefined : false}
         />
       )}
     </>
