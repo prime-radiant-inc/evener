@@ -591,7 +591,7 @@ export function InstanceModelEditor({
                   </Button>
                 );
               })}
-              {initial.effortValues !== null && draft.effortValues !== null && (
+              {draft.effortValues !== null && (
                 <Button variant="link" disabled={busy} onClick={() => update({ effortValues: null })}>
                   Reset
                 </Button>
@@ -631,7 +631,7 @@ export function InstanceModelEditor({
                   })
                 }
               />
-              {initial.inputModalities !== null && draft.inputModalities !== null && (
+              {draft.inputModalities !== null && (
                 <Button variant="link" disabled={busy} onClick={() => update({ inputModalities: null })}>
                   Reset
                 </Button>
