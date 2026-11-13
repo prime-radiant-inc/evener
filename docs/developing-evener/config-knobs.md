@@ -112,7 +112,7 @@ packages and test files do not count.
 | `GOOGLE_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
-| `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 3 more |
+| `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 4 more |
 | `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 10 more |
 | `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 6 more |
 | `CARGO_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
@@ -121,7 +121,7 @@ packages and test files do not count.
 | `GOENV` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
-| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 18 more |
+| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 19 more |
 | `LANG` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `NVM_DIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/gate/test-timing-budget.sh` and 1 more |
