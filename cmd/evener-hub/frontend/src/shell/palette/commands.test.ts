@@ -1,5 +1,6 @@
 import type { Thread, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, renderHook } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -8,6 +9,7 @@ import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { resetFindRequestsForTests, useFindRequest } from "../../panes/session/find/findRequest";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
@@ -269,7 +271,7 @@ test("a live focused session exposes global + session (all 25 commands)", () => 
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(25);
+  expect(inScope).toHaveLength(26);
   expect(inScope.some((c) => c.id === "steer")).toBe(true);
   expect(inScope.some((c) => c.id === "project")).toBe(true);
 });
@@ -286,7 +288,7 @@ test("an ended focused session still lists every command; only the wire's own fa
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
   });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(25);
+  expect(inScope).toHaveLength(26);
   const byId = new Map(inScope.map((c) => [c.id, c]));
   for (const id of ["model", "goal", "clear", "compact", "aside", "shutdown", "copy-id"]) {
     expect(byId.get(id)?.unavailableReason).toBeUndefined();
@@ -330,7 +332,7 @@ test("a session command with no wire capability is never capability-gated", () =
 test("an unhydrated focused session keeps every command listed and only Notes unavailable", () => {
   focusSession("ref_a");
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(25);
+  expect(inScope).toHaveLength(26);
   expect(inScope.find((c) => c.id === "notes")?.unavailableReason).toBe(UNAVAILABLE_REASON);
   expect(inScope.filter((c) => c.id !== "notes").every((c) => c.unavailableReason === undefined)).toBe(true);
 });
@@ -786,6 +788,22 @@ test("/project reveals the focused session in the rail via the seam", () => {
   seedModel("ref_a");
   cmd("project").run?.(runContext());
   expect(vi.mocked(revealSessionInRail)).toHaveBeenCalledWith("ref_a");
+});
+
+test("/find asks the focused session's conversation to open Find", () => {
+  focusSession("ref_a");
+  // The request is addressed to the focused session's own pane.
+  const asked = renderHook(() => useFindRequest("ref_a", "p1"));
+  const other = renderHook(() => useFindRequest("ref_a", "another-pane"));
+  expect(asked.result.current).toBeUndefined();
+  act(() => {
+    cmd("find").run?.(runContext());
+  });
+  expect(asked.result.current).toBeDefined();
+  expect(other.result.current).toBeUndefined();
+  // Nothing is typed for the reader: the bar opens on whatever it held.
+  expect(asked.result.current?.query).toBeUndefined();
+  act(() => resetFindRequestsForTests());
 });
 
 test("/copy-id copies the session ref to the clipboard", async () => {

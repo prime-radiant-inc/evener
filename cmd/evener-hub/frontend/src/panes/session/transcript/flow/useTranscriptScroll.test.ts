@@ -2976,6 +2976,33 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
   });
 
+  test("a jump to a row lands there and ends bottom-following, so nothing pulls the reader back", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const onReaderIntent = vi.fn();
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        onReaderIntent,
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToRow(1));
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    // A jump the reader asked for supersedes any retained placement.
+    expect(onReaderIntent).toHaveBeenCalled();
+    // The landing is inside the transcript: the way back to latest is offered.
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the error/count state while the pill stays on offer", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);

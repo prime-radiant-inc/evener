@@ -345,7 +345,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // disclosure that would open to nothing.
   if (bodyless) {
     return (
-      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
+      <div
+        className={CLASS.call}
+        data-testid="tool-call-item"
+        data-tool-name={item.toolName ?? ""}
+        data-item-id={item.id}
+      >
         <ToolRow
           summary={rowSummaryText}
           summaryLink={summaryLink}
@@ -378,6 +383,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
+      // A call inside an open run has no anchor of its own (the run is one
+      // scroll position), so its source item id is how Find locates it.
+      data-item-id={item.id}
       // A failed row carries data-attention="error" for the same urgent-anchor
       // search the legacy shell tagged failed rows with (parity §11's
       // dataset.attention="error"); a clean row carries neither attribute so it

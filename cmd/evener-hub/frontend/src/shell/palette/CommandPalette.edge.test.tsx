@@ -17,6 +17,7 @@ import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
+import { resetFindRequestsForTests, useFindRequest } from "../../panes/session/find/findRequest";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../stores/connection";
@@ -101,6 +102,7 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
+  resetFindRequestsForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
   // @ts-expect-error jsdom baseline has no matchMedia.
@@ -256,6 +258,30 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");
   expect(anchors).toHaveLength(0);
+});
+
+test("choosing an in-session result hands its words and its item to the session's Find", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "nothing here"), item("i2", "search term found here")])] });
+  const paneId = workspaceStore.getState().focusedPaneId ?? "";
+  const request = renderHook(() => useFindRequest("ref_a", paneId));
+  expect(request.result.current).toBeUndefined();
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), " Search  term ");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(request.result.current).toMatchObject({ query: "Search  term", itemId: "i2" });
+  // Another session's Find is not asked.
+  expect(renderHook(() => useFindRequest("ref_b", paneId)).result.current).toBeUndefined();
 });
 
 test("Enter on a plain query prefers the first session hit over the leading command", async () => {

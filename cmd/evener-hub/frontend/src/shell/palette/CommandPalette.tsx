@@ -20,6 +20,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
 import {
@@ -662,10 +663,12 @@ function PaletteBody({
       return;
     }
     if (item.kind === "insession") {
-      // Best-effort: focus stays on the already-focused session pane; precise
-      // scroll-to-hit in the virtualized transcript is beyond-parity (flagged
-      // in the sweep).
+      // Hand the choice to the conversation's own Find: it opens on these
+      // words, lands on this item, and from there steps through the rest.
+      const { sessionRef, sessionPaneId } = runContext();
       closePalette();
+      if (sessionRef !== null)
+        requestFindInSession(sessionRef, { target: sessionPaneId, query: query.trim(), itemId: item.match.itemId });
       return;
     }
     if (item.kind === "live" || item.kind === "past") {

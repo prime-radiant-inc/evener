@@ -113,6 +113,29 @@ test("pane-only Verbosity follows Overview, precedes the first separator, and di
   expect(onOpenVerbosity).toHaveBeenCalledOnce();
 });
 
+test("pane-only Find sits with the inspection actions and dispatches its callback", async () => {
+  const user = userEvent.setup();
+  const onFind = vi.fn();
+  renderMenu({ onFind });
+  await openMenu(user);
+
+  const menu = screen.getByRole("menu");
+  const find = within(menu).getByRole("menuitem", { name: /find/i });
+  const firstSeparator = within(menu).getAllByRole("separator")[0];
+  if (!firstSeparator) throw new Error("Session menu is missing its first separator");
+  expect(find.compareDocumentPosition(firstSeparator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.click(find);
+  expect(onFind).toHaveBeenCalledOnce();
+});
+
+test("rail-style callers that omit the pane-only callback do not get Find", async () => {
+  const user = userEvent.setup();
+  renderMenu({ triggerLabel: "Actions for My session" });
+  await user.click(screen.getByRole("button", { name: "Actions for My session" }));
+  expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
+});
+
 test("rail-style callers that omit the pane-only callback do not get Verbosity", async () => {
   const user = userEvent.setup();
   renderMenu({ triggerLabel: "Actions for My session" });

@@ -176,6 +176,10 @@ export interface UseTranscriptScrollResult {
    * Call it immediately BEFORE the scroll write. The bottom-hold correction
    * refuses to re-pin while a gesture is pending in the same frame - see the
    * scroll listener. Stable identity; safe to call from a long-lived handler. */
+  /** Lands the reader on a row inside the transcript, as a jump they asked
+   * for: it ends bottom-following and supersedes any pending placement, so
+   * neither pulls them back off the row. */
+  jumpToRow: (index: number) => void;
   markGesture: (readerIntent?: boolean, beforeOffset?: number) => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
@@ -520,6 +524,21 @@ export function useTranscriptScroll({
     // until the next scroll event recomputes it.
     setPillArrowDirection("down");
   }, []);
+
+  const jumpToRow = useCallback(
+    (index: number) => {
+      pendingViewAnchorRef.current = null;
+      pendingBottomJumpRef.current = null;
+      readerGestureRef.current = undefined;
+      readerCallbacksRef.current.onReaderIntent?.();
+      listRef.current?.scrollToIndex(index, { align: "start" });
+      // The landing is not the bottom until measured geometry says so.
+      wasAtBottomRef.current = false;
+      endFollowIntentRef.current = false;
+      setAwayFromBottom(true);
+    },
+    [listRef],
+  );
 
   const jumpToBottom = useCallback(() => {
     pendingViewAnchorRef.current = null;
@@ -1373,6 +1392,7 @@ export function useTranscriptScroll({
     pillArrowDirection,
     isFollowingBottom,
     jumpToBottom,
+    jumpToRow,
     captureViewAnchor,
     restoreViewAnchorAfterMeasurement,
   };

@@ -24,6 +24,8 @@ import { useBlockedMutationEntries, usePendingMessages } from "./composer/queue/
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
+import { FindBar } from "./find/FindBar";
+import { useFindInSession } from "./find/useFindInSession";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
@@ -186,6 +188,20 @@ function UnavailablePresentationControl() {
   );
 }
 
+// Whether the conversation `ref`, seated under `paneId`, is the one the
+// keyboard is in: a focused session pane showing it, or a focused cascade
+// whose active leaf is it.
+function holdsKeyboard(
+  state: Pick<ReturnType<typeof workspaceStore.getState>, "panes" | "focusedPaneId">,
+  paneId: string | null,
+  ref: string,
+): boolean {
+  const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
+  if (!focusedPane || focusedPane.id !== paneId) return false;
+  if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
+  return focusedSessionRef() === ref;
+}
+
 function StandardConversationBody(props: {
   ref: string;
   seat: ConversationSeat;
@@ -219,10 +235,19 @@ function LiveConversationBody({
   render(parts: ConversationParts): React.ReactNode;
   submission?: ComposerSubmission;
 }) {
-  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
-    ref,
-    seat.readView,
-  );
+  const {
+    model,
+    hasOlder,
+    olderPageKey,
+    loadOlder,
+    loadingOlder,
+    loadOlderReportingError,
+    olderError,
+    olderPermanent,
+    cancelOlder,
+    findOlder,
+    cancelFindOlder,
+  } = useTranscript(ref, seat.readView);
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
@@ -249,12 +274,7 @@ function LiveConversationBody({
   // Only the actual focused conversation participates: a session pane, or a
   // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
   // ref). A parent column's broad seat.focused value never grants it.
-  const attentionOwner = useStore(workspaceStore, (state) => {
-    const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
-    if (!focusedPane || focusedPane.id !== seat.keyboardScrollPaneId) return false;
-    if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
-    return focusedSessionRef() === ref;
-  });
+  const attentionOwner = useStore(workspaceStore, (state) => holdsKeyboard(state, seat.keyboardScrollPaneId, ref));
   useEffect(() => {
     if (!attentionOwner) setOverlayHeight(0);
   }, [attentionOwner]);
@@ -361,6 +381,30 @@ function LiveConversationBody({
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
     onPositioningCommand: seat.readView?.supersedePositioning,
+  });
+
+  // Find shares the transcript's rows, its scroll owner and its paging owner.
+  // The chord reaches only the conversation the keyboard is in, read at keydown.
+  const keyboardPaneId = seat.keyboardScrollPaneId;
+  const ownsKeyboard = useCallback(
+    () => holdsKeyboard(workspaceStore.getState(), keyboardPaneId, ref),
+    [keyboardPaneId, ref],
+  );
+  const find = useFindInSession({
+    ref,
+    paneId: seat.viewFallbackId,
+    rows: renderRows,
+    disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
+    listRef: virtualListRef,
+    jumpToRow: flow.jumpToRow,
+    markGesture: flow.markGesture,
+    olderPageKey,
+    olderLoading: loadingOlder,
+    olderError,
+    olderPermanent,
+    findOlder,
+    cancelFindOlder,
+    ownsKeyboard,
   });
 
   // Each floating slot mounts only while its control would actually render
@@ -513,6 +557,7 @@ function LiveConversationBody({
     <div className={styles.contentColumn}>
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
       <SandboxEscalationRail sessionRef={ref} />
+      {find.view && <FindBar view={find.view} />}
       {/* The held-steer ghosts' ONE live region, same rule as the ask
           dock's: outside the virtual list, live-gated per spec §1. */}
       {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}

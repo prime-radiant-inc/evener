@@ -98,6 +98,29 @@ describe("default bindings through the dispatcher", () => {
     expect(calls).toEqual([ACTIONS.settingsOpen]);
   });
 
+  test("the find chord fires from an editable target", () => {
+    setup();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    const taken = keydown({ key: "f", code: "KeyF", ctrlKey: true });
+    input.dispatchEvent(taken);
+    expect(calls).toEqual([ACTIONS.transcriptFind]);
+    expect(taken.defaultPrevented).toBe(true);
+  });
+
+  test("a find chord every handler declines is not claimed", () => {
+    // Declining is how a pane that is not a conversation leaves the chord
+    // alone.
+    registry = createKeybindingsRegistry(parseKeybinding);
+    registry.getState().registerAction(ACTIONS.transcriptFind, () => false);
+    registerDefaultBindings(registry);
+    dispatcher = createKeybindingDispatcher({ registry });
+    detach = dispatcher.attach(window);
+    const declined = keydown({ key: "f", code: "KeyF", ctrlKey: true });
+    window.dispatchEvent(declined);
+    expect(declined.defaultPrevented).toBe(false);
+  });
+
   test("Escape only closes settings while the settings scope is pushed", () => {
     setup();
     window.dispatchEvent(keydown({ key: "Escape", code: "Escape" }));

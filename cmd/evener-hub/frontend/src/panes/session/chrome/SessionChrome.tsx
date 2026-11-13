@@ -58,6 +58,7 @@ import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionAc
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { requestFindInSession } from "../find/findRequest";
 import { NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
@@ -376,6 +377,7 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            onFind={() => requestFindInSession(sessionRef, { target: paneId })}
             // The composer's two row mounts carry the turn verbs (the
             // header comment on the prop says why the footer and rail
             // mounts must never): the engaged inline chrome, and the

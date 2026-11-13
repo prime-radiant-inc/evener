@@ -1,16 +1,23 @@
 // Search mode: the palette's default mode (query is empty or doesn't start
 // with "/"). Three concerns, all ported from search.js's search-mode block:
 //   - fetchSearch: the backend session search over the typed AppWire method.
-//   - findInSessionMatches: the "In session · N" section. The legacy scanned
-//     #conversation's DOM (search.js:961-982); the new transcript is
-//     virtualized, so this scans the focused session's ThreadModel directly
-//     (turns -> items -> text) - the plan-resolved successor.
+//   - findInSessionMatches: the "In session · N" section, scanning the focused
+//     session's loaded ThreadModel (turns -> items -> text). Choosing a row
+//     opens the session's own Find on it (panes/session/find).
 //   - buildSnippet / highlightParts: the <mark>-highlighted context strings.
 //     Returned as structured parts (not HTML) so the React overlay renders
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
 //     legacy's escapeHtml has no successor here.
 
-import type { AppwireClientLike, ItemModel, SearchResponse, ThreadModel } from "@evener/appwire-client";
+import {
+  type AppwireClientLike,
+  findIndexIn,
+  findNeedle,
+  findReadable,
+  itemFindTexts,
+  type SearchResponse,
+  type ThreadModel,
+} from "@evener/appwire-client";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -29,45 +36,23 @@ export function fetchSearch(query: string, client: AppwireClientLike): Promise<S
   return client.request("evener/search", { query });
 }
 
-// normalizeWhitespace collapses runs of whitespace to a single space and
-// trims, matching the legacy's `(el.textContent||"").replace(/\s+/g," ").trim()`
-// so a match spanning a newline in the model's item text still resolves.
-function normalizeWhitespace(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-// itemSearchTexts gathers every user-VISIBLE text an item renders in the
-// transcript, so search finds what the user can see (reviewer adjudication
-// I2), not just the settled message text: an item's `text`, a tool call's
-// `output` and `error`, and each live reasoning summary (its streamed chunks
-// joined). Each source that matches produces its own hit, all sharing the
-// item's turn label.
-function itemSearchTexts(item: ItemModel): string[] {
-  const texts: string[] = [];
-  if (item.text) texts.push(item.text);
-  if (item.output) texts.push(item.output);
-  if (item.error) texts.push(item.error);
-  for (const summary of item.reasoningSummaries ?? []) {
-    const joined = summary.join("");
-    if (joined) texts.push(joined);
-  }
-  return texts;
-}
-
+// What an item is searched by, and what counts as a match, are the shared
+// find rules (@evener/appwire-client's findInSession): the palette lists the
+// same matches the session's own Find steps through. Each matching text of an
+// item is its own hit, all sharing the item's turn label.
 export function findInSessionMatches(model: ThreadModel, query: string): InSessionMatch[] {
-  const q = query.toLowerCase();
-  if (!q) return [];
+  const needle = findNeedle(query);
+  if (needle === "") return [];
   const out: InSessionMatch[] = [];
   let turnNumber = 0;
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      for (const raw of itemSearchTexts(item)) {
-        const text = normalizeWhitespace(raw);
-        if (!text) continue;
-        const hit = text.toLowerCase().indexOf(q);
+      for (const raw of itemFindTexts(item)) {
+        const text = findReadable(raw);
+        const hit = findIndexIn(text, needle);
         if (hit < 0) continue;
-        out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, query.length) });
+        out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, needle.length) });
       }
     }
   }

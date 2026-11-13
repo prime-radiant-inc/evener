@@ -123,6 +123,14 @@ test("findInSessionMatches scans tool output", () => {
   expect(hits[0]?.turn).toBe(1);
 });
 
+test("findInSessionMatches scans what a tool call was asked to act on, not the names of its arguments", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("i1", { type: "tool", argumentsJSON: JSON.stringify({ path: "/src/frobnitz.ts" }) })]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
+  expect(findInSessionMatches(model, "path")).toEqual([]);
+});
+
 test("findInSessionMatches scans tool error text", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", error: "frobnitz not permitted" })])]);
   expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);

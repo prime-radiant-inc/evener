@@ -196,6 +196,52 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Find in session
+
+Find searches the conversation in a session pane or a cascade's active column.
+It opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
+**Find in session…** in the session menu, from the palette's **Find in session**
+command, and by choosing an **In session** result in the palette, which opens
+Find on the typed words at that item.
+
+- **What matches.** A match is one transcript entry the current verbosity
+  shows: a message, a thought, or a tool call, searched by its text, what the
+  call was asked to act on, and what came back. Case and the shape of
+  whitespace are ignored. The rule is shared with the phone and the palette
+  (`appwire-client/typescript/findInSession.ts`).
+- **Order.** Typing lands on the newest loaded match. Enter or the up control
+  steps older; Shift+Enter or the down control steps newer. The position counts
+  from the newest match, so it does not shift as older pages arrive.
+- **Folds.** Landing on a match inside a folded tool run or action group opens
+  the fold, and a tool call's or thought's own body, so the words are on
+  screen. They stay open, as a reader's own toggle would.
+- **Marks.** The current entry is outlined. Matching words are painted with the
+  CSS Custom Highlight API, which changes no transcript DOM; where a browser
+  lacks it, the outline alone marks the match.
+- **Older history.** Typing reads only what is loaded. Stepping older past the
+  oldest loaded match reads older pages, as Find's own consumer of
+  [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts), until a
+  match appears or the start of history is confirmed. While older history is
+  unread the count carries a `+` and an empty result reads as not found *yet*;
+  "No matches" is said only at the confirmed start. A failed or disconnected
+  read leaves the search waiting and it resumes by itself; a permanent failure
+  shows its explanation and the search stays incomplete.
+- **Refresh and reconnect.** A refresh or resync replaces the loaded window
+  with the newest page. If that drops the page holding the current match, Find
+  reads back to it rather than losing the reader's place.
+- **Leaving.** Escape or the close control closes Find, withdraws only Find's
+  older-history demand, clears the marks and returns focus to where it was (the
+  composer when that element is gone). Changing the words also withdraws the
+  search for the old ones. The reader's own paging demand is untouched.
+- **Scrolling.** The transcript's scroll owner moves the reader
+  (`useTranscriptScroll`'s `jumpToRow`): a landing ends bottom-following and
+  supersedes any retained placement.
+- **Phone.** The bar docks above the transcript, so the on-screen keyboard,
+  which lifts the composer, never puts it over the send control.
+
+Find's state belongs to the mounted conversation: switching away from the pane
+closes it.
+
 ## Browser transcript cache
 
 The browser loads a session's transcript from the entry-backed repository, which

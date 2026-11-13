@@ -18,6 +18,7 @@ import {
   slashCommandInvocation,
   visibleCatalogCommands,
 } from "@evener/appwire-client";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
@@ -610,6 +611,17 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         if (!ctx.sessionRef) return;
         copyToClipboard(ctx.sessionRef).catch(() => ctx.toasts.push("error", "Couldn't copy session id"));
+      },
+    },
+    {
+      id: "find",
+      title: "Find in session",
+      hint: "",
+      keywords: ["search", "transcript"],
+      scope: "session",
+      run: (ctx) => {
+        if (!ctx.sessionRef) return;
+        requestFindInSession(ctx.sessionRef, { target: ctx.sessionPaneId });
       },
     },
     {

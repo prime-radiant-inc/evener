@@ -1440,7 +1440,10 @@ These are useful patterns and preservation checks, rather than new fix requests.
   position remain with the existing stores and scroll owners. Find stays
   incomplete until a match or confirmed history end; proven permanent failures
   keep their explanations. Closing Find or jumping live cancels only that
-  consumer's demand. Fulfilled reads without cursor progress remain quiet and
+  consumer's demand. Browser Find is its own consumer beside the pane's reader:
+  it reads older pages only when the user steps older past the loaded matches,
+  reads back to its current match when a refresh or resync drops that page, and
+  is withdrawn alone by closing Find or changing the words. Fulfilled reads without cursor progress remain quiet and
   paced rather than reporting a fetch failure. Native session memory also retains pending demand
   across route disposal without holding a closed store or service. Mounted native views keep independent demand; a detached pending owner is
   adopted once when the reader commits, preserving its requested page and Find

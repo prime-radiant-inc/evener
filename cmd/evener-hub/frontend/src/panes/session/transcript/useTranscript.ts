@@ -29,6 +29,15 @@ export interface UseTranscriptResult {
   // every attempt, so a retry begins from a clean state. Retried automatically
   // while active; the row adds no label of its own.
   olderError: string | null;
+  // A failure no retry can clear (an upgrade is required, or the session is
+  // gone): demand stops, and the explanation in olderError stands.
+  olderPermanent: boolean;
+  // Find's own older-page demand: a separate consumer of the same paging
+  // owner, so closing Find withdraws only what Find asked for and the reader's
+  // demand stays. Asking again while a page is in flight or a retry is paced
+  // changes nothing.
+  findOlder(): void;
+  cancelFindOlder(): void;
 }
 
 import {
@@ -93,6 +102,7 @@ function useTranscriptInternal(
   const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
   // Wait for hydration when a pane returns before resuming its demand.
   const ready = reader !== null && model !== undefined && connection === "ready";
+  const findConsumer = `${viewId}:find`;
   useLayoutEffect(() => {
     view?.setReadable(true);
     return () => view?.setReadable(false);
@@ -112,7 +122,14 @@ function useTranscriptInternal(
       if (document.visibilityState === "hidden" || (view && !view.readable) || (typedReader && !typedReader.readable)) {
         release?.();
         release = undefined;
-      } else if (!release) release = paging.activate(viewId);
+      } else if (!release) {
+        const releaseReader = paging.activate(viewId);
+        const releaseFind = paging.activate(findConsumer);
+        release = () => {
+          releaseReader();
+          releaseFind();
+        };
+      }
     };
     sync();
     const unsubscribe = (typedReader ?? view)?.subscribe(sync);
@@ -122,7 +139,7 @@ function useTranscriptInternal(
       unsubscribe?.();
       release?.();
     };
-  }, [paging, ready, ref, entry, binding, viewId, view, typedReader]);
+  }, [paging, ready, ref, entry, binding, viewId, findConsumer, view, typedReader]);
 
   useEffect(() => {
     if (!standalone) return;
@@ -150,6 +167,15 @@ function useTranscriptInternal(
     forgetConsumer(selected, viewId);
     if (!standalone) cancelRemovedConsumers(selected, ref);
   }, [committedEntry, viewId, ref, standalone]);
+  const findOlder = useCallback(() => {
+    if (reader === null || view?.alive === false || typedReader?.alive === false) return;
+    void committedEntry()
+      .paging.request(findConsumer)
+      .catch(() => {});
+  }, [committedEntry, findConsumer, reader, view, typedReader]);
+  const cancelFindOlder = useCallback(() => {
+    committedEntry().paging.cancel(findConsumer);
+  }, [committedEntry, findConsumer]);
   return {
     model,
     olderPageKey,
@@ -166,5 +192,8 @@ function useTranscriptInternal(
       void request(viewId).catch(() => {});
     },
     olderError: state.error === null ? null : sessionActionError("Couldn't load older turns", state.error),
+    olderPermanent: state.permanent,
+    findOlder,
+    cancelFindOlder,
   };
 }

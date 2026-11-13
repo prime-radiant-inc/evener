@@ -167,6 +167,7 @@ is on (see the cheatsheet section below).
 | Alt+Shift+ArrowDown | `transcript.pageDown` | global | — | Scroll the focused pane's transcript down one page |
 | Alt+Home | `transcript.scrollTop` | global | — | Jump the focused pane's transcript to the top |
 | Alt+End | `transcript.scrollBottom` | global | — | Jump the focused pane's transcript to the bottom |
+| ⌘F / Ctrl+F | `transcript.find` | global | `allowInEditable` | Open Find in the focused conversation; every handler declines elsewhere, so the browser keeps its own find |
 | Escape | `settings.close` | settings | `allowInEditable` | Close settings |
 | ⌘/ / Ctrl+/ | `cheatsheet.toggle` | global | `allowInEditable`, `allowInModal` | Open/close the keyboard shortcuts overlay |
 | ? | `cheatsheet.toggle` | global | conditional on the character-key-triggers pref | Open/close the keyboard shortcuts overlay |
@@ -274,6 +275,22 @@ The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
   on mobile — where the global chords
   are inert — the tree keeps every arrow tree-owned so Alt+ArrowLeft/Right
   never fall through to the browser's history navigation.
+
+## Find in session
+
+`transcript.find` (⌘F / Ctrl+F) opens Find in the conversation the keyboard is
+in. Every mounted conversation registers a handler
+(`src/panes/session/find/useFindInSession.ts`) and all but the focused one
+decline, by the same focused-pane-and-ref rule the floating Next control
+uses. A chord every handler declines is not `preventDefault`ed, so in any pane
+that is not a conversation the browser's own find still opens. The handler also
+declines when the keydown comes from inside the find bar: a second press there
+reaches the browser's find. The chord fires from editable targets because the
+reader is usually in the composer.
+
+Enter, Shift+Enter and Escape inside the bar are the field's own keys, like the
+palette's: they act only while focus is in the bar and are not registry
+bindings.
 
 ## Phase 3: transcript scroll
 
