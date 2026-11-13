@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>connection-settings-label-wrap layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The settings disclosure's own container at a sheet-width body. The row
+     under test is the real "All connection settings" grid rule. */
+  .page {
+    box-sizing: border-box;
+    width: 760px;
+    padding: var(--space-4);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page" id="page">
+  <div class="settings" id="settings">
+    <div class="settingsRow" id="settings-row">
+      <label class="rowLabel" for="var-deepseek-base-url">DEEPSEEK_BASE_URL</label>
+      <span class="settingField">
+        <input class="input" id="var-deepseek-base-url" value="https://api.deepseek.com/v1">
+      </span>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const row = document.querySelector("#settings-row");
+  const label = document.querySelector("#settings-row .rowLabel");
+  const input = document.querySelector("#var-deepseek-base-url");
+  const labelStyle = getComputedStyle(label);
+  return {
+    viewportWidth: window.innerWidth,
+    row: box(row),
+    label: box(label),
+    input: box(input),
+    rowColumns: getComputedStyle(row).gridTemplateColumns,
+    rowScrollWidth: row.scrollWidth,
+    rowClientWidth: row.clientWidth,
+    labelScrollWidth: label.scrollWidth,
+    labelClientWidth: label.clientWidth,
+    labelLineHeight: labelStyle.lineHeight,
+  };
+};
+</script>
+</body>
+</html>
