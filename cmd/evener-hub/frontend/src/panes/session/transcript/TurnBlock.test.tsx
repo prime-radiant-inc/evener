@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import {
   ACTION_SUMMARY_UNAVAILABLE,
+  hydrateThread,
   makeTranscriptDisplayConfig,
   projectThread,
   type TranscriptDisplayConfigV1,
@@ -1174,4 +1175,83 @@ test("a completed intent group closes after its trailing tool calls", () => {
   expect(screen.getByTestId("turn-done")).toBeTruthy();
   const group = document.querySelector('[data-transcript-row-id="intent-group-row"]');
   expect(group?.contains(screen.getByTestId("turn-separator"))).toBe(true);
+});
+
+// Issue #5836: an answered ask round's reply text must render in the thread.
+// The wire serves the reply as a userMessage whose observation carries the
+// answer link exactly this way (internal/apptranscript's answerObservation);
+// this drives the real wire fold (hydrateThread), projection and row
+// rendering together, so the reply row's bubble - the thing the issue
+// reported as blank - is pinned on the same path a served transcript takes.
+test("an answered round renders its reply text in the thread", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const thread = {
+    id: "thread_probe",
+    sessionId: "sess_probe",
+    source: "local",
+    status: { type: "idle" },
+    cwd: "/w",
+    turns: [
+      {
+        id: "turn_q",
+        itemsView: "full",
+        status: "completed",
+        items: [
+          {
+            id: "item_user_1",
+            type: "userMessage",
+            turnId: "turn_q",
+            text: "please unblock the Jobs rendering work",
+            status: "completed",
+          },
+          {
+            id: "item_ask",
+            type: "commandExecution",
+            turnId: "turn_q",
+            toolName: "ask_user",
+            callId: "call_ask",
+            description: "Ask",
+            argumentsJson:
+              '{"questions":[{"header":"Jobs rendering blocker","question":"What should I do about the Jobs rendering blocker?","options":[{"label":"Authorize a bounded Jobs investigation","detail":"go"}]}]}',
+            output: "questions posted",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn_a",
+        itemsView: "full",
+        status: "completed",
+        items: [
+          {
+            id: "item_reply",
+            type: "userMessage",
+            turnId: "turn_a",
+            text: '[answers]\n1. [Jobs rendering blocker] → "Authorize a bounded Jobs investigation"',
+            status: "completed",
+            startedAt: 1_700_000_000_000,
+            observation: { ref: "", turnId: "turn_a", answerToTurnIds: ["turn_q"], causalKnown: false },
+          },
+        ],
+      },
+    ],
+    evener: { ref: "local:sess_probe", queue: { revision: 0 } },
+  } as unknown as Parameters<typeof hydrateThread>[0]["thread"];
+  const model = hydrateThread({ thread }, "local:sess_probe", 0);
+  const projection = projectThread(model as ThreadModel, config);
+  render(
+    withConfig(
+      config,
+      projection.turns.map((projected) => (
+        <TurnBlock key={projected.id} turn={projected} thread={model as ThreadModel} />
+      )),
+    ),
+  );
+  const bubbles = screen.getAllByTestId("user-bubble");
+  expect(bubbles.some((bubble) => bubble.textContent?.includes("Authorize a bounded Jobs investigation"))).toBe(true);
+  // The durable link survived the fold: the reply model item names the
+  // question round it answers.
+  expect(
+    model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.id === "item_reply")?.answerToTurnIds,
+  ).toEqual(["turn_q"]);
 });

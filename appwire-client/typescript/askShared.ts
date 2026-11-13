@@ -140,15 +140,15 @@ function parseAskAnswerLines(text: string): Map<string, string> {
 // line. The current transcript already collapses a clean ask_user row by
 // default (ToolCallItem's generic disclosure contract), but its summary
 // only ever showed "Asked: [Header]" - the answer lives in a SEPARATE,
-// later userMessage item (the composed [answers] reply) that this item
-// alone can't see, forcing the reader to cross-reference a second,
-// unstyled message to reconstruct "what did I answer". This reads the
-// FULL thread model to find that reply and pull the answer back in.
+// later reply item that this item alone can't see, forcing the reader to
+// cross-reference a second, unstyled message to reconstruct "what did I
+// answer". This reads the FULL thread model to find that reply and pull
+// the answer back in.
 //
 // Returns undefined - meaning "show nothing extra, keep the bare
 // 'Asked: [Header]' summary" - whenever there's nothing to append: the call
 // errored (its own row already gets the failure treatment), it carries no
-// parseable questions, or no later [answers] reply exists yet (still
+// parseable questions, or no later answer reply exists yet (still
 // pending in the composer/dock - a LIVE thing, which per the same
 // principle must stay looking unresolved).
 export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): string | undefined {
@@ -158,16 +158,49 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   const items = model.turns.flatMap((turn) => turn.items);
   const at = items.findIndex((i) => i.id === item.id);
   if (at === -1) return undefined;
-  const reply = items.slice(at + 1).find((i) => i.type === "userMessage" && i.text.startsWith("[answers]"));
+  const reply = findAnswerReply(items.slice(at + 1), item);
   if (!reply) return undefined;
   const answers = parseAskAnswerLines(reply.text);
-  const multiple = questions.length > 1;
-  const parts = questions
-    .map((q) => {
-      const a = answers.get(q.header);
-      if (a === undefined) return undefined;
-      return multiple ? `${q.header}: ${a}` : a;
-    })
-    .filter((p): p is string => p !== undefined);
-  return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
+  if (answers.size > 0) {
+    const multiple = questions.length > 1;
+    const parts = questions
+      .map((q) => {
+        const a = answers.get(q.header);
+        if (a === undefined) return undefined;
+        return multiple ? `${q.header}: ${a}` : a;
+      })
+      .filter((p): p is string => p !== undefined);
+    return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
+  }
+  // A linked reply whose text is not the composed form is the spec's other
+  // reply form - free prose (§4.3: "either the numbered [answers] form ...
+  // or free prose; treat either as the reply to everything you asked") -
+  // and the reply's own words are the answer.
+  const prose = reply.text.trim();
+  return prose !== "" ? ` — answered: ${prose}` : undefined;
+}
+
+// One user-role item that can carry a round's answer: a recorded user
+// message, or the user-sourced steering a fenced answer records (the ask
+// fence's steering append publishes the same answer evidence - agent's
+// session_client_mutation). Daemon-sourced steering is machinery, not an
+// answer.
+function isAnswerCarrier(item: ItemModel): boolean {
+  return item.type === "userMessage" || (item.type === "steering" && item.source === "user");
+}
+
+// findAnswerReply locates the reply that answered this call among the items
+// after it. The durable rule decides first: a reply carrying the wire's
+// answer link (ThreadItem.observation.answerToTurnIds, onto the model as
+// answerToTurnIds) is server-stamped evidence naming the round it answers,
+// so the first linked reply after the call answers this call exactly when it
+// names this item's turn - and a reply linked to another round is refuted
+// even when its text shape looks like this round's composed reply. Without
+// any link (an older daemon, or a reply the observation never reached) the
+// composed "[answers]" text shape is the only evidence, exactly as before
+// the link existed.
+function findAnswerReply(later: readonly ItemModel[], item: ItemModel): ItemModel | undefined {
+  const linked = later.find((i) => isAnswerCarrier(i) && i.answerToTurnIds !== undefined);
+  if (linked !== undefined) return linked.answerToTurnIds?.includes(item.turnId) ? linked : undefined;
+  return later.find((i) => i.type === "userMessage" && i.text.startsWith("[answers]"));
 }

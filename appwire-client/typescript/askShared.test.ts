@@ -294,3 +294,54 @@ test("answeredAskUserSuffix finds the reply across multiple turns", () => {
   } as unknown as ThreadModel;
   expect(answeredAskUserSuffix(model, ask)).toBe(' — answered: "Yes"');
 });
+
+// --- the durable answer link (issue #5836) ----------------------------
+//
+// The wire stamps the reply of an answered round with
+// ThreadItem.observation.answerToTurnIds naming the question's turn (see
+// internal/apptranscript's answerObservation; carried onto the model by
+// wireItemToModel). A reply that carries the link is the round's answer by
+// server-stamped evidence, whatever its text looks like: the composed
+// [answers] form is only ONE of the two reply forms the ask spec allows
+// (docs/superpowers/specs/2026-07-03-ask-user-question-tool-design.md §4.3:
+// "either the numbered [answers] form ... or free prose").
+
+test("answeredAskUserSuffix resolves a linked reply by its answer link, not its text shape", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({ text: "sure, go with Yes", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const model: ThreadModel = {
+    turns: [
+      { id: "turn_1", status: "completed", items: [ask] },
+      { id: "turn_2", status: "completed", items: [reply] },
+    ],
+  } as unknown as ThreadModel;
+  expect(answeredAskUserSuffix(model, ask)).toBe(" — answered: sure, go with Yes");
+});
+
+test("a linked reply keeps the composed [answers] recap, parsing resolutions by header", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+  });
+  const model: ThreadModel = {
+    turns: [
+      { id: "turn_1", status: "completed", items: [ask] },
+      { id: "turn_2", status: "completed", items: [reply] },
+    ],
+  } as unknown as ThreadModel;
+  expect(answeredAskUserSuffix(model, ask)).toBe(' — answered: "Yes"');
+});
+
+test("a reply linked to another round never answers this call", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_9", answerToTurnIds: ["turn_8"] });
+  const model: ThreadModel = {
+    turns: [
+      { id: "turn_1", status: "completed", items: [ask] },
+      { id: "turn_9", status: "completed", items: [reply] },
+    ],
+  } as unknown as ThreadModel;
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+});
