@@ -376,7 +376,7 @@ describe("stacked detail", () => {
       /\.option\.stacked\s*\{[^}]*flex-direction:\s*column[^}]*block-size:\s*auto[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
     );
     expect(css).toMatch(
-      /\.optionDetail\s*\{[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
+      /\.optionDetail\s*\{[^}]*font-size:\s*min\(var\(--font-size-caption\),\s*calc\(var\(--font-size-caption\) \/ var\(--font-scale\)\)\)[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
     );
   });
 });

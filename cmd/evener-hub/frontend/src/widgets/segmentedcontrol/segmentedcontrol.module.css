@@ -142,8 +142,11 @@
   gap: var(--space-half);
   block-size: auto;
   padding-block: var(--space-1);
-  /* Five stacked options must fit a 320px phone without clipping a long fraction. */
+  /* Five stacked options must fit a 320px phone without clipping a long
+   * fraction: the label sits at the caption size with the detail beneath it,
+   * so a column's width is set by the caption scale, not the control scale. */
   padding-inline: 0;
+  font-size: var(--font-size-caption);
   border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
 }
 
@@ -154,7 +157,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  /* A count is chrome, not reading text: it follows the font-size setting
+   * down but stops at the unscaled caption size (the caption token divided by
+   * the font scale), which keeps "100/100" inside one of five equal columns
+   * on a 320px sidebar at the largest setting. */
+  font-size: min(var(--font-size-caption), calc(var(--font-size-caption) / var(--font-scale)));
   font-variant-numeric: tabular-nums;
   font-weight: var(--font-weight-regular);
 }
