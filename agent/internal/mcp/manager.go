@@ -259,7 +259,7 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 // environment while exercising the same transport and sandbox wiring without
 // observing the developer machine's process environment.
 func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper, environ func() []string) func(context.Context) (mcpsdk.Transport, error) {
-	return func(context.Context) (mcpsdk.Transport, error) {
+	return func(ctx context.Context) (mcpsdk.Transport, error) {
 		// MCP servers — stdio and remote (sse/http) alike — are trusted
 		// infrastructure: they are launched only from config layers the model
 		// cannot write, so net=off does not sever them (kata 83pm). Model-directed
@@ -270,12 +270,42 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 		}
 		if wrapper != nil {
 			if ct, ok := t.(*mcpsdk.CommandTransport); ok && ct.Command != nil {
+				// A sandbox whose host check has not answered starts no server.
+				// A server starts once, at session start, so its start keeps
+				// rechecking until the check answers or the connect's time
+				// bound ends.
+				if err := confirmSandboxForServer(ctx, wrapper); err != nil {
+					return nil, err
+				}
 				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper, environ)
 			}
 		}
 		return t, nil
 	}
 }
+
+// confirmSandboxForServer reruns the sandbox's host check until it answers or
+// ctx ends, pausing between runs so a check that fails fast under load is not
+// respawned back to back. It returns nil once the sandbox is confirmed, and the
+// refusal otherwise: a definitive one at once, an unconfirmed one when ctx
+// ends.
+func confirmSandboxForServer(ctx context.Context, wrapper *sandbox.Wrapper) error {
+	for {
+		err := wrapper.Confirm(ctx)
+		var refusal *sandbox.RefusalError
+		if err == nil || !errors.As(err, &refusal) || refusal.Kind != sandbox.RefusalUnconfirmed {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(serverSandboxRecheckPause):
+		}
+	}
+}
+
+// serverSandboxRecheckPause spaces a server start's sandbox rechecks.
+const serverSandboxRecheckPause = time.Second
 
 // confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
 // inside the session sandbox: the bwrap invocation is prepended to the argv, the

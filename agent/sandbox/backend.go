@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -206,6 +207,32 @@ func (w *Wrapper) Policy() ResolvedPolicy { return w.policy }
 // SessionTmp returns the per-session writable tmp directory (the child's TMPDIR).
 func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 
+// unconfirmedReason is the refusal reason of a command whose sandbox check has
+// not answered yet.
+const unconfirmedReason = "sandbox not yet confirmed: the host check timed out; retry the command"
+
+// Confirm settles an unconfirmed policy (ResolvedPolicy.Unconfirmed) before a
+// spawn: it reruns the host's user-namespace check, sharing a run already in
+// progress, until one answers. Every spawn site calls it before Confine and
+// spawns nothing when it errs. A check still without an answer when the run
+// ends or ctx ends refuses this command with RefusalUnconfirmed, so a later
+// command rechecks; a definitive "no" refuses with RefusalDefinitive, and every
+// later command refuses the same way. A nil wrapper, or a policy that was never
+// unconfirmed, confirms at once.
+func (w *Wrapper) Confirm(ctx context.Context) error {
+	if w == nil || w.policy.Backend != BackendBwrap || w.policy.resolveHost.BwrapRecheck == nil {
+		return nil
+	}
+	switch w.policy.resolveHost.BwrapRecheck.Outcome(ctx) {
+	case CheckPassed:
+		return nil
+	case CheckFailed:
+		return noBwrapRefusal(w.policy.Mode, w.policy.Network)
+	default:
+		return &RefusalError{Mode: w.policy.Mode, Net: w.policy.Network, Kind: RefusalUnconfirmed, Reason: unconfirmedReason}
+	}
+}
+
 // Confine rewrites cmd to run under the wrapper's backend confinement: it prepends
 // the backend invocation to cmd.Args (updating cmd.Path via Wrap) and, for the
 // Seatbelt backend, sets cmd.Dir to dir. sandbox-exec has no chdir flag (unlike
@@ -277,6 +304,12 @@ func (w *Wrapper) Wrap(argv []string, cwd string) []string {
 			panic(fmt.Sprintf("sandbox: seatbelt backend selected on a host that cannot enforce it: %v", err))
 		}
 		return wrapped
+	}
+	if w.policy.Unconfirmed() {
+		// Unreachable when every spawn site calls Confirm first. A command
+		// built here would run sandboxed work the host never confirmed; panic
+		// (fail closed, loudly) rather than hand one back.
+		panic("sandbox: confining a command before Confirm settled an unconfirmed bwrap policy")
 	}
 	if w.policy.CacheStrategy == CacheOverlay {
 		recreateMissingCacheRoots(w.policy)

@@ -228,6 +228,15 @@ type ResolvedPolicy struct {
 // FileToolConfined.
 func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
 
+// Unconfirmed reports that this is a bwrap policy resolved while the host's
+// user-namespace check had not answered (HostFacts.BwrapRecheck), and no spawn
+// has seen it pass since. No command runs under it until Wrapper.Confirm
+// passes.
+func (rp ResolvedPolicy) Unconfirmed() bool {
+	recheck := rp.resolveHost.BwrapRecheck
+	return rp.Backend == BackendBwrap && recheck != nil && recheck.answered() != CheckPassed
+}
+
 // FileToolConfined reports whether the in-process file-tool layer must enforce
 // this policy's grants. Every enforced mode confines the file tools, and so does
 // a write-blocked OFF policy: that is the read-only delegate scope degraded on a
@@ -360,6 +369,18 @@ func FileToolEnforceable(host HostFacts) bool {
 	return host.OS == "linux" || host.OS == "darwin"
 }
 
+// RefusalKind says whether retrying a refused request can help.
+type RefusalKind uint8
+
+const (
+	// RefusalDefinitive means the host answered that it cannot enforce the
+	// request; a retry fails the same way until the host changes.
+	RefusalDefinitive RefusalKind = iota
+	// RefusalUnconfirmed means the host check that decides enforcement has not
+	// answered yet; the same command may run on retry.
+	RefusalUnconfirmed
+)
+
 // RefusalError is the typed fail-closed refusal returned when the host cannot
 // enforce the requested (mode, network) — the floor's "full contract or refuse"
 // rule. It is distinct from an ordinary error so the flag/session layer can
@@ -367,6 +388,7 @@ func FileToolEnforceable(host HostFacts) bool {
 type RefusalError struct {
 	Mode Mode
 	Net  bool
+	Kind RefusalKind
 	// Reason is the human-legible explanation surfaced to the user.
 	Reason string
 	// RequiredBackend names the backend that WOULD satisfy the request
@@ -701,15 +723,14 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 	switch host.OS {
 	case "linux":
 		// bwrap is the only Linux backend: it serves the full mode matrix and
-		// net on/off. A Linux host that is not bwrap-capable has no way to enforce
-		// any sandboxed mode, so it refuses; only --sandbox off works there.
-		if host.BwrapCapable {
+		// net on/off. A Linux host that answered that bwrap cannot namespace has
+		// no way to enforce any sandboxed mode, so it refuses; only --sandbox off
+		// works there. A host whose check has not answered resolves to bwrap
+		// unconfirmed, and its spawns wait on the recheck (Wrapper.Confirm).
+		if host.BwrapAvailable() {
 			return BackendBwrap, nil
 		}
-		return 0, &RefusalError{
-			Mode: policy.Mode, Net: net, RequiredBackend: "",
-			Reason: "no sandbox backend is available (bubblewrap is required on Linux but is not usable on this host); only --sandbox off is supported",
-		}
+		return 0, noBwrapRefusal(policy.Mode, net)
 	case "darwin":
 		if host.SeatbeltAvailable() {
 			return BackendSeatbelt, nil // deny-capable: full matrix + net on/off
@@ -723,6 +744,15 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 			Mode: policy.Mode, Net: net, RequiredBackend: "",
 			Reason: fmt.Sprintf("sandboxing is not supported on %s; only --sandbox off is available", host.OS),
 		}
+	}
+}
+
+// noBwrapRefusal is the definitive refusal of a Linux host whose bwrap cannot
+// create the namespaces confinement needs.
+func noBwrapRefusal(mode Mode, net bool) *RefusalError {
+	return &RefusalError{
+		Mode: mode, Net: net, RequiredBackend: "",
+		Reason: "no sandbox backend is available (bubblewrap is required on Linux but is not usable on this host); only --sandbox off is supported",
 	}
 }
 
