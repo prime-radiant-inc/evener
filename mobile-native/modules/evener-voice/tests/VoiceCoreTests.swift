@@ -274,4 +274,118 @@ final class VoiceCoreTests: XCTestCase {
         XCTAssertEqual(voice.state, .speaking)
         XCTAssertTrue(voice.acceptSpeech(generation: 6))
     }
+
+    func testArmedQuietBlocksPullNoCaptureAudio() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        var pulls = 0
+        // The locked-armed soak (#5683): blocks arrive for hours while the
+        // controller has nothing to consume, so none of them may build PCM.
+        for block in 0..<25 {
+            let actions = voice.capture(
+                {
+                    pulls += 1
+                    return Data(repeating: 1, count: 960)
+                },
+                speech: false,
+                at: Double(block)
+            )
+            XCTAssertEqual(actions, [])
+        }
+        XCTAssertEqual(pulls, 0)
+    }
+
+    func testFollowupOnsetPullsTheOnsetBlockExactlyOnce() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertTrue(voice.acceptSpeech(generation: 2))
+        voice.outputDrained(at: 0)
+        let onsetPCM = Data(repeating: 1, count: 960)
+        var pulls = 0
+        let onset = voice.capture(
+            {
+                pulls += 1
+                return onsetPCM
+            },
+            speech: true,
+            at: 100
+        )
+        // The onset block becomes the utterance's first buffered frame; the
+        // active branch must not pull it a second time.
+        XCTAssertEqual(onset, [.cue, .send(.inputStart(1))])
+        XCTAssertEqual(pulls, 1)
+        XCTAssertEqual(voice.bufferedBytes, 960)
+        XCTAssertEqual(voice.started(sequence: 1), [.send(.audio(1, 0, onsetPCM))])
+    }
+
+    func testActiveConversationPullsOncePerBlock() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertEqual(voice.talk(at: 0), [.cue, .send(.inputStart(1))])
+        _ = voice.started(sequence: 1)
+        var pulls = 0
+        let pcm = Data(repeating: 2, count: 1024)
+        for block in 0..<5 {
+            let actions = voice.capture(
+                {
+                    pulls += 1
+                    return pcm
+                },
+                speech: true,
+                at: Double(1 + block)
+            )
+            XCTAssertEqual(actions, [.send(.audio(1, block, pcm))])
+        }
+        XCTAssertEqual(pulls, 5)
+    }
+
+    func testANilPullDropsTheBlockWithoutTouchingTurnState() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertEqual(voice.talk(at: 0), [.cue, .send(.inputStart(1))])
+        _ = voice.started(sequence: 1)
+        // The device reports a failed conversion with a nil pull; the block
+        // must vanish exactly as one that never reached capture did.
+        XCTAssertEqual(voice.capture({ nil }, speech: true, at: 1), [])
+        var pcm = Data(repeating: 2, count: 960)
+        XCTAssertEqual(voice.capture({ pcm }, speech: true, at: 2), [.send(.audio(1, 0, pcm))])
+        pcm = Data(repeating: 3, count: 960)
+        XCTAssertEqual(voice.capture({ pcm }, speech: true, at: 3), [.send(.audio(1, 1, pcm))])
+    }
+
+    func testNilPullsNeverRefreshTheIdleWatchdog() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertEqual(voice.talk(at: 0), [.cue, .send(.inputStart(1))])
+        _ = voice.started(sequence: 1)
+        // A failing device must not look like speech: after idleInputMs of
+        // dropped blocks the idle watchdog still owes its abort.
+        for block in 0..<3 {
+            XCTAssertEqual(voice.capture({ nil }, speech: true, at: 10000 + Double(block)), [])
+        }
+        XCTAssertEqual(voice.tick(at: 31000), [.abort(1, "input_idle")])
+    }
+
+    func testANilOnsetPullStartsNoTurn() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertTrue(voice.acceptSpeech(generation: 2))
+        voice.outputDrained(at: 0)
+        // A follow-up onset whose pull fails starts nothing: no cue, no
+        // input_start, and the state is untouched for the next onset block.
+        XCTAssertEqual(voice.capture({ nil }, speech: true, at: 100), [])
+        var pulls = 0
+        let onset = voice.capture({ pulls += 1; return Data(repeating: 1, count: 960) }, speech: true, at: 101)
+        XCTAssertEqual(onset, [.cue, .send(.inputStart(1))])
+        XCTAssertEqual(pulls, 1)
+    }
+
+    func testAnEmptyTimelineHasNoChunksToReportProgressFor() throws {
+        var timeline = PlaybackTimeline()
+        XCTAssertTrue(timeline.isEmpty)
+        try timeline.append(delivery: "d", generation: 1, item: "one", providerSamples: 2400, outputSamples: 4800, outputRate: 48000)
+        XCTAssertFalse(timeline.isEmpty)
+        timeline.clear()
+        XCTAssertTrue(timeline.isEmpty)
+    }
 }
