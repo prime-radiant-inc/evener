@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -422,7 +423,7 @@ func listItemTurns(
 	ctx context.Context,
 	source appsource.Source,
 	params appwire.ThreadTurnsListParams,
-	logf func(format string, args ...any),
+	log *slog.Logger,
 ) (appwire.ThreadTurnsListResponse, bool, error) {
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
@@ -448,8 +449,8 @@ func listItemTurns(
 	}
 
 	meta, metaErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false})
-	if metaErr != nil && logf != nil {
-		logf("thread turns metadata enrichment unavailable: %v", metaErr)
+	if metaErr != nil && log != nil {
+		log.Info("thread turns metadata enrichment unavailable", "err", metaErr)
 	}
 	packed, packErr := packThreadTurnsItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		thread := appwire.Thread{Turns: response.Data}
@@ -977,27 +978,33 @@ func hubAuthStateRoot(cfg hubcore.WebConfig) string {
 	return ""
 }
 
-// hubLogfFor is where the hub's operational log lines go: cfg.Logf, or
+// hubLogFor is where the hub's operational log lines go: cfg.Log, or
 // stderr with the "[hub] " prefix.
-func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
-	if cfg.Logf != nil {
-		return cfg.Logf
+func hubLogFor(cfg hubcore.WebConfig) *slog.Logger {
+	if cfg.Log != nil {
+		return cfg.Log
 	}
 	// Resolve the sink once, when the logger is built, not per call. A server
 	// goroutine outlives the test that started it, so reading the mutable
 	// os.Stderr global from it races any test that redirects os.Stderr
 	// (captureHubStderr, issue #2783). The startup path sets the sink before
 	// any server runs, so this captures the same destination it always wanted.
-	log := componentlog.New("hub")
+	return componentlog.New("hub")
+}
+
+// hubLogfFunc adapts a slog logger to the appserver's printf-style sink. The
+// appserver API predates componentlog and is shared with non-hub embedders, so
+// the hub converts at the boundary instead of changing that API.
+func hubLogfFunc(log *slog.Logger) func(format string, args ...any) {
 	return func(format string, args ...any) {
 		log.Info(fmt.Sprintf(format, args...))
 	}
 }
 
-// navigationStatsLogfFor is where navigation build stats lines go. Tests that
+// navigationStatsLogFor is where navigation build stats lines go. Tests that
 // build a hub web server replace it so a slow build cannot write to stderr
-// outside a test that asserts the line (which passes cfg.Logf).
-var navigationStatsLogfFor = hubLogfFor
+// outside a test that asserts the line (which passes cfg.Log).
+var navigationStatsLogFor = hubLogFor
 
 // concurrentForwardedRequest is the ConcurrentRequest policy newHubAppServer
 // installs: requests whose cost is a remote party's leave the connection's
@@ -1049,7 +1056,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return navigation.Capability()
 		}
 	}
-	hubLogf := hubLogfFor(cfg)
+	hubLog := hubLogFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName:   "evener-hub",
 		Version:      Version,
@@ -1065,7 +1072,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		WebSocketTrace:       appwireTrace,
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
-		Logf:                 hubLogf,
+		Logf:                 hubLogfFunc(hubLog),
 		ConnectionAdmissionContext: func(ctx context.Context) context.Context {
 			return admitSessionConnection(ctx, cfg)
 		},
@@ -1222,7 +1229,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	if observeHubRelay != nil {
 		observeHubRelay(relay)
 	}
-	registerThreadHandlers(server, cfg, sources, relay, hubLogf, sessionControlOwners{navigation: navigation, resolve: resolve})
+	registerThreadHandlers(server, cfg, sources, relay, hubLog, sessionControlOwners{navigation: navigation, resolve: resolve})
 	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
@@ -1268,7 +1275,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// surface rewrites in place, so the surface is wired, not a
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
-	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
+	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLog)
 	// The remnant fence reaches the attach path through the WebConfig seam: the
 	// manager owns the durable teardown-remnant records and attach has no
 	// manager handle of its own. It must be installed BEFORE the attach handler
@@ -1341,7 +1348,7 @@ func registerThreadHandlers(
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	relays *hubRelay,
-	logf func(format string, args ...any),
+	log *slog.Logger,
 	owners ...sessionControlOwners,
 ) {
 	// evener/session/image is the AppWire counterpart of the local image routes:
@@ -1436,7 +1443,7 @@ func registerThreadHandlers(
 		var liveItemHandled bool
 		if srcErr == nil {
 			_, liveItemNative := source.(appsource.ItemCandidateSource)
-			live, liveItemHandled, liveErr = listItemTurns(ctx, source, params, logf)
+			live, liveItemHandled, liveErr = listItemTurns(ctx, source, params, log)
 			if liveItemHandled && liveErr == nil && (!liveItemNative || len(live.Data) > 0) {
 				return live, nil
 			}

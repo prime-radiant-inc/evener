@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,7 +83,7 @@ func (f *pipelineFixture) manager(t *testing.T) *hubHostManager {
 		RemoteHostOpsStore:   f.store,
 		RemoteHostConfigPath: f.configPath,
 	}
-	return newHubHostManager(nil, nil, cfg, f.configPath, f.registry, t.Logf)
+	return newHubHostManager(nil, nil, cfg, f.configPath, f.registry, testLogger(t))
 }
 
 // restart is a process start over the fixture's pair: the registry is rebuilt
@@ -114,7 +115,7 @@ func (f *pipelineFixture) restart(t *testing.T) *hubHostManager {
 func (f *pipelineFixture) legacyManager(t *testing.T) *hubHostManager {
 	t.Helper()
 	cfg := hubcore.WebConfig{RemoteHostRegistry: f.registry, RemoteHostConfigPath: f.configPath}
-	m := newHubHostManager(nil, nil, cfg, f.configPath, f.registry, t.Logf)
+	m := newHubHostManager(nil, nil, cfg, f.configPath, f.registry, testLogger(t))
 	m.cfg.ops.Store(f.store)
 	// The orphan-stash prune a boot with the store runs.
 	m.pruneOrphanHubTOMLStash()
@@ -485,7 +486,7 @@ func TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked(t *t
 		RemoteHostRegistry:   fixture.registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, fixture.registry, t.Logf)
+	}, fixture.configPath, fixture.registry, testLogger(t))
 	if record, open := m.opsStore().Compensation("m4"); open {
 		t.Fatalf("the compensation stayed open: %+v", record)
 	}
@@ -662,7 +663,7 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 	second := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, nil, t.Logf)
+	}, fixture.configPath, nil, testLogger(t))
 	records := second.opsStore().Records()
 	var removedMarked, readdMarked bool
 	for _, record := range records {
@@ -1197,7 +1198,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	crashed := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, nil, t.Logf)
+	}, fixture.configPath, nil, testLogger(t))
 	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
 		t.Fatal("the crash boot left the marker staged in the model")
 	}
@@ -1281,7 +1282,7 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, t.Logf)
+	}, fixture.configPath, registry, testLogger(t))
 	// The host the restore declared is served by this process, not only after
 	// another restart.
 	for _, name := range []string{"alpha", "beta"} {
@@ -1372,7 +1373,7 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, t.Logf)
+	}, fixture.configPath, registry, testLogger(t))
 	_ = second
 	if _, open := fixture.store.Compensation("keep"); open {
 		t.Fatal("the compensation did not clear")
@@ -1443,14 +1444,12 @@ func TestBootCompensationOwnsTheStagedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	var logged strings.Builder
+	var logged bytes.Buffer
 	newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, func(format string, args ...any) {
-		_, _ = fmt.Fprintf(&logged, format+"\n", args...)
-	})
+	}, fixture.configPath, registry, slog.New(slog.NewTextHandler(&logged, nil)))
 	if _, still := registry.Get("keep"); !still {
 		t.Fatalf("the staged marker was finalized for a compensated name: its pinned teardown removed the host; log:\n%s", logged.String())
 	}
@@ -1516,7 +1515,7 @@ func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, t.Logf)
+	}, fixture.configPath, registry, testLogger(t))
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep) with a configured path and no file: %v", err)
 	}

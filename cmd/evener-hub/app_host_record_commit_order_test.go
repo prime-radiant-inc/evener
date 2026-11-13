@@ -450,7 +450,7 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 	previous := configReadFile
 	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
 	recovered := newHubHostManager(appsource.NewRegistry(), nil,
-		hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath}, hub.configPath, hosts, t.Logf)
+		hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath}, hub.configPath, hosts, testLogger(t))
 	configReadFile = previous
 
 	records := mustRecords(t, store)
@@ -583,7 +583,7 @@ func TestADegradedBootLeavesHubTOMLBytesAlone(t *testing.T) {
 
 	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 
 	if !bytes.Equal(fileBytes(t, hub.configPath), before) {
 		t.Fatal("a boot without its store rewrote hub.toml")
@@ -729,7 +729,7 @@ func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
 	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
 	recovered := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 	configReadFile = previous
 
 	if recovered.mutationRefusal() == nil {
@@ -813,7 +813,7 @@ func TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML(t *testing.
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 	before := fileBytes(t, configPath)
 
 	dir.failing.Store(true)
@@ -855,7 +855,7 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 	}
 	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 
 	requireFamilyEquals(t, store, records)
 	if sections := legacyRecordSections(mustReadDocument(t, configPath)); len(sections) == 0 {
@@ -871,7 +871,7 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 	}
 	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: nextHosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, nextHosts, t.Logf)
+	}, configPath, nextHosts, testLogger(t))
 
 	requireNoRecordSections(t, configPath)
 }
@@ -1088,7 +1088,7 @@ func TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded(t *testing.T)
 		}
 		m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
-		}, hub.configPath, hosts, t.Logf)
+		}, hub.configPath, hosts, testLogger(t))
 		return m, store, reads
 	}
 
@@ -1237,7 +1237,7 @@ func TestBootFinalizationNeverRewritesTheHostList(t *testing.T) {
 	}
 	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 
 	var ssh string
 	for _, host := range mustLoadConfig(t, hub.configPath).Hosts {
@@ -1458,7 +1458,7 @@ func TestTakingBackARemovalsFlipClearsItsRemovedMark(t *testing.T) {
 		t.Fatal("the flipped removal is not counted as removed")
 	}
 
-	if err := (hostOpsRecordStore{path: hub.configPath, ops: store, logf: t.Logf}).takeBackFlip("side"); err != nil {
+	if err := (hostOpsRecordStore{path: hub.configPath, ops: store, log: testLogger(t)}).takeBackFlip("side"); err != nil {
 		t.Fatalf("takeBackFlip: %v", err)
 	}
 
@@ -1487,7 +1487,7 @@ func TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker(t *testing.T) {
 	params := removeRequest(t, m, "side")
 	armCut(m, cutStaged)
 	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
-	record := hostOpsRecordStore{path: configPath, ops: store, logf: t.Logf}
+	record := hostOpsRecordStore{path: configPath, ops: store, log: testLogger(t)}
 
 	dir.failing.Store(true)
 	if err := record.takeBackFlip("side"); err == nil {
@@ -1621,7 +1621,7 @@ func TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost(t *tes
 	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
 		HostTombstoneRetention: time.Nanosecond,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 
 	if _, ok := reopened.OutstandingToken("side"); ok {
 		t.Fatal("the removed host's token row survived a recovery past its retention window")
@@ -1657,7 +1657,7 @@ func TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle(t *te
 		}
 		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 			RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
-		}, hub.configPath, hosts, t.Logf), reopened
+		}, hub.configPath, hosts, testLogger(t)), reopened
 	}
 
 	waiting, reopened := boot(true)
@@ -1692,7 +1692,7 @@ func TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone(t *testing.T) {
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
 		HostTombstoneRetention: time.Nanosecond,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 	params := removeRequest(t, m, "side")
 	armCut(m, cutStaged)
 	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
@@ -1769,7 +1769,7 @@ func TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry(t *testing.T) {
 	expiring := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
 		HostTombstoneRetention: time.Nanosecond,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 	if _, err := expiring.AddResult(context.Background(), appwire.HostAddParams{
 		Entry: appwire.HostEntry{Name: "other", Address: "other.example"}, MutationID: "add-other",
 	}); err != nil {
@@ -1984,7 +1984,7 @@ func TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal(t *testing.T) 
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
 		HostTombstoneRetention: time.Nanosecond,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("remove side: %v", err)
 	}
@@ -2084,7 +2084,7 @@ func TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfi
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
 		HostTombstoneRetention: time.Nanosecond,
-	}, hub.configPath, hosts, t.Logf)
+	}, hub.configPath, hosts, testLogger(t))
 	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("remove side: %v", err)
 	}
@@ -2132,7 +2132,7 @@ func TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted(t *t
 		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
 			HostTombstoneRetention: 720 * time.Hour,
-		}, hub.configPath, hosts, t.Logf), store
+		}, hub.configPath, hosts, testLogger(t)), store
 	}
 	m, store := bootLongRetention()
 	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))

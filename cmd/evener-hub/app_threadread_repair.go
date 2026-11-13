@@ -35,7 +35,7 @@ var transcriptRepairLaneExhaustedInterval = 10 * time.Minute
 var transcriptIndexRepairNow = time.Now
 
 // transcriptIndexRepairLogSink is the repair registry's log destination,
-// resolved when the registry is armed — hubLogfFor's rule: a detached
+// resolved when the registry is armed — hubLogFor's rule: a detached
 // repair outlives the startup and shutdown windows where os.Stderr gets
 // redirected, so reading the mutable global per line would follow a late
 // reassign (captureHubStderr, issue #2783) into an unintended or closed
