@@ -9,15 +9,6 @@
     var(--shadow-card);
 }
 
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. */
-@supports (corner-shape: squircle) {
-  .card {
-    corner-shape: squircle;
-  }
-}
-
 /* The bordered box shared by outlined and attention: a real 1px edge in
  * place of the flat card's ring, padded one step tighter for the denser flow
  * these sit in. */
