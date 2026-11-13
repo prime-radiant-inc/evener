@@ -331,6 +331,15 @@ loading them, since each opens a socket the moment its body runs.
   merge-group run completed green, then re-enqueue the same head. A
   cancelled group posts no failure comment. Any other reason needs the
   merge-group run inspected first.
+  A repeated drop on one ambient failing row — every lane on the PR head is
+  green, the failing check sits outside the diff, and the base's own latest
+  run fails the same row — is the queue retesting a flake the base already
+  carries, not the candidate. Post that comparison on the PR, retry the
+  enqueue once, and if the identical drop repeats, merge with the admin
+  override instead of spending more queue cycles: `gh pr merge <N> --repo
+  prime-radiant-inc/evener --squash --admin --match-head-commit <head>`,
+  after confirming the review is current for that head. Never use this for a
+  red check on the PR head, a stale review, or a failure the diff can reach.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
