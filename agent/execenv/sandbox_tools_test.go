@@ -1029,7 +1029,7 @@ func TestSandboxGrepSearchesOneNamedFile(t *testing.T) {
 				want string
 			}{
 				{mode: "content", want: "2:needle one\n4:needle two"},
-				{mode: "files_with_matches", want: "."},
+				{mode: "files_with_matches", want: filepath.FromSlash("sub/p.md")},
 				{mode: "count", want: "2"},
 			} {
 				got, err := env.Grep(t.Context(), "needle", file, "", false, 100, tc.mode)

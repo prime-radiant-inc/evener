@@ -279,7 +279,7 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 		t.Fatalf("Grep content fallback = %q, %v", content, err)
 	}
 	files, err := env.Grep(context.Background(), "needle", "pkg", "*.go", true, 10, "files_with_matches")
-	if err != nil || files != "main.go" {
+	if err != nil || files != filepath.FromSlash("pkg/main.go") {
 		t.Fatalf("Grep files-with-matches fallback = %q, %v", files, err)
 	}
 	counts, err := env.Grep(context.Background(), "needle", "", "*.txt", false, 100, "count")

@@ -83,8 +83,8 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 			filepath.FromSlash("sub/b.go") + ":2:foo three",
 		}},
 		{name: "content from a subdirectory", path: "sub", mode: "content", want: []string{
-			"b.go:1:foo two",
-			"b.go:2:foo three",
+			filepath.FromSlash("sub/b.go") + ":1:foo two",
+			filepath.FromSlash("sub/b.go") + ":2:foo three",
 		}},
 		{name: "files with matches", mode: "files_with_matches", want: []string{
 			"a.go", filepath.FromSlash("ctx/deep"), "ctx.txt", filepath.FromSlash("sub/b.go"),
@@ -98,7 +98,7 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 		{name: "one named file", path: "sub/b.go", mode: "content", want: []string{
 			"1:foo two", "2:foo three",
 		}},
-		{name: "one named file's matches", path: "a.go", mode: "files_with_matches", want: []string{"."}},
+		{name: "one named file's matches", path: "a.go", mode: "files_with_matches", want: []string{"a.go"}},
 		{name: "one named file's count", path: "sub/b.go", mode: "count", want: []string{"2"}},
 		{name: "overlapping context windows join", path: "ctx/overlap", pattern: "hit", context: 1, want: []string{
 			"1-a", "2:hit 1", "3:hit 2", "4-b",
@@ -143,6 +143,100 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	}
 }
 
+// TestGrepSubdirectoryPathsRoundTripIntoReadFile tests that paths returned from
+// subdirectory and single-file searches resolve against the environment root
+// and round-trip into ReadFile without hitting same-named root decoys (#6176).
+func TestGrepSubdirectoryPathsRoundTripIntoReadFile(t *testing.T) {
+	root := t.TempDir()
+	rootDecoy := filepath.Join(root, "b.go")
+	if err := os.WriteFile(rootDecoy, []byte("package main\n// decoy root b.go: target pattern\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subDir := filepath.Join(root, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subTarget := filepath.Join(subDir, "b.go")
+	if err := os.WriteFile(subTarget, []byte("package sub\n// sub/b.go target pattern\n// second line target pattern\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fallback := NewLocalExecutionEnvironment(root)
+	defer fallback.Cleanup()
+	fallback.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	type grepArm struct {
+		name string
+		env  *LocalExecutionEnvironment
+	}
+	arms := []grepArm{{"fallback", fallback}}
+	if rg, err := exec.LookPath("rg"); err == nil {
+		withRg := NewLocalExecutionEnvironment(root)
+		defer withRg.Cleanup()
+		withRg.lookPath = func(string) (string, error) { return rg, nil }
+		arms = append(arms, grepArm{"ripgrep", withRg})
+	}
+
+	expectedSubB := filepath.FromSlash("sub/b.go")
+
+	for _, arm := range arms {
+		t.Run(arm.name, func(t *testing.T) {
+			// 1. Directory search with path="sub", output_mode="content"
+			contentOut, err := arm.env.Grep(context.Background(), "target pattern", "sub", "", false, 100, "content")
+			if err != nil {
+				t.Fatalf("%s: Grep content: %v", arm.name, err)
+			}
+			wantContent := expectedSubB + ":2:// sub/b.go target pattern\n" + expectedSubB + ":3:// second line target pattern"
+			if contentOut != wantContent {
+				t.Fatalf("%s: content = %q, want %q", arm.name, contentOut, wantContent)
+			}
+			readContent, err := arm.env.ReadFile(expectedSubB, nil, nil)
+			if err != nil || !strings.Contains(readContent, "sub/b.go target pattern") || strings.Contains(readContent, "decoy") {
+				t.Fatalf("%s: ReadFile round-trip failed: content=%q, err=%v", arm.name, readContent, err)
+			}
+
+			// 2. Directory search with path="sub", output_mode="files_with_matches"
+			filesOut, err := arm.env.Grep(context.Background(), "target pattern", "sub", "", false, 100, "files_with_matches")
+			if err != nil {
+				t.Fatalf("%s: Grep files_with_matches: %v", arm.name, err)
+			}
+			if filesOut != expectedSubB {
+				t.Fatalf("%s: files_with_matches = %q, want %q", arm.name, filesOut, expectedSubB)
+			}
+			readFiles, err := arm.env.ReadFile(filesOut, nil, nil)
+			if err != nil || !strings.Contains(readFiles, "sub/b.go target pattern") || strings.Contains(readFiles, "decoy") {
+				t.Fatalf("%s: ReadFile round-trip for files_with_matches failed: content=%q, err=%v", arm.name, readFiles, err)
+			}
+
+			// 3. Directory search with path="sub", output_mode="count"
+			countOut, err := arm.env.Grep(context.Background(), "target pattern", "sub", "", false, 100, "count")
+			if err != nil {
+				t.Fatalf("%s: Grep count: %v", arm.name, err)
+			}
+			wantCount := expectedSubB + ":2"
+			if countOut != wantCount {
+				t.Fatalf("%s: count = %q, want %q", arm.name, countOut, wantCount)
+			}
+
+			// 4. Single-file search path="sub/b.go" in all 3 modes
+			// 4a. content: prefix-free line numbers
+			sfContent, err := arm.env.Grep(context.Background(), "target pattern", "sub/b.go", "", false, 100, "content")
+			if err != nil || sfContent != "2:// sub/b.go target pattern\n3:// second line target pattern" {
+				t.Fatalf("%s: single-file content = %q, want prefix-free line numbers, err=%v", arm.name, sfContent, err)
+			}
+			// 4b. count: bare count
+			sfCount, err := arm.env.Grep(context.Background(), "target pattern", "sub/b.go", "", false, 100, "count")
+			if err != nil || sfCount != "2" {
+				t.Fatalf("%s: single-file count = %q, want \"2\", err=%v", arm.name, sfCount, err)
+			}
+			// 4c. files_with_matches: returns workspace-relative path
+			sfFiles, err := arm.env.Grep(context.Background(), "target pattern", "sub/b.go", "", false, 100, "files_with_matches")
+			if err != nil || sfFiles != expectedSubB {
+				t.Fatalf("%s: single-file files_with_matches = %q, want %q, err=%v", arm.name, sfFiles, expectedSubB, err)
+			}
+		})
+	}
+}
+
 // TestRipgrepOutputLinesTakesTheFallbacksShape pins the reshaping on recorded
 // rg output, so hosts without ripgrep cover it too.
 func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
@@ -151,6 +245,7 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 	cases := []struct {
 		name      string
 		stdout    string
+		target    string
 		oneFile   bool
 		filesOnly bool
 		want      []string
@@ -181,13 +276,14 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 			want:   []string{`"a\nb.md"-1-x`, `"a\nb.md":2:foo`, "--", "c.md:9:foo"},
 		},
 		{name: "a name holding a newline, files with matches", stdout: dir + sep + "a\nb.md\x00", filesOnly: true, want: []string{`"a\nb.md"`}},
-		{name: "a named file's matches", stdout: dir + "\x00", oneFile: true, filesOnly: true, want: []string{"."}},
+		{name: "a named file's matches", stdout: filepath.Join(dir, "a.go") + "\x00", target: filepath.Join(dir, "a.go"), oneFile: true, filesOnly: true, want: []string{"a.go"}},
 		{name: "a named file's lines", stdout: "1:foo\n2:foo\n", oneFile: true, want: []string{"1:foo", "2:foo"}},
 		{name: "a named file's count", stdout: "2\n", oneFile: true, want: []string{"2"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ripgrepOutputLines(tc.stdout, dir, tc.oneFile, tc.filesOnly); !slices.Equal(got, tc.want) {
+			target := cmp.Or(tc.target, dir)
+			if got := ripgrepOutputLines(tc.stdout, target, dir, tc.oneFile, tc.filesOnly); !slices.Equal(got, tc.want) {
 				t.Fatalf("ripgrepOutputLines = %q, want %q", got, tc.want)
 			}
 		})
