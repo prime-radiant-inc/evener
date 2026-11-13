@@ -416,9 +416,7 @@ describe("per-model summary rows and drill-in editor", () => {
   test("surfaces alias-inherited config figures in the model editor placeholders", async () => {
     const user = userEvent.setup();
     const fake = new FakeClient("ready");
-    // An alias_of row whose target set these figures in its own config row:
-    // seedFromAlias preserves the target's "config" provenance while the
-    // alias row itself authors nothing.
+    // An alias_of row whose target set these figures in its own config row.
     fake.on("evener/instance/modelGet", () =>
       modelDetailFixture({
         effective: { ...modelDetailFixture().effective, contextWindow: 128_000, compactionThreshold: 250_000 },
@@ -427,7 +425,7 @@ describe("per-model summary rows and drill-in editor", () => {
           ContextWindow: "config",
           CompactionThreshold: "config",
         },
-        authored: { aliasOf: "gpt-5.5" },
+        authored: { aliasOf: "gpt-4o" },
       }),
     );
     connectionStore.getState().connect(fake);
