@@ -393,6 +393,56 @@ describe("per-model summary rows and drill-in editor", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Reset all overrides" })).toBeNull());
   });
 
+  test("offers per-field Reset for newly drafted effort and modality overrides on inherited fields", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    const inst: InstanceEntry = {
+      ...entry(),
+      endpointFingerprint: "fp-1",
+      models: [{ id: "gpt-5.5", contextWindow: 1_000_000 }],
+    };
+    fake.on("evener/instance/modelGet", () => modelDetailFixture());
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [inst], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+    await screen.findByLabelText("Auto-compact threshold");
+
+    const effortRow = screen.getByRole("group", { name: "Allowed effort levels" });
+    const modalityRow = screen.getByRole("group", { name: "Input modalities" });
+    // Nothing is drafted yet, so neither inherited field offers a Reset and the form is clean.
+    expect(within(effortRow).queryByRole("button", { name: "Reset" })).toBeNull();
+    expect(within(modalityRow).queryByRole("button", { name: "Reset" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // Toggling a tier on and back off leaves a drafted override equal to the
+    // inherited array; Reset must appear so the draft can return to inherited.
+    await user.click(within(effortRow).getByRole("button", { name: "max" }));
+    await user.click(within(effortRow).getByRole("button", { name: "max" }));
+    expect(within(effortRow).getByRole("button", { name: "Reset" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(within(effortRow).getByRole("button", { name: "Reset" }));
+    // The draft returned to inherited, so the form is clean again and Save pins nothing.
+    expect(within(effortRow).queryByRole("button", { name: "Reset" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // A newly drafted modality override gets the same affordance.
+    await user.click(within(modalityRow).getByRole("switch", { name: "Image" }));
+    expect(within(modalityRow).getByRole("button", { name: "Reset" })).toBeTruthy();
+    await user.click(within(modalityRow).getByRole("button", { name: "Reset" }));
+    expect(within(modalityRow).queryByRole("button", { name: "Reset" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
+  });
+
   test("auto-opens Routing & wire overrides when a routing field is authored", async () => {
     const user = userEvent.setup();
     const fake = new FakeClient("ready");
