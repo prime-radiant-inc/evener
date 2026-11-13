@@ -1,0 +1,119 @@
+{
+  "benchmark": "BenchmarkCatalogLookupAndList/model-ids",
+  "iterations": 1000000,
+  "benchmark_source_sha256": "fa94f4b58427725e94349a84626e4e7284d72aca25eb97a99c869a2893009e32",
+  "driver_sha256": "973edc14729367b9e7e7096d11c300949b74aedd26e964892dd9b1679f54e2be",
+  "process_helper_sha256": "b866dde5273ed841cc4ec4bd1c83fca95fe37fe5538031ca6e2df5654ee4e581",
+  "samples": [
+    {
+      "pair": 1,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 47468,
+      "peak_rss_bytes": 48607232,
+      "user_cpu_seconds": 9.340102,
+      "system_cpu_seconds": 0.056083999999999995,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7409 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 1,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38484,
+      "peak_rss_bytes": 39407616,
+      "user_cpu_seconds": 8.785315,
+      "system_cpu_seconds": 0.059238,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7120 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 2,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38440,
+      "peak_rss_bytes": 39362560,
+      "user_cpu_seconds": 8.867246,
+      "system_cpu_seconds": 0.053108999999999996,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7138 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 2,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 46516,
+      "peak_rss_bytes": 47632384,
+      "user_cpu_seconds": 9.014004,
+      "system_cpu_seconds": 0.053099999999999994,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7193 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 3,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 46916,
+      "peak_rss_bytes": 48041984,
+      "user_cpu_seconds": 8.979427,
+      "system_cpu_seconds": 0.053221,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7166 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 3,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38624,
+      "peak_rss_bytes": 39550976,
+      "user_cpu_seconds": 8.958699,
+      "system_cpu_seconds": 0.055053,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7208 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 4,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38248,
+      "peak_rss_bytes": 39165952,
+      "user_cpu_seconds": 9.268727,
+      "system_cpu_seconds": 0.06415,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7424 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 4,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 50332,
+      "peak_rss_bytes": 51539968,
+      "user_cpu_seconds": 10.402784,
+      "system_cpu_seconds": 0.072213,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      8666 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 5,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 47272,
+      "peak_rss_bytes": 48406528,
+      "user_cpu_seconds": 9.89283,
+      "system_cpu_seconds": 0.091219,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7826 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 5,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38928,
+      "peak_rss_bytes": 39862272,
+      "user_cpu_seconds": 9.625733,
+      "system_cpu_seconds": 0.07223,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t 1000000\t      7672 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    }
+  ]
+}

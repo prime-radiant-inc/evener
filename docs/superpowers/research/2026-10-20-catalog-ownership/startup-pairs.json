@@ -1,0 +1,110 @@
+{
+  "platform": "linux",
+  "process_helper_sha256": "b866dde5273ed841cc4ec4bd1c83fca95fe37fe5538031ca6e2df5654ee4e581",
+  "probe_sha256": "14e861bab1526bc48e44ee6921d1d9c5039b54dc7e7e404693f201be7b957851",
+  "driver_sha256": "e06a7a6cfe6fff136aaf8683946743071302f3dc236095c4f0769ddf3f3539be",
+  "samples": [
+    {
+      "pair": 1,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "2bd18ac317f03c0c7a369869b7b2a1a3735582441f99bcd499c53665f55fbdac",
+      "peak_rss_kib": 31232,
+      "peak_rss_bytes": 31981568,
+      "user_cpu_seconds": 0.064303,
+      "system_cpu_seconds": 0.016331,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17024872,
+        "total_alloc_bytes": 34815976
+      }
+    },
+    {
+      "pair": 1,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "70bce0d75c170aca6166ad72ed26316ac3173a4ac5d7e8e581ce3b2c9df1da7b",
+      "peak_rss_kib": 29952,
+      "peak_rss_bytes": 30670848,
+      "user_cpu_seconds": 0.06841699999999999,
+      "system_cpu_seconds": 0.00919,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 12301336,
+        "total_alloc_bytes": 30419464
+      }
+    },
+    {
+      "pair": 2,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "70bce0d75c170aca6166ad72ed26316ac3173a4ac5d7e8e581ce3b2c9df1da7b",
+      "peak_rss_kib": 29952,
+      "peak_rss_bytes": 30670848,
+      "user_cpu_seconds": 0.062231999999999996,
+      "system_cpu_seconds": 0.015805,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 12022232,
+        "total_alloc_bytes": 30456344
+      }
+    },
+    {
+      "pair": 2,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "2bd18ac317f03c0c7a369869b7b2a1a3735582441f99bcd499c53665f55fbdac",
+      "peak_rss_kib": 31360,
+      "peak_rss_bytes": 32112640,
+      "user_cpu_seconds": 0.063628,
+      "system_cpu_seconds": 0.015394,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17025736,
+        "total_alloc_bytes": 34822024
+      }
+    },
+    {
+      "pair": 3,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "2bd18ac317f03c0c7a369869b7b2a1a3735582441f99bcd499c53665f55fbdac",
+      "peak_rss_kib": 29952,
+      "peak_rss_bytes": 30670848,
+      "user_cpu_seconds": 0.081102,
+      "system_cpu_seconds": 0.010012,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17187136,
+        "total_alloc_bytes": 34816128
+      }
+    },
+    {
+      "pair": 3,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "70bce0d75c170aca6166ad72ed26316ac3173a4ac5d7e8e581ce3b2c9df1da7b",
+      "peak_rss_kib": 29952,
+      "peak_rss_bytes": 30670848,
+      "user_cpu_seconds": 0.075804,
+      "system_cpu_seconds": 0.01639,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 12589936,
+        "total_alloc_bytes": 30413864
+      }
+    }
+  ]
+}
