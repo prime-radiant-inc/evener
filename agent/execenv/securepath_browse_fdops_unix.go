@@ -183,9 +183,22 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 // output semantics are identical. It never searches a file skip names (see
 // LocalExecutionEnvironment.GrepSkipping). A base that names a file is
 // searched alone (see grepNamedFile).
-// outputRoot, when supplied by memory search, changes only result path
-// presentation, not the walk's base or selection paths.
-func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, outputRoot ...string) (string, error) {
+// displayRoot, when non-empty, formats returned file paths relative to
+// displayRoot when under it, or as absolute paths when outside it (#6176).
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot ...string) (string, error) {
+	root := base
+	if len(displayRoot) > 0 && displayRoot[0] != "" {
+		root = displayRoot[0]
+	}
+	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, root, false)
+}
+
+// grepConfinedNative is used by GrepConfinedFiles for memory search.
+func (s *sandboxFS) grepConfinedNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, outputRoot string) (string, error) {
+	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, outputRoot, true)
+}
+
+func (s *sandboxFS) grepNativeInternal(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot string, scopeRelative bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -197,11 +210,16 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	// The base opens without O_DIRECTORY, so a named file is admitted by the
 	// same read policy as a directory; its type then picks the search.
 	canonical := filepath.Clean(base)
-	if len(outputRoot) > 0 {
-		a.pathPrefix, err = filepath.Rel(outputRoot[0], canonical)
-		if err != nil {
-			return "", err
+	if scopeRelative {
+		if displayRoot != "" {
+			a.pathPrefix, err = filepath.Rel(displayRoot, canonical)
+			if err != nil {
+				return "", err
+			}
 		}
+	} else {
+		a.displayRoot = displayRoot
+		a.baseDir = canonical
 	}
 	baseFd, err := s.openRead("grep", canonical, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
@@ -213,6 +231,10 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 		return "", err
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		if !scopeRelative {
+			a.namedFile = true
+			a.namedFilePath = grepDisplayPath(canonical, displayRoot)
+		}
 		return grepNamedFile(ctx, baseFd, canonical, a, globFilters, skip)
 	}
 	defer func() { _ = unix.Close(baseFd) }()
@@ -237,8 +259,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 // grepNamedFile searches the one file a grep's path names, given its
 // nonblocking fd (which it takes ownership of), under the rules the walk
 // applies to each file it reaches: dotfiles, files grepFileSelected leaves
-// out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
-// output path is ".", the unsandboxed walk's name for a named file.
+// out, non-regular files, and binary files (grepAccum.feed) are skipped. In
+// files_with_matches mode, its output path is the file's workspace-relative
+// or outside-root absolute path (#6176).
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
 	f, err := admitReadFD(fd, path, false, isPseudoFsPath(path))
 	if err != nil {

@@ -65,6 +65,15 @@ type grepAccum struct {
 	// pathPrefix rebases result names for memory search. An empty prefix keeps
 	// ordinary grep's search-base-relative and unnamed-single-file output.
 	pathPrefix string
+	// displayRoot, when non-empty, formats returned file paths relative to
+	// displayRoot when under it, or as absolute paths when outside it (#6176).
+	displayRoot string
+	// baseDir is the searched directory on disk.
+	baseDir string
+	// namedFile indicates the grep target is a single explicit file.
+	namedFile bool
+	// namedFilePath is the displayed path for a single named file.
+	namedFilePath string
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
@@ -136,8 +145,21 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 func (a *grepAccum) resultName(relPath string) (name string, singleFile bool) {
 	if a.pathPrefix != "" {
 		relPath = filepath.Join(a.pathPrefix, relPath)
+		return GrepPath(relPath), relPath == "."
 	}
-	return GrepPath(relPath), relPath == "."
+	if a.namedFile || relPath == "." {
+		disp := a.namedFilePath
+		if disp == "" {
+			disp = "."
+		}
+		return GrepPath(disp), true
+	}
+	if a.baseDir != "" {
+		fullPath := filepath.Join(a.baseDir, relPath)
+		disp := grepDisplayPath(fullPath, a.displayRoot)
+		return GrepPath(disp), false
+	}
+	return GrepPath(relPath), false
 }
 
 // feed scans one file's lines and records matches per output mode; it returns true
