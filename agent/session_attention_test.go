@@ -3378,7 +3378,7 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 	)
 	// Armed in the wake set before the turn; its durable entry does not exist
 	// yet, so no request of the user turn can present it.
-	root.armRootDelegateAttention(attentionID)
+	root.armRootDelegateAttentions([]string{attentionID})
 	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
 		t.Fatalf("process user turn: %v", err)
 	}
@@ -4573,6 +4573,91 @@ func TestDelegateAttention_PrelaunchStopRetriesStrandedDeliveryAck(t *testing.T)
 	}
 }
 
+// Several retryable admissions under one owner are acknowledged as one batch:
+// each touched delegate is snapshotted once and its receiver woken once, not
+// once per receipt.
+func TestDelegateAttention_PrelaunchStopBatchesRetryAcknowledgments(t *testing.T) {
+	const receipts = 3
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: receipts, retryable: true, ownerReachable: true})
+	c := f.controller
+	c.mu.Lock()
+	plans, wakes, err := c.acknowledgeRetryableStopDeliveriesLocked(c.stop)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("acknowledge retryable stop deliveries: %v", err)
+	}
+	acknowledged := f.acknowledged(t)
+	for _, delivery := range f.deliveries {
+		if !acknowledged[delivery.deliveryID] {
+			t.Fatalf("delivery %q has no durable acknowledgment", delivery.deliveryID)
+		}
+	}
+	snapshots := make(map[string]int)
+	for _, plan := range plans.updates {
+		for _, row := range plan.rows {
+			snapshots[row.id]++
+		}
+	}
+	for id, count := range snapshots {
+		if count != 1 {
+			t.Fatalf("delegate %q snapshotted %d times, want once", id, count)
+		}
+	}
+	if len(snapshots) > 2 {
+		t.Fatalf("snapshotted %v, want only the owner and target", snapshots)
+	}
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %d, want one for the owner receiver", len(wakes))
+	}
+	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+		t.Fatalf("wake grouped receiver: %v", err)
+	}
+	if got := atomic.LoadInt32(f.notifies); got != 1 {
+		t.Fatalf("owner notify count = %d, want 1 for the batch", got)
+	}
+}
+
+// The root receiver is armed once for every attention ID the batch
+// acknowledged, not once per receipt.
+func TestDelegateAttention_PrelaunchStopBatchesRootWakeIDs(t *testing.T) {
+	const receipts = 3
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: receipts, retryable: true, topLevel: true, realRoot: true})
+	for _, delivery := range f.deliveries {
+		attentionID := delegateAttentionID(delivery.deliveryID)
+		content := `<delegate-notification delegate_id="dlg_target">report</delegate-notification>`
+		if appended, err := f.root.appendDelegateNotificationDurably(attentionID, content); err != nil || !appended {
+			t.Fatalf("append root attention %q = (%t, %v), want true", attentionID, appended, err)
+		}
+	}
+	var notifies atomic.Int32
+	f.root.notifyFunc = func() { notifies.Add(1) }
+	c := f.controller
+	c.mu.Lock()
+	_, wakes, err := c.acknowledgeRetryableStopDeliveriesLocked(c.stop)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("acknowledge retryable stop deliveries: %v", err)
+	}
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %d, want one for the root receiver", len(wakes))
+	}
+	if len(wakes[0].attentionIDs) != receipts {
+		t.Fatalf("root wake carries %d attention IDs, want %d", len(wakes[0].attentionIDs), receipts)
+	}
+	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+		t.Fatalf("root wake: %v", err)
+	}
+	if got := notifies.Load(); got != 1 {
+		t.Fatalf("root notify count = %d, want 1 for the batch", got)
+	}
+	f.root.attentionMu.Lock()
+	armed := len(f.root.rootAttentionWakeIDs)
+	f.root.attentionMu.Unlock()
+	if armed != receipts {
+		t.Fatalf("root armed %d attention IDs, want %d", armed, receipts)
+	}
+}
+
 // A non-retryable admission is still in flight: the stop must keep waiting for
 // its executor rather than acknowledging it itself.
 func TestDelegateAttention_PrelaunchStopWaitsForInFlightDelivery(t *testing.T) {
@@ -4899,17 +4984,17 @@ func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	c.mu.Lock()
 	c.rootRuntime = root
 	c.mu.Unlock()
-	if err := c.wakeDeliveryReceiver(root, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(root, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("root receiver wake: %v", err)
 	}
-	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("cold receiver wake: %v", err)
 	}
 	if got := notified.Load(); got != 1 {
 		t.Fatalf("root wake count = %d, want 1 from the cold receiver", got)
 	}
 	var typedNil *Session
-	if err := c.wakeDeliveryReceiver(typedNil, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(typedNil, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("typed-nil root wake: %v", err)
 	}
 }
