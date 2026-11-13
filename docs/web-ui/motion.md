@@ -208,7 +208,8 @@ invents progress stay banned.
   bounded by the exit token removes it if the animation's end never arrives. Reopening
   during the exit cancels the removal. A closing layer is `inert`, ignores the pointer,
   drops its dialog role and `aria-modal`, and has already returned focus, exactly as an
-  unmount would. Everything that answers the user (dismissal, focus, `aria-expanded`)
+  unmount would; focus recovery (`useFocusRehome`, `tabbable`) treats an inert subtree as
+  gone. Everything that answers the user (dismissal, focus, `aria-expanded`)
   keys off the open state, never off the layer still being mounted. A layer its caller
   mounts and unmounts outright, such as the directory picker, has no exit and so no
   entrance either.

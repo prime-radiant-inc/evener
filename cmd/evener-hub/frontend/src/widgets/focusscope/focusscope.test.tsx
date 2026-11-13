@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRoot } from "react-dom/client";
 import { expect, test } from "vitest";
-import { FocusScope } from "./index";
+import { FocusScope, LayerFocusScope } from "./index";
 
 test("renders its children", () => {
   render(
@@ -231,4 +231,52 @@ test("a scope in a popout focuses and restores within its own document", ({ onTe
 
   act(() => root.unmount());
   expect(popout.activeElement).toBe(opener);
+});
+
+// --- a released scope (a layer leaving with motion) -------------------------
+
+function Layer({ released, opener }: { released: boolean; opener: boolean }) {
+  return (
+    <>
+      {opener && <button type="button">opener</button>}
+      <LayerFocusScope trap released={released}>
+        <button type="button">inside</button>
+      </LayerFocusScope>
+    </>
+  );
+}
+
+test("releasing restores focus to the opener while the scope is still mounted", () => {
+  const { rerender } = render(<Layer released opener />);
+  const opener = screen.getByRole("button", { name: "opener" });
+  act(() => opener.focus());
+  rerender(<Layer released={false} opener />);
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "inside" }));
+
+  rerender(<Layer released opener />);
+  expect(screen.getByRole("button", { name: "inside" })).toBeTruthy();
+  expect(document.activeElement).toBe(opener);
+});
+
+test("a released scope no longer traps Tab", async () => {
+  const user = userEvent.setup();
+  const { rerender } = render(
+    <>
+      <LayerFocusScope trap released={false}>
+        <button type="button">inside</button>
+      </LayerFocusScope>
+      <button type="button">after</button>
+    </>,
+  );
+  rerender(
+    <>
+      <LayerFocusScope trap released>
+        <button type="button">inside</button>
+      </LayerFocusScope>
+      <button type="button">after</button>
+    </>,
+  );
+  act(() => screen.getByRole("button", { name: "inside" }).focus());
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "after" }));
 });

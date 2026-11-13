@@ -111,16 +111,18 @@ test("reopening during the exit cancels the removal and returns the layer to ope
   vi.useFakeTimers();
   const exit = fakeAnimation(80);
   running = [exit.animation];
-  const { rerender } = render(<Layer open />);
-  rerender(<Layer open={false} />);
+  const onExited = vi.fn();
+  const { rerender } = render(<Layer open onExited={onExited} />);
+  rerender(<Layer open={false} onExited={onExited} />);
   const closing = layer();
   expect(closing?.getAttribute("data-motion")).toBe("closing");
 
-  rerender(<Layer open />);
+  rerender(<Layer open onExited={onExited} />);
   // The browser cancels the exit when the attribute flips back; neither that
-  // rejection nor the fallback timer may remove the reopened layer.
+  // rejection nor the fallback timer may count as the layer having left.
   await act(async () => exit.cancel());
   act(() => vi.advanceTimersByTime(1000));
   expect(layer()).toBe(closing);
   expect(layer()?.getAttribute("data-motion")).toBe("open");
+  expect(onExited).not.toHaveBeenCalled();
 });
