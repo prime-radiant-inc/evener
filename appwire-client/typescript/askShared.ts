@@ -158,20 +158,8 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   const items = model.turns.flatMap((turn) => turn.items);
   const at = items.findIndex((i) => i.id === item.id);
   if (at === -1) return undefined;
-  const reply = findAnswerReply(items.slice(at + 1), item);
+  const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
-  // The wire's answer link names an execution TURN, not the individual call,
-  // and the fence can keep a later sibling call pending even though its turn
-  // is named (a scoped answer admits the pending set; a call appended after
-  // admission survives — agent's TestAskFenceScopedAnswerPreservesPostAdmissionAppend).
-  // So the linked path must not guess WHICH sibling call a reply answered: a
-  // free-prose reply names no header, and a composed reply answering a
-  // header a sibling also asks could belong to either — both stay
-  // suppressed. A composed reply whose answered headers no sibling asks
-  // identify this call exactly, so header matching still runs for it.
-  // (Exposing admission's call-level AskResolution on the wire would lift
-  // this guard entirely; the link stays turn-granular until then.)
-  if (reply.answerToTurnIds !== undefined && linkedReplyNamesTheWrongSibling(items, item, reply)) return undefined;
   if (reply.text.startsWith("[answers]")) {
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
@@ -199,27 +187,46 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   return first !== "" ? ` — answered: ${first}${more ? " …" : ""}` : undefined;
 }
 
-// Whether a linked reply could belong to a sibling ask call of the same
-// execution turn: true when the reply is free prose (it names no header to
-// identify its call), or when it answers a header this call asks that a
-// sibling also asks (a shared header cannot say which call it belongs to).
-// An answered header belonging only to the OTHER sibling identifies that
-// sibling exactly and is no collision for this call - the dock composes one
-// reply for the whole pending set, so a reply may answer several sibling
-// calls' distinct headers at once.
-function linkedReplyNamesTheWrongSibling(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
-  const siblings = items.filter(
-    (i) => i.id !== item.id && i.turnId === item.turnId && parseAskUserQuestions(i) !== undefined,
+// One acked, answerable ask_user call - the only population that can hold a
+// round's questions. A rejected call posts no questions (its arguments may
+// still parse - the projector stamps it "completed" with error set), and a
+// still-streaming call has not posted them yet; neither can be a reply's
+// target. Mirrors deriveAskQuestions's isAckedAskUserItem, which gates
+// liveness the same way; the two must not drift.
+function isAckedAskCall(candidate: ItemModel): boolean {
+  return (
+    candidate.type === "commandExecution" &&
+    candidate.toolName === "ask_user" &&
+    candidate.status === "completed" &&
+    candidate.error === undefined
   );
-  if (siblings.length === 0) return false;
-  if (!reply.text.startsWith("[answers]")) return true;
+}
+
+// What a linked reply naming item's turn can say about THIS call. Without
+// acked sibling calls in the same execution it is this call's answer. With
+// them, free prose names no header and could belong to any sibling, and a
+// composed reply is decisive only through a header it answers that THIS
+// call asks and no sibling also asks (a shared header could belong to
+// either); a composed reply answering only the sibling's headers says
+// nothing about this call. (The wire's link names an execution turn, not a
+// call - the whole heuristic exists because of that granularity, and
+// exposing admission's call-level AskResolution on the wire would replace
+// it with an exact match; see the follow-up issue filed from #5836.)
+function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
+  const siblings = items.filter((i) => i.id !== item.id && i.turnId === item.turnId && isAckedAskCall(i));
+  if (siblings.length === 0) return true;
+  if (!reply.text.startsWith("[answers]")) return false;
   const siblingHeaders = new Set(
     siblings.flatMap((sibling) => (parseAskUserQuestions(sibling) ?? []).map((question) => question.header)),
   );
-  const ownHeaders = new Set((parseAskUserQuestions(item) ?? []).map((question) => question.header));
-  return [...parseAskAnswerLines(reply.text).keys()].some(
-    (header) => ownHeaders.has(header) && siblingHeaders.has(header),
-  );
+  const answered = parseAskAnswerLines(reply.text);
+  let answersOwn = false;
+  for (const question of parseAskUserQuestions(item) ?? []) {
+    if (!answered.has(question.header)) continue;
+    if (siblingHeaders.has(question.header)) return false;
+    answersOwn = true;
+  }
+  return answersOwn;
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item
@@ -257,23 +264,34 @@ function isAnswerCarrier(item: ItemModel): boolean {
 // after it, in one pass. The durable rule decides first: a reply carrying
 // the wire's answer link (ThreadItem.observation.answerToTurnIds, onto the
 // model as answerToTurnIds) is server-stamped evidence naming the round it
-// answers. Among carriers, the first linked reply naming THIS turn is the
-// answer, and the first linked reply naming ANOTHER round ends the search:
-// the fence holds the floor until this round is answered, so this round's
-// own reply can only sit before any foreign link - everything after that
-// link answered a later round. The composed "[answers]" shape matched
-// before the foreign link still stands, though: in a mixed thread (a reply
-// recorded by an older daemon that stamped no link), erasing it would lose
-// this round's answer to an unrelated later link. With no link anywhere
-// (an older daemon, or a reply the observation never reached) the shape is
-// the only evidence, exactly as before the link existed.
-function findAnswerReply(later: readonly ItemModel[], item: ItemModel): ItemModel | undefined {
+// answers. Among carriers, the first linked reply naming ANOTHER round ends
+// the search: the fence holds the floor until this round is answered, so
+// this round's own reply can only sit before any foreign link - everything
+// after that link answered a later round. A linked reply naming THIS turn is
+// decisive when it can unambiguously answer THIS call
+// (linkedReplyAnswersThisCall); one that cannot - free prose beside acked
+// sibling calls, or a composed reply answering only the siblings' headers -
+// is skipped, not decisive, so a later unambiguous reply can still supply
+// this call's recap: the fence keeps a call appended after a scoped answer
+// pending (TestAskFenceScopedAnswerPreservesPostAdmissionAppend), and its
+// own answer arrives after the earlier one. The composed "[answers]" shape
+// matched before a foreign link still stands, though: in a mixed thread (a
+// reply recorded by an older daemon that stamped no link), erasing it would
+// lose this round's answer to an unrelated later link. With no link
+// anywhere (an older daemon, or a reply the observation never reached) the
+// shape is the only evidence, exactly as before the link existed.
+function findAnswerReply(
+  items: readonly ItemModel[],
+  later: readonly ItemModel[],
+  item: ItemModel,
+): ItemModel | undefined {
   let shapeMatch: ItemModel | undefined;
   for (const candidate of later) {
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
-      if (candidate.answerToTurnIds.includes(item.turnId)) return candidate;
-      return shapeMatch;
+      if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
+      if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
+      continue;
     }
     if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
       shapeMatch = candidate;

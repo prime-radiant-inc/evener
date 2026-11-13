@@ -415,8 +415,20 @@ test("a linked reply never guesses between same-execution ask calls", () => {
   // answerable calls in one execution, a free-prose reply's turn link
   // cannot say which call it resolved - the recap shows nothing rather
   // than claim a specific one answered.
-  const first = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_1" });
-  const second = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_2" });
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
   const reply = userMessage({ text: "do the first thing", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
   const model = turnsModel([first, second], [reply]);
   expect(answeredAskUserSuffix(model, first)).toBeUndefined();
@@ -427,13 +439,21 @@ test("a linked composed reply still recaps a sibling call it answers by a distin
   // The dock composes ONE [answers] reply for the whole pending set, naming
   // each answer by header: when sibling calls ask distinct headers, the
   // reply identifies its calls exactly and must not be suppressed.
-  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
+  const alpha = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_alpha",
+    toolName: "ask_user",
+    status: "completed",
+  });
   const beta = item({
     argumentsJSON: askUserArgs([
       { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
     ]),
     turnId: "turn_1",
     id: "ask_beta",
+    toolName: "ask_user",
+    status: "completed",
   });
   const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2", answerToTurnIds: ["turn_1"] });
   const model = turnsModel([alpha, beta], [reply]);
@@ -444,8 +464,20 @@ test("a linked composed reply still recaps a sibling call it answers by a distin
 test("a linked composed reply answering a header a sibling also asks recaps neither call", () => {
   // Both calls ask "Deploy?": the shared header cannot say which call the
   // reply answered, so neither claims it.
-  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
-  const beta = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_beta" });
+  const alpha = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_alpha",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const beta = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_beta",
+    toolName: "ask_user",
+    status: "completed",
+  });
   const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2", answerToTurnIds: ["turn_1"] });
   const model = turnsModel([alpha, beta], [reply]);
   expect(answeredAskUserSuffix(model, alpha)).toBeUndefined();
@@ -457,13 +489,21 @@ test("a linked composed reply answering both distinct-header sibling calls recap
   // distinct headers, each answer names its own call and both recaps stand.
   // An answered header belonging to the OTHER sibling must not read as a
   // collision for this call.
-  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
+  const alpha = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_alpha",
+    toolName: "ask_user",
+    status: "completed",
+  });
   const beta = item({
     argumentsJSON: askUserArgs([
       { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
     ]),
     turnId: "turn_1",
     id: "ask_beta",
+    toolName: "ask_user",
+    status: "completed",
   });
   const reply = userMessage({
     text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Beta] → "Postgres"',
@@ -473,6 +513,66 @@ test("a linked composed reply answering both distinct-header sibling calls recap
   const model = turnsModel([alpha, beta], [reply]);
   expect(answeredAskUserSuffix(model, alpha)).toBe(' — answered: "Yes"');
   expect(answeredAskUserSuffix(model, beta)).toBe(' — answered: "Postgres"');
+});
+
+test("a rejected ask then a successful retry still recaps the retry's answer", () => {
+  // A rejected call posts no questions to the pending set - its arguments may
+  // still parse - so it must not read as a sibling suppressing the retry's
+  // recap. The projector stamps a rejected call "completed" with error set,
+  // so the sibling set must gate on error, not status alone.
+  const rejected = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_rejected",
+    toolName: "ask_user",
+    status: "completed",
+    error: "duplicate option labels",
+  });
+  const retry = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_retry",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const model = turnsModel([rejected, retry], [reply]);
+  expect(answeredAskUserSuffix(model, rejected)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, retry)).toBe(' — answered: "Yes"');
+});
+
+test("a sibling's own composed answer supplies its recap after an earlier prose answer", () => {
+  // A's prose answer is admitted first; sibling B is appended in the same
+  // execution before consumption and survives pending; B's own composed
+  // answer arrives later. The earlier ambiguous prose reply must not mask
+  // B's unambiguous one (the fence's admission/append scenario, agent
+  // TestAskFenceScopedAnswerPreservesPostAdmissionAppend).
+  const alpha = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_alpha",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const beta = item({
+    argumentsJSON: askUserArgs([
+      { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_beta",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const proseAnswer = userMessage({ text: "do the first thing", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const betaAnswer = userMessage({
+    id: "reply_2",
+    text: '[answers]\n1. [Beta] → "Postgres"',
+    turnId: "turn_3",
+    answerToTurnIds: ["turn_1"],
+  });
+  const model = turnsModel([alpha, beta], [proseAnswer], [betaAnswer]);
+  expect(answeredAskUserSuffix(model, beta)).toBe(' — answered: "Postgres"');
+  expect(answeredAskUserSuffix(model, alpha)).toBeUndefined();
 });
 
 test("a free-prose recap carries only the reply's first line, with an ellipsis for the rest", () => {
