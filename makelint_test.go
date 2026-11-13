@@ -356,7 +356,7 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle",
 			},
-			golangciRunCount: 2, // host + GOOS=linux
+			golangciRunCount: 2, // the host pass plus the GOOS=linux pass
 		},
 		"lint-eval": {
 			vetInvocations: []string{
@@ -366,7 +366,7 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle",
 			},
-			golangciRunCount: 2, // host + GOOS=linux
+			golangciRunCount: 2, // the host pass plus the GOOS=linux pass
 		},
 		"lint-golangci": {
 			golangciRuns: []string{
