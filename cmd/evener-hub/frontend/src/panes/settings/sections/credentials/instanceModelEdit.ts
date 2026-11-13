@@ -172,7 +172,12 @@ function effectiveHardCeiling(
     return draftedCw !== null && draftedCw > 0 ? draftedCw : 0;
   }
   const limits: number[] = [];
-  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow) ?? null;
+  const inheritedCw =
+    inheritedField(
+      detail?.effective.contextWindow,
+      detail?.provenance.ContextWindow,
+      isAuthoredHere(detail, "contextWindow"),
+    ) ?? null;
   const effectiveCw = rawCw !== "" ? draftedCw : inheritedCw;
   if (effectiveCw !== null && effectiveCw > 0) {
     limits.push(effectiveCw);
@@ -526,8 +531,20 @@ export function formatModelRowSummary(row: Pick<InstanceModelEntry, "contextWind
   return parts.join(" · ");
 }
 
-function inheritedField<T>(value: T | undefined, prov: string | undefined): T | undefined {
-  return prov === "config" ? undefined : value;
+// True when this row authored the named override itself. A config-provenance
+// figure is hidden from the Inherited placeholders only when the row authored
+// it: an alias importing the target's config figures (seedFromAlias preserves
+// the target's provenance) did not author them, so they stay visible as
+// inherited exactly like a catalog or overlay figure would.
+function isAuthoredHere(
+  detail: InstanceModelDetailResponse | null | undefined,
+  field: "compactionThreshold" | "contextWindow" | "maxOutputTokens",
+): boolean {
+  return detail?.authored?.[field] !== undefined;
+}
+
+function inheritedField<T>(value: T | undefined, prov: string | undefined, authoredHere = true): T | undefined {
+  return prov === "config" && authoredHere ? undefined : value;
 }
 
 function provenanceSuffix(prov: string | undefined): string {
@@ -548,13 +565,21 @@ export function compactionThresholdPlaceholder(
   draftContextWindow = "",
 ): string {
   const thresholdProv = detail?.provenance.CompactionThreshold;
-  const inheritedThreshold = inheritedField(detail?.effective.compactionThreshold, thresholdProv);
+  const inheritedThreshold = inheritedField(
+    detail?.effective.compactionThreshold,
+    thresholdProv,
+    isAuthoredHere(detail, "compactionThreshold"),
+  );
   if (inheritedThreshold !== undefined && inheritedThreshold > 0) {
     return `Inherited: ${formatTokenCount(inheritedThreshold)}${provenanceSuffix(thresholdProv)}`;
   }
   const rawDraftCw = draftContextWindow.trim();
   const draftedCw = rawDraftCw === "" ? null : parseTokenCount(rawDraftCw);
-  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow);
+  const inheritedCw = inheritedField(
+    detail?.effective.contextWindow,
+    detail?.provenance.ContextWindow,
+    isAuthoredHere(detail, "contextWindow"),
+  );
   const cw = draftedCw ?? inheritedCw;
   if (cw !== undefined && cw > 0) {
     const defaultTokens = Math.round(cw * DEFAULT_COMPACT_AT);
@@ -563,8 +588,12 @@ export function compactionThresholdPlaceholder(
   return "Default: 90% of context window";
 }
 
-export function tokenLimitPlaceholder(value: number | undefined, prov: string | undefined): string {
-  const inherited = inheritedField(value, prov);
+export function tokenLimitPlaceholder(
+  value: number | undefined,
+  prov: string | undefined,
+  authoredHere = true,
+): string {
+  const inherited = inheritedField(value, prov, authoredHere);
   if (inherited !== undefined && inherited > 0) {
     return `Inherited: ${formatTokenCount(inherited)}${provenanceSuffix(prov)}`;
   }

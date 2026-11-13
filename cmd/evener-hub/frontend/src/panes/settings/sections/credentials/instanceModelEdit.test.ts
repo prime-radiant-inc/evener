@@ -419,6 +419,14 @@ describe("summary and placeholder helpers", () => {
         ThinkingShape: "config",
         WireID: "config",
       },
+      // The row authored these config values itself: that is what the
+      // config-provenance omission below is for. An alias importing the
+      // target's config figures authors nothing (see the alias test below).
+      authored: {
+        compactionThreshold: 90_000,
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+      },
     });
 
     expect(tokenLimitPlaceholder(128_000, "config")).not.toContain("128K");
@@ -446,5 +454,39 @@ describe("summary and placeholder helpers", () => {
     expect(modelSurfaceOptions(configDetail)[0]?.label).not.toContain("generic");
     expect(thinkingFormatOptions(configDetail)[0]?.label).not.toContain("deepseek");
     expect(thinkingShapeOptions(configDetail)[0]?.label).not.toContain("budget");
+  });
+
+  test("keeps alias-inherited values visible when config provenance was imported from the alias target", () => {
+    // seedFromAlias preserves the target's ContextWindow/CompactionThreshold
+    // provenance (llm/registry/resolve.go), so an alias row can carry prov
+    // "config" for figures it did not author. Those figures stay inherited:
+    // visible in the placeholders, and the imported window still bounds a
+    // drafted compaction threshold exactly as the placeholder advertises.
+    const aliasDetail = baseDetail({
+      effective: { ...baseDetail().effective, contextWindow: 128_000, compactionThreshold: 250_000 },
+      provenance: { ...baseDetail().provenance, ContextWindow: "config", CompactionThreshold: "config" },
+      authored: { aliasOf: "gpt-5.5" },
+    });
+    expect(compactionThresholdPlaceholder(aliasDetail, "")).toContain("250K");
+    expect(tokenLimitPlaceholder(128_000, "config", false)).toContain("128K");
+    expect(tokenLimitPlaceholder(128_000, "config", true)).not.toContain("128K");
+
+    const aliasWindowOnly = baseDetail({
+      effective: { ...baseDetail().effective, contextWindow: 128_000 },
+      provenance: { ...baseDetail().provenance, ContextWindow: "config" },
+      authored: { aliasOf: "gpt-5.5" },
+    });
+    expect(compactionThresholdPlaceholder(aliasWindowOnly, "")).toContain("115K");
+    expect(compactionThresholdPlaceholder(aliasWindowOnly, "")).toContain("128K");
+
+    const seeded = seedModelDraft(aliasDetail);
+    expect(
+      validateModelDraft({ ...seeded, compactionThreshold: "300k" }, aliasDetail, [], "edit", seeded)
+        .compactionThreshold,
+    ).toBeDefined();
+    expect(
+      validateModelDraft({ ...seeded, compactionThreshold: "100k" }, aliasDetail, [], "edit", seeded)
+        .compactionThreshold,
+    ).toBeUndefined();
   });
 });
