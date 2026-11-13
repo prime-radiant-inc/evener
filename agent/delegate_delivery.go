@@ -339,11 +339,52 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	return c.completeDeliveryLocked(token, committed)
 }
 
+// delegateDeliveryAck is one committed delivery acknowledgment before its
+// snapshots and owner replay are planned. The stop retry acknowledges a batch
+// of receipts under one lock and plans the snapshots and replays once.
+type delegateDeliveryAck struct {
+	planned      bool
+	ownerID      string
+	delegateID   string
+	ownerChanged bool
+}
+
 // completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
 func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
+	ack, err := c.completeDeliveryAckLocked(token, committed)
+	if err != nil || !ack.planned {
+		return delegateMutationPlans{}, err
+	}
+	updateIDs := make([]string, 0, 2)
+	if ack.ownerChanged {
+		updateIDs = append(updateIDs, ack.ownerID)
+	}
+	updateIDs = append(updateIDs, ack.delegateID)
+	return c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID}), nil
+}
+
+// deliveryAckPlansLocked assembles the snapshots and owner replays for
+// acknowledged deliveries in the order the caller supplies.
+func (c *delegateTreeController) deliveryAckPlansLocked(updateIDs, ownerIDs []string) delegateMutationPlans {
+	plans := delegateMutationPlans{}
+	for _, id := range updateIDs {
+		if id != "" {
+			plans.updates = append(plans.updates, c.capturedPlanLocked(id))
+		}
+	}
+	for _, owner := range ownerIDs {
+		plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(owner)...)
+	}
+	return plans
+}
+
+// completeDeliveryAckLocked commits one delivery acknowledgment without
+// building its snapshots or owner replay. It is the shared body of
+// CompleteDelivery and the stop's batch retry.
+func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliveryToken, committed bool) (delegateDeliveryAck, error) {
 	receipt := c.deliveries[token.processID]
 	if receipt == nil || receipt.token != token {
-		return delegateMutationPlans{}, errDelegateStaleLease
+		return delegateDeliveryAck{}, errDelegateStaleLease
 	}
 	if !committed {
 		delete(c.deliveries, token.processID)
@@ -353,14 +394,14 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 		}
 		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
-		return delegateMutationPlans{}, nil
+		return delegateDeliveryAck{}, nil
 	}
 	aggregate := c.durable[receipt.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
 		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
-		return delegateMutationPlans{}, errDelegateStaleLease
+		return delegateDeliveryAck{}, errDelegateStaleLease
 	}
 	events := make([]delegatestore.Event, 0, 2)
 	ownerChanged := false
@@ -368,7 +409,7 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 	if !receipt.inline && receipt.ownerID != "" {
 		openEvent, err := c.delegateAttentionOpenEventLocked(receipt.ownerID)
 		if err != nil {
-			return delegateMutationPlans{}, err
+			return delegateDeliveryAck{}, err
 		}
 		if openEvent != nil {
 			events = append(events, *openEvent)
@@ -392,7 +433,7 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 				c.signalStopProgressLocked()
 			}
 		}
-		return delegateMutationPlans{}, err
+		return delegateDeliveryAck{}, err
 	}
 	if !receipt.inline && receipt.ownerID != "" {
 		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
@@ -400,13 +441,12 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 	delete(c.deliveries, token.processID)
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
-	plans := delegateMutationPlans{}
-	if ownerChanged {
-		plans.updates = append(plans.updates, c.capturedPlanLocked(receipt.ownerID))
-	}
-	plans.updates = append(plans.updates, c.capturedPlanLocked(receipt.delegateID))
-	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(receipt.ownerID)...)
-	return plans, nil
+	return delegateDeliveryAck{
+		planned:      true,
+		ownerID:      receipt.ownerID,
+		delegateID:   receipt.delegateID,
+		ownerChanged: ownerChanged,
+	}, nil
 }
 
 // PostUpdate records a running delegate's mid-work update in its journal,
@@ -663,7 +703,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	return plans, plan.controller.wakeDeliveryReceiver(receiver, attentionID)
+	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID})
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable
