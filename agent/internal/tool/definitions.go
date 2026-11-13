@@ -373,7 +373,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
-					"description":          "JSON-Schema-like object for structured delegate results. Evener validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
+					"description":          "JSON Schema object (draft 2020-12) for structured delegate results: every property value must itself be a schema object, never a bare type name. Evener validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
 					"additionalProperties": true,
 				},
 			},

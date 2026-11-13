@@ -358,6 +358,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	}
 	if len(args.ResultSchema) == 0 {
 		resultSchema = nil
+	} else if err := llm.ValidateSchemaDocument(args.ResultSchema); err != nil {
+		// An invalid result_schema spliced into the child's communicate tool
+		// makes its first model call a provider 400 about tool schemas (issue
+		// #6298); reject it here, at the call the model can repair.
+		return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
 	}
 	sandboxSnapshot := delegateSandboxSnapshot(requestedSandbox)
 	if requestedSandbox == nil {
