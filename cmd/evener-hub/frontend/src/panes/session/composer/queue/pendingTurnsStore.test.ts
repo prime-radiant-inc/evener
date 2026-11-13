@@ -13,6 +13,7 @@ import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import {
+  consumedQueueEntriesFor,
   hasBlockedUnknown,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -32,6 +33,7 @@ import {
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   useBlockedMutationEntries,
+  usePendingMessages,
   usePendingTurnEntries,
   useRecoveryEntries,
   useRetryPendingState,
@@ -1207,7 +1209,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
 // turn is coming because of it - so it must not hold the skeleton up; the
 // session shows its empty state instead of a loading frame that only Retry
 // or teardown could clear. The same exclusion class the Composer's
-// ownPendingSend and PendingChips' isOptimistic already carry.
+// ownPendingSend and the pending projection's isOptimistic already carry.
 test("a born-canceled send does not hold the cold-start skeleton", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -1229,14 +1231,14 @@ test("a born-canceled send does not hold the cold-start skeleton", async () => {
   await flushPendingTurnsProjectionForTests();
 
   // The canceled row stays visible where its Retry affordance lives (the
-  // queue strip's durable rows) - the exclusion lives in the skeleton's
+  // pending stack's durable rows) - the exclusion lives in the skeleton's
   // predicate, not in the projection.
   expect(pending.result.current).toEqual([expect.objectContaining({ state: "canceled" })]);
   // ... but a turn that provably never sent does not mean a turn is coming:
   expect(coldStart.result.current).toBe(false);
 });
 
-test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
+test("a stale history frame keeps a replayed steer's accepted copy", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = await connect();
@@ -1290,16 +1292,6 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     }),
   ]);
 
-  const settleApplied = storage.settleApplied.bind(storage);
-  let signalIdentitySettled!: () => void;
-  const identitySettled = new Promise<void>((resolve) => {
-    signalIdentitySettled = resolve;
-  });
-  vi.spyOn(storage, "settleApplied").mockImplementation(async (clientMutationId) => {
-    const settled = await settleApplied(clientMutationId);
-    if (clientMutationId === mutationId) signalIdentitySettled();
-    return settled;
-  });
   act(() => {
     fake.emitNotification({
       method: "history/updated",
@@ -1307,13 +1299,13 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
         threadId: "thread_a",
         ref: "ref_a",
         bootGeneration: "1",
-        epoch: 1,
+        epoch: 0,
         snapshot: { incarnation: "inc_a", length: 1 },
         items: [
           {
             type: "steering",
             id: "item_steer_1",
-            turnId: "turn_a",
+            turnId: "turn_1",
             text: "patient steer",
             source: "user",
             clientMutationId: pending.result.current[0]?.id,
@@ -1323,12 +1315,15 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     });
   });
   await act(async () => {
-    await identitySettled;
     await refreshPendingTurnsProjection("ref_a");
   });
-
-  expect(pending.result.current).toEqual([]);
-  expect(await storage.listOptimistic("ref_a")).toEqual([]);
+  // The stale frame is ignored by the history reducer, so it must not settle
+  // the only copy of the message. A visible transcript item is the proof the
+  // projection waits for.
+  expect(await storage.getOptimistic(mutationId)).toBeDefined();
+  expect(pending.result.current).toEqual([
+    expect.objectContaining({ method: "steer", state: "accepted", text: "patient steer" }),
+  ]);
 });
 
 test("first-frame state derives from the identified active turn and needs no confirmation timer", async () => {
@@ -1531,4 +1526,37 @@ test("useRetryPendingState reports own unresolved input when loaded", async () =
     await allocatePendingRow(storage);
   });
   expect(pending.result.current).toEqual({ loaded: true, unresolved: true });
+});
+
+// A carried consumed row must not change the snapshot identity on a plain
+// re-read: useSyncExternalStore compares with Object.is, so a fresh array per
+// call rerenders forever. The row has to actually exist for that to be under
+// test, so this consumes a real queue entry first.
+test("usePendingMessages keeps one snapshot while a carried row exists", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect({
+    evener: {
+      ...thread().evener,
+      mutationStateAuthoritative: true,
+      queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+    },
+  });
+  expect(consumedQueueEntriesFor("ref_a")).toHaveLength(0);
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thread_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+      consumedClientMutationIds: ["m9"],
+    },
+  } as never);
+  await flushPendingTurnsProjectionForTests();
+  expect(consumedQueueEntriesFor("ref_a")).toHaveLength(1);
+
+  const pending = renderHook(() => usePendingMessages("ref_a"));
+  const first = pending.result.current;
+  expect(pending.result.current).toBe(first);
+  expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));
 });

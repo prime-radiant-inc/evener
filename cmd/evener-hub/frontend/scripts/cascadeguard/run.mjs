@@ -1080,7 +1080,13 @@ async function sourceMutationJourney() {
   assert.equal((await driver.composerState(ref)).text, "CASCADE_UNSENT_AFTER_QUEUE");
   for (const mutation of [held, queued.params]) {
     const requests = sent(after).filter(frame => frame.params?.clientMutationId === mutation.clientMutationId);
-    assert.equal(requests.length, 1, "inspection and return never duplicate original mutation identity");
+    // A reconnect replay probes the daemon journal with the same identity and
+    // gets a replayed receipt back. Count applied requests, not journal probes.
+    const applied = requests.filter((request) => {
+      const answer = frames.find((frame) => frame.direction === "Network.webSocketFrameReceived" && frame.id === request.id);
+      return answer?.result?.receipt?.disposition !== "replayed";
+    });
+    assert.equal(applied.length, 1, "inspection and return never duplicate original mutation identity");
     assert.equal(requests[0].params.ref, ref, "original recipient is retained");
   }
   driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });

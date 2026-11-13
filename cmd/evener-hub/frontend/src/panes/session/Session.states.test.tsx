@@ -521,7 +521,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await act(async () => {
     clientMutationId = await seedPendingSend(mutationStorage, "ref_a", { attempted: true });
   });
-  expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
+  expect(screen.getByTestId("pending-message-stack").textContent).toContain("hello");
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
@@ -582,7 +582,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.textContent).toContain("hello");
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  expect(screen.queryByTestId("pending-message-stack")).toBeNull();
 
   act(() => {
     fake.emitNotification({

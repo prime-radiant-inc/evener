@@ -150,7 +150,7 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // saved after this one) is preserved. The port declares no separate discard
   // method for this: it is the settlement's own side effect, so structural
   // interface conformance alone does not prove it.
-  settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
+  settleReceipt(clientMutationId: string, projectionState: string, queueEntryIds?: readonly string[]): Promise<boolean>;
   // Records an authoritative apply, with the same notes/human/set supersede
   // side effect as settleReceipt. Returns the record the settlement resolved
   // as its subject - the row the id names, else a carrier of the id's wire
@@ -160,7 +160,10 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // answer from the settlement, the one home of wire-family resolution,
   // rather than enumerating stores by wire id. Undefined when nothing
   // carrying the id, by key or by wire, settled.
-  settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined>;
+  settleApplied(
+    clientMutationId: string,
+    options?: { retainDisplayCopy?: boolean; queueEntryIds?: readonly string[] },
+  ): Promise<MutationRecord<A> | undefined>;
   // Records the authoritative snapshot proves never landed, re-queued for
   // another dispatch attempt; returns the ROWS this pass re-queued (a host
   // may reopen the record in place or mint a fresh row for its work - the

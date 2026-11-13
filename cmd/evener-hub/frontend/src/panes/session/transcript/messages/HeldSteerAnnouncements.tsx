@@ -18,11 +18,11 @@ import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import {
   useBlockedMutationEntries,
   useCanceledMutationEntries,
+  useEditablePendingMutationIds,
   usePendingTurnEntries,
-  useQueueStripMutationIds,
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
-import { heldSteerEntries } from "./HeldSteerStack";
+import { heldSteerEntries } from "../../pending/pendingMessageLiveEdge";
 
 // What became of a held steer: it arrived held, or how it left.
 type HeldSteerOutcome = "held" | "delivered" | "rejected" | "canceled" | "uncertain" | "failed";
@@ -33,15 +33,15 @@ const ANNOUNCEMENTS: Record<HeldSteerOutcome, string> = {
   rejected: "Steering message was rejected. It's kept with the queue.",
   canceled: "Steering message was canceled by Stop. It's kept with the queue.",
   uncertain: "Steering message delivery is uncertain. It's kept with the queue.",
-  // Post-settle failed delivery: nothing holds the id anywhere. No QueueStrip
+  // Post-settle failed delivery: nothing holds the id anywhere. No pending stack
   // row exists for this departure (spec §5) - the announcement is the
   // message's only trace; the failed turn's error surface is the explanation.
   failed: "Steering message failed to deliver.",
 };
 
 export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JSX.Element {
-  const queueStripIds = useQueueStripMutationIds(sessionRef);
-  const held = heldSteerEntries(usePendingTurnEntries(sessionRef), queueStripIds);
+  const editableIds = useEditablePendingMutationIds(sessionRef);
+  const held = heldSteerEntries(usePendingTurnEntries(sessionRef), editableIds);
   const recovery = useRecoveryEntries(sessionRef);
   const blocked = useBlockedMutationEntries(sessionRef);
   const canceled = useCanceledMutationEntries(sessionRef);
@@ -63,13 +63,13 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     const announce = (outcomes: HeldSteerOutcome[]) => setAnnouncement((a) => ({ outcomes, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
     // A local ownership move is neither delivery nor failure. The same
-    // identity is still visibly held by QueueStrip - but a Stop-canceled or
+    // identity is still visibly held by the pending stack - but a Stop-canceled or
     // delivery-uncertain departure is a real outcome, and the strip owning the
     // row is exactly where its explanation lives.
     const disappeared = [...prev.ids].filter(
       (id) =>
         !ids.has(id) &&
-        (!queueStripIds.has(id) ||
+        (!editableIds.has(id) ||
           canceled.some((record) => record.clientMutationId === id) ||
           blocked.some((record) => record.clientMutationId === id)),
     );
@@ -93,7 +93,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     } else if (appeared) {
       announce(["held"]);
     }
-  }, [sessionRef, held, recovery, blocked, canceled, model, queueStripIds]);
+  }, [sessionRef, held, recovery, blocked, canceled, model, editableIds]);
 
   return (
     <div

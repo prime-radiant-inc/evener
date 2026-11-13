@@ -407,6 +407,10 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
+  // Set only when the wire carried them, like clientMutationId above. A
+  // promotion or drain inherits the consumed entry's input ids, which is the
+  // only lineage tying a recorded message to the queue row it replaced.
+  if (item.conversationInputIds?.length) model.conversationInputIds = [...item.conversationInputIds];
   if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.
@@ -532,6 +536,12 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
+    // Set only when the snapshot carried one, like the per-item fields below:
+    // a daemon that does not report provenance must not add an empty key, and
+    // the notification path keeps the last value it was told.
+    ...(thread.evener.conversationProvenance === undefined
+      ? {}
+      : { conversationProvenance: thread.evener.conversationProvenance }),
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,

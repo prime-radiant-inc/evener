@@ -256,6 +256,11 @@ type ThreadItem struct {
 	// non-steering items and on steering items the daemon didn't classify.
 	SteeringKind     string `json:"steeringKind,omitempty"`
 	ClientMutationID string `json:"clientMutationId,omitempty"`
+	// ConversationInputIDs names the conversation inputs this recorded item
+	// speaks for. A promotion or drain records ITS OWN clientMutationId but
+	// inherits the consumed entry's input ids, so this is the lineage that ties
+	// a recorded message back to the queue entry another client consumed.
+	ConversationInputIDs []string `json:"conversationInputIds,omitempty"`
 	// Version is the highest entry ordinal (below) among the entries that
 	// contributed to this item, stored and sent as ordinal + 1 so 0 means "no
 	// history version" (an overlay item). The higher version wins.

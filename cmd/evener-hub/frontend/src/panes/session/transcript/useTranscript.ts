@@ -98,7 +98,15 @@ function useTranscriptInternal(
     return () => view?.setReadable(false);
   }, [view]);
   useEffect(() => {
-    if (!ready || pagingByRef.get(ref) !== entry) return;
+    if (!ready) return;
+    if (pagingByRef.get(ref) === undefined) {
+      // A remount above this hook can let the outgoing reader's store
+      // subscription retire the idle entry between the layout install and this
+      // effect. Nobody else owns the ref then, so restore this committed entry
+      // rather than leaving the reinstalled demand unserved forever.
+      if (!matchesBinding(entry, binding)) return;
+      pagingByRef.set(ref, entry);
+    } else if (pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
     const sync = () => {
       if (document.visibilityState === "hidden" || (view && !view.readable) || (typedReader && !typedReader.readable)) {
@@ -114,7 +122,7 @@ function useTranscriptInternal(
       unsubscribe?.();
       release?.();
     };
-  }, [paging, ready, ref, entry, viewId, view, typedReader]);
+  }, [paging, ready, ref, entry, binding, viewId, view, typedReader]);
 
   useEffect(() => {
     if (!standalone) return;
