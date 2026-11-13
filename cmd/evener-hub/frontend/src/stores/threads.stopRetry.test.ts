@@ -2146,7 +2146,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // RoboRev PR #1873 low, the notify half: a zero-discard success still has
   // to notify persistence. Zero says what THIS tab's write removed - never what
   // another tab removed from under this tab's cached projection, and the
-  // notify is what refreshes that projection (the queue strip's rows, the
+  // notify is what refreshes that projection (the pending stack's rows, the
   // note editor's statuses).
   test("a deletion fence's zero-discard cleanup still notifies persistence", async () => {
     const storage = new MutationOutboxIndexedDB();

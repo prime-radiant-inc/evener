@@ -1,0 +1,24 @@
+{
+  "name": "instance-model-editor-layout",
+  "description": "InstanceModelEditor desktop geometry: inside .fieldInline, .fieldGrow stretches the Input across the FormRow up to the Reset link button.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/formrow/formrow.module.css",
+    "widgets/input/input.module.css",
+    "widgets/button/button.module.css",
+    "panes/settings/sections/credentials/InstanceSheet.module.css"
+  ],
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "panes/settings/sections/credentials/InstanceSheet.module.css: .fieldGrow { flex: 1 1 0 } removed",
+    "verified": "2026-11-12",
+    "expect": "fail",
+    "note": "Measured 2026-11-12: without flex: 1 1 0 on .fieldGrow, inputWidth shrinks to 221px inside the 434px .fieldInline row, failing both the slack bound and inputWidth > 260."
+  }
+}

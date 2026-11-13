@@ -1336,7 +1336,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 	if raw == "" {
 		return "", nil
 	}
-	if strings.EqualFold(raw, "off") {
+	if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "disabled") {
 		return "off", nil
 	}
 	if prov, model, ok := strings.Cut(raw, "/"); ok {

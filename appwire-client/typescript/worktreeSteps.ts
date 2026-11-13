@@ -73,7 +73,7 @@ export function worktreeWords(item: WorktreeStep): StepWords {
       return base ? { ...words, after: `(from ${base})` } : words;
     }
     case "list": {
-      const found = countOf(result, "entries");
+      const found = typeof result?.total_entries === "number" ? result.total_entries : countOf(result, "entries");
       return withDetail({ verb: "Listed worktrees" }, found === undefined ? undefined : `${found} found`);
     }
     case "switch":

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -41,6 +42,39 @@ type hubLaunchController struct {
 	// apply it so the resolved view matches what Spawn actually launches
 	// (HubSpawner injects the same default into the daemon argv).
 	hubAPILogDefault bool
+
+	commitMu    sync.Mutex
+	onCommitted func(launchCommitted)
+}
+
+// launchCommitted is one launch settings write that applied: cwd and layer are
+// the values the handler used to broadcast, kept raw the way the caller sent
+// them.
+type launchCommitted struct {
+	CWD   string
+	Layer string
+}
+
+// OnCommitted registers the controller's one post-commit sink. It runs after a
+// layer or trust write actually applied - including a write whose follow-up
+// resolution failed (writeApplied) - so the RPC layer cannot pair a write with
+// its own broadcast, and a new handler cannot forget to.
+func (c *hubLaunchController) OnCommitted(fn func(launchCommitted)) {
+	if c == nil {
+		return
+	}
+	c.commitMu.Lock()
+	defer c.commitMu.Unlock()
+	c.onCommitted = fn
+}
+
+func (c *hubLaunchController) committed(cwd, layer string) {
+	c.commitMu.Lock()
+	onCommitted := c.onCommitted
+	c.commitMu.Unlock()
+	if onCommitted != nil {
+		onCommitted(launchCommitted{CWD: cwd, Layer: layer})
+	}
 }
 
 var (
@@ -168,7 +202,14 @@ func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.Launc
 	return launchconfig.ToWire(layer), nil
 }
 
-func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
+func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (resp appwire.LaunchConfigResolved, err error) {
+	// Every nil return below is a layer that reached the file; every earlier
+	// path returns a refusal that wrote nothing.
+	defer func() {
+		if writeDidApply(err) {
+			c.committed(params.CWD, params.Layer)
+		}
+	}()
 	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
@@ -224,7 +265,14 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	return launchconfig.ResolvedToWire(launchconfig.ApplyRuntimeDefaults(resolved, c.getenv, launchconfig.LaunchOptionSchema())), nil
 }
 
-func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
+func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (resp appwire.LaunchConfigResolved, err error) {
+	// The trust decision reaches the meta file on every nil return; earlier
+	// refusals wrote nothing.
+	defer func() {
+		if writeDidApply(err) {
+			c.committed(params.CWD, "repo")
+		}
+	}()
 	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())

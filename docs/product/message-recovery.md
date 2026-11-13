@@ -15,22 +15,41 @@ Controls follow that ownership, not the preview text or connection status.
   and is waiting on, whose edit would race that send; a legacy row with no
   attempt metadata at all; and the non-composer verbs (interrupt, clear, note
   saves), which keep their own controls.
+- A daemon queue row that also has a local display copy routes Edit and Remove
+  through the queue entry id, then retires the display copy. It never deletes
+  only the local copy and leaves the daemon message queued. A refused queue
+  cancellation stays visible as a dismissible control-failure row carrying the
+  daemon's reason.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
-  "Delivery uncertain" as a subtitle. Editing it carries the row's inherited wire
-  identity into the recovery: an unchanged resend replays the existing mutation
-  under that identity - the daemon's journal deduplicates it, so work that
-  already delivered cannot apply twice - while changed content sends as a new
-  message under a fresh identity. The row still closes its ref's FIFO - the
-  daemon may already hold it, so nothing behind it may go - and when the hub
-  cannot answer, Remove is the exit that lets later messages move: it ends the
-  wire, retiring the row's remaining durable siblings in the same write, though
-  an attempt already in flight may still land and appear in the conversation.
+  "Delivery uncertain" as a subtitle. That row is the browser's own
+  `blockedUnknown` record in its IndexedDB mutation outbox — the browser's
+  durable recovery copy of the composition. The daemon never acknowledged the
+  send on a connection the browser could see, but a send that was accepted
+  durably by the daemon can lose its response and land here too, so the row
+  means acceptance is unknown, not that the daemon never received it;
+  reconciliation with authority is what settles the question, and until then no
+  server-side state the browser can read describes the message. Editing it
+  carries the row's inherited wire identity into the recovery: an unchanged
+  resend replays the existing mutation under that identity - the daemon's
+  journal deduplicates it, so work that already delivered cannot apply twice -
+  while changed content sends as a new message under a fresh identity. The row
+  still closes its ref's FIFO - the daemon may already hold it, so nothing
+  behind it may go - and when the hub cannot answer, Remove is the exit that
+  lets later messages move: it ends the wire, retiring the row's remaining
+  durable siblings in the same write, though an attempt already in flight may
+  still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
-- Unattempted rows appear once in QueueStrip, not also in optimistic send chips
-  or steering ghosts. In-flight and remote ghosts remain. A move back to the
-  local queue after an explicit refusal is not announced as delivery or failure.
+- Every undelivered message appears once, in the pending stack at the bottom of
+  the transcript. Local unattempted rows, daemon queue rows, in-flight sends and
+  steering, and recovery rows share one identity-keyed row. A queue row is
+  suppressed once a recorded transcript item with the same identity is visible.
+  A move back to the local queue after an explicit refusal is not announced as
+  delivery or failure.
+- An independently edited recovery keeps its own row after the attempt it was
+  edited from delivers. Mentions travel through the pending row, so editing
+  preserves literal `/name` references instead of turning them into selections.
 
 A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
 queue's tail and settles the predecessor terminal. The predecessor keeps its
@@ -39,6 +58,20 @@ late receipt or refusal still reconciles through it, whichever generation the
 authoritative feed names; repeated requeues bound retention to that one
 evidence row beside the live successor, and the wire's settlement or removal
 retires it with the rest.
+
+QueueStrip offers that **Retry** only when the press could act:
+`retryBlockedForTarget` (`cmd/evener-hub/frontend/src/stores/threads.ts`)
+reads the row's own target — the snapshot flags a press consults, plus the
+target's storage-blocked fence — so a fenced target keeps Retry disabled
+exactly as its press would refuse.
+
+Every resume trigger — a composer, palette or ask-dock send on a fenced
+session, a recovery resend, the session notice's own Resume button — runs the
+store's one resume sequence (`resumeSession`, whose `runResumeFencedForSend`
+in `cmd/evener-hub/frontend/src/stores/threads.ts` is the only production
+`resumeThread` caller), with one in-flight drive per ref: a press that
+arrives while a drive is running parks its row and joins the drive instead of
+issuing a second resume.
 
 ```mermaid
 flowchart LR
@@ -110,8 +143,8 @@ not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
 newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through QueueStrip's explicit Edit, Remove, Retry
-and Send now regardless of owner. A pane's own send carries its seat, so the row
+back. Every row stays reachable through the pending stack's explicit Edit, Remove and
+Retry regardless of owner, with Steer now on a row that is still queued. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
 replacement pane, so the resumed composer can restore its own work again.
@@ -264,10 +297,13 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Browser transactions: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`.
 - Browser identity checks, dispatch and resume-retry pacing:
   `cmd/evener-hub/frontend/src/stores/threads.ts`.
-- Projection and presentation membership: `composer/queue/pendingTurnsStore.ts`.
-  Presentation filtering does not change submission routing.
+- Projection and presentation membership:
+  `appwire-client/typescript/state/mutation/pendingMessages.ts` and
+  `panes/session/pending/PendingMessageStack.tsx`. Presentation filtering does
+  not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
-- Controls: `composer/queue/QueueStrip.tsx` and `composer/Composer.tsx`.
+- Controls: `panes/session/pending/usePendingMessageActions.ts` and
+  `composer/Composer.tsx`.
 - Decisions both controls share (selection capability gate, store dispatch by
   route, changed or already-sent recovery refusals): `composer/submitProtocol.ts`.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using

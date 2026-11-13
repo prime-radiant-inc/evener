@@ -1,11 +1,13 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
@@ -77,8 +79,22 @@ type UnreadableTranscript struct {
 // inside the transcript's entry-index namespace. Unlike the other views it is
 // not session-scoped: the question it answers is "which sessions on this
 // machine carry the shape", so it enumerates rather than resolving a selector.
-func ScanTurnIDs(stateBase string) (TurnIDScan, error) {
-	sessions, stateRoot, err := allSessions(stateBase)
+// TurnIDOpts narrows a ScanTurnIDs sweep.
+type TurnIDOpts struct {
+	// Since, when > 0, skips sessions whose transcript mtime is older than
+	// time.Now().Add(-Since). Zero means no recency filter.
+	Since time.Duration
+	// Bucket scopes the sweep to one project id. Empty sweeps every bucket
+	// under the state root. A Bucket naming no enumerated bucket is an
+	// explicit not-found error, never a silently empty scan.
+	Bucket string
+}
+
+func ScanTurnIDs(ctx context.Context, stateBase string, opts TurnIDOpts) (TurnIDScan, error) {
+	if err := ctx.Err(); err != nil {
+		return TurnIDScan{}, err
+	}
+	sessions, stateRoot, err := allSessions(ctx, stateBase, opts)
 	if err != nil {
 		return TurnIDScan{}, err
 	}
@@ -89,8 +105,14 @@ func ScanTurnIDs(stateBase string) (TurnIDScan, error) {
 		Unreadable:      []UnreadableTranscript{},
 	}
 	for _, paths := range sessions {
-		doc, err := loadTranscript(paths.TranscriptPath)
+		if err := ctx.Err(); err != nil {
+			return TurnIDScan{}, err
+		}
+		doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return TurnIDScan{}, ctxErr
+			}
 			scan.Unreadable = append(scan.Unreadable, UnreadableTranscript{
 				SessionID:     paths.SessionID,
 				TranscriptRef: paths.TranscriptRef,
@@ -108,6 +130,9 @@ func ScanTurnIDs(stateBase string) (TurnIDScan, error) {
 			TranscriptPath: paths.TranscriptPath,
 			ReservedTurns:  reserved,
 		})
+	}
+	if err := ctx.Err(); err != nil {
+		return TurnIDScan{}, err
 	}
 	return scan, nil
 }
@@ -132,25 +157,49 @@ func entryIndexReservedTurns(doc transcriptDoc) []ReservedTurn {
 // allSessions enumerates every session that has a transcript under stateBase,
 // across every bucket, ordered by bucket then session id so two sweeps of an
 // unchanged state root produce the same list.
-func allSessions(stateBase string) ([]Paths, string, error) {
+func allSessions(ctx context.Context, stateBase string, opts TurnIDOpts) ([]Paths, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return nil, "", err
 	}
+	if opts.Bucket != "" {
+		b, ok := bucketByProjectID(buckets, opts.Bucket)
+		if !ok {
+			return nil, "", fmt.Errorf("bucket %s not found %s", opts.Bucket, scannedUnder(stateRoot, len(buckets)))
+		}
+		buckets = []bucket{b}
+	}
+	var cutoff time.Time
+	if opts.Since > 0 {
+		cutoff = time.Now().Add(-opts.Since)
+	}
 	var all []Paths
 	for _, b := range buckets {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(b.dir), "*"+schema.SessionTranscriptSuffix))
 		if err != nil {
 			return nil, "", fmt.Errorf("glob sessions in %s: %w", b.dir, err)
 		}
 		for _, match := range matches {
+			if err := ctx.Err(); err != nil {
+				return nil, "", err
+			}
 			sid := strings.TrimSuffix(filepath.Base(match), schema.SessionTranscriptSuffix)
 			// A file whose name is not a session id is not a session's
 			// transcript, whatever else it may be.
 			if identifier.ValidateSessionID(sid) != nil {
 				continue
 			}
-			all = append(all, pathsFor(b, sid))
+			p := pathsFor(b, sid)
+			if !cutoff.IsZero() && transcriptOlderThan(p.TranscriptPath, cutoff) {
+				continue
+			}
+			all = append(all, p)
 		}
 	}
 	sort.Slice(all, func(i, j int) bool {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -155,7 +156,7 @@ func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
 		t.Fatalf("catalog = %q", tag)
 	}
 	f := &fakeFetch{body: subsetFixture(t, 1), etag: "e"}
-	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state), WithFetcher(f.fetcher()), WithLog(func(string, ...any) {}))
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state), WithFetcher(f.fetcher()), WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		t.Fatal(err)
 	}

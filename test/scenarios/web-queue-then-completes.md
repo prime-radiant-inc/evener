@@ -1,8 +1,8 @@
 # web-queue-then-completes: type during a turn, queued message runs after
 
 **What this covers**: kata `111a` (web). While a turn is in flight the
-composer's **Send** routes to the queue instead of starting a turn; the queue
-strip shows what is waiting; and when the active turn completes the daemon
+composer's **Send** routes to the queue instead of starting a turn; the
+pending stack shows what is waiting; and when the active turn completes the daemon
 pops the head of the queue and runs it as a **fresh user turn** — not as a
 steer. The user-facing complement to the agent-level
 `TestSession_Enqueue_DrainsAfterTurnCompletes` unit (kata `111a` backend).
@@ -45,15 +45,16 @@ HUB=http://127.0.0.1:$PORT
 4. **Queue a message.** Type `then: write a haiku about Go testing` and press
    the submit chord — `Enter` when the `evener.prefs.enterToSend` preference is
    on, `⌘/Ctrl+Enter` otherwise (`Composer.tsx:389`) — or just click
-   `[data-testid="composer-submit"]`. Then read the strip:
+   `[data-testid="composer-submit"]`. Then read the stack:
    ```javascript
    ({
      port: location.port,
-     heading: document.querySelector("h3")?.textContent,   // "Queued messages (1)"
-     rows: Array.from(document.querySelectorAll("h3 ~ ul li"), (li) => li.textContent),
+     rows: Array.from(document.querySelectorAll('[data-testid="pending-message-row"]'),
+                      (li) => li.textContent),
+     states: Array.from(document.querySelectorAll('[data-testid="pending-message-row"]'),
+                        (li) => li.dataset.state),
      text: document.querySelector('[data-testid="composer-input-card"] textarea').value,
-     chips: document.querySelectorAll('[data-testid="pending-chips"] li').length,
-     rowActions: Array.from(document.querySelectorAll("h3 ~ ul li button"),
+     rowActions: Array.from(document.querySelectorAll('[data-testid="pending-message-row"] button'),
                             (b) => b.getAttribute("aria-label") ?? b.textContent),
    })
    ```
@@ -76,26 +77,29 @@ HUB=http://127.0.0.1:$PORT
   `Capabilities.Queue` stopped being threaded through the
   appwire thread capabilities, and
   every browser assertion below is moot.
-- **Step 4 (queue submit)**: the strip appears with heading
-  `Queued messages (1)` (`composer/queue/QueueStrip.tsx:302`) and one row
-  carrying the message text; the composer is cleared; `pending-chips` is
-  **empty** — queue mutations are deliberately excluded from that strip
-  because `QueueStrip` already chips them
-  (`panes/session/pending/PendingChips.tsx:22-28`); and the row offers
-  `Steer now`, `Edit message` and `Remove from queue`
-  (`QueueStrip.tsx:328-360`). Falsify: the message starts a new turn instead
-  of queueing (the routing table regressed —
+- **Step 4 (queue submit)**: the stack appears
+  (`pending/PendingMessageStack.tsx:41-49`) with one row per identity
+  (`:50-69`) carrying the message text and the `Queued, sends when this turn
+  ends` caption (`pending/pendingMessageCaption.ts:17-18`); the composer is
+  cleared; and the row's footer offers `Steer now`, `Edit message` and
+  `Remove from queue` (`pending/PendingMessageStack.tsx:96-102`). The same
+  row set comes from `usePendingMessages`, which merges the queue entry with
+  the local record by `clientMutationId`
+  (`composer/queue/pendingTurnsStore.ts:487-546`,
+  `state/mutation/pendingMessages.ts:426-516`). Falsify: the message starts
+  a new turn instead of queueing (the routing table regressed —
   `decideSubmitRoute` puts queue ahead of send whenever it is available,
-  `submitRouting.ts:19-23`), the strip never appears, or the daemon rejects
+  `submitRouting.ts:19-23`), the stack never appears, or the daemon rejects
   the queue with a conflict (the session was not really active).
 - **Step 5 (drain)**: after the original turn settles the daemon pops the
   queue head and runs it as a fresh turn — `state` returns to `active`, then
-  `idle`, and `turn_count` advances by exactly one. The strip empties and
-  then disappears entirely (it renders only while there is queued work,
-  `QueueStrip.tsx:158-162`). Falsify: `turn_count` does not advance (the
-  queued message was dropped), the strip keeps its row after the queued
-  message has plainly run, or the new turn starts before the original
-  finishes (the daemon's outer loop did not wait for the queue drain point).
+  `idle`, and `turn_count` advances by exactly one. The stack empties and
+  then disappears entirely (it renders only while a row is shown,
+  `pending/PendingMessageStack.tsx:36-39`). Falsify: `turn_count` does not
+  advance (the queued message was dropped), the stack keeps its row after
+  the queued message has plainly run, or the new turn starts before the
+  original finishes (the daemon's outer loop did not wait for the queue
+  drain point).
 - **Step 6 (transcript)**: the queued text appears as a `USER` turn, **not**
   as `STEERING`, and the assistant's reply to it answers the queued
   instruction. In the browser the same distinction is visible: a queued
@@ -123,7 +127,7 @@ rm -rf "$tmpdir"
   this design rejected (`Composer.tsx:383-388`). Only the tooltip says which
   timing applies, and the tooltip is portalled in on hover/focus only
   (`widgets/tooltip/index.tsx:186-192`), so do not assert on it without
-  hovering. The strip's depth is what shows the effect.
+  hovering. The stack's row count is what shows the effect.
 - **The queue window opens on the status flip alone.** Send/queue
   availability keys on `statusType === "active"` and deliberately does *not*
   wait for `activeTurnId` (`appwire-client/typescript/sendQueueAvailability.ts` header);
@@ -138,9 +142,12 @@ rm -rf "$tmpdir"
   `[data-testid="steering-item"]` finds neither — that element is the
   *daemon*-steering divider.
 - **Rows can lose their actions.** `Steer now` / `Edit message` /
-  `Remove from queue` need the daemon to report per-entry ids and texts; an
-  older or degraded daemon reports neither and the buttons render disabled
-  with a reason (`QueueStrip.tsx:296-300`). Disabled row actions are a
+  `Remove from queue` need the daemon to report per-entry ids and full texts;
+  an older or degraded daemon reports neither, so `Steer now` is not offered
+  (`pending/PendingMessageStack.tsx:96-102`), `Edit message` is withheld until
+  the row carries complete text (`pending/usePendingMessageActions.ts:362-373`),
+  and a press without entry ids returns without acting
+  (`pending/usePendingMessageActions.ts`, `:137-174`). That is a
   daemon-capability signal, not a UI bug.
-- **The strip's absence is a state, not a failure.** No queued work and no
-  recovery rows means the component returns `null`.
+- **The stack's absence is a state, not a failure.** No pending rows means
+  the component returns `null` (`pending/PendingMessageStack.tsx:39`).

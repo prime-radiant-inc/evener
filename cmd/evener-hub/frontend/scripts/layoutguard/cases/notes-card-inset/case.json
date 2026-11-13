@@ -1,6 +1,6 @@
 {
   "name": "notes-card-inset",
-  "description": "The session notes card is an inset, fully bordered, rounded card in both states: its top edge and both top corners are separated from the pane body's scrollport clip line (rather than parked on it, where the border and corners were painted away), and the collapsed bar carries the same boundary instead of being a squared, edgeless strip.",
+  "description": "The session notes panel is attached to the header: its top edge is flush to the header's bottom border (negative top margin cancels the body's top padding so there is no gap), its top corners are square (no radius) and its top border is omitted to avoid doubling the header's border, while the bottom corners carry the panel radius and the card has a border and shadow.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

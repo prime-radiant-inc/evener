@@ -1205,8 +1205,9 @@ after each main push.
 `make test-timing-budget` budgets each Go package's test CPU time, plus one
 wall-time aggregate for the frontend, against the checked-in
 `testing-budget.json`, so a timing regression cannot silently erode the suite's
-runtime. It reuses `gate-surface-lib.sh`, so it measures the same surface
-`ROOT_FULL=1 make test` proves.
+runtime. It reuses `gate-surface-lib.sh` (generated from
+`internal/devtool/gatesurface`), so it measures the same surface `ROOT_FULL=1
+make test` proves.
 
 ### What Is Budgeted
 

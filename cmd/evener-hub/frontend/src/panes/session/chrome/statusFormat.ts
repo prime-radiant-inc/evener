@@ -1,9 +1,12 @@
 // Pure formatting helpers for the session chrome's status displays. Kept
-// dependency-free (no React, no ThreadModel) so each is trivially
-// unit-testable - same convention as protocol/displayFormat.ts,
+// dependency-free of React so each is trivially unit-testable - same
+// convention as protocol/displayFormat.ts,
 // deliberately not shared with it (see formatWorkDuration's own comment for
 // why).
+import { type EffectiveContextStatus, effectiveContextStatus } from "@evener/appwire-client";
 import type { MeterTone } from "../../../widgets";
+
+export { type EffectiveContextStatus, effectiveContextStatus };
 
 // contextTone escalates the context gauge's tone as pressure climbs,
 // mirroring the legacy compact strip's own single warn threshold

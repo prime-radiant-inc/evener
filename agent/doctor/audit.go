@@ -452,6 +452,15 @@ func (m metricSource) resolve(path string) (any, error) {
 			return nil, fmt.Errorf("metric %q: user_corrections takes no further path segments", path)
 		}
 		return m.health.UserCorrections, nil
+	case "assistant_fabrications":
+		switch rest {
+		case "":
+			return m.health.AssistantFabrications, nil
+		case fabricationKindHarnessEnvelope, fabricationKindToolMarkup:
+			return m.health.AssistantFabricationsByKind[rest], nil
+		default:
+			return nil, fmt.Errorf("unknown metric %q", path)
+		}
 	case "steering":
 		if rest == "" {
 			return nil, fmt.Errorf("metric %q: expected steering.<kind>", path)
@@ -935,6 +944,10 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 			apiHealthRes, err := APIHealth(ctx, stateBase, sel)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
+				continue
+			}
+			if apiHealthRes.Unrecorded {
+				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: "API logging not recorded for session"})
 				continue
 			}
 			source.apiHealth = apiHealthRes

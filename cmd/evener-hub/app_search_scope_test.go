@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,10 +212,8 @@ func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var logged []string
-	cfg := hubcore.WebConfig{Past: past, Archive: hubcore.NewArchiveStore(dbPath), Logf: func(format string, args ...any) {
-		logged = append(logged, fmt.Sprintf(format, args...))
-	}}
+	logged := &logCapture{}
+	cfg := hubcore.WebConfig{Past: past, Archive: hubcore.NewArchiveStore(dbPath), Log: logged.logger()}
 
 	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "frobnitz"}, time.Now())
 	if err != nil {
@@ -225,7 +222,7 @@ func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
 	if len(resp.Past) != 1 || resp.Past[0].ID != sessionID {
 		t.Fatalf("past = %+v, want the session found despite the broken archive store", resp.Past)
 	}
-	if len(logged) == 0 {
+	if logged.len() == 0 {
 		t.Fatal("want the archive failure logged, not silently swallowed")
 	}
 }
@@ -241,7 +238,7 @@ func TestHubSearchFailsClosedOnAScopedQueryWhenDecisionsFail(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{Archive: hubcore.NewArchiveStore(dbPath), Logf: func(string, ...any) {}}
+	cfg := hubcore.WebConfig{Archive: hubcore.NewArchiveStore(dbPath), Log: silentLogger()}
 	for _, scope := range []string{appwire.SearchScopeLive, appwire.SearchScopeArchived} {
 		if _, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "x", Scope: scope}, time.Now()); err == nil {
 			t.Errorf("scope %q: hubSearch returned no error with unavailable archive decisions, want it to fail closed", scope)
@@ -266,10 +263,8 @@ func TestHubSearchDegradesWhenMessageIndexFails(t *testing.T) {
 	if err := index.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var logged []string
-	cfg := hubcore.WebConfig{Past: past, MessageSearch: index, Logf: func(format string, args ...any) {
-		logged = append(logged, fmt.Sprintf(format, args...))
-	}}
+	logged := &logCapture{}
+	cfg := hubcore.WebConfig{Past: past, MessageSearch: index, Log: logged.logger()}
 
 	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "frobnitz"}, time.Now())
 	if err != nil {
@@ -281,7 +276,7 @@ func TestHubSearchDegradesWhenMessageIndexFails(t *testing.T) {
 	if resp.InSessions != nil {
 		t.Fatalf("inSessions = %+v, want none from a broken index", resp.InSessions)
 	}
-	if len(logged) == 0 {
+	if logged.len() == 0 {
 		t.Fatal("want the message index failure logged, not silently swallowed")
 	}
 }

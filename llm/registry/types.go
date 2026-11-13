@@ -105,15 +105,16 @@ type Transport struct {
 type Caps struct {
 	// Model facts. This block plus Surface and Family is what an alias row
 	// inherits (spec §4.2).
-	ContextWindow     *int     `toml:"context_window" json:"context_window,omitempty"`
-	MaxInputTokens    *int     `toml:"max_input_tokens" json:"max_input_tokens,omitempty"`
-	MaxOutputTokens   *int     `toml:"max_output_tokens" json:"max_output_tokens,omitempty"`
-	Tools             *bool    `toml:"tools" json:"tools,omitempty"`
-	StructuredOutput  *bool    `toml:"structured_output" json:"structured_output,omitempty"`
-	Sampling          *bool    `toml:"sampling" json:"sampling,omitempty"`
-	Reasoning         *bool    `toml:"reasoning" json:"reasoning,omitempty"`
-	ReasoningControls []string `toml:"reasoning_controls" json:"reasoning_controls,omitempty"`
-	EffortValues      []string `toml:"effort_values" json:"effort_values,omitempty"`
+	ContextWindow       *int     `toml:"context_window" json:"context_window,omitempty"`
+	MaxInputTokens      *int     `toml:"max_input_tokens" json:"max_input_tokens,omitempty"`
+	CompactionThreshold *int     `toml:"compaction_threshold" json:"compaction_threshold,omitempty"`
+	MaxOutputTokens     *int     `toml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Tools               *bool    `toml:"tools" json:"tools,omitempty"`
+	StructuredOutput    *bool    `toml:"structured_output" json:"structured_output,omitempty"`
+	Sampling            *bool    `toml:"sampling" json:"sampling,omitempty"`
+	Reasoning           *bool    `toml:"reasoning" json:"reasoning,omitempty"`
+	ReasoningControls   []string `toml:"reasoning_controls" json:"reasoning_controls,omitempty"`
+	EffortValues        []string `toml:"effort_values" json:"effort_values,omitempty"`
 	// EffortParameterUnsupported records a gateway's explicit statement that
 	// the model takes no effort parameter at all. It is distinct from
 	// toggle-only ReasoningControls, which the catalog also uses for models
@@ -254,12 +255,17 @@ type Resolved struct {
 	Synthesized bool `json:"synthesized,omitempty"`
 }
 
-// InstanceModel is one row of an instance's model inventory: the catalog id
-// and whether the config layer disabled it. The sheet behind the Providers
-// pane reads this to render per-model toggles.
+// InstanceModel is one row of an instance's model inventory: the catalog id,
+// whether the config layer disabled it, whether it exists only in user config
+// or carries user customizations, and its effective context window and
+// compaction threshold.
 type InstanceModel struct {
-	ID       string `json:"id"`
-	Disabled bool   `json:"disabled"`
+	ID                  string `json:"id"`
+	Disabled            bool   `json:"disabled"`
+	AuthoredOnly        bool   `json:"authored_only,omitempty"`
+	Customized          bool   `json:"customized,omitempty"`
+	ContextWindow       *int   `json:"context_window,omitempty"`
+	CompactionThreshold *int   `json:"compaction_threshold,omitempty"`
 }
 
 // Ref names an instance/model pair (spec §7).
@@ -286,3 +292,16 @@ func StringValue(p *string) string {
 // row must send no reasoning control at all. nil means "unknown", which is
 // not disabled.
 func (c Caps) ReasoningDisabled() bool { return c.Reasoning != nil && !*c.Reasoning }
+
+// InputCeiling returns the smaller positive input token limit from
+// MaxInputTokens and ContextWindow, or 0 when neither is positive.
+func (c Caps) InputCeiling() int {
+	ceiling := 0
+	if c.MaxInputTokens != nil && *c.MaxInputTokens > 0 {
+		ceiling = *c.MaxInputTokens
+	}
+	if c.ContextWindow != nil && *c.ContextWindow > 0 && (ceiling == 0 || *c.ContextWindow < ceiling) {
+		ceiling = *c.ContextWindow
+	}
+	return ceiling
+}

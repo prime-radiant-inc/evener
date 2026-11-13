@@ -57,7 +57,7 @@ func TestGrepNeverHandsStreamsToRipgrep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "keep.txt"; got != want {
+	if want := filepath.FromSlash("pseudo/keep.txt"); got != want {
 		t.Fatalf("pseudo-rooted search = %q, want %q", got, want)
 	}
 	if rec.argvCalls != 0 {

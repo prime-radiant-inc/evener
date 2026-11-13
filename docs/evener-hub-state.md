@@ -23,6 +23,10 @@ local**. Network-backed FUSE can evade this check. Darwin requires the OS
 `MNT_LOCAL` mount flag, not proof of physical backing; a local FUSE mount without
 that flag can be refused. Persistence is separate from locality: choose private,
 persistent local storage for durable hub state, not a temporary filesystem.
+The requirement covers the selected hub root only
+([`CheckStorage`](../cmd/evener-hub/internal/hostlock/storage.go) is called on
+`hub_state_root` alone): SSH-connected managed hosts and project/session
+directories matched by `state_glob` on network storage are not refused by it.
 
 Inspection follows actual existing symlinks and checks the selected directory
 or its nearest existing directory ancestor without creating a missing root.

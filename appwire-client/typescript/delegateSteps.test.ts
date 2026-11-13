@@ -45,6 +45,8 @@ test("reads a send's status from its footer's status field, and words the fallba
   const send = (output: string, args: Record<string, unknown> = { to: "dlg_x" }) =>
     toolStepWords({ toolName: "delegate_send", argumentsJSON: JSON.stringify(args), output });
   const sent = { verb: "Sent a message to delegate", target: "dlg_x" };
+  expect(send("[delegate_id dlg_x · completed]")).toEqual({ ...sent, detail: "completed" });
+  expect(send("[delegate_id dlg_x · completed · completed]")).toEqual({ ...sent, detail: "completed" });
   expect(send("[delegate_id dlg_x · steered · delivered]")).toEqual({ ...sent, detail: "delivered" });
   expect(send("[delegate_id dlg_x · queued · not_delivered]")).toEqual({ ...sent, detail: "not delivered" });
   expect(send("[delegate_id dlg_x · steered · running in background]")).toEqual({ ...sent, detail: "running" });

@@ -53,6 +53,14 @@ var (
 	Unset    = Var{Name: "EVENER_UNSET_ONLY", Visibility: Public}
 	Literal  = Var{Name: "EVENER_LITERAL_READ", Visibility: Public}
 	Lookup   = Var{Name: "EVENER_LITERAL_LOOKUP", Visibility: Public}
+	Injected = Var{Name: "EVENER_INJECTED", Visibility: Public}
+	Field    = Var{Name: "EVENER_FIELD_LOOKUP", Visibility: Public}
+	Built    = Var{Name: "EVENER_BUILT", Visibility: Public}
+	Alias    = Var{Name: "EVENER_ALIAS", Visibility: Public}
+	Script   = Var{Name: "EVENER_SCRIPT_ONLY", Visibility: Public}
+	Frontend = Var{Name: "EVENER_FRONTEND_ONLY", Visibility: Public}
+	Make     = Var{Name: "EVENER_MAKE_ONLY", Visibility: Public}
+	TestOnly = Var{Name: "EVENER_TEST_MENTION", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
@@ -86,21 +94,28 @@ var removedKnobs = []string{"old_key"}
 
 func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
-		"envvars/envvars.go":                    fixtureRegistry,
-		"envvars/userdirs/u.go":                 "package userdirs\nvar _ = envvars.Read.Getenv()\n",
-		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc g() { os.Unsetenv(\"EVENER_UNSET_ONLY\") }\nfunc h() { _ = map[string]string{envvars.InMap.Name: \"1\"} }\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
-		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
-		"llm/registry/data/overlay.toml":        "# \"GHOST_API_KEY\" in a comment\nheaders = { \"Org\" = \"$ACME_ORG_ID\" } # \"$GHOST_API_KEY\" too\n",
-		"llm/registry/note.go":                  "package registry\n// \"GHOST_API_KEY\" in a comment\nvar _ = 1\n",
-		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
-		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
-		"cmd/evener-hub/config.go":              fixtureHubConfig,
-		"cmd/evener-hub/use.go":                 "package main\ntype other struct{ Dead, Addr int }\nfunc f(c Config, p *Config, o other) { _ = c.Addr; _ = p.Timeout; _ = o.Dead; c.Dead = 1 }\n",
-		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
-		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\nconst rig = \"EVENER_RIG\"\nvar _ = os.Getenv(\"EVENER_LITERAL_READ\")\nvar _, _ = os.LookupEnv(\"EVENER_LITERAL_LOOKUP\")\nvar cleared = []string{\"EVENER_ONLY_CLEARED_LIST\"}\n",
-		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
-		"docs/evener-hub.md":                    "`addr` and\ntimeout = \"5s\"\n",
-		"docs/superpowers/plans/dated.md":       "`EVENER_ORPHAN` `dead`\n",
+		"envvars/envvars.go":                        fixtureRegistry,
+		"envvars/userdirs/u.go":                     "package userdirs\nvar _ = envvars.Read.Getenv()\n",
+		"cmd/setter/main.go":                        "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc g() { os.Unsetenv(\"EVENER_UNSET_ONLY\") }\nfunc h() { _ = map[string]string{envvars.InMap.Name: \"1\"} }\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
+		"auth/acmetest/isolate.go":                  "package acmetest\nvar _ = envvars.Isolated\n",
+		"llm/registry/data/overlay.toml":            "# \"GHOST_API_KEY\" in a comment\nheaders = { \"Org\" = \"$ACME_ORG_ID\" } # \"$GHOST_API_KEY\" too\n",
+		"llm/registry/note.go":                      "package registry\n// \"GHOST_API_KEY\" in a comment\nvar _ = 1\n",
+		"cmd/tool/main.go":                          "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
+		"cmd/tool/main_test.go":                     "package main\nvar _ = envvars.Orphan\n",
+		"cmd/evener-hub/config.go":                  fixtureHubConfig,
+		"cmd/evener-hub/use.go":                     "package main\ntype other struct{ Dead, Addr int }\nfunc f(c Config, p *Config, o other) { _ = c.Addr; _ = p.Timeout; _ = o.Dead; c.Dead = 1 }\n",
+		"cmd/evener-hub/other_test.go":              "package main\nvar _ = cfg.Dead\n",
+		"cmd/dev/direct.go":                         "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\nconst rig = \"EVENER_RIG\"\nvar _ = os.Getenv(\"EVENER_LITERAL_READ\")\nvar _, _ = os.LookupEnv(\"EVENER_LITERAL_LOOKUP\")\nvar cleared = []string{\"EVENER_ONLY_CLEARED_LIST\"}\n",
+		"agent/probe/probe.go":                      "package probe\n\nimport \"os\"\n\nfunc readInjected(getenv func(string) string) string { return getenv(\"EVENER_INJECTED\") }\n\ntype options struct{ env func(string) (string, bool) }\n\nfunc (o options) readField() string { v, _ := o.env(\"EVENER_FIELD_LOOKUP\"); return v }\n\nconst prefix = \"EVENER_\"\nconst alias = \"EVENER_ALIAS\"\n\nvar _ = os.Getenv(prefix + \"BUILT\")\nvar _ = os.Getenv(alias)\n",
+		"scripts/gate/run.sh":                       "#!/usr/bin/env bash\n: \"${EVENER_SCRIPT_ONLY:-}\"\n",
+		"make/testing.mk":                           "probe:\n\t@printf '%s\\n' '$(EVENER_MAKE_ONLY)'\n",
+		"cmd/evener-hub/frontend/vite.config.ts":    "export const value = process.env.EVENER_FRONTEND_ONLY;\n",
+		"scripts/gate/run.test.mjs":                 "process.env.EVENER_TEST_MENTION;\n",
+		"cmd/evener-hub/frontend/src/view.test.tsx": "process.env.EVENER_TEST_MENTION;\n",
+		"cmd/evener-hub/frontend/testing/helper.ts": "process.env.EVENER_TEST_MENTION;\n",
+		"docs/developing-evener/environment.md":     "| `EVENER_READ` | doc |\n",
+		"docs/evener-hub.md":                        "`addr` and\ntimeout = \"5s\"\n",
+		"docs/superpowers/plans/dated.md":           "`EVENER_ORPHAN` `dead`\n",
 	})
 }
 
@@ -142,6 +157,43 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	}
 	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {
 		t.Errorf("EVENER_USED_INSIDE consumers = %v, want the registry package that reads it", got.Consumers)
+	}
+	// A name built from constants, or read through an injected lookup, is a
+	// consumer in Go; a read in a script, Makefile or frontend file is a
+	// consumer outside Go. A test file or a test-support directory is not.
+	for name, want := range map[string][]string{
+		"EVENER_INJECTED":      {"agent/probe"},
+		"EVENER_FIELD_LOOKUP":  {"agent/probe"},
+		"EVENER_BUILT":         {"agent/probe"},
+		"EVENER_ALIAS":         {"agent/probe"},
+		"EVENER_SCRIPT_ONLY":   {"scripts/gate/run.sh"},
+		"EVENER_FRONTEND_ONLY": {"cmd/evener-hub/frontend/vite.config.ts"},
+		"EVENER_MAKE_ONLY":     {"make/testing.mk"},
+	} {
+		if got := byName[name]; !slices.Equal(got.Consumers, want) {
+			t.Errorf("%s consumers = %v, want %v", name, got.Consumers, want)
+		}
+	}
+	if got := byName["EVENER_TEST_MENTION"]; len(got.Consumers) != 0 {
+		t.Errorf("EVENER_TEST_MENTION consumers = %v, want none from test files", got.Consumers)
+	}
+}
+
+// TestUnconsumedKnobsFindsIndirectAndNonGoReads pins the audit's verdict on the
+// widened scan: none of these knobs is reported dead.
+func TestUnconsumedKnobsFindsIndirectAndNonGoReads(t *testing.T) {
+	root := fixtureRoot(t)
+	env, _, err := UnconsumedKnobs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"EVENER_INJECTED", "EVENER_FIELD_LOOKUP", "EVENER_BUILT", "EVENER_ALIAS",
+		"EVENER_SCRIPT_ONLY", "EVENER_FRONTEND_ONLY", "EVENER_MAKE_ONLY",
+	} {
+		if slices.Contains(env, name) {
+			t.Errorf("%s was reported unconsumed, but the widened scan finds its reader", name)
+		}
 	}
 }
 

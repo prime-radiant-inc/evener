@@ -104,6 +104,7 @@ const COLUMNS = [
 	"stop_epoch_at_enqueue",
 	"recovery_kind",
 	"recovery_reason",
+	"queue_entry_ids",
 ] as const;
 
 const insertSQL = (table: string): string =>
@@ -136,6 +137,7 @@ export interface Row {
 	unresolved_attempts: number;
 	recovery_kind: string | null;
 	recovery_reason: string | null;
+	queue_entry_ids: string | null;
 }
 
 export function fromRow<A extends MutationAttachmentRef, T extends MutationRecord<A>>(row: Row): T {
@@ -165,6 +167,7 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 					stopEpochAtEnqueue: row.stop_epoch_at_enqueue,
 				}),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
+		...(row.queue_entry_ids ? { queueEntryIds: JSON.parse(row.queue_entry_ids) as string[] } : {}),
 	} as unknown as T;
 }
 
@@ -259,6 +262,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 					"INTEGER NOT NULL DEFAULT 0",
 					`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
 				);
+				// A receipt's queue-entry lineage, the web adapter's fused
+				// identity: the accepted copy retires when the consuming
+				// mutation settles, so the entries it came from must survive the
+				// round trip. Rows written before it read as lineage-unknown.
+				this.addColumnIfMissing(table, "queue_entry_ids", "TEXT");
 			}
 			// #4342: unresolved attempt counts live beside the attempted flag on
 			// the outbox table; rows written before it read as zero unresolved
@@ -527,7 +535,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// record (the daemon has not reflected it yet); any other pending receipt
 	// (a receipt-only control) or projection state has nothing worth carrying
 	// forward, so the record is simply retired everywhere it lives.
-	async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+	async settleReceipt(
+		clientMutationId: string,
+		projectionState: string,
+		queueEntryIds?: readonly string[],
+	): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_receipt", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
@@ -540,7 +552,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// build: it never spreads, so a recovery-sourced receipt
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
 				// not leak into the optimistic row.
-				this.replace(TABLES.optimistic, acceptedRecord(source));
+				this.replace(
+					TABLES.optimistic,
+					acceptedRecord(queueEntryIds && queueEntryIds.length > 0 ? { ...source, queueEntryIds } : source),
+				);
 				// Acceptance is its own moment. A read already in flight when this
 				// receipt lands never saw the record, so its absence must not retire
 				// it; the prune compares against this stamp, never enqueue time.
@@ -1144,6 +1159,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			"stopEpochAtEnqueue" in record ? (record.stopEpochAtEnqueue ?? 0) : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,
+			JSON.stringify(record.queueEntryIds ?? null),
 		];
 	}
 

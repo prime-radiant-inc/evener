@@ -82,7 +82,6 @@ import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } f
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { readDraftRevision } from "./draft";
 import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
-import { QueueStrip } from "./queue";
 import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
@@ -90,7 +89,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { useBuiltinSubmission } from "./useBuiltinSubmission";
+import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -100,7 +99,7 @@ export interface ComposerProps {
   // Whether this composer's pane is the workspace's focused one. Mount
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
-  focused: boolean;
+  focused?: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
   // The seat's own chrome already renders this conversation's activity counts
@@ -108,6 +107,7 @@ export interface ComposerProps {
   // not mount a second set of chips beside the status chrome.
   ownsActivityCounts?: boolean;
   source: ComposerSourceState;
+  submission?: ComposerSubmission;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
   // this editor, and hiding the control then would take it away before the
@@ -140,15 +140,26 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({
+export function Composer(props: ComposerProps) {
+  if (props.submission !== undefined) return <ComposerWithSubmission {...props} submission={props.submission} />;
+  return <ComposerWithOwnSubmission {...props} />;
+}
+
+function ComposerWithOwnSubmission(props: ComposerProps) {
+  const submission = useBuiltinSubmission(props.source, props.paneId);
+  return <ComposerWithSubmission {...props} submission={submission} />;
+}
+
+function ComposerWithSubmission({
   ref,
   paneId,
-  focused,
+  focused = false,
   mountAutofocus = true,
   ownsActivityCounts = false,
   source,
+  submission,
   onEditingChange,
-}: ComposerProps) {
+}: ComposerProps & { submission: ComposerSubmission }) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -230,7 +241,7 @@ export function Composer({
     restoredRecoveryRef.current = activeRecoveryId;
     // Automatic restoration starts without an owner. Replacing an existing
     // owner after peer consumption preserves the editor, including selection.
-    // Explicit recovery Edit restores its caret in the QueueStrip callback.
+    // Explicit recovery Edit restores its caret in the pending stack callback.
     if (activating && activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
   }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
@@ -254,7 +265,7 @@ export function Composer({
     persistDraft,
     writeDraft,
   } = source;
-  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
+  const { actions, sessionBuiltins, submitBuiltin } = submission;
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -615,7 +626,7 @@ export function Composer({
   // line twice in a row is still two separate insertions rather than a
   // no-op the second time (quoteInsert.ts's own QuoteInsertRequest doc
   // comment). mergeDraftText is the SAME merge restoreTextToComposer uses
-  // for QueueStrip's "edit a queued entry" path, now parameterized on the
+  // for pending stack's "edit a queued entry" path, now parameterized on the
   // request's own placement (mergeDraftText's own doc comment) - a quote
   // never clobbers whatever the user already typed, and a palette-inserted
   // slash command lands where it can actually parse (the draft's start)
@@ -988,7 +999,7 @@ export function Composer({
   );
 
   // data-testid on every control in this row: two different buttons here
-  // start with "Steer" (this one and QueueStrip's "Steer queue now"), so
+  // start with "Steer" (this one and pending stack's "Steer queue now"), so
   // tests address controls by a stable hook instead of navigating by
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
@@ -1063,26 +1074,6 @@ export function Composer({
           {readyAnnouncement}
         </span>
       </VisuallyHidden>
-      {/* T3: queue strip - the queue preview (model.queue) above the input
-          row; getComposerText/onRestoreToComposer/onDrainSuccess are this
-          integration's own seam implementations, see each one's own doc
-          comment above. busy/onDrainBusyChange share this component's own
-          busyAction gate both ways (BusyAction's own "drain" doc comment). */}
-      <QueueStrip
-        {...actions.queueProps}
-        onRestoreToComposer={(...args) => {
-          actions.queueProps.onRestoreToComposer(...args);
-          editorRef.current?.focus();
-        }}
-        onEditRecovery={async (record) => {
-          const epoch = source.getSnapshot().restoreEpoch;
-          await actions.queueProps.onEditRecovery?.(record);
-          if (source.alive && source.getSnapshot().restoreEpoch !== epoch) {
-            scheduleCursorRestore(source.getSnapshot().text.length);
-            editorRef.current?.focus();
-          }
-        }}
-      />
       {askPending && askChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's

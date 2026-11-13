@@ -108,6 +108,7 @@
     "web_search": true
   },
   "provenance": {
+    "AliasOf": "overlay/row",
     "ContextWindow": "overlay/glob:gpt-5.6*",
     "Cost": "alias",
     "EffortValues": "alias",
@@ -133,6 +134,7 @@
     "MaxInputTokens": "alias",
     "MaxOutputTokens": "alias",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "snapshot/provider",
     "Reasoning": "alias",
     "ReasoningControls": "alias",
     "ReasoningSummary": "overlay/glob:gpt-5.6*",
@@ -144,6 +146,7 @@
     "ThinkingAlwaysOn": "overlay/glob:gpt-5.6*",
     "Tools": "alias",
     "WebSearch": "overlay/provider",
+    "WireID": "overlay/row",
     "model": "row:gpt-5.6"
   },
   "default_model": "gpt-5.6",

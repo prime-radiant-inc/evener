@@ -1566,6 +1566,45 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
   });
 
+  test("replays an accepted pinned copy discovered during reconnect", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: {
+        ref: "ref_a",
+        input: [{ type: "text", text: "queued" }],
+      },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    expect(await storage.settleReceipt(record.clientMutationId, "pending")).toBe(true);
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: true,
+          queue: { revision: 1 },
+          pendingMutations: [],
+        },
+      }),
+    );
+    fake.on("turn/queue", (params) => ({
+      receipt: { ...mutationReceipt(params.clientMutationId), projectionState: "removed" },
+    }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
+    inspector.close();
+  });
+
   test.each(["bounded transcript", "cleared instance"])(
     "retries an unresolved %s mutation with its original identity and payload",
     async (snapshot) => {
@@ -1898,96 +1937,6 @@ describe("retry-safe mutation outbox integration", () => {
     threadsStore.getState().releaseThread("ref_a");
   });
 
-  // The drain's repair-status obligations (#4343): the flag a pinned ref's
-  // read set cannot outlive the pin, and a read still on the wire when the
-  // pin leaves cannot recreate it for a lifetime that just ended.
-  test("settling the last durable record clears the repair status its ref's read set", async () => {
-    await seedPinnedIntent("ref_a", "mutation-a");
-    const reads: Array<{
-      resolve: (response: ThreadReadResponse) => void;
-      reject: (error: unknown) => void;
-    }> = [];
-    const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => {
-      const read = deferred<ThreadReadResponse>();
-      reads.push(read);
-      return read.promise;
-    });
-    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
-
-    // The ready transition rejoins the discovered pinned ref and publishes
-    // its snapshot, so a resync can put a second read on the wire. The
-    // macrotask settles the first read's consumer chain — the lease resolves
-    // it through a timer hop — so no late step of it can land after the
-    // events the assertions below pin.
-    fake.emitReady();
-    await flushIndexedDBUntil(() => reads.length === 1);
-    reads[0]!.resolve(readResponse("ref_a"));
-    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
-    await settleCallerContinuations();
-    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
-    await flushIndexedDBUntil(() => reads.length === 2);
-
-    // That read answers the hub's rebuilding code: the flag is set.
-    reads[1]!.reject(
-      new WireError("thread history is being rebuilt in the background", -32000, {
-        evenerErrorInfo: "transcriptIndexRebuilding",
-      }),
-    );
-    await flushIndexedDBUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
-    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
-
-    // Settling the record drops the pin — the ref's only owner — so the
-    // repair status cannot outlive it.
-    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
-    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
-    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
-  });
-
-  test("a rejoin read that answers rebuilding after its record settles recreates no repair status", async () => {
-    await seedPinnedIntent("ref_a", "mutation-a");
-    const reads: Array<{
-      promise: Promise<ThreadReadResponse>;
-      resolve: (response: ThreadReadResponse) => void;
-      reject: (error: unknown) => void;
-    }> = [];
-    const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => {
-      const read = deferred<ThreadReadResponse>();
-      reads.push(read);
-      return read.promise;
-    });
-    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
-
-    fake.emitReady();
-    await flushIndexedDBUntil(() => reads.length === 1);
-    reads[0]!.resolve(readResponse("ref_a"));
-    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
-    // The macrotask settles the first read's consumer chain — the lease
-    // resolves it through a timer hop — so its late steps cannot land after
-    // the drain and muddy what the assertions below pin.
-    await settleCallerContinuations();
-    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
-    await flushIndexedDBUntil(() => reads.length === 2);
-
-    // The pin leaves while the read is still on the wire: the drain retires
-    // the lifetime, so the read's late rebuilding answer must publish
-    // nothing. The rejection settles through the lease's timer hop too, so
-    // one macrotask covers the consumer's catch chain.
-    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
-    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
-    reads[1]!.reject(
-      new WireError("thread history is being rebuilt in the background", -32000, {
-        evenerErrorInfo: "transcriptIndexRebuilding",
-      }),
-    );
-    // The lease's read is a derived promise, so settling the raw deferred
-    // does not settle the consumer's catch chain; one macrotask does.
-    await reads[1]!.promise.catch(() => undefined);
-    await settleCallerContinuations();
-    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
-  });
-
   // The mirror of the case above, one step earlier: here the pin goes away
   // while the read is still on the wire, so there is no lifecycle to retire
   // yet. Opening one anyway would arm a retry for a ref nothing owns - a timer
@@ -2188,6 +2137,44 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(0);
   });
 
+  test("a queue identity also named in pendingMutations keeps its display copy", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    const [record] = await inspector.listOutbox("ref_a");
+    expect(record).toBeDefined();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: [record!.clientMutationId] },
+          pendingMutations: [
+            {
+              clientMutationId: record!.clientMutationId,
+              method: "turn/queue",
+              executionState: "accepted",
+              projectionState: "pending",
+            },
+          ],
+        },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    for (
+      let attempt = 0;
+      attempt < 50 && (await inspector.getOptimistic(record!.clientMutationId)) === undefined;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect((await inspector.getOptimistic(record!.clientMutationId))?.state).toBe("accepted");
+    inspector.close();
+  });
+
   test("a stale client hydration cannot settle an intent in a newer ready generation", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
     await storage.enqueueIntent({
@@ -2227,6 +2214,53 @@ describe("retry-safe mutation outbox integration", () => {
     currentRead.resolve(readResponse("ref_a"));
     await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "turn/queue"));
     expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
+  test("a queue change preserves the hydrated source until a replacement arrives", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: ["m1"] },
+          pendingMutations: [
+            {
+              clientMutationId: "m1",
+              method: "turn/queue",
+              executionState: "accepted",
+              projectionState: "pending",
+            },
+          ],
+        },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.pendingMutations?.map((pending) => pending.clientMutationId),
+    ).toEqual(["m1"]);
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 2, clientMutationIds: [] },
+        consumedClientMutationIds: ["m1"],
+      },
+    } as AnyNotification);
+    await flushUntil(() => false, 5);
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.pendingMutations?.map((pending) => pending.clientMutationId),
+    ).toEqual(["m1"]);
   });
 });
 

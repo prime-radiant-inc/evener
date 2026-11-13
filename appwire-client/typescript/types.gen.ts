@@ -945,6 +945,7 @@ export interface EvenerThread {
   contextWindow?: number;
   contextRemaining?: number;
   contextAssumed?: boolean;
+  compactionThreshold?: number;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
   /**
@@ -1967,9 +1968,109 @@ export interface InstanceListResponse {
   writesRefused?: boolean;
 }
 
+export interface InstanceModelAuthored {
+  compactionThreshold?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
+export interface InstanceModelDetailResponse {
+  name: string;
+  model: string;
+  disabled: boolean;
+  disabledLockstepTarget?: string;
+  authoredOnly: boolean;
+  effective: InstanceModelEffective;
+  provenance: Record<string, string>;
+  authored: InstanceModelAuthored;
+  thinkingFormats: string[];
+  thinkingShapes: string[];
+  warnings?: string[];
+}
+
+export interface InstanceModelEditParams {
+  name: string;
+  model: string;
+  create?: boolean;
+  removeCustom?: boolean;
+  resetAll?: boolean;
+  compactionThreshold?: number;
+  clearCompactionThreshold?: boolean;
+  contextWindow?: number;
+  clearContextWindow?: boolean;
+  maxOutputTokens?: number;
+  clearMaxOutputTokens?: boolean;
+  reasoning?: boolean;
+  clearReasoning?: boolean;
+  defaultEffort?: string;
+  clearDefaultEffort?: boolean;
+  effortValues?: string[];
+  clearEffortValues?: boolean;
+  inputModalities?: string[];
+  clearInputModalities?: boolean;
+  tools?: boolean;
+  clearTools?: boolean;
+  protocol?: string;
+  clearProtocol?: boolean;
+  surface?: string;
+  clearSurface?: boolean;
+  thinkingFormat?: string;
+  clearThinkingFormat?: boolean;
+  thinkingShape?: string;
+  clearThinkingShape?: boolean;
+  wireId?: string;
+  clearWireId?: boolean;
+  aliasOf?: string;
+  clearAliasOf?: boolean;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
+}
+
+export interface InstanceModelEditResponse {
+  list: InstanceListResponse;
+  detail?: InstanceModelDetailResponse;
+}
+
+export interface InstanceModelEffective {
+  contextWindow?: number;
+  maxInputTokens?: number;
+  compactionThreshold?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
 export interface InstanceModelEntry {
   id: string;
   disabled?: boolean;
+  customized?: boolean;
+  contextWindow?: number;
+  compactionThreshold?: number;
+}
+
+export interface InstanceModelGetParams {
+  name: string;
+  model: string;
 }
 
 export interface InstanceRefreshModelsParams {
@@ -2437,6 +2538,7 @@ export interface ModelDescriptor {
   displayName?: string;
   contextWindow?: number;
   maxInputTokens?: number;
+  compactionThreshold?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
   maxOutputTokens?: number;
@@ -4830,6 +4932,13 @@ export interface ThreadItem {
   steeringKind?: string;
   clientMutationId?: string;
   /**
+   * ConversationInputIDs names the conversation inputs this recorded item
+   * speaks for. A promotion or drain records ITS OWN clientMutationId but
+   * inherits the consumed entry's input ids, so this is the lineage that ties
+   * a recorded message back to the queue entry another client consumed.
+   */
+  conversationInputIds?: string[];
+  /**
    * Version is the highest entry ordinal (below) among the entries that
    * contributed to this item, stored and sent as ordinal + 1 so 0 means "no
    * history version" (an overlay item). The higher version wins.
@@ -4888,6 +4997,11 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  contextUsed?: number;
+  contextWindow?: number;
+  contextPressure?: number;
+  contextAssumed?: boolean;
+  compactionThreshold?: number;
 }
 
 export interface ThreadModelRetryParams {
@@ -5809,6 +5923,8 @@ export const METHOD_NAMES = [
   "evener/instance/setDefault",
   "evener/instance/setModelDisabled",
   "evener/instance/refreshModels",
+  "evener/instance/modelGet",
+  "evener/instance/modelEdit",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -6357,7 +6473,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "conversationInputIds", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
@@ -6489,6 +6605,8 @@ export interface MethodTypes {
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
   "evener/instance/refreshModels": { params: InstanceRefreshModelsParams; result: InstanceListResponse };
+  "evener/instance/modelGet": { params: InstanceModelGetParams; result: InstanceModelDetailResponse };
+  "evener/instance/modelEdit": { params: InstanceModelEditParams; result: InstanceModelEditResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };

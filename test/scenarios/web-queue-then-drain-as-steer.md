@@ -13,8 +13,8 @@ Two controls reach it, and both must:
   queue is non-empty or attachments are staged — `decideSteerRoute` routes
   to `"drain"` *regardless of whether the composer has text*
   (`appwire-client/typescript/submitRouting.ts:33-39`);
-- the queue strip's **Steer queue now** button
-  (`composer/queue/QueueStrip.tsx:279-284`).
+- the pending stack's **Steer queue now** button
+  (`pending/PendingMessageStack.tsx:43-48`).
 
 If the queue is empty and nothing is staged, the same button falls back to
 the classic single-text steer so typed text is never lost — see
@@ -27,9 +27,10 @@ the AppWire socket as `turn/queue` and `turn/drainAsSteer`
 (`appwire/types_protocol.go#MethodTurnQueue`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
-REST surface, and what is no longer on it". The queue strip carries no
-`data-testid` — address it by its visible text, which is what
-`test/scenarios/README.md` asks for anyway.
+REST surface, and what is no longer on it". The pending stack carries
+`data-testid="pending-message-stack"`, and each row carries
+`data-testid="pending-message-row"` with its `data-state`; the visible text
+still works too, which is what `test/scenarios/README.md` asks for anyway.
 
 ## Pre-state
 
@@ -61,11 +62,12 @@ HUB=http://127.0.0.1:$PORT
    - `and: avoid framework-specific advice`
    - `summary: prioritize readability`
 
-   After each submit, read the strip:
+   After each submit, read the stack:
    ```javascript
    ({
-     heading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
-     rows: document.querySelectorAll("h3 ~ ul li").length,
+     rows: document.querySelectorAll('[data-testid="pending-message-row"]').length,
+     states: Array.from(document.querySelectorAll('[data-testid="pending-message-row"]'),
+       (li) => li.dataset.state),
      drainButton: !!Array.from(document.querySelectorAll("button"))
        .find((b) => b.textContent.trim() === "Steer queue now"),
    })
@@ -75,16 +77,16 @@ HUB=http://127.0.0.1:$PORT
    then after the ack:
    ```javascript
    (async () => {
-     const chips = () => Array.from(
-       document.querySelectorAll('[data-testid="pending-chips"] li'), (li) => li.textContent);
-     const heading = () => document.querySelector("h3")?.textContent ?? null;
+     const rows = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-message-row"]'),
+       (li) => ({ state: li.dataset.state, text: li.textContent }));
      const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
      document.querySelector('[data-testid="composer-steer"]').click();
-     const sync = { chips: chips(), heading: heading() };
+     const sync = { rows: rows() };
      await new Promise((r) => setTimeout(r, 3000));
      return JSON.stringify({
        port: location.port, sync,
-       after: { chips: chips(), heading: heading(), text: ta.value,
+       after: { rows: rows(), text: ta.value,
                 toast: document.querySelector('[aria-label="Notifications"]')?.textContent },
      }, null, 2);
    })()
@@ -96,25 +98,28 @@ HUB=http://127.0.0.1:$PORT
 
 ## Expected
 
-- **Step 3 (queueing)**: the heading counts up — `Queued messages (1)`,
-  `(2)`, `(3)` (`QueueStrip.tsx:278`) — with one row per message and a
-  `Steer queue now` button present the whole time (`:279-284`). Falsify: a
-  later submit replaces an earlier row instead of appending, the count stops
-  advancing, or the message starts a new turn instead of queueing (the
-  queue capability did not re-engage).
-- **Step 4 (drain)**: `sync.chips` holds one chip reading `Draining` plus the
-  composer text (`pending/PendingChips.tsx:38-42`) — **one** mutation, not
-  two. This is the part that changed shape: the composer's text and
+- **Step 3 (queueing)**: the row count counts up — 1, 2, 3
+  (`pending/PendingMessageStack.tsx:50-69`) — with one row per message and a
+  `Steer queue now` button present the whole time (`:43-48`). The queue
+  projection merges each daemon entry with its local row by
+  `clientMutationId`, so a later submit appends rather than replaces
+  (`state/mutation/pendingMessages.ts:426-516`). Falsify: a later submit
+  replaces an earlier row instead of appending, the count stops advancing,
+  or the message starts a new turn instead of queueing (the queue capability
+  did not re-engage).
+- **Step 4 (drain)**: `sync.rows` holds exactly one row carrying the composer
+  text and its state caption (`pending/PendingMessageStack.tsx:50-69`,
+  caption at `pending/pendingMessageCaption.ts:12-40`) — **one** mutation,
+  not two. This is the part that changed shape: the composer's text and
   attachments are appended to the queue and the whole queue drained **in a
-  single `turn/drainAsSteer`** carrying both `expectedTurnId` and
-  `expectedQueueRevision` (`stores/threads.ts:707-712`), rather than the old
-  extra `/queue` POST followed by a `/drain-as-steer` POST. Afterwards the
-  chip is gone, the queue strip is gone entirely (it renders only while there
-  is queued work — `QueueStrip.tsx:158-162`), the composer is cleared, and no
+  single `turn/drainAsSteer`** carrying the queue revision it is swapping
+  against (`stores/threads.ts:4531-4540`), rather than the old extra `/queue`
+  POST followed by a `/drain-as-steer` POST. Afterwards the row is gone, the
+  stack is gone entirely (it renders only while a row is shown —
+  `pending/PendingMessageStack.tsx:36-39`), the composer is cleared, and no
   error toast appears. Falsify: the composer's text is dropped instead of
-  drained (the "don't lose typed text" contract), the strip still shows rows,
-  or a `Steering` chip appears instead of `Draining` (the empty-queue branch
-  ran with a non-empty queue).
+  drained (the "don't lose typed text" contract), the stack still shows rows,
+  or a row appears for the empty-queue branch instead of the drained queue.
 - **Step 5 (durable)**: exactly **one** new `STEERING` entry, whose text
   contains all four lines in FIFO order joined by blank lines — the daemon
   joins with `"\n\n"` (`agent/session_client_mutation_queue.go:478`). **No**
@@ -139,24 +144,26 @@ rm -rf "$tmpdir"
   attachments *before* the textarea: a non-empty queue routes to `drain` even
   with nothing typed (`submitRouting.ts:33-39`). Do not treat an empty
   composer as a reason to expect the classic steer.
-- **Two buttons, one action.** `Steer queue now` in the strip and `Steer` in
-  the composer both drain, and the strip's version pulls the composer's
-  current text in too (`QueueStrip.tsx:222-228` reads `getComposerText`).
+- **Two buttons, one action.** `Steer queue now` in the stack and `Steer` in
+  the composer both drain, and the stack's version pulls the composer's
+  current text in too (`pending/usePendingMessageActions.ts`, `:245-250`
+  reads `getComposerText`).
   Either is a valid step 4; do not assert that only one of them works.
-- **The drain is a CAS on two things.** `expectedTurnId` and
-  `expectedQueueRevision` are both preconditions
-  (`agent/session_client_mutation_queue.go:384-403`): a turn that ended gives
-  `Conflict("turn is not active")`, a queue that changed underneath gives
-  `Conflict("queue revision changed")`, and an empty queue with no composer
-  input gives `Conflict("queue is empty")`. A drain that fails this way is a
-  race, not a regression — retry from a fresh snapshot before filing.
+- **The drain is a CAS on the queue revision.** `expectedQueueRevision` is
+  the precondition (`agent/session_client_mutation_queue.go:888-912`): a
+  queue that changed underneath gives `Conflict("queue revision changed")`,
+  and an empty queue with no composer input gives `Conflict("queue is
+  empty")`. A drain that fails this way is a race, not a regression — retry
+  from a fresh snapshot before filing.
 - **A partial drain is its own error code.** `appwire.ErrorQueuedDrainPartial`
   reports that some entries drained and some did not. If you
   see a partial, count what actually landed in the transcript rather than
   reading the error as a flat failure.
-- **The strip disappears when the queue empties.** Its absence after a drain
-  is the expected state, not a rendering failure — `visible` is false with no
-  queued work and no recovery rows (`QueueStrip.tsx:160-162`).
+- **The stack disappears when the queue empties.** Its absence after a drain
+  is the expected state, not a rendering failure — `shown` is empty with no
+  queued work and no recovery rows (`pending/PendingMessageStack.tsx:36-39`).
 - Rows for mutations whose fate is unknown stay behind as
-  `Delivery uncertain — <text>` with a `Retry` button (`:349-360`). That is a
-  dropped socket, not a drain bug.
+  `Delivery uncertain` with a `Retry` button
+  (`pending/pendingMessageCaption.ts:23-24`,
+  `pending/PendingMessageStack.tsx:103-108`). That is a dropped socket, not a
+  drain bug.

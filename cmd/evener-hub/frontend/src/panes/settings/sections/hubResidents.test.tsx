@@ -6,7 +6,7 @@
 //
 // Note: this codebase has no jest-dom matcher setup (vite.config.ts's own
 // `test.setupFiles: []`), so disabled state is checked via the DOM property
-// directly, matching the convention established in QueueStrip.test.tsx and
+// directly, matching the convention established in sessionCacheRow.test.tsx and
 // the widget tests.
 
 import type { DaemonIdentity, DaemonListResponse, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
@@ -23,7 +23,7 @@ import { HubResidents } from "./hubResidents";
 const POLL_INTERVAL_MS = 2000;
 
 // Checks the HTML disabled property — no jest-dom in this project.
-// Mirrors QueueStrip.test.tsx's isDisabled helper.
+// Mirrors sessionCacheRow.test.tsx's isDisabled helper.
 function isDisabled(el: Element): boolean {
   return (el as HTMLButtonElement).disabled;
 }

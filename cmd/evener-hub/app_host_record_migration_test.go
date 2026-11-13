@@ -51,7 +51,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
-	return newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf), store
+	return newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, testLogger(t)), store
 }
 
 // restartOver is a process start over configPath and a store that is already
@@ -66,7 +66,7 @@ func restartOver(t *testing.T, configPath string, store *hostops.Store) *hubHost
 	}
 	return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 }
 
 // legacyHub builds a hub.toml the previous build could have left: hosts, and
@@ -318,7 +318,7 @@ func TestHostsKeepServingAndChangesResumeWhenTheStoreReturns(t *testing.T) {
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 
 	if rows := hostRows(t, m); rows["keep"].Removed || rows["keep"].Name != "keep" {
 		t.Fatalf("the hosts in hub.toml are not served: %+v", rows)
@@ -624,7 +624,7 @@ func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *tes
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 	if rows := hostRows(t, m); rows["keep"].Name != "keep" || rows["keep"].Removed {
 		t.Fatalf("the hosts in hub.toml are not served: %+v", rows)
 	}
@@ -669,7 +669,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	previous := configReadFile
 	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
-	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
+	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, testLogger(t))
 	configReadFile = previous
 
 	if _, _, imported := store.HostRecords(); imported {
@@ -766,7 +766,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 		return previous(path)
 	}
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
-	newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
+	newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, testLogger(t))
 	configReadFile = previous
 
 	if _, _, imported := store.HostRecords(); imported {
@@ -802,7 +802,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 
 	if _, _, imported := store.HostRecords(); imported {
 		t.Fatal("the records moved although the original could not be kept")
@@ -897,7 +897,7 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	}
 	legacy := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 	legacy.cfg.ops.Store(store)
 
 	legacy.migrateLegacyRecords(store)
@@ -933,7 +933,7 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	}
 	legacy := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 	legacy.cfg.ops.Store(store)
 
 	legacy.migrateLegacyRecords(store)
@@ -996,7 +996,7 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 	configReadFile = previous
 
 	if _, _, imported := store.HostRecords(); imported {
@@ -1111,7 +1111,7 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 		}
 		newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
-		}, configPath, hosts, t.Logf)
+		}, configPath, hosts, testLogger(t))
 		configReadFile = previous
 		return reads, records, configPath, store
 	}
@@ -1249,7 +1249,7 @@ func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
 		RemoteHostRecordsUnreadable: true,
-	}, configPath, hosts, t.Logf)
+	}, configPath, hosts, testLogger(t))
 
 	if _, _, imported := store.HostRecords(); imported {
 		t.Fatal("records moved over a registry built without their identities")

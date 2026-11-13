@@ -8,6 +8,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/activitySidebarStore";
+import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -32,7 +33,7 @@ import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
-  Composer,
+  ComposerWithPendingStack,
   foldStatusFrame,
   installCanvasStubs,
   installNarrowComposer,
@@ -553,10 +554,16 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   // Wait out the settlement the publish drives, so the second message is
   // composed in the harder of the two states this hydrate passes through: not
   // merely re-described from the authoritative projection, but with the durable
-  // record it re-described GONE. (The transient first state, where the record
-  // still exists and only `source` has flipped, is pendingReconcile.test.ts's.)
+  // outbox record it re-described GONE and only its accepted display copy left
+  // to keep the one pending row on screen until the transcript echo.
+  // (The transient first state, where the record still exists and only `source`
+  // has flipped, is pendingReconcile.test.ts's.)
   await flushPendingTurnsProjectionForTests();
-  expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0);
+  const persisted = await readMutationPersistence("ref_a");
+  expect(persisted.outbox).toHaveLength(0);
+  expect(persisted.optimistic).toHaveLength(1);
+  expect(persisted.optimistic[0]?.clientMutationId).toBe(firstSendId);
+  expect(persisted.optimistic[0]?.state).toBe("accepted");
 
   await user.type(editor, "m2");
   await user.click(submitButton());
@@ -897,7 +904,7 @@ test("a phone-width draft keeps Send in the row and Stop and Steer in the sessio
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   // ...and the verbs answer from the session menu. Its items carry the
   // SessionMenu-owned labels, not the row buttons' testids (the menu has
-  // none), and "Steer" alone stays unambiguous - QueueStrip's longer
+  // none), and "Steer" alone stays unambiguous - pending stack's longer
   // "Steer queue now" does not exact-match.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Steer" }));
@@ -1354,7 +1361,13 @@ test.each(["", "  ", "occupied draft"])(
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(textarea().textContent).toBe(text);
     view.unmount();
-    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
+    // The recovery row lives in the transcript's pending stack, so mount the
+    // production composer-plus-stack composition that owns its Edit action.
+    render(
+      <ClientProvider client={view.fake}>
+        <ComposerWithPendingStack ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+      </ClientProvider>,
+    );
     await flushPendingTurnsProjectionForTests();
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);

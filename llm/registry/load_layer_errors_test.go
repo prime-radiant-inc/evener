@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -207,16 +208,16 @@ func TestLoadFreshCacheSkipsRefresh(t *testing.T) {
 // A background refresh that fails logs and keeps the previous catalog.
 func TestLoadFailedBackgroundRefreshLogs(t *testing.T) {
 	t.Parallel()
-	var logs []string
-	logf := func(format string, args ...any) { logs = append(logs, format) }
-	f := &fakeFetch{err: errors.New("boom")}
+	boom := errors.New("boom")
+	logs := &logCapture{}
+	f := &fakeFetch{err: boom}
 	r, err := Load(
 		WithSnapshot(fixtureBytes(t)),
 		WithEnv(mapEnv(nil)),
 		WithNoUserLayer(),
 		WithStateRoot(t.TempDir()),
 		WithFetcher(f.fetcher()),
-		WithLog(logf),
+		WithLogger(logs.logger()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +226,15 @@ func TestLoadFailedBackgroundRefreshLogs(t *testing.T) {
 		t.Fatal("an injected fetcher starts the background refresh")
 	}
 	r.WaitRefresh()
-	if len(logs) == 0 {
-		t.Fatal("a failed background refresh must log")
+	records := logs.all()
+	if len(records) != 1 {
+		t.Fatalf("refresh failure records = %+v, want exactly one", records)
+	}
+	if records[0].level != slog.LevelWarn {
+		t.Errorf("refresh failure level = %v, want Warn", records[0].level)
+	}
+	if loggedErr, ok := records[0].attrs["err"].(error); !ok || !errors.Is(loggedErr, boom) {
+		t.Errorf("refresh failure err = %v, want %v", records[0].attrs["err"], boom)
 	}
 	if _, _, ok := readCache(r.StateRoot()); ok {
 		t.Fatal("a failed background refresh must not write the cache")

@@ -626,6 +626,31 @@ test("settleReceipt's accepted optimistic copy keeps the enqueue-time instance",
 	});
 });
 
+// A receipt names the queue entry its accepted copy came from; that lineage is
+// what retires the pending row once the consuming mutation settles, so the
+// column must survive the write and the read-back.
+test("settleReceipt persists a receipt-supplied queueEntryIds on the accepted copy", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("accepted with lineage"),
+		optimisticDisplay: { input: [{ type: "text", text: "accepted with lineage" }] },
+	});
+	await expect(
+		storage.settleReceipt(record.clientMutationId, "pending", ["queue-entry-1", "queue-entry-2"]),
+	).resolves.toBe(true);
+
+	await expect(storage.getOptimistic(record.clientMutationId)).resolves.toMatchObject({
+		state: "accepted",
+		queueEntryIds: ["queue-entry-1", "queue-entry-2"],
+	});
+	expect((await storage.listOptimistic())[0]).toMatchObject({
+		queueEntryIds: ["queue-entry-1", "queue-entry-2"],
+	});
+	openStorage();
+	await expect(storage.getOptimistic(record.clientMutationId)).resolves.toMatchObject({
+		queueEntryIds: ["queue-entry-1", "queue-entry-2"],
+	});
+});
+
 test("settleReceipt clears attempt evidence from the accepted optimistic record", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("attempted before receipt"),
@@ -1072,9 +1097,10 @@ test("nextDispatchable decodes only the FIFO head row, not the whole target queu
 		parses = parse.mock.calls.length;
 		parse.mockRestore();
 	}
-	// One row decoded (payload, attachments, optimistic_display). Listing the
-	// queue first would have decoded all three rows.
-	expect(parses).toBe(3);
+	// One row decoded (payload, attachments, optimistic_display, and the
+	// nullable queue_entry_ids). Listing the queue first would have decoded all
+	// three rows.
+	expect(parses).toBe(4);
 });
 
 test("restoreProvenAbsent scopes reopening to the target and preserves authoritative records", async () => {
@@ -1139,8 +1165,9 @@ test("restoreProvenAbsent decodes only the rows it returns, never the target's o
 		parse.mockRestore();
 	}
 	// Exactly the two returned rows decode (each row's optimistic display,
-	// payload and attachments); the target's other rows are never read.
-	expect(parses).toBe(6);
+	// payload, attachments, and nullable queue_entry_ids); the target's other
+	// rows are never read.
+	expect(parses).toBe(8);
 	await expect(storage.getOutbox(first.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
 	await expect(storage.getOutbox(second.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
 });

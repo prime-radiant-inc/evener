@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"slices"
 	"time"
 
@@ -174,7 +173,7 @@ func (r *forceStopRun) openProcess(ctx context.Context) error {
 			return
 		}
 		if err := r.process.Close(); err != nil {
-			log.Printf("force stop process handle cleanup: %v", err)
+			hubLogFor(r.cfg).Warn(fmt.Sprintf("force stop process handle cleanup: %v", err))
 		}
 	})
 	if r.exited && r.recoveryTarget != "" && r.target.SessionID != r.recoveryTarget {
@@ -1078,7 +1077,7 @@ func forceStopAliases(entry rendezvous.Entry) []string {
 func refreshAfterForceStop(ctx context.Context, cfg hubcore.WebConfig) {
 	if cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
-			log.Printf("daemon stopped; roster refresh remains incomplete: %v", err)
+			hubLogFor(cfg).Warn(fmt.Sprintf("daemon stopped; roster refresh remains incomplete: %v", err))
 		}
 	}
 	if cfg.Inputs != nil {

@@ -182,6 +182,24 @@ describe("usage", () => {
 		expect(facts.context?.text).toContain("~128K");
 		expect(facts.context?.text).not.toContain("~25.6K");
 	});
+
+	it("measures against an explicit compactionThreshold without exposing a synthetic assumed window", () => {
+		const facts = usageFacts({
+			usage: null,
+			cost: null,
+			workMillis: 0,
+			contextUsed: 200_000,
+			contextWindow: 277_778,
+			contextAssumed: true,
+			compactionThreshold: 250_000,
+			failedToolCalls: undefined,
+		});
+		expect(facts.context?.fraction).toBe(0.8);
+		expect(facts.context?.text).toContain("200K");
+		expect(facts.context?.text).toContain("250K");
+		expect(facts.context?.text).not.toContain("~");
+		expect(facts.context?.text).not.toContain("278K");
+	});
 });
 
 describe("the model chip (spec 8.5)", () => {

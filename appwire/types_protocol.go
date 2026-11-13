@@ -164,6 +164,8 @@ const (
 	MethodEvenerInstanceSetDefault       = "evener/instance/setDefault"
 	MethodEvenerInstanceSetModelDisabled = "evener/instance/setModelDisabled"
 	MethodEvenerInstanceRefreshModels    = "evener/instance/refreshModels"
+	MethodEvenerInstanceModelGet         = "evener/instance/modelGet"
+	MethodEvenerInstanceModelEdit        = "evener/instance/modelEdit"
 	MethodEvenerPluginCheckNow           = "evener/plugin/checkNow"
 	MethodEvenerPluginPreview            = "evener/plugin/preview"
 	MethodEvenerMarketplaceList          = "evener/marketplace/list"

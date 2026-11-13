@@ -277,7 +277,7 @@ type worktreeGuard struct {
 	// cannot collaterally discard an uncommitted edit.
 	removeOp func(ctx context.Context, name string, force, forceDirty, deleteBranch bool) (WorktreeRemoveResult, error)
 	// listOp runs the list operation (spec §5 list, all three steps).
-	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
+	listOp func(ctx context.Context, pagination ...int) (WorktreeListResult, error)
 	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
 	// orphanedDelegateDays arms the orphan reclaim arm (#5471) when > 0.
 	pruneOp func(ctx context.Context, orphanedDelegateDays float64) (WorktreePruneResult, error)
@@ -334,6 +334,13 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 // work cannot be waited for, and the close may already be past its join, so the
 // only safe answer is to run nothing at all.
 var errWorktreeOpWhileClosing = errors.New("the session is closing; operation refused")
+
+var (
+	// ErrWorktreeInvalidLimit is returned when manage_worktree list receives a limit <= 0.
+	ErrWorktreeInvalidLimit = errors.New("limit must be greater than 0")
+	// ErrWorktreeInvalidOffset is returned when manage_worktree list receives a negative offset.
+	ErrWorktreeInvalidOffset = errors.New("offset must be non-negative")
+)
 
 // worktreeOpLabel names a manage_worktree call for a close-fence warning: the
 // operation, and the target it acts on when the arguments carry one. The
@@ -527,25 +534,76 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				return out, nil
 			case "list":
-				entries, err := deps.worktreeGuard.listOp(ctx)
+				limit := defaultWorktreeListLimit
+				var hasLimit bool
+				if raw, ok := args["limit"]; ok {
+					hasLimit = true
+					switch v := raw.(type) {
+					case float64:
+						if v <= 0 {
+							return nil, ErrWorktreeInvalidLimit
+						}
+						limit = int(min(v, 1<<30))
+					case int:
+						if v <= 0 {
+							return nil, ErrWorktreeInvalidLimit
+						}
+						limit = v
+					default:
+						return nil, fmt.Errorf("invalid limit type %T", raw)
+					}
+				}
+				if limit > maxWorktreeListLimit {
+					limit = maxWorktreeListLimit
+				}
+
+				offset := 0
+				var hasOffset bool
+				if raw, ok := args["offset"]; ok {
+					hasOffset = true
+					switch v := raw.(type) {
+					case float64:
+						if v < 0 {
+							return nil, ErrWorktreeInvalidOffset
+						}
+						offset = int(min(v, 1<<30))
+					case int:
+						if v < 0 {
+							return nil, ErrWorktreeInvalidOffset
+						}
+						offset = v
+					default:
+						return nil, fmt.Errorf("invalid offset type %T", raw)
+					}
+				}
+
+				res, err := deps.worktreeGuard.listOp(ctx, limit, offset)
 				if err != nil {
 					return nil, err
 				}
-				managed, unmanaged := partitionWorktreeListEntries(entries)
-				out := make([]map[string]any, len(managed))
-				for i, e := range managed {
+				out := make([]map[string]any, len(res.Entries))
+				for i, e := range res.Entries {
 					out[i] = worktreeListEntryToMap(e)
 				}
-				strays := make([]map[string]any, len(unmanaged))
-				for i, e := range unmanaged {
+				strays := make([]map[string]any, len(res.Unmanaged))
+				for i, e := range res.Unmanaged {
 					strays[i] = worktreeUnmanagedEntryToMap(e)
 				}
-				return map[string]any{
+				ret := map[string]any{
 					"status":    "listed",
 					"entries":   out,
 					"unmanaged": strays,
-					"message":   worktreeListSummary(managed, unmanaged),
-				}, nil
+					"message":   worktreeListSummaryPagedWithTotals(res.Entries, res.Unmanaged, res.Truncated, res.NextOffset, res.TotalEntries, res.TotalUnmanaged),
+				}
+				if res.Truncated || hasLimit || hasOffset || offset > 0 {
+					ret["total_entries"] = res.TotalEntries
+					ret["total_unmanaged"] = res.TotalUnmanaged
+					ret["truncated"] = res.Truncated
+					if res.Truncated {
+						ret["next_offset"] = res.NextOffset
+					}
+				}
+				return ret, nil
 			case "prune":
 				orphanedDays, _ := args["orphaned_delegate_days"].(float64)
 				if orphanedDays > 0 && orphanedDays < minOrphanedDelegateDays {

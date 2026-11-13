@@ -147,7 +147,21 @@ losing the conversation that made the evidence relevant.
   and response space. The
   four activity counters stay in the
   app with their existing Overview links. The OS-owned Duo system rail is not a public
-  customization surface, so no counters move there.
+  customization surface, so no counters move there. The 466px cover treatment is a fit
+  pass on that existing session screen, not a new mode: content, controls and workflow
+  stay, and an empty, unfocused card gives its own padding back to the transcript
+  (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap in
+  `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
+  (`composer.module.css` `.activityRow`).
+- **Keep the loading face honest and seat-scoped.** A loading session pane shows a `Loader`
+  status over a static four-line `Skeleton` and delays its force-stop recovery copy by
+  eight seconds (`RECOVERY_HINT_DELAY_MS` in
+  [Session.tsx](../../cmd/evener-hub/frontend/src/panes/session/Session.tsx)); the pane's
+  face has no presentation footer while loading. The deleted and loading faces stay with the
+  seat ([ConversationBody](../../cmd/evener-hub/frontend/src/panes/session/ConversationBody.tsx)):
+  a cascade column renders its own bare `Loader` inside its column chrome, keeps its
+  verbosity control when the conversation is unavailable, and inherits none of the pane's
+  recovery affordances.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -310,7 +324,9 @@ font-size preferences, timestamp rail, safe-area/keyboard rules and 899px mobile
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
 The page frame follows the column it names: a session or spawn header shares its content
 measure, while the settings header stays on the nav axis. The header takes this from the
-pane's existing scaffold marker, not a second layout prop.
+pane's existing scaffold marker, not a second layout prop. The layoutguard case
+`page-frame-alignment` pins it: without the header padding rule the session title sits
+hundreds of pixels left of the reading column.
 
 **Color is meaning.** Attention = a human/action is needed; alive = active work;
 danger = failure/destruction; accent = links, focus and selection. No decorative status
@@ -353,6 +369,11 @@ host, branch, running jobs, subagent tally, watches, tier and age move into a sh
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
+
+The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
+one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
+task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
+probes) fails if the rail CTA turns primary or the shell route shows two.
 
 Ancestor spines share this compact renderer, not the rail's status authority.
 The rail retains navigation-summary arbitration, including running jobs and
@@ -419,6 +440,13 @@ The PWA manifest and HTML theme-color are synchronized to the dark page `#111214
 theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
 browser chrome does not stay dark.
 
+These values are the cool-neutral ruling, not a preference: no warm or beige ground may
+replace them. The rail stays one visible step from the page (`--surface-canvas` over
+`--surface-0`), and the message slip keeps its own inset ground (`--surface-inset`).
+`token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
+`zscn-theme-flip-dark-surface` layoutguard case pin the palette; change them together
+with the tokens, never one at a time.
+
 **Type** — three shared families, no CDN font requests:
 
 - `--font-sans`: `"Schibsted Grotesk Variable"` plus system sans fallbacks. Controls, labels, operational tables.
@@ -428,6 +456,22 @@ browser chrome does not stay dark.
 Schibsted Grotesk, JetBrains Mono and Source Serif 4 are wired to their package Latin variable WOFF2 files. Source Serif 4
 uses the package's actual exported normal CSS and `wght-italic.css` for real italics; all assets
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
+
+The reading face is not negotiable against a sans swap: prose stays Source Serif at every
+density. Making the app denser means changing the shared size and leading tokens —
+`--font-size-prose` and `--line-height-prose` — never replacing `--font-prose`. Duo composer
+and status compaction is a separate width treatment and never touches the reading ramp.
+
+Changing the face or the type ramp also retunes the browser-guard fixtures, not just the
+tokens. The guards pin exact rendered text metrics — `compact-session-footer`'s boundary
+widths, `overflowguard`'s Send button width, `toolrow-chevron-nowrap`'s stranding sweep,
+`attention-dock-narrow-pane`'s title length and `zscn-theme-flip-dark-surface`'s surface
+values — and a face or tracking change moves rendered text by fractions of a pixel that
+only the real-browser suite catches. After any face, size-step or tracking change, run
+`npm run layoutguard` from `cmd/evener-hub/frontend` and then `make test-web-browser`,
+updating the fixture widths and exact `--surface-*` expectations with the change. If the
+parallel browser run times out, run the tagged cascade test alone:
+`go test -tags browserguard ./cmd/evener-hub -run '^TestAgentCascadeBrowser$' -count=1`.
 
 The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
 12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
@@ -474,6 +518,11 @@ disclosure card that sits inside a pane (the session notes card) and `--radius-p
 999px for switch tracks.
 Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
+The radius ladder is a contract, not a starting point: 8px is reserved for
+`--radius-panel` alone — a floating disclosure card inside a pane body's padding — and is
+not a general softening. Do not raise `--radius-pane` or `--radius-control` toward it;
+surfaces that draw from the radius tokens stay at their token values, while structural
+surfaces (Card, PaneScaffold, tables) stay square as above.
 `--dock-clearance` is the home-indicator band a bottom dock keeps its content
 clear of, `max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))`:
 0 off a phone, and it yields as the on-screen keyboard rises so a dock spends
@@ -510,6 +559,12 @@ typed text input is louder than the palette wants. Hand-rolled ring geometry (ba
 outlines in any order/unit, the outline longhands, or the retired inset-ring `box-shadow` hack) is
 contract-banned; see §4. Dropzone's dashed drag-target outline is signage, not a focus ring, and
 holds the second (and last) contract exception.
+
+The prompt card is the composer's focus treatment: the card is the prompt surface's single
+visible box, so it carries the focus affordance for the seamless textarea inside
+(`promptcard.module.css` `.card:focus-within`) with the ring on the card's own edge
+(`outline-offset: 0`) and the hairline set to `--accent` at the same time, so the composer
+reads as one blue line rather than a blue ring around a white card line.
 
 Every `:focus-visible` element also carries `--focus-ring-scroll-margin` (6px: the ring width plus
 the largest positive outline-offset, with a sub-pixel scroll-rounding allowance). A keyboard
@@ -1040,6 +1095,20 @@ filter that matches a session command's name (built-in or plugin) shows exactly 
 text into the focused session's composer and moves focus there, closing the palette; the palette
 itself never executes a session mutation or makes a wire call for one. With no session focused,
 the same row explains that there's nowhere to hand off to yet, rather than silently doing nothing.
+
+**Body, listing and selection.** The palette body is 520px wide
+(`commandpalette.module.css` `.palette`, shrinking to the viewport below it). An empty query
+is a showcase, not a blank card: needs-you sessions lead (Mod+J's own tree-order list),
+then the app-global Commands list. A plain query puts matching commands ahead of live/past/
+in-session search, so typing "settings" finds "Open settings" without the `/` prefix.
+The side-effecting `upgrade` and `search` commands stay out of plain search:
+`pushCommandMatches` filters them from every plain listing, while a `/`-prefixed
+command-filter listing (`filterCommands` direct) still shows them for explicit invocation.
+Enter acts on the highlighted row only after the
+reader has picked one — arrowed, clicked, or typed a name — and only in the
+`/`-prefixed command-filter mode; a bare `/` with the highlight untouched falls
+through rather than firing row 0 (`enterPressed`'s `picked` gate). In plain
+search mode Enter activates the automatically highlighted first result.
 
 ## 10. Collection pages: segmented workspaces and detail sheets
 

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -228,9 +229,9 @@ type hostManagerConfig struct {
 	// offline and in-progress rows keep the metadata the wire contract
 	// promises.
 	state *hostAttachState
-	// logf is the hub's logging path for store load problems; nil drops
+	// log is the hub's logging path for store load problems; nil drops
 	// the lines (tests that never load a broken file).
-	logf func(format string, args ...any)
+	log *slog.Logger
 	// mu serializes add/remove/update read-modify-write cycles so concurrent calls
 	// cannot lose updates or interleave a save with a registry mutation.
 	mu sync.Mutex
@@ -264,11 +265,11 @@ type hostManagerConfig struct {
 // entries loaded here and hosts added at runtime are attachable
 // without a restart; a nil hosts falls back to an empty registry rather than
 // a panic. configPath is the selected hub.toml path ("" disables
-// persistence); logf is the hub's logging path for store load problems.
+// persistence); log is the hub's logging path for store load problems.
 //
 // The durable host set starts as the registry's boot entries — every host
 // lives in the one machine-managed hub.toml.
-func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hosts *hostreg.Registry, logf func(format string, args ...any)) *hubHostManager {
+func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hosts *hostreg.Registry, log *slog.Logger) *hubHostManager {
 	if hosts == nil {
 		hosts, _ = hostreg.New(nil)
 	}
@@ -296,7 +297,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		state:             newHostAttachState(),
 		mutating:          map[string]struct{}{},
 		policy:            hostRecordPolicyFor(cfg),
-		logf:              logf,
+		log:               log,
 	}}
 	m.cfg.ops.Store(cfg.RemoteHostOpsStore)
 	if m.cfg.planFacts == nil && manager != nil {

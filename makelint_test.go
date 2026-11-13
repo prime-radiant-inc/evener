@@ -327,8 +327,10 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 	}
 
 	// The three lanes are .PHONY with no prerequisites at HEAD, so -n
-	// prints every recipe line without executing anything; a prerequisite
-	// added later must stay .PHONY or -n would run its recipe.
+	// prints every recipe line without executing anything. The one -n
+	// exception is a recipe line containing $(MAKE), which make runs even
+	// under -n — makeTargetsDryRun's comment documents it; none of these
+	// lanes has one.
 	dryRunOf := func(target string) string {
 		t.Helper()
 		return makeTargetsDryRun(t, makePath, target)
@@ -339,11 +341,14 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 	// while lint-evenerfuzz lost the GOOS=linux passes that two evenerfuzz
 	// && linux sources depend on. CI runs on Linux only, where those
 	// branches never execute, so a repeat deletion ships silently without
-	// this table. The invocation counts pin one-invocation-per-regime: a
-	// revert to per-module loops multiplies the counts, and a dropped
-	// regime subtracts from them.
+	// this table. The invocation counts pin one-invocation-per-regime for
+	// golangci and go vet: a dropped regime subtracts from them, and a
+	// loop re-expanded by make multiplies them. (A shell for-loop prints
+	// its body once under -n, so that shape is caught by the sweep-pattern
+	// assertion below instead.)
 	laneRegimes := map[string]struct {
 		vetInvocations   []string
+		vetRunCount      int
 		golangciRuns     []string
 		golangciRunCount int
 	}{
@@ -353,20 +358,26 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 				"GOOS=windows go vet -tags evenerfuzz",
 				"GOOS=linux go vet -tags evenerfuzz",
 			},
+			// host + GOOS=linux + GOOS=windows
+			vetRunCount: 3,
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle",
 			},
-			golangciRunCount: 2, // the host pass plus the GOOS=linux pass
+			// the host pass plus the GOOS=linux pass
+			golangciRunCount: 2,
 		},
 		"lint-eval": {
 			vetInvocations: []string{
 				"go vet -tags eval",
 				"GOOS=linux go vet -tags eval",
 			},
+			// host + GOOS=linux
+			vetRunCount: 2,
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle",
 			},
-			golangciRunCount: 2, // the host pass plus the GOOS=linux pass
+			// the host pass plus the GOOS=linux pass
+			golangciRunCount: 2,
 		},
 		"lint-golangci": {
 			golangciRuns: []string{
@@ -386,6 +397,9 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 			if !strings.Contains(dryRun, invocation) {
 				t.Errorf("%s lost the invocation %q; the merged lane must run every build regime it covers", lane, invocation)
 			}
+		}
+		if got := strings.Count(dryRun, "go vet -tags"); got != regimes.vetRunCount {
+			t.Errorf("%s runs %d go vet invocations, want %d: one per build regime. A higher count means a per-module loop returned; a lower one means a regime was dropped.", lane, got, regimes.vetRunCount)
 		}
 		if got := strings.Count(dryRun, "golangci-lint run"); got != regimes.golangciRunCount {
 			t.Errorf("%s runs %d golangci-lint invocations, want %d: one per build regime. A higher count means a per-module loop returned; a lower one means a regime was dropped.", lane, got, regimes.golangciRunCount)

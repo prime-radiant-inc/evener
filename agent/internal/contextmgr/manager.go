@@ -127,6 +127,8 @@ type Manager struct {
 	WarnThreshold       float64
 	CheckpointThreshold float64
 	SummarizeThreshold  float64
+	explicitCompactAt   float64
+	thresholdScale      float64
 
 	PreserveRecentTurns int
 
@@ -191,6 +193,14 @@ func (cm *Manager) SetCompactAt(fraction float64) {
 	cm.CheckpointThreshold = fraction
 	cm.WarnThreshold = min(selfCompactNudgeAt, max(0, fraction-nudgeLead))
 	cm.SummarizeThreshold = max(summarizeBackstopAt, fraction)
+}
+
+// SetExplicitCompactAt sets a session-configured compaction fraction
+// (compact_at_percent) and records it so thresholdsFor knows an explicit
+// session percentage was configured.
+func (cm *Manager) SetExplicitCompactAt(fraction float64) {
+	cm.SetCompactAt(fraction)
+	cm.explicitCompactAt = fraction
 }
 
 func (cm *Manager) resultToolName() string {

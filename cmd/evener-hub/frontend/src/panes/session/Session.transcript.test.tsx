@@ -580,7 +580,7 @@ function liveSurfaceThread(): Partial<Thread> {
   };
 }
 
-test("a dormant live session keeps an idle drain in the QueueStrip", async () => {
+test("a dormant live session keeps its queued and draining messages in the pending stack", async () => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
   const fake = connectReadyFakeClient();
@@ -628,9 +628,9 @@ test("a dormant live session keeps an idle drain in the QueueStrip", async () =>
   });
   await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+  await waitFor(() => expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2));
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
   expect(screen.getByTestId("held-steer-announcements")).toBeTruthy();
 });
 
@@ -638,7 +638,7 @@ test("a dormant live session keeps an idle drain in the QueueStrip", async () =>
 // read-only surfaces - the same family the shared-notes surface keys on
 // (humanNoteDrafts.ts). A hold parked on a restart-required session waits
 // with the queue, not as a ghost promising delivery.
-test("a restart-required session renders no held ghost for a seeded hold", async () => {
+test("a restart-required session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -671,9 +671,10 @@ test("a restart-required session renders no held ghost for a seeded hold", async
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
 });
 
 // Stop cancels a locally owned, never-attempted row. It is not a held ghost
@@ -713,7 +714,7 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByTestId("queue-strip")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
   await act(async () => {
     await mutationStorage.enqueueIntent({
       targetRef: "ref_a",
@@ -726,10 +727,10 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
+  await waitFor(() => expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2));
 
   // Stop cancels attempted work, but this never-attempted row stays locally
-  // owned by QueueStrip.
+  // owned by pending stack.
   await act(async () => {
     await mutationStorage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
@@ -738,9 +739,9 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
 
   // Stop keeps the unattempted row under local queue ownership. It was never
   // a held ghost, so there is no delivery/failure announcement to preserve.
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
+  await waitFor(() => expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2));
   expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBeUndefined();
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
 });
 
 test("a dormant session announces held delivery after transcript reflection", async () => {
@@ -771,7 +772,7 @@ test("a dormant session announces held delivery after transcript reflection", as
   );
   await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
   const id = await act(async () => seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true }));
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
 
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -800,7 +801,7 @@ test("a dormant session announces held delivery after transcript reflection", as
   await flushPendingTurnsProjectionForTests();
 
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("delivered"));
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("pending-message-stack")).toBeNull();
   // This delivery adds a real user turn; it does not exercise disappearance
   // of the entire transcript subtree after the final ghost leaves.
 });
@@ -836,7 +837,7 @@ test("a dormant session keeps the held outcome region through final rejected gho
   const announcements = screen.getByTestId("held-steer-announcements");
 
   const id = await act(async () => seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true }));
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
   expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.queryByTestId("empty-state")).toBeNull();
   expect(screen.getByTestId("held-steer-announcements")).toBe(announcements);
@@ -847,9 +848,10 @@ test("a dormant session keeps the held outcome region through final rejected gho
   });
   await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
-  expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
-  expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("no-turns");
+  await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
+  expect(screen.getByTestId("pending-message-row").dataset.state).toBe("refused");
+  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
+  expect(screen.queryByTestId("empty-state")).toBeNull();
   expect(screen.getByTestId("held-steer-announcements")).toBe(announcements);
   expect(announcements.dataset.outcomes).toBe("rejected");
 });
@@ -858,7 +860,7 @@ test("a dormant session keeps the held outcome region through final rejected gho
 // status still reads active/idle can be read-only - a snapshot marked
 // resumeRequired, or a restart-blocking recovery obligation. No ghost, no
 // announcements, no live-edge row while either fence stands.
-test("a resume-required live session renders no held ghost", async () => {
+test("a resume-required live session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -891,12 +893,13 @@ test("a resume-required live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
 });
 
-test("a recovery-fenced live session renders no held ghost", async () => {
+test("a recovery-fenced live session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -935,9 +938,10 @@ test("a recovery-fenced live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(screen.getAllByTestId("pending-message-row")).toHaveLength(2);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
 });
 
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
@@ -955,7 +959,7 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
   await waitFor(() => {
     const row = document.querySelector('[data-row-id="live-edge"]');
     expect(row).not.toBeNull();
-    expect(row!.querySelector("[data-testid='held-steer-stack']")).not.toBeNull();
+    expect(row!.querySelector("[data-testid='pending-message-stack']")).not.toBeNull();
   });
 
   // With the ask dock pending too, both live in the ONE trailing row, dock
@@ -1009,7 +1013,7 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
   await waitFor(() => {
-    const stack = document.querySelector("[data-testid='held-steer-stack']");
+    const stack = document.querySelector("[data-testid='pending-message-stack']");
     expect(stack).not.toBeNull();
     const dock = document.querySelector("[data-ask-response-dock]");
     expect(dock).not.toBeNull();
@@ -1059,7 +1063,7 @@ test("a held steer without an ask still counts in renderedRowCount (the one-row-
     await act(async () => {
       await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
     });
-    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
     const afterSeed = captured.at(-1)?.renderedRowCount;
     expect(afterSeed).toBe((beforeSeed ?? 0) + 1);
   } finally {
@@ -1069,7 +1073,7 @@ test("a held steer without an ask still counts in renderedRowCount (the one-row-
 
 test("heldEpoch bumps on arrival only - never on removal", async () => {
   // Same spy shape as above, capturing options.heldEpoch instead: this is
-  // useHeldSteerEpoch's one end-to-end pin - the epoch Session feeds the
+  // usePendingArrivalEpoch's one end-to-end pin - the epoch Session feeds the
   // scroll coordinator, observed through the options the coordinator
   // actually received.
   const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
@@ -1105,7 +1109,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     await act(async () => {
       await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
     });
-    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
     expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
     // A departure: the daemon acknowledges the steer, and settling that
     // receipt removes the row.
@@ -1114,7 +1118,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
       answerSteer();
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("pending-message-stack")).toBeNull());
     expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
     // ...and never RESETS it either: the last observed value is still the
     // arrival's 1. Math.max alone would let a reset-to-0 on removal slip
@@ -1126,7 +1130,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   }
 });
 
-test("held steering renders only on a live surface: a notLoaded session shows no ghost", async () => {
+test("a notLoaded session keeps its pending row visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { ...liveSurfaceThread(), status: { type: "notLoaded" } }));
 
@@ -1142,7 +1146,8 @@ test("held steering renders only on a live surface: a notLoaded session shows no
     await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
   });
   await flushPendingTurnsProjectionForTests();
-  expect(document.querySelector("[data-row-id='live-edge']")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(screen.getByTestId("pending-message-row")).toBeTruthy();
 });
 
 // The held-steer announcements region follows the ask dock's one mounting rule
@@ -1163,12 +1168,12 @@ test("the held-steer announcements region lives outside the virtual list", async
   await act(async () => {
     await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
   });
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-message-stack")).toBeTruthy());
 
   // The ghost stack itself IS inside the virtual list - it is the live-edge
   // trailing row, scrolling away with the content...
   const list = screen.getByTestId("transcript-virtual-list");
-  expect(list.contains(screen.getByTestId("held-steer-stack"))).toBe(true);
+  expect(list.contains(screen.getByTestId("pending-message-stack"))).toBe(true);
 
   // ...while its one aria-live region stays OUTSIDE the list, so a
   // virtualized remount of the row never re-announces unchanged text.

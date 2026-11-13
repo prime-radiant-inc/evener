@@ -446,20 +446,11 @@ func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) 
 		},
 		metadataErr: sentinel,
 	}
-	var logs []struct {
-		format string
-		args   []any
-	}
-	logf := func(format string, args ...any) {
-		logs = append(logs, struct {
-			format string
-			args   []any
-		}{format: format, args: args})
-	}
+	logs := &logCapture{}
 
 	response, handled, err := listItemTurns(context.Background(), source, appwire.ThreadTurnsListParams{
 		Ref: "codex:metadata-error",
-	}, logf)
+	}, logs.logger())
 	if err != nil {
 		t.Fatalf("listItemTurns: %v", err)
 	}
@@ -470,14 +461,12 @@ func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) 
 	if len(items) != 1 || items[0].ID != "item-00" {
 		t.Fatalf("packed items = %+v, want the valid source item", items)
 	}
-	for _, entry := range logs {
-		for _, arg := range entry.args {
-			if loggedErr, ok := arg.(error); ok && errors.Is(loggedErr, sentinel) {
-				return
-			}
+	for _, entry := range logs.all() {
+		if loggedErr, ok := entry.attrs["err"].(error); ok && errors.Is(loggedErr, sentinel) {
+			return
 		}
 	}
-	t.Fatalf("logger did not receive sentinel error as an argument: %+v", logs)
+	t.Fatalf("logger did not receive sentinel error as the err field: %+v", logs.all())
 }
 
 // metadataErrorRemoteImageRPCSource is a source whose images live on another hub

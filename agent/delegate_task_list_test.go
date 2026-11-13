@@ -107,6 +107,74 @@ func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 	}
 }
 
+// TestDecodeDelegateArgs_TaskListAcceptsDescriptionAndDependsOn pins issue #6189:
+// delegate task_list items accept "description" as an alias for "title" and
+// tolerate "depends_on".
+func TestDecodeDelegateArgs_TaskListAcceptsDescriptionAndDependsOn(t *testing.T) {
+	t.Parallel()
+	a, err := decodeDelegateArgs(map[string]any{
+		"prompt": "brief",
+		"task_list": []any{
+			map[string]any{"description": "inspect code", "prompt": "read it", "depends_on": []any{1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(a.TaskList) != 1 {
+		t.Fatalf("expected 1 task template, got %d", len(a.TaskList))
+	}
+	if a.TaskList[0].Title != "inspect code" {
+		t.Fatalf("title = %q, want %q", a.TaskList[0].Title, "inspect code")
+	}
+}
+
+func TestNormalizeDelegateArgs_TaskListDescriptionAndDependsOn(t *testing.T) {
+	t.Parallel()
+	normalized, err := normalizeDelegateArgs(map[string]any{
+		"prompt": "brief",
+		"task_list": []any{
+			map[string]any{"description": "inspect code", "prompt": "read it", "depends_on": []any{1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizeDelegateArgs: %v", err)
+	}
+	tasks, ok := normalized["task_list"].([]any)
+	if !ok || len(tasks) != 1 {
+		t.Fatalf("normalized task_list = %#v", normalized["task_list"])
+	}
+	taskMap, ok := tasks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("task item = %#v", tasks[0])
+	}
+	if taskMap["title"] != "inspect code" {
+		t.Fatalf("title = %q, want %q", taskMap["title"], "inspect code")
+	}
+	if _, hasDesc := taskMap["description"]; hasDesc {
+		t.Errorf("description should be deleted after aliasing to title: %#v", taskMap)
+	}
+	if _, hasDeps := taskMap["depends_on"]; hasDeps {
+		t.Errorf("depends_on should be stripped from delegate task_list item: %#v", taskMap)
+	}
+}
+
+func TestDecodeDelegateArgs_TaskListWhitespaceTitleWithDescription(t *testing.T) {
+	t.Parallel()
+	a, err := decodeDelegateArgs(map[string]any{
+		"prompt": "brief",
+		"task_list": []any{
+			map[string]any{"title": "   ", "description": "inspect", "prompt": "p"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(a.TaskList) != 1 || a.TaskList[0].Title != "inspect" {
+		t.Fatalf("TaskList = %+v, want Title=inspect", a.TaskList)
+	}
+}
+
 // The parent's task_list is frozen into the delegate descriptor at creation,
 // so launch and every later resume seed the child's task list from it.
 func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {
