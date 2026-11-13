@@ -530,7 +530,7 @@ export function InstanceModelEditor({
             label="Context window"
             value={draft.contextWindow}
             initialValue={initial.contextWindow}
-            placeholder={tokenLimitPlaceholder(detail?.effective.contextWindow, detail?.provenance.ContextWindow)}
+            placeholder={tokenLimitPlaceholder(detail, "contextWindow")}
             error={errors.contextWindow}
             disabled={busy}
             onChange={(contextWindow) => update({ contextWindow })}
@@ -542,7 +542,7 @@ export function InstanceModelEditor({
             label="Max output tokens"
             value={draft.maxOutputTokens}
             initialValue={initial.maxOutputTokens}
-            placeholder={tokenLimitPlaceholder(detail?.effective.maxOutputTokens, detail?.provenance.MaxOutputTokens)}
+            placeholder={tokenLimitPlaceholder(detail, "maxOutputTokens")}
             error={errors.maxOutputTokens}
             disabled={busy}
             onChange={(maxOutputTokens) => update({ maxOutputTokens })}

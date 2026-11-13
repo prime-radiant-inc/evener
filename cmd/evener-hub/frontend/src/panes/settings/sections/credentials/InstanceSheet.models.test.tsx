@@ -495,6 +495,33 @@ describe("per-model summary rows and drill-in editor", () => {
     expect(routingDetails?.hasAttribute("open")).toBe(true);
   });
 
+  test("surfaces alias-inherited config figures in the model editor placeholders", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    // An alias_of row whose target set these figures in its own config row.
+    fake.on("evener/instance/modelGet", () =>
+      modelDetailFixture({
+        effective: { ...modelDetailFixture().effective, contextWindow: 128_000, compactionThreshold: 250_000 },
+        provenance: {
+          ...modelDetailFixture().provenance,
+          ContextWindow: "config",
+          CompactionThreshold: "config",
+        },
+        authored: { aliasOf: "gpt-4o" },
+      }),
+    );
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [entry()], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(<InstanceSheet name="work" {...handlers()} />);
+    await user.click(screen.getByRole("button", { name: "Configure gpt-5.5" }));
+
+    const thresholdInput = (await screen.findByLabelText("Auto-compact threshold")) as HTMLInputElement;
+    expect(thresholdInput.placeholder).toContain("250K");
+    const contextWindowInput = screen.getByLabelText("Context window") as HTMLInputElement;
+    expect(contextWindowInput.placeholder).toContain("128K");
+  });
+
   test("returns to overview on Escape while restoring focus and scrollTop, and closes Sheet on Close button", async () => {
     const user = userEvent.setup();
     const fake = new FakeClient("ready");
