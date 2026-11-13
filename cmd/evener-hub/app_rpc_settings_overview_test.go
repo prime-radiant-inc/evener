@@ -426,6 +426,185 @@ mcp_configs = ["`+mcpConfigFile+`"]
 	}
 }
 
+// TestHubRPCSettingsOverview_MCPDiscoveredReportsLaunchDiagnostics proves a
+// successful launch resolution that dropped an invalid MCP path still
+// explains the drop: a relative global mcp_configs entry disappears from
+// discovery with a resolver diagnostic, and the overview reports that
+// diagnostic alongside the servers that did load instead of silently
+// omitting the file.
+func TestHubRPCSettingsOverview_MCPDiscoveredReportsLaunchDiagnostics(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	const relativeEntry = "relative/mcp.json"
+	goodFile := filepath.Join(t.TempDir(), "good-mcp.json")
+	writeMCPConfigLayer(t, goodFile, `{"mcpServers": {"good-tool": {"command": "true"}}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"),
+		`mcp_configs = ["`+relativeEntry+`", "`+goodFile+`"]
+`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if !strings.Contains(resp.McpDiscovered.Error, relativeEntry) {
+		t.Errorf("McpDiscovered.Error = %q, want the dropped relative mcp_configs entry named", resp.McpDiscovered.Error)
+	}
+	if !strings.Contains(resp.McpDiscovered.Error, "mcp_configs") {
+		t.Errorf("McpDiscovered.Error = %q, want the launch layer's mcp_configs field named", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 1 || resp.McpDiscovered.Servers[0].Name != "good-tool" {
+		t.Fatalf("McpDiscovered.Servers = %+v, want the valid entry's server alongside the diagnostic", resp.McpDiscovered.Servers)
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvRoutesGlobalLayer covers
+// the launch-env overlay's whole reach: env.XDG_CONFIG_HOME in launch.toml
+// changes which global mcp.json a spawned session reads, so the probe must
+// read the same layer the session would — not the hub process's own.
+func TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvRoutesGlobalLayer(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	// Pin the process side so the assertions below can only fail through the
+	// overlay being ignored, whatever the ambient machine exports.
+	t.Setenv("EVENER_NO_USER_SKILLS", "")
+	processXDG := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", processXDG)
+	writeMCPConfigLayer(t, filepath.Join(processXDG, "evener", "mcp.json"), `{"mcpServers": {
+		"process-global": {"command": "true"}
+	}}`)
+
+	launchXDG := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchXDG, "evener", "mcp.json"), `{"mcpServers": {
+		"launch-global": {"command": "true"}
+	}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `env = { XDG_CONFIG_HOME = "`+launchXDG+`" }
+`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if resp.McpDiscovered.Error != "" {
+		t.Errorf("McpDiscovered.Error = %q, want empty", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 1 || resp.McpDiscovered.Servers[0].Name != "launch-global" {
+		t.Fatalf("McpDiscovered.Servers = %+v, want exactly the launch overlay's global layer", resp.McpDiscovered.Servers)
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvCommandExpressions covers
+// the $(command) half of the launch-env overlay: a config file referenced by
+// launch.toml whose command expression reads a variable from that same launch
+// env expands the way a session expands it, without the variable ever
+// reaching the hub process environment.
+func TestHubRPCSettingsOverview_MCPDiscoveredLaunchEnvCommandExpressions(t *testing.T) {
+	if _, err := exec.LookPath("printenv"); err != nil {
+		t.Skipf("`printenv` not found on PATH: %v", err)
+	}
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("`true` not found on PATH: %v", err)
+	}
+	const binVar = "EVENER_TEST_MCP_BIN_4428"
+	mcpConfigFile := filepath.Join(t.TempDir(), "launch-mcp.json")
+	writeMCPConfigLayer(t, mcpConfigFile, `{"mcpServers": {
+		"cmd-tool": {"command": "$(printenv `+binVar+`)"}
+	}}`)
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `env = { `+binVar+` = "true" }
+mcp_configs = ["`+mcpConfigFile+`"]
+`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if resp.McpDiscovered.Error != "" {
+		t.Errorf("McpDiscovered.Error = %q, want empty (the expansion must succeed)", resp.McpDiscovered.Error)
+	}
+	if len(resp.McpDiscovered.Servers) != 1 {
+		t.Fatalf("McpDiscovered.Servers = %+v, want the command-expression server", resp.McpDiscovered.Servers)
+	}
+	server := resp.McpDiscovered.Servers[0]
+	if server.Name != "cmd-tool" || server.Transport != "stdio" || server.Status != "available" {
+		t.Errorf("server = %+v, want {cmd-tool stdio available}", server)
+	}
+	if _, ok := os.LookupEnv(binVar); ok {
+		t.Errorf("discovery leaked launch env %s into the hub process environment", binVar)
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredReportsCredentialEnvDiagnostics
+// proves a launch env key the credential blocklist drops surfaces as a
+// diagnostic: the session never receives it either, so without the resolver's
+// explanation the probe's expansion failure (or the plain absence of the
+// variable) has no visible cause in Settings.
+func TestHubRPCSettingsOverview_MCPDiscoveredReportsCredentialEnvDiagnostics(t *testing.T) {
+	const tokenKey = "MCP_4428_TOKEN" // credential-suffixed: the merge drops it
+	launchRoot := t.TempDir()
+	writeMCPConfigLayer(t, filepath.Join(launchRoot, "launch.toml"), `env = { `+tokenKey+` = "secret" }
+`)
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: launchRoot,
+		MCPDiscoveryDir:  t.TempDir(),
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if !strings.Contains(resp.McpDiscovered.Error, "env."+tokenKey) {
+		t.Errorf("McpDiscovered.Error = %q, want the dropped credential-shaped env key's diagnostic named", resp.McpDiscovered.Error)
+	}
+}
+
+// TestHubRPCSettingsOverview_MCPDiscoveredReportsRepoLayerDiagnostics proves
+// a project launch layer that cannot be read surfaces as a diagnostic: the
+// layer contributes nothing to the merged set, resolution still succeeds, and
+// the probe must say why the list may have shrunk. A directory stands in for
+// any unreadable launch.toml without depending on the test user's permissions.
+func TestHubRPCSettingsOverview_MCPDiscoveredReportsRepoLayerDiagnostics(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".evener", "launch.toml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:             hubcore.NewPastIndex(""),
+		LaunchConfigRoot: t.TempDir(), // no global layer; the repo layer's diagnostic is the only one
+		MCPDiscoveryDir:  repo,
+	})
+
+	if resp.McpDiscovered == nil {
+		t.Fatal("McpDiscovered = nil, want populated")
+	}
+	if !strings.Contains(resp.McpDiscovered.Error, ".evener/launch.toml") {
+		t.Errorf("McpDiscovered.Error = %q, want the repo layer's read failure named", resp.McpDiscovered.Error)
+	}
+}
+
 // TestHubRPCSettingsOverview_MCPDiscoveredErrorOnMalformedSessionConfig pins
 // the error contract: an explicitly configured session-local file that fails to
 // parse surfaces as Error, the same failure a session's initMCP returns.

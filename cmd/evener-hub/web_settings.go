@@ -80,7 +80,8 @@ func fileSizeHuman(path string) string {
 }
 
 // defaultMCPConfigPath is the conventional XDG location for the global
-// MCP config (~/.config/evener/mcp.json), matching agent.globalMCPConfigPath.
+// MCP config (~/.config/evener/mcp.json), matching mcpconfig's global path
+// resolution for the process environment.
 func defaultMCPConfigPath() string {
 	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), configUserHomeDir), "mcp.json")
 }

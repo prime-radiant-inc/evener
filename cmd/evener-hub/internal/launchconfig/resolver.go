@@ -146,7 +146,7 @@ func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
 func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
 	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
-		return &RepoStatus{Path: filepath.Join(cwd, ".evener", "launch.toml"), Trust: TrustUntrusted}, Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
+		return &RepoStatus{Path: filepath.Join(cwd, ".evener", "launch.toml"), Trust: TrustUntrusted}, Layer{}, []Diagnostic{{Layer: LayerRepo, Field: RepoLaunchConfigFile, Message: err.Error()}}
 	}
 	return loadRepoLayerFS(afero.NewOsFs(), cwd, stateRoot, project)
 }
@@ -159,14 +159,14 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 			return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, nil
 		}
 		return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".evener/launch.toml",
+			Layer: LayerRepo, Field: RepoLaunchConfigFile,
 			Message: fmt.Sprintf("read: %v", err),
 		}}
 	}
 	hash, err := CanonicalHashTOML(data)
 	if err != nil {
 		return &RepoStatus{Path: repoPath, Trust: TrustUntrusted, Preview: string(data)}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".evener/launch.toml",
+			Layer: LayerRepo, Field: RepoLaunchConfigFile,
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
@@ -194,7 +194,7 @@ func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, an
 	var layer Layer
 	metadata, err := decode(data, &layer)
 	if err != nil {
-		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
+		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: RepoLaunchConfigFile, Message: err.Error()}}
 	}
 	var diags []Diagnostic
 	for _, key := range metadata.Undecoded() {

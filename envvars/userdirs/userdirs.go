@@ -26,6 +26,35 @@ func ConfigRoot(xdgConfigHome string, userHomeDir func() (string, error)) string
 	return filepath.Join(base, "evener")
 }
 
+// HomeFromLookup resolves the home directory from a supplied environment
+// lookup using os.UserHomeDir's GOOS rules: USERPROFILE on Windows, home on
+// Plan 9, HOME elsewhere, and the /sdcard and / constants os.UserHomeDir
+// returns on Android and iOS. Empty means unresolvable. Callers that hold an
+// environment that is not the process's — a launch layer's overlay — resolve
+// the home exactly where a consumer spawned under that environment would.
+//
+// It deliberately has no HOMEDRIVE/HOMEPATH arm: os.UserHomeDir has none, and
+// the hub's old arm for those was the Windows drift #1012 removed.
+func HomeFromLookup(goos string, lookup func(string) (string, bool)) string {
+	name := envvars.Home.Name
+	switch goos {
+	case "windows":
+		name = envvars.UserProfile.Name
+	case "plan9":
+		name = "home"
+	}
+	if home, ok := lookup(name); ok && home != "" {
+		return home
+	}
+	switch goos {
+	case "android":
+		return "/sdcard"
+	case "ios":
+		return "/"
+	}
+	return ""
+}
+
 // ErrNoStateHome reports that neither XDG_STATE_HOME nor a home directory is
 // available, so there is no honest place for Evener's state. Callers surface
 // it rather than writing under a temporary or relative directory.

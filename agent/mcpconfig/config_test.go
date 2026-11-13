@@ -3,9 +3,12 @@ package mcpconfig
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -224,7 +227,7 @@ func TestExpandEnvVars(t *testing.T) {
 func TestExpandEnvVarsCommandFailure(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		return "", errors.New("command exited with status 1: session expired")
 	}
 	_, err := expandEnvVars("$(get-gateway-token)")
@@ -242,7 +245,7 @@ func TestExpandEnvVars_CommandInConfigLoading(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted", nil }
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
@@ -432,7 +435,7 @@ func TestDiscoverRefusesProjectLayerCommandExpressions(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted", nil }
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -472,7 +475,7 @@ func TestDiscoverRefusesProjectLayerCommandWithSyntaxError(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted", nil }
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -520,7 +523,7 @@ func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
 
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string) (string, error) { return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { return "minted", nil }
 	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("LoadFile (trusted): %v", err)
@@ -756,5 +759,135 @@ func TestDiscoverMCPConfigs_HidesUserGlobalWhenNoUserSkills(t *testing.T) {
 	}
 	if _, ok := byName["project-tool"]; !ok {
 		t.Errorf("project MCP layer must remain; got %v", configs)
+	}
+}
+
+// writeGlobalMCPConfigAt writes the user-global mcp.json under configRoot
+// (the userdirs layout: <configRoot>/evener/mcp.json) with one server.
+func writeGlobalMCPConfigAt(t *testing.T, configRoot, name, command string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(configRoot, "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"mcpServers": {%q: {"command": %q}}}`, name, command)
+	if err := os.WriteFile(filepath.Join(configRoot, "evener", "mcp.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The settings probe must discover the global layer a spawned session would
+// read: a launch config whose env sets XDG_CONFIG_HOME redirects which global
+// mcp.json the session loads, so discovery under that overlay must follow it
+// rather than the hub process's own variable.
+func TestDiscoverWithLaunchEnv_OverlayXDGRoutesGlobalLayer(t *testing.T) {
+	// Pin the process side so the failure below can only come from the overlay
+	// being ignored, whatever the ambient machine exports.
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	processRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", processRoot)
+	writeGlobalMCPConfigAt(t, processRoot, "process-global", "p-tool")
+
+	launchRoot := t.TempDir()
+	writeGlobalMCPConfigAt(t, launchRoot, "launch-global", "l-tool")
+
+	configs, warnings, err := DiscoverWithLaunchEnv(nil, nil, nil,
+		map[string]string{"XDG_CONFIG_HOME": launchRoot})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 1 || configs[0].Name != "launch-global" {
+		t.Fatalf("configs = %+v, want exactly the launch overlay's global server", configs)
+	}
+}
+
+// With XDG_CONFIG_HOME unset everywhere, the overlay's HOME decides the
+// global path the same way it does for a spawned session: the probe must
+// read the launch overlay's home, not the hub process's.
+func TestDiscoverWithLaunchEnv_OverlayHOMERoutesGlobalLayer(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		// Home resolution consults USERPROFILE on windows and home on plan9
+		// (userdirs.HomeFromLookup), so this HOME-pinning scenario only holds
+		// on the unix hosts it exercises.
+		t.Skipf("home routing consults a different variable on %s", runtime.GOOS)
+	}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	processHome := t.TempDir()
+	t.Setenv("HOME", processHome)
+	writeGlobalMCPConfigAt(t, filepath.Join(processHome, ".config"), "process-global", "p-tool")
+
+	launchHome := t.TempDir()
+	writeGlobalMCPConfigAt(t, filepath.Join(launchHome, ".config"), "launch-global", "l-tool")
+
+	configs, warnings, err := DiscoverWithLaunchEnv(nil, nil, nil,
+		map[string]string{"HOME": launchHome})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 1 || configs[0].Name != "launch-global" {
+		t.Fatalf("configs = %+v, want exactly the launch overlay's global server", configs)
+	}
+}
+
+// The overlay also controls the hermetic-eval suppression: a session spawned
+// with EVENER_NO_USER_SKILLS=1 in its launch env drops the global layer, so
+// discovery under that overlay must drop it too.
+func TestDiscoverWithLaunchEnv_OverlayNoUserSkillsHidesGlobalLayer(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	processRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", processRoot)
+	writeGlobalMCPConfigAt(t, processRoot, "process-global", "p-tool")
+
+	configs, warnings, err := DiscoverWithLaunchEnv(nil, nil, nil,
+		map[string]string{envvars.EVENERNoUserSkills.Name: "1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("configs = %+v, want the global layer suppressed by the launch overlay", configs)
+	}
+}
+
+// A $(command) expression must run under the launch overlay's environment,
+// the way it does for a spawned session: with the overlay supplying
+// MCP_TEST_LAUNCH_BIN_4428, the probe reports the same expansion a session
+// performs instead of executing the command with the hub process
+// environment, where the variable is unset and the expansion fails.
+func TestDiscoverWithLaunchEnv_CommandExpressionsRunUnderOverlayEnv(t *testing.T) {
+	if _, err := exec.LookPath("printenv"); err != nil {
+		t.Skipf("`printenv` not found on PATH: %v", err)
+	}
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const binVar = "MCP_TEST_LAUNCH_BIN_4428"
+	os.Unsetenv(binVar)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch-mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers": {
+		"cmd-tool": {"command": "$(printenv `+binVar+`)"}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, warnings, err := DiscoverWithLaunchEnv(nil, []string{path}, nil,
+		map[string]string{binVar: "/usr/bin/true"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(configs) != 1 || configs[0].Command != "/usr/bin/true" {
+		t.Fatalf("configs = %+v, want the command expression expanded from the overlay env", configs)
 	}
 }

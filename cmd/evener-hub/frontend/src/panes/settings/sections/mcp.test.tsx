@@ -606,6 +606,42 @@ test("a discovered server's transport sits apart from a long name, and the full 
   await act(() => fetch.value);
 });
 
+// The overview store is a fetch-once cache shared with the other Settings
+// sections, so a REOPEN of this section must re-probe rather than replay the
+// cache: an edit made through any other surface while this section was away
+// would otherwise leave the discovered list stale until an app reload.
+test("reopening the section with populated overview data re-probes instead of replaying the cache", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  const fetchFn = vi.fn(async () => {});
+  const refreshFn = vi.fn(async () => {});
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } }, fetch: fetchFn, refresh: refreshFn })}
+    />,
+  );
+  expect(refreshFn).toHaveBeenCalledOnce();
+  expect(fetchFn).not.toHaveBeenCalled();
+  await launchLayerLoaded();
+});
+
+// The hub fans every successful launch setLayer out as evener/launch/updated,
+// including the ones this section did not make - the Session-defaults pane
+// edits the same global layer's mcps and env. The pane re-probes on that
+// broadcast, debounced with every other launch-backed pane.
+test("a launch-config update from another surface re-probes the discovered list", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await launchLayerLoaded();
+  expect(refreshFn).not.toHaveBeenCalled();
+  act(() => {
+    fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+  });
+  await waitFor(() => expect(refreshFn).toHaveBeenCalledOnce());
+});
+
 // The launch-layer store translates a failed read while it still has its type:
 // a hub's own explanation survives, and the client's connection-state wiring
 // text never reaches the screen.
@@ -621,4 +657,117 @@ test.each([
   await waitFor(() => expect(extensionsStore.getState().launchLayerError).not.toBeNull());
   expect(document.body.textContent).toContain(friendlyErrorMessage(err));
   expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
+// A successful local MCP edit changes the set a spawned session discovers, so
+// the section must ask the overview store to re-probe: fetch() is a fetch-once
+// cache that no-ops once data is populated, so without refresh() the
+// discovered list keeps stale rows and diagnostics after every edit.
+test("adding a config file refreshes the discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "/etc/mcp.json", valid: true }));
+  fake.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await launchLayerLoaded();
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard("/etc/mcp.json");
+  await user.keyboard("{Enter}");
+  const addButtons = screen.getAllByRole("button", { name: "Add" });
+  await user.click(addButtons[0]!);
+  await waitFor(() => expect(refreshFn).toHaveBeenCalledOnce());
+});
+
+test("removing a config file refreshes the discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
+  fake.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await screen.findByText("/etc/mcp.json");
+  await user.click(screen.getByRole("button", { name: "Remove /etc/mcp.json" }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(refreshFn).toHaveBeenCalledOnce());
+});
+
+test("adding an inline server refreshes the discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/search-mcp", valid: true }));
+  fake.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await launchLayerLoaded();
+  await addInlineServer(user, "search /usr/bin/search-mcp --port 9000");
+  await waitFor(() => expect(refreshFn).toHaveBeenCalledOnce());
+});
+
+test("removing an inline server refreshes the discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({
+    mcpConfigs: [],
+    mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
+  }));
+  fake.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await screen.findByText("search → /usr/bin/search-mcp");
+  await user.click(screen.getByRole("button", { name: "Remove search" }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(refreshFn).toHaveBeenCalledOnce());
+});
+
+// Only a successful save re-probes: a refused save changed nothing a session
+// would discover, and re-probing would report an unrelated failure as if the
+// edit caused it. The dialog closing after the toast is the ordering witness:
+// a buggy implementation would refresh before the dialog unmounts.
+test("a failed save does not refresh the discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({
+    mcpConfigs: [],
+    mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
+  }));
+  fake.on("evener/launch/setLayer", () => {
+    throw new WireError("remove denied", -1);
+  });
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await screen.findByText("search → /usr/bin/search-mcp");
+  await user.click(screen.getByRole("button", { name: "Remove search" }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Remove failed: remove denied"));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(refreshFn).not.toHaveBeenCalled();
+});
+
+// The discovered block describes THIS hub only, so an edit to a remote host's
+// own launch layer must not re-probe this hub's set.
+test("a remote host's edit does not re-probe this hub's discovered list", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") {
+      return { mcpConfigs: [], mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }] };
+    }
+    if (forwarded.method === "evener/launch/setLayer") {
+      return { effective: {}, layers: {}, provenance: {} };
+    }
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+  const refreshFn = vi.fn(async () => {});
+  render(<McpSection host="beta" useOverviewStore={overviewHook({ refresh: refreshFn })} />);
+  await screen.findByText("search → /usr/bin/search-mcp");
+  await user.click(screen.getByRole("button", { name: "Remove search" }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(refreshFn).not.toHaveBeenCalled();
 });
