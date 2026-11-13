@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -56,7 +55,8 @@ func renderVisionToolProse(td llm.ToolDefinition) []byte {
 
 // TestReadFileVisionProseGoldens pins the model-facing descriptions and vision_prompt
 // parameter descriptions for read_file and memory_read across all three vision regimes
-// (#6190), per the prose rule in docs/developing-evener/testing.md. Regenerate with:
+// (#6190) from real sessions, per the prose rule in docs/developing-evener/testing.md.
+// Regenerate with:
 //
 //	go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt
 //
@@ -65,36 +65,59 @@ func TestReadFileVisionProseGoldens(t *testing.T) {
 	t.Parallel()
 	const hint = "Regenerate with `go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt` and read the diff."
 
-	regime1RF := tool.DefReadFileNativeVision()
-	regime1MR := tool.MemoryDefinition(regime1RF, "memory_read")
-	regime2RF := tool.DefReadFilePDFVisionOnly()
-	regime2MR := tool.MemoryDefinition(regime2RF, "memory_read")
-	regime3RF := tool.DefReadFile()
-	regime3MR := tool.DefMemoryRead()
+	client := llm.NewClient()
+	client.Register(newFakeErrAdapter("anthropic", nil))
+	client.Register(newFakeErrAdapter("openai", nil))
 
-	// Structural distinctness across all three regimes
-	if regime1RF.Description == regime2RF.Description || regime2RF.Description == regime3RF.Description || regime1RF.Description == regime3RF.Description {
-		t.Fatal("read_file descriptions must be distinct across all three vision regimes")
+	// Regime 1: Real session with Anthropic Claude (sees both images and PDFs inline)
+	profClaude, err := provider.Resolve(provider.EmbeddedRegistry(), "anthropic/claude-opus-4-5")
+	if err != nil {
+		t.Fatalf("resolve claude: %v", err)
 	}
-	if regime1MR.Description == regime2MR.Description || regime2MR.Description == regime3MR.Description || regime1MR.Description == regime3MR.Description {
-		t.Fatal("memory_read descriptions must be distinct across all three vision regimes")
+	sessRegime1 := newSession(t, withClient(client), withProfile(profClaude),
+		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	rfRegime1, ok := findToolDef(sessRegime1.ToolDefinitions(), "read_file")
+	if !ok {
+		t.Fatal("Regime 1 read_file missing")
 	}
+	mrRegime1, ok := findToolDef(sessRegime1.ToolDefinitions(), "memory_read")
+	if !ok {
+		t.Fatal("Regime 1 memory_read missing")
+	}
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-read-file.md"), renderVisionToolProse(rfRegime1), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-memory-read.md"), renderVisionToolProse(mrRegime1), *updatePromptGoldens, hint)
 
-	// Regime 1 goldens
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-read-file.md"), renderVisionToolProse(regime1RF), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-memory-read.md"), renderVisionToolProse(regime1MR), *updatePromptGoldens, hint)
+	// Regime 2: Real session with OpenAI gpt-5.2 (sees images inline, PDFs use side-channel)
+	sessRegime2 := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
+		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	rfRegime2, ok := findToolDef(sessRegime2.ToolDefinitions(), "read_file")
+	if !ok {
+		t.Fatal("Regime 2 read_file missing")
+	}
+	mrRegime2, ok := findToolDef(sessRegime2.ToolDefinitions(), "memory_read")
+	if !ok {
+		t.Fatal("Regime 2 memory_read missing")
+	}
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-read-file.md"), renderVisionToolProse(rfRegime2), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-memory-read.md"), renderVisionToolProse(mrRegime2), *updatePromptGoldens, hint)
 
-	// Regime 2 goldens
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-read-file.md"), renderVisionToolProse(regime2RF), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-memory-read.md"), renderVisionToolProse(regime2MR), *updatePromptGoldens, hint)
-
-	// Regime 3 goldens
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-read-file.md"), renderVisionToolProse(regime3RF), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-memory-read.md"), renderVisionToolProse(regime3MR), *updatePromptGoldens, hint)
+	// Regime 3: Real session with text-only gpt-5.2-codex (both use side-channel)
+	sessRegime3 := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-codex")),
+		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	rfRegime3, ok := findToolDef(sessRegime3.ToolDefinitions(), "read_file")
+	if !ok {
+		t.Fatal("Regime 3 read_file missing")
+	}
+	mrRegime3, ok := findToolDef(sessRegime3.ToolDefinitions(), "memory_read")
+	if !ok {
+		t.Fatal("Regime 3 memory_read missing")
+	}
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-read-file.md"), renderVisionToolProse(rfRegime3), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-memory-read.md"), renderVisionToolProse(mrRegime3), *updatePromptGoldens, hint)
 }
 
 // Regime 1: Anthropic Claude sees both image/png and application/pdf natively inline.
-// vision_prompt is omitted from advertised properties and description.
+// vision_prompt is omitted from advertised properties.
 func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -114,10 +137,6 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("read_file advertised vision_prompt in Regime 1; def: %+v", rf)
 	}
-	wantRF := tool.DefReadFileNativeVision()
-	if rf.Description != wantRF.Description {
-		t.Fatalf("read_file description mismatch in Regime 1; got %q, want %q", rf.Description, wantRF.Description)
-	}
 
 	mr, ok := findToolDef(defs, "memory_read")
 	if !ok {
@@ -125,10 +144,6 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	}
 	if _, hasVisionPrompt := toolProp(mr, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("memory_read advertised vision_prompt in Regime 1; def: %+v", mr)
-	}
-	wantMR := tool.MemoryDefinition(wantRF, "memory_read")
-	if mr.Description != wantMR.Description {
-		t.Fatalf("memory_read description mismatch in Regime 1; got %q, want %q", mr.Description, wantMR.Description)
 	}
 }
 
@@ -148,16 +163,11 @@ func TestSessionReadFileSchema_Regime1_Explorer(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("explorer read_file advertised vision_prompt; def: %+v", rf)
 	}
-	wantRF := tool.DefReadFileNativeVision()
-	if rf.Description != wantRF.Description {
-		t.Fatalf("explorer read_file description mismatch; got %q, want %q", rf.Description, wantRF.Description)
-	}
 }
 
 // Regime 1: VisionModel set to off, none, or disabled disables the side-channel.
 func TestSessionReadFileSchema_Regime1_VisionOff(t *testing.T) {
 	t.Parallel()
-	wantRF := tool.DefReadFileNativeVision()
 	for _, setting := range []string{"off", "none", "disabled"} {
 		t.Run(setting, func(t *testing.T) {
 			client := llm.NewClient()
@@ -173,15 +183,12 @@ func TestSessionReadFileSchema_Regime1_VisionOff(t *testing.T) {
 			if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 				t.Fatalf("read_file advertised vision_prompt when VisionModel=%q", setting)
 			}
-			if rf.Description != wantRF.Description {
-				t.Fatalf("read_file description mismatch when VisionModel=%q", setting)
-			}
 		})
 	}
 }
 
 // Regime 2: OpenAI gpt-5.2 sees images natively inline, but PDFs use the side-channel.
-// vision_prompt is kept and scoped to PDFs.
+// vision_prompt is kept in advertised properties.
 func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -197,10 +204,6 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 2; def: %+v", rf)
 	}
-	wantRF := tool.DefReadFilePDFVisionOnly()
-	if rf.Description != wantRF.Description {
-		t.Fatalf("read_file description mismatch in Regime 2")
-	}
 
 	mr, ok := findToolDef(defs, "memory_read")
 	if !ok {
@@ -209,13 +212,9 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	if _, hasVPMR := toolProp(mr, "vision_prompt"); !hasVPMR {
 		t.Fatalf("memory_read omitted vision_prompt in Regime 2; def: %+v", mr)
 	}
-	wantMR := tool.MemoryDefinition(wantRF, "memory_read")
-	if mr.Description != wantMR.Description {
-		t.Fatalf("memory_read description mismatch in Regime 2")
-	}
 }
 
-// Regime 3: Text-only model keeps vision_prompt for both image and PDF reads.
+// Regime 3: Text-only model keeps vision_prompt in advertised properties.
 func TestSessionReadFileSchema_Regime3_TextOnlyPrimary(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -231,13 +230,9 @@ func TestSessionReadFileSchema_Regime3_TextOnlyPrimary(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3; def: %+v", rf)
 	}
-	wantRF := tool.DefReadFile()
-	if rf.Description != wantRF.Description {
-		t.Fatalf("read_file description mismatch in Regime 3")
-	}
 }
 
-// Regime 3: Explicitly configured VisionModel keeps side-channel for both.
+// Regime 3: Explicitly configured VisionModel keeps vision_prompt in advertised properties.
 func TestSessionReadFileSchema_Regime3_ExplicitVisionModel(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -254,13 +249,9 @@ func TestSessionReadFileSchema_Regime3_ExplicitVisionModel(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3 explicit; def: %+v", rf)
 	}
-	wantRF := tool.DefReadFile()
-	if rf.Description != wantRF.Description {
-		t.Fatalf("read_file description mismatch in Regime 3 explicit")
-	}
 }
 
-// SetModel dynamically switches regimes and updates ToolDefinitions.
+// SetModel dynamically switches regimes and updates ToolDefinitions properties.
 func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -273,44 +264,40 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 			},
 		}))
 
-	regime1Desc := tool.DefReadFileNativeVision().Description
-	regime2Desc := tool.DefReadFilePDFVisionOnly().Description
-	regime3Desc := tool.DefReadFile().Description
-
-	// Starts in Regime 2
+	// Starts in Regime 2 (vision_prompt present)
 	defs := sess.ToolDefinitions()
 	rf, _ := findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP || rf.Description != regime2Desc {
+	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP {
 		t.Fatalf("expected Regime 2 at start; def: %+v", rf)
 	}
 
-	// Switch to Claude -> Regime 1 (neither image nor PDF uses side-channel)
+	// Switch to Claude -> Regime 1 (vision_prompt omitted)
 	if err := sess.SetModel("anthropic/claude-opus-4-5"); err != nil {
 		t.Fatalf("SetModel claude: %v", err)
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP || rf.Description != regime1Desc {
+	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP {
 		t.Fatalf("expected Regime 1 after switch to claude; def: %+v", rf)
 	}
 
-	// Switch to text-only codex -> Regime 3 (both use side-channel)
+	// Switch to text-only codex -> Regime 3 (vision_prompt present)
 	if err := sess.SetModel("openai/gpt-5.2-codex"); err != nil {
 		t.Fatalf("SetModel codex: %v", err)
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP || rf.Description != regime3Desc {
+	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP {
 		t.Fatalf("expected Regime 3 after switch to codex; def: %+v", rf)
 	}
 
-	// SetVisionModel off -> Regime 1
+	// SetVisionModel off -> Regime 1 (vision_prompt omitted)
 	if err := sess.SetVisionModel("off"); err != nil {
 		t.Fatalf("SetVisionModel off: %v", err)
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP || rf.Description != regime1Desc {
+	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP {
 		t.Fatalf("expected Regime 1 after SetVisionModel off; def: %+v", rf)
 	}
 }

@@ -281,13 +281,14 @@ func (s *Session) rebuildToolDefsCache() {
 					_ = s.reg.Register(*regTool)
 				}
 			}
-			if td.Name == "shell" {
+			switch td.Name {
+			case "shell":
 				td = s.sessionShellDefinition()
-			} else if td.Name == "read_file" {
+			case "read_file":
 				td = s.sessionReadFileDefinition()
-			} else if td.Name == "memory_read" {
+			case "memory_read":
 				td = tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read")
-			} else {
+			default:
 				// Registration builds descriptions that name the session's result
 				// tool; the profile's copy names the default.
 				td.Description = s.reg.Get(td.Name).Definition.Description
@@ -319,16 +320,15 @@ func (s *Session) rebuildToolDefsCache() {
 		if td.Name == "update_goal" && !s.hasGoalConfigured() {
 			continue
 		}
-		if td.Name == "shell" {
+		switch td.Name {
+		case "shell":
 			// A profile that omits shell still gets the environment-aware
 			// schema here rather than the registry's fully capable copy
 			// (issue #4422).
 			td = s.sessionShellDefinition()
-		}
-		if td.Name == "read_file" {
+		case "read_file":
 			td = s.sessionReadFileDefinition()
-		}
-		if td.Name == "memory_read" {
+		case "memory_read":
 			td = tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read")
 		}
 		if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
