@@ -3937,6 +3937,38 @@ describe("opening at the unseen reply", () => {
     expect(result.current.pillVisible).toBe(true);
   });
 
+  test("a landing waits for a transcript whose recorded bodies are still being restored", () => {
+    // The restore's first paint is the evicted snapshot: empty turns that
+    // still render the divider, in a transcript short enough to read as its
+    // own end. Settling there would follow the end once the bodies arrive.
+    setLocalOpening("ref_a", true);
+    let offset: number | undefined = 0;
+    const { el, result, set, rerender, scrollToIndex } = mountOpening({
+      measureUnseenLanding: () => offset,
+      metrics: AT_BOTTOM,
+    });
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+
+    // The bodies restore: the landing is placed against the real geometry,
+    // and the reader is not carried to the end.
+    act(() => setLocalOpening("ref_a", false));
+    set(SCROLLED_AWAY);
+    offset = 300;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(300);
+    expect(result.current.isFollowingBottom()).toBe(false);
+
+    scrollToIndex.mockClear();
+    rerender({
+      r: "ref_a",
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      openAtRow: 1,
+    });
+    expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
+  });
+
   test("a landing measured above the port's top never lands before the start", () => {
     let offset: number | undefined;
     const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });

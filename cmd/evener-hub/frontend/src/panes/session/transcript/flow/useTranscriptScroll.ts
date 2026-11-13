@@ -670,6 +670,11 @@ export function useTranscriptScroll({
       if (!el) return;
 
       if (pending.openingRow !== undefined) {
+        // A recorded transcript still restoring its bodies paints empty turns
+        // first: the divider renders in them and the short sizer reads as its
+        // own end. The landing belongs to the restored geometry, and the
+        // measurements the restore produces bring it back here.
+        if (openingPendingRef.current) return;
         // The row's own scroll request is still bringing it into the window;
         // every row that holds the boundary turn renders the divider, so the
         // measurement that commits the row finds it.
