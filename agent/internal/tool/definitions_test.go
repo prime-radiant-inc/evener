@@ -714,6 +714,9 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	if !strings.Contains(read.Description, "fixed 16 KiB") {
 		t.Errorf("read description does not explain fixed expansion pages: %q", read.Description)
 	}
+	if req, ok := read.Parameters["required"].([]string); ok && slices.Contains(req, "transcript_ref") {
+		t.Errorf("read_transcript must leave transcript_ref optional, got required: %v", req)
+	}
 
 	outputMatch := rp["output_match"].(map[string]any)
 	outputMatchTypes, ok := outputMatch["type"].([]any)
