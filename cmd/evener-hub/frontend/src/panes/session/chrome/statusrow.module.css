@@ -21,6 +21,19 @@
   overflow: hidden;
 }
 
+/* Where the triggers keep their compact desktop size, the model and effort
+ * read as one quiet --field pill: a single control-shaped object describing
+ * where the prompt goes, set back from the verbs beside it. Touch layouts
+ * leave the ground off - their triggers grow to the tap floor, and a pill
+ * that tall would outweigh the Send button it sits next to. */
+@media (min-width: 900px) and (not (any-pointer: coarse)) {
+  .identity {
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-pill);
+    background: var(--field);
+  }
+}
+
 /* The composer's inline mount packs its facts against the far end, beside
  * the verbs. The footer row keeps its leading edge. The auto margin spends
  * the free space before the identity, so the whole run - model, effort,
@@ -165,7 +178,7 @@
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 

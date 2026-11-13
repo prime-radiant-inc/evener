@@ -188,18 +188,18 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// The user's own words sit on a paper slip (inset surface + one hairline)
-// hugging the content. Corners are uniformly 4px under the editorial scale,
-// so no distinct tail renders. Serif prose stays; only the containment
-// returns.
+// The user's own words sit on a paper slip (structural surface, one hairline,
+// the card lift) hugging the content. The corner toward the avatar is the
+// tight one; the other three share one rounder corner. Serif prose stays.
 test("the user reading surface is a paper slip hugging its content column", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--surface-inset\)/);
+  expect(body![1]).toMatch(/background:\s*var\(--surface-1\)/);
   expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
+  expect(body![1]).toMatch(/box-shadow:\s*var\(--shadow-card\)/);
   expect(body![1]).toMatch(
-    /border-radius:\s*var\(--radius-control\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
+    /border-radius:\s*var\(--slip-tail\)\s*var\(--slip-round\)\s*var\(--slip-round\)\s*var\(--slip-round\)/,
   );
   expect(body![1]).toMatch(/width:\s*fit-content/);
   expect(body![1]).toMatch(/max-width:\s*100%/);

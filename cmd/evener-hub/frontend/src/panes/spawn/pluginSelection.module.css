@@ -31,6 +31,12 @@
   padding: var(--space-1) 0;
 }
 
+/* Before the preview lands there is no disclosure to wrap the summary, so it
+ * supplies the row inset the disclosure's own summary would have given it. */
+.summary[role="status"] {
+  padding: var(--space-2);
+}
+
 .summary strong {
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
@@ -84,7 +90,7 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(var(--space-1) / 2);
 }
 
 .source,

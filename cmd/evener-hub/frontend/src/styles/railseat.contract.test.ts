@@ -79,17 +79,23 @@ test("the gutter pull exists only above the breakpoint, never unconditionally", 
   expect(seatUngated).not.toMatch(/margin-left:\s*calc\(-1/);
 });
 
-test("ToolRow's kind icon composes the shared seat; its slot owns the shared pull", () => {
+test("ToolRow's kind icon composes the shared seat; its slot pulls into the row's own seat column", () => {
   expect(toolcallitem).toMatch(
     /\.rowIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  // No restated geometry: the seat's declarations belong to the shared module.
-  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("");
+  // No restated geometry: the seat's box belongs to the shared module. The one
+  // override is its strength - a tool row's glyph sits on its own --field
+  // ground inside a card, which does the receding the rail's half opacity does.
+  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("opacity: 1;");
   // The pull rides the row's own flex item (the icon's slot, which is also the
-  // failure badge's positioning context), so the gutter still has one owner
-  // and the icon cannot seat differently from the notification head's glyph.
+  // failure badge's positioning context). It is one --speaker-gutter, the
+  // column the seat's geometry sums to, and it is NOT the breakpoint-gated
+  // rail pull: a tool row reserves its seat column in its own padding, so the
+  // column exists at every width.
+  expect(toolcallitem).toMatch(/\.rowIconSlot\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
+  expect(toolcallitem).not.toMatch(/\.rowIconSlot\s*\{[^}]*composes:\s*gutterPull/);
   expect(toolcallitem).toMatch(
-    /\.rowIconSlot\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
+    /\.call\s*\{[^}]*padding-left:\s*calc\(var\(--tool-card-inset\) \+ var\(--speaker-gutter\)\)/,
   );
   // The one local rule that is genuinely ToolRow's own: on intent-bearing rows
   // the first line is the rationale, whose line-height is --line-height-title

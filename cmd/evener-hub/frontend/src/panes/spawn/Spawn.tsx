@@ -1,6 +1,8 @@
-// Session creation keeps the project directory above the prompt and the
-// less frequently changed launch settings below it. The directory picker
-// commits once, so browsing does not churn directory-dependent configuration.
+// Session creation leads with the task: the question, then the prompt card.
+// The working directory and effective access summarize beneath it, and the
+// less frequently changed launch settings follow as disclosure rows. The
+// directory picker commits once, so browsing does not churn
+// directory-dependent configuration.
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
@@ -2842,7 +2844,7 @@ function SpawnForm({
         )}
 
         {/* The modelRequired note lives with the card's own model trigger
-            below: it explains why Start is disabled, so it sits beside the
+            above: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && !providerRequired && (
           <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>

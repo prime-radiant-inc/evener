@@ -1,24 +1,18 @@
-/* One tool call. The vertical rhythm is the associativity cue (Jesse's
- * review call): a call's own lines sit TIGHT (the row's row-gap below) and
- * separate calls sit LOOSE (this padding, 2x8px between calls) - before
- * this, both gaps measured the same 8px and a run of calls read as one
- * undifferentiated list. The intent-only row below is the one exception:
- * at the "intent" level every call is a single rationale line, so the loose
- * step reads as one airy list instead of a grouping cue, and that shape
- * halves the step (Jesse's density call, 2026-09-20). */
+/* One tool call: a row of a tool card (turnblock.module.css's
+ * [data-tool-card], the intent group's and the folded run's own cards). The
+ * row owns its whole inset, including the seat column its kind icon sits in,
+ * so it lays out the same wherever a card holds it and at every width: the
+ * icon's slot pulls one --speaker-gutter left into the padding reserved here
+ * (see .rowIconSlot), and the row's text lands one gutter in from the card's
+ * inset. A call's own lines sit TIGHT (the row's row-gap below); separate
+ * calls are separated by the card's hairline divider plus this padding. */
 .call {
+  --tool-card-inset: var(--space-3);
+  --tool-card-row-pad: var(--space-2);
   display: flex;
   flex-direction: column;
-  padding: var(--rhythm-item) 0;
-}
-
-/* The intent-only presentation (ToolCallItem's data-intent-only: one
- * rationale line, no summary line, no status line, no body). Halving the
- * padding halves the gap between collapsed rows; opening any disclosure
- * drops the attribute and restores the full rhythm above, so expansion is
- * the visual boundary between rows with more to show and rows without. */
-.call[data-intent-only="true"] {
-  padding: var(--space-1) 0;
+  padding: var(--tool-card-row-pad) var(--tool-card-inset);
+  padding-left: calc(var(--tool-card-inset) + var(--speaker-gutter));
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
@@ -385,6 +379,10 @@
  * cross off the icon's corner. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
+  /* Full strength: the seat's own --field ground (see .rowIconSlot::before)
+   * is what sets the kind glyph back from the text, so the rail's ambient
+   * half-opacity would only fade it into that ground. */
+  opacity: 1;
 }
 
 /* The kind icon's positioning context: the row's first flex item, carrying
@@ -392,17 +390,40 @@
  * absolutely pinned to its bottom-right corner. A clean row renders the slot
  * with only the seat inside it, so success costs no extra column. */
 .rowIconSlot {
-  composes: gutterPull from "../../../styles/railseat.module.css";
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
    * to the GLYPH's corner rather than the seat's. Two spellings of one number
    * (this stylesheet and the component constant) are unavoidable across the
    * CSS/TS boundary; toolRowGrammar.test.ts pins them equal. */
   --tool-row-icon-size: 14px;
+  /* The painted seat: a rounded square a little larger than the avatar
+   * column the slot's layout box keeps. */
+  --tool-seat-size: 26px;
   position: relative;
   display: inline-flex;
   flex: none;
   align-self: flex-start;
+  /* The pull into the seat column .call reserves. Unconditional, unlike the
+   * rail's breakpoint-gated gutterPull: the column belongs to the row itself,
+   * not to the turn's gutter, so it exists at every width. */
+  margin-left: calc(-1 * var(--speaker-gutter));
+}
+
+/* The seat's ground: a --field rounded square centred on the glyph. Painted,
+ * not laid out - the slot's layout box stays one line tall so the icon pins
+ * to the row's first line and a second line sits tight beneath the first.
+ * The overhang above and below a one-line row fits inside .call's padding. */
+.rowIconSlot::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: calc((var(--speaker-avatar-size) - var(--tool-seat-size)) / 2);
+  width: var(--tool-seat-size);
+  height: var(--tool-seat-size);
+  border-radius: var(--radius-control);
+  background: var(--field);
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
 /* The failure cross's overlay seat on the icon: pinned to the ICON's
@@ -703,12 +724,23 @@
   z-index: var(--z-raised);
 }
 
-/* Flat evidence wrapper; native renderers own useful output boundaries.
+/* The evidence band: an inset ground running edge to edge inside the card
+ * under the row it belongs to, closed off by one hairline above. It bleeds
+ * through .call's own padding to the card's edges and takes the card's lower
+ * corners when it is the last thing in it, so the band never draws a card of
+ * its own inside the card. Native renderers keep their own output boundaries.
  * Size is deliberately not declared: the Markdown widget composes with its
  * host (1em fallback), so a renderer's text inherits the ambient body step
  * (see widgets/markdown). */
 .body {
-  margin-top: var(--space-1);
+  margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
+    calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
+  padding: var(--tool-card-inset);
+  border-top: 1px solid var(--edge);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+  background: var(--surface-inset);
+  min-width: 0;
 }
 
 @media (prefers-reduced-motion: no-preference) {

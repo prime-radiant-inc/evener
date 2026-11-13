@@ -1,18 +1,21 @@
-/* A folded run of settled tool calls (critique R9, toolRuns.ts). The
- * collapsed row is deliberately quieter than the tool rows it stands in for:
- * it is a count and one name, at the same UI step and the same half-step
- * padding a collapsed single tool call takes (the intent-only rhythm,
- * toolcallitem.module.css), so a turn's vertical rhythm does not change
- * when a run folds. */
+/* A folded run of settled tool calls (critique R9, toolRuns.ts): one row of
+ * the tool card it sits in (turnblock.module.css's [data-tool-card] draws the
+ * card on this element). The collapsed row is deliberately quieter than the
+ * tool rows it stands in for: a count and one name, at the UI step, with the
+ * same inset a tool row takes so its edge lines up with their seats. Open, it
+ * is the header of the rows it stands for, which follow inside the same card
+ * behind hairline dividers. The card's corners clip the last row's evidence
+ * band, so nothing inside draws a second card edge. */
 .group {
   min-width: 0;
+  overflow: clip;
 }
 
 .summary {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) 0;
+  padding: var(--space-2) var(--space-3);
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -22,24 +25,19 @@
   list-style: none;
 }
 
-/* An OPEN run is a header again - the rows it stands for render beneath it -
- * so it keeps the full item rhythm. */
-.group[open] > .summary {
-  padding: var(--rhythm-item) 0;
-}
-
 .summary::-webkit-details-marker {
   display: none;
 }
 
 .summary:hover {
-  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
-  border-radius: var(--radius-control);
+  background: var(--hover-1);
 }
 
+/* Inset: the card clips at its own edge, and the summary spans it. */
 .summary:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
+  border-radius: var(--radius-control);
 }
 
 /* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
@@ -81,4 +79,10 @@
 .body {
   display: flex;
   flex-direction: column;
+}
+
+/* Every row of an open run, the first included, sits under a hairline: the
+ * first divides it from the header above. */
+.body > * {
+  border-top: 1px solid var(--edge);
 }

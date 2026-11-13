@@ -105,6 +105,26 @@
   }
 }
 
+/* The group's actions share one tool card, the same surface a run of tool
+ * rows takes inside a turn (turnblock.module.css's [data-tool-card]): rounded,
+ * hairline dividers between rows, the card's corners clipping the last row's
+ * evidence band. A member whose descriptor suppresses its row renders an
+ * empty wrapper, which must not draw a divider of its own. */
+.intentGroupCard {
+  display: flex;
+  flex-direction: column;
+  margin-block: var(--rhythm-item);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+  overflow: clip;
+}
+
+.intentGroupCard > :not(:empty) ~ :not(:empty) {
+  border-top: 1px solid var(--edge);
+}
+
 .coldStart {
   width: 100%;
   max-width: var(--session-measure);

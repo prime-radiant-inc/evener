@@ -15,6 +15,8 @@ const CLASS = {
   nav: requireClass(styles.nav, "settings.module.css", "nav"),
   filterRow: requireClass(styles.filterRow, "settings.module.css", "filterRow"),
   clusterHeader: requireClass(styles.clusterHeader, "settings.module.css", "clusterHeader"),
+  clusterRows: requireClass(styles.clusterRows, "settings.module.css", "clusterRows"),
+  navItem: requireClass(styles.navItem, "settings.module.css", "navItem"),
   link: requireClass(styles.link, "settings.module.css", "link"),
   linkActive: requireClass(styles.linkActive, "settings.module.css", "linkActive"),
   linkChevron: requireClass(styles.linkChevron, "settings.module.css", "linkChevron"),
@@ -30,7 +32,7 @@ function NavLink({
   onNavigate: (id: string) => void;
 }) {
   return (
-    <div className={active ? CLASS.linkActive : undefined}>
+    <div className={active ? `${CLASS.navItem} ${CLASS.linkActive}` : CLASS.navItem}>
       <ListRow
         variant="plain"
         aria-current={active ? "page" : undefined}
@@ -86,9 +88,11 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
             <div className={CLASS.clusterHeader} data-section={cluster.id}>
               <Eyebrow>{cluster.label}</Eyebrow>
             </div>
-            {sections.map((section) => (
-              <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
-            ))}
+            <div className={CLASS.clusterRows}>
+              {sections.map((section) => (
+                <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
+              ))}
+            </div>
           </div>
         );
       })}

@@ -51,10 +51,10 @@
   font-family: var(--ask-tab-font, revert);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
-  background: var(--surface-0);
+  background: var(--surface-1);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
   overflow-wrap: anywhere;
 }
 
@@ -64,6 +64,7 @@
 .tab[aria-selected="true"] {
   color: var(--ink-hi);
   border-color: var(--accent);
+  background: var(--accent-bg);
 }
 
 .tabCheck {

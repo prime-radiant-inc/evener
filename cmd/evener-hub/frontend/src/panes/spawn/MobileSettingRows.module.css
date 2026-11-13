@@ -12,7 +12,6 @@
   border-bottom: 0;
 }
 
-
 .rowButton,
 .readOnly {
   display: flex;
@@ -22,7 +21,6 @@
   gap: var(--space-2);
   box-sizing: border-box;
   padding: var(--space-3) var(--space-4);
-  border: 0;
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
@@ -30,7 +28,10 @@
   text-align: left;
 }
 
+/* The border reset is the button's alone: a read-only row is the row element
+ * itself, and keeps the hairline that separates it from the next row. */
 .rowButton {
+  border: 0;
   cursor: pointer;
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }

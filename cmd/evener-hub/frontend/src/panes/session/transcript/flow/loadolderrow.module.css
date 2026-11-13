@@ -9,9 +9,7 @@
   background: var(--surface-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-pill);
-  box-shadow:
-    0 1px 3px var(--shadow-color),
-    0 8px 24px var(--shadow-color);
+  box-shadow: var(--shadow-raised);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-ui);
 }

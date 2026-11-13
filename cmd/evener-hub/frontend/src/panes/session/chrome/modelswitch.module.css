@@ -15,7 +15,7 @@
   max-width: 100%;
   padding: var(--space-1);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   background: transparent;
   cursor: pointer;
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);

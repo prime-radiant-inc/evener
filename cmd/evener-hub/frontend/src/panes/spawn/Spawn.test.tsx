@@ -70,8 +70,9 @@ test("the cold-start spawn pane carries the chord hints when no session is open"
 
 // --- the page's shape ------------------------------------------------------
 //
-// Prompt card first, taking the page's slack; ONE configuration row beneath it
-// (working directory, model, effort); harness in Advanced options.
+// Prompt card first, taking the page's slack; the working-directory and
+// access summaries beneath it; model and effort in the card's own control
+// row; harness in Advanced options.
 
 test("the desktop directory trigger announces the confirmed path", async () => {
   const user = setupUser();
@@ -88,14 +89,16 @@ test("the desktop directory trigger announces the confirmed path", async () => {
 // split is CSS-only), so one render covers both. The mobile row order is the
 // Treatment A list plus session-only Plugins. Model AND effort left it when
 // the card took the job.
-test("the directory and git info sit above the prompt; model and effort live in the card", async () => {
+test("the prompt card leads and the directory follows it; model and effort live in the card", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
-  expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The task is the page's first control and the directory summary comes
+  // after it, in DOM order, so keyboard focus follows the same path.
+  expect(card.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // Below-card model/effort fields are gone: the desktop field wrapper and the
   // bordered Effort select no longer render.
   expect(screen.queryByTestId("spawn-desktop-model")).toBeNull();

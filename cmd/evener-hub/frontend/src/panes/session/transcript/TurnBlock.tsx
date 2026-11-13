@@ -177,24 +177,26 @@ export function ProjectedIntentGroup({
           summary={`${entries.length} action${entries.length === 1 ? "" : "s"}`}
         >
           <div className={transcriptStyles.intentGroupItems}>
-            {entries.map((entry) => (
-              <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
-                <ToolCallItem
-                  item={entry.item}
-                  turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
-                  live={entry.item.status === "inProgress"}
-                  sessionRef={sessionRef}
-                  projectedSummary={!entry.item.description?.trim() ? entry.rationale : undefined}
-                  renderContext={renderContext ?? context}
-                  thread={thread}
-                  threadFingerprint={threadFingerprintForItem(
-                    entry.item,
-                    thread,
-                    toolRendererFor(entry.item.toolName ?? "").summarySuffix?.(entry.item, thread),
-                  )}
-                />
-              </div>
-            ))}
+            <div className={transcriptStyles.intentGroupCard}>
+              {entries.map((entry) => (
+                <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+                  <ToolCallItem
+                    item={entry.item}
+                    turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
+                    live={entry.item.status === "inProgress"}
+                    sessionRef={sessionRef}
+                    projectedSummary={!entry.item.description?.trim() ? entry.rationale : undefined}
+                    renderContext={renderContext ?? context}
+                    thread={thread}
+                    threadFingerprint={threadFingerprintForItem(
+                      entry.item,
+                      thread,
+                      toolRendererFor(entry.item.toolName ?? "").summarySuffix?.(entry.item, thread),
+                    )}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         </Disclosure>
         {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
@@ -222,6 +224,41 @@ function projectedForDirectTurn(turn: TurnModel): ProjectedTurn {
 
 function isProjectedTurn(turn: ProjectedTurn | TurnModel): turn is ProjectedTurn {
   return "source" in turn && "entries" in turn && "visibleItems" in turn;
+}
+
+/** Where a row sits in a tool card: a run of adjacent tool rows reads as ONE
+ * rounded surface with hairline dividers (turnblock.module.css), so each
+ * row's wrapper says whether it opens the card, continues it, or closes it. */
+type ToolCardPosition = "only" | "first" | "middle" | "last";
+
+/** Whether a laid-out entry renders a tool row: a folded run, or a tool call
+ * whose descriptor does not suppress its whole row. A suppressed call renders
+ * nothing, so it must neither join a card nor split one. */
+function rendersToolRow(entry: ProjectedEntry | ToolRun): boolean | "skip" {
+  if (entry.kind === "run") return true;
+  if (entry.kind === "intent") return false;
+  if (entry.item.type !== "commandExecution") return false;
+  return toolRendererFor(entry.item.toolName ?? "").suppress?.(entry.item) ? "skip" : true;
+}
+
+/** Each laid-out entry's position in its tool card, or undefined for a row
+ * that is not a tool row. */
+function toolCardPositions(laidOut: readonly (ProjectedEntry | ToolRun)[]): (ToolCardPosition | undefined)[] {
+  const member = laidOut.map(rendersToolRow);
+  const neighbour = (from: number, step: 1 | -1): boolean => {
+    for (let index = from + step; index >= 0 && index < member.length; index += step) {
+      if (member[index] !== "skip") return member[index] === true;
+    }
+    return false;
+  };
+  return member.map((is, index) => {
+    if (is !== true) return undefined;
+    const before = neighbour(index, -1);
+    const after = neighbour(index, 1);
+    if (before && after) return "middle";
+    if (before) return "last";
+    return after ? "first" : "only";
+  });
 }
 
 export function TurnBlock({
@@ -262,6 +299,7 @@ export function TurnBlock({
   // status (the projector reads the same literal), so a turn still working
   // keeps every call visible as it arrives.
   const laidOut = foldTurnEntries(projectedTurn);
+  const cardPositions = toolCardPositions(laidOut);
   const renderedEntries: ReactNode[] = [];
   for (let index = 0; index < laidOut.length; index += 1) {
     const entry = laidOut[index];
@@ -272,6 +310,7 @@ export function TurnBlock({
           key={entry.id}
           className={CLASS.runContent}
           data-testid="run-content"
+          data-tool-card={cardPositions[index]}
           // The whole run is one position for scroll coordination, open or
           // closed - see ToolRunGroup's header.
           {...runAnchorFor(entry, viewAnchorIndex)}
@@ -344,7 +383,13 @@ export function TurnBlock({
       );
     } else {
       renderedEntries.push(
-        <div key={displayKey} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
+        <div
+          key={displayKey}
+          className={CLASS.runContent}
+          data-testid="run-content"
+          data-tool-card={cardPositions[index]}
+          {...viewAnchorFor(entry)}
+        >
           {renderedItem}
         </div>,
       );

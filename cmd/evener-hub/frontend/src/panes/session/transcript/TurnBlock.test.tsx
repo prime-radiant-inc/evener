@@ -926,6 +926,43 @@ test("a lone commandExecution renders inside a run-content wrapper", () => {
   expectInsideRunContent(screen.getByTestId("tool-call-item"));
 });
 
+// A run of adjacent tool rows is one card: each row's wrapper says whether it
+// opens, continues or closes the card, and a row that is not a tool row ends
+// the run, so the stylesheet can round only the card's outer corners.
+function toolCardPositionsOf(container: HTMLElement): (string | null)[] {
+  return Array.from(container.querySelectorAll('[data-testid="run-content"]')).map((wrapper) =>
+    wrapper.getAttribute("data-tool-card"),
+  );
+}
+
+test("adjacent tool rows share one card; a row between them splits it into two", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+    item({ id: "c", type: "commandExecution", toolName: "tb-card-c", output: "three" }),
+    item({ id: "note", type: "someFutureWireType", text: "between" }),
+    item({ id: "d", type: "commandExecution", toolName: "tb-card-d", output: "four" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(toolCardPositionsOf(container)).toEqual(["first", "middle", "last", null, "only"]);
+});
+
+test("a tool call whose row is suppressed neither joins a card nor splits the one around it", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({
+      id: "view",
+      type: "commandExecution",
+      toolName: "task_list",
+      argumentsJSON: JSON.stringify({ action: "view" }),
+    }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(2);
+  expect(toolCardPositionsOf(container)).toEqual(["first", null, "last"]);
+});
+
 test("an unknown future item type defaults to run content", () => {
   const items = [item({ id: "x", type: "someFutureWireType", text: "mystery" })];
   render(<TurnBlock turn={turn(items)} />);

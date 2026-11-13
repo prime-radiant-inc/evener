@@ -276,7 +276,7 @@ export function MarketplacesSection({
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
           <li>
-            <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one below." />
+            <EmptyState size="compact" reason="empty" title="No marketplaces yet. Add one below." />
           </li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (
           <li>

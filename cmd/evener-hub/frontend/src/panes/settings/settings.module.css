@@ -9,7 +9,11 @@
   flex: none;
   flex-direction: column;
   gap: var(--space-1);
-  width: 200px;
+  box-sizing: border-box;
+  width: 208px;
+  /* The scroll port clips at its padding edge: this inset is the room the
+   * selected row's ring and the filter's focus ring are drawn in. */
+  padding-inline: var(--space-1);
   overflow-y: auto;
 }
 
@@ -17,12 +21,28 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-bottom: var(--space-2);
-  padding: var(--space-1);
+  padding-block: var(--space-1);
 }
 
 .clusterHeader {
   margin-top: var(--space-3);
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* A cluster's rows. On desktop they stack with a hair of air between the
+ * pills; the phone block below turns the stack into one grouped surface. */
+.clusterRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* One nav row, in the rail row's language: a rounded pill whose hover wash
+ * is the ListRow's own, and whose selected state lifts onto --surface-1.
+ * position: relative anchors the phone drill-in chevron to the row's edge. */
+.navItem {
+  position: relative;
+  border-radius: var(--radius-control);
 }
 
 .link {
@@ -30,25 +50,22 @@
   width: 100%;
 }
 
-/* FIX 3a: var(--accent) is the raw hue (meant for glyphs/borders, not text -
- * see tokens.css's own "-ink companions" comment) - on --accent-bg's own pale
- * tint it read at borderline/failing contrast in the light theme, close
- * enough to the neutral grey .link:hover wash (--hover-1) that a real user
- * testing this read the selected item as barely-there next to a plain
- * grey-background link (FIX 3b, below). --accent-ink is the AA-derived
- * text form of the same hue, the same substitution toast.module.css already
- * makes for text sitting on this exact --accent-bg fill.
- */
+/* The selected row is a raised --surface-1 pill in semibold ink, the same
+ * selected treatment the session rail uses. The hairline ring keeps it
+ * distinct from a hovered row's --hover-1 wash in the dark theme, where the
+ * two fills sit close together. */
 .linkActive {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
-  font-weight: var(--font-weight-medium);
-  border-inline-start: 1px solid var(--accent);
+  background: var(--surface-1);
+  box-shadow:
+    0 0 0 1px var(--edge),
+    var(--shadow-card);
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
 }
 
 .linkActive .link {
-  color: var(--accent-ink);
-  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
 }
 
 .content {
@@ -91,6 +108,26 @@
     display: none;
   }
 
+  /* Each cluster is one grouped list: a rounded --surface-1 surface with a
+   * hairline between rows. */
+  .clusterRows {
+    gap: 0;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-pane);
+    background: var(--surface-1);
+    box-shadow: var(--shadow-card);
+  }
+
+  .navItem {
+    padding: var(--space-1);
+  }
+
+  .navItem + .navItem {
+    border-top: 1px solid var(--edge);
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+
   .link {
     display: flex;
     align-items: center;
@@ -99,15 +136,23 @@
     min-height: var(--tap-min);
   }
 
+  /* The drill-in chevron sits at the row's trailing edge, not beside the
+   * label: it is anchored to the row, and passes pointer events through to
+   * the row's button beneath it. */
   .linkChevron {
     display: inline-flex;
-    color: var(--ink-mid);
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: var(--space-3);
+    align-items: center;
+    color: var(--ink-low);
+    pointer-events: none;
   }
 
   .filterRow {
     position: sticky;
     top: 0;
     z-index: var(--z-sticky-bar);
-    background: var(--surface-1);
+    background: var(--surface-0);
   }
 }

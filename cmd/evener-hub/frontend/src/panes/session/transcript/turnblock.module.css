@@ -36,3 +36,48 @@
     padding-left: var(--speaker-gutter);
   }
 }
+
+/* The tool card: a run of adjacent tool rows reads as ONE rounded surface
+ * with hairline dividers, so a burst of calls is a single object in the
+ * conversation rather than a column of loose lines. TurnBlock marks each tool
+ * row's wrapper with its place in the run (data-tool-card); the row's own
+ * root (a tool call or a folded run) carries the surface, so the card starts
+ * at the content edge - under the speaker's name - at every width. One card
+ * holds the rows and their evidence: nothing inside it draws a second card
+ * edge (see toolcallitem.module.css's .body). */
+.runContent[data-tool-card] > * {
+  background: var(--surface-1);
+  border-inline: 1px solid var(--edge);
+}
+
+.runContent[data-tool-card="middle"] > *,
+.runContent[data-tool-card="last"] > * {
+  border-top: 1px solid var(--edge);
+}
+
+.runContent[data-tool-card="first"] > *,
+.runContent[data-tool-card="only"] > * {
+  border-top: 1px solid var(--edge);
+  border-top-left-radius: var(--radius-pane);
+  border-top-right-radius: var(--radius-pane);
+}
+
+.runContent[data-tool-card="last"] > *,
+.runContent[data-tool-card="only"] > * {
+  border-bottom: 1px solid var(--edge);
+  border-bottom-left-radius: var(--radius-pane);
+  border-bottom-right-radius: var(--radius-pane);
+  box-shadow: var(--shadow-card);
+}
+
+/* The card keeps one item step clear of the prose around it; rows inside it
+ * are separated by their dividers alone. */
+.runContent[data-tool-card="first"],
+.runContent[data-tool-card="only"] {
+  padding-top: var(--rhythm-item);
+}
+
+.runContent[data-tool-card="last"],
+.runContent[data-tool-card="only"] {
+  padding-bottom: var(--rhythm-item);
+}

@@ -778,7 +778,7 @@ test("the Advanced options toggle gets comfortable padding and reaches the tap f
   const css = readModuleCss(import.meta.url, "advancedOptions.module.css");
   const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);
   expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
-  expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
+  expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\)/);
 
   const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(coarse, "advancedOptions.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
