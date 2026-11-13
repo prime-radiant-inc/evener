@@ -190,8 +190,12 @@ func interruptedAnnouncement() apptranscript.NoticeAnnouncement {
 func warningAnnouncement(source, title, hint, code, message string) apptranscript.NoticeAnnouncement {
 	info := diagnostic.FromFields(source, title, hint, message)
 	announcement := apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindWarning, Description: info.Title, Text: message}
+	rawSource := source
+	if rawSource == "" {
+		rawSource = string(info.Source)
+	}
 	fields := map[string]string{
-		"source": string(info.Source),
+		"source": rawSource,
 		"title":  info.Title,
 		"hint":   info.Hint,
 	}

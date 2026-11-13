@@ -257,14 +257,16 @@ export interface AcceptedModelSwitch {
   model: string;
   previousModelProvider: string;
   previousModel: string;
+  previousInstanceId?: string;
+  previousRejectionNotice: number;
 }
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   // A successful thread/model/set is immediately useful UI state even when the
   // daemon queues it behind an active turn. It stays shared across every pane
-  // showing the ref until the authoritative model changes or the daemon emits
-  // its sourced rejection notice.
+  // showing the ref until the authoritative model changes or a live or hydrated
+  // daemon rejection notice supersedes the one present when the pick was made.
   acceptedModelSwitches: ReadonlyMap<string, AcceptedModelSwitch>;
   mutationWriteStalled: boolean;
   // Refs whose durable reconcile failed for a reason other than storage: the
@@ -623,6 +625,28 @@ function invalidateAcceptedModelSwitch(ref: string): void {
 function modelSwitchRejectionRef(n: AnyNotification): string | undefined {
   if (n.method !== "overlay/upserted") return undefined;
   return warningNoticeSource(n.params.item.item) === "model_switch" ? n.params.ref : undefined;
+}
+
+function latestModelSwitchRejection(model: ThreadModel | undefined): number {
+  let latest = -1;
+  for (const item of Object.values(model?.overlay ?? {})) {
+    if (warningNoticeSource(item.item) !== "model_switch") continue;
+    const match = /^notice:(\d+)$/.exec(item.key);
+    if (match) latest = Math.max(latest, Number(match[1]));
+  }
+  return latest;
+}
+
+function invalidatesAcceptedModelSwitch(model: ThreadModel, accepted: AcceptedModelSwitch): boolean {
+  if (model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel) return true;
+  const instanceId = threadInstanceID(model);
+  if (
+    accepted.previousInstanceId !== undefined &&
+    instanceId !== undefined &&
+    instanceId !== accepted.previousInstanceId
+  )
+    return true;
+  return latestModelSwitchRejection(model) > accepted.previousRejectionNotice;
 }
 
 function invalidateGoalResponseFallback(ref: string): void {
@@ -1548,6 +1572,18 @@ function putThreadModels(
   if (watchedModel) {
     putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
     patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+  }
+  const accepted = state.acceptedModelSwitches.get(ref);
+  if (
+    accepted &&
+    ((threadModel && invalidatesAcceptedModelSwitch(threadModel, accepted)) ||
+      (watchedModel && invalidatesAcceptedModelSwitch(watchedModel, accepted)))
+  ) {
+    const requests = modelSwitchRequests.get(ref);
+    if (requests) requests.settledThrough = requests.issued;
+    const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
+    acceptedModelSwitches.delete(ref);
+    patch.acceptedModelSwitches = acceptedModelSwitches;
   }
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
@@ -8461,6 +8497,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     modelSwitchRequests.set(ref, requests);
     const sequence = ++requests.issued;
     const previous = trackedThreadModel(ref);
+    const previousRejectionNotice = latestModelSwitchRejection(previous);
     await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
     if (sequence <= requests.settledThrough) return;
     requests.settledThrough = sequence;
@@ -8471,6 +8508,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         model,
         previousModelProvider: previous?.modelProvider ?? "",
         previousModel: previous?.model ?? "",
+        previousInstanceId: threadInstanceID(previous),
+        previousRejectionNotice,
       });
       return { acceptedModelSwitches };
     });

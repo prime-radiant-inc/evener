@@ -239,7 +239,7 @@ func budgetUsed(b *Budget) int {
 
 func TestAWarningNoticeKeepsItsTitleMessageHintAndSource(t *testing.T) {
 	o := newOverlay()
-	item := upserted(t, one(t, o.Event(events.New(events.WarningData{Message: "context nearly full", Source: "hook", Title: "Context", Hint: "compact soon"}))))
+	item := upserted(t, one(t, o.Event(events.New(events.WarningData{Message: "context nearly full", Source: "model_switch", Title: "Context", Hint: "compact soon"}))))
 	if item.Item.Description != "Context" || item.Item.Text != "context nearly full" {
 		t.Fatalf("warning = %q / %q, want its title and message", item.Item.Description, item.Item.Text)
 	}
@@ -247,7 +247,7 @@ func TestAWarningNoticeKeepsItsTitleMessageHintAndSource(t *testing.T) {
 	if err := json.Unmarshal(item.Item.Raw, &raw); err != nil {
 		t.Fatalf("warning Raw is not JSON: %v", err)
 	}
-	if raw["warning"]["hint"] != "compact soon" || raw["warning"]["source"] != "hook" || raw["warning"]["title"] != "Context" {
+	if raw["warning"]["hint"] != "compact soon" || raw["warning"]["source"] != "model_switch" || raw["warning"]["title"] != "Context" {
 		t.Fatalf("warning Raw = %v, want its source, title and hint", raw)
 	}
 }

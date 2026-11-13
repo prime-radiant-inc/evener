@@ -1,13 +1,18 @@
-import type { ModelListResponse, ThreadModel } from "@evener/appwire-client";
+import type { ModelListResponse, OverlayItem, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import {
+  acquireBackgroundThread,
+  putThreadModel,
+  resetThreadsStoreForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
-import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ModelSwitch } from "./ModelSwitch";
@@ -114,21 +119,26 @@ function emitModelSwitchRejection(fake: ReturnType<typeof connectReadyFakeClient
     params: {
       threadId: "thr_a",
       ref: "ref_a",
-      item: {
-        key: "notice:1",
-        kind: "notice",
-        turnId: "turn_1",
-        item: {
-          type: "systemMessage",
-          id: "notice:1",
-          turnId: "turn_1",
-          text: "The queued model switch was refused.",
-          eventKind: "warning",
-          raw: { warning: { source: "model_switch" } },
-        },
-      },
+      item: modelSwitchRejectionNotice(1),
     },
   });
+}
+
+function modelSwitchRejectionNotice(sequence: number): OverlayItem {
+  const key = `notice:${sequence}`;
+  return {
+    key,
+    kind: "notice",
+    turnId: "turn_1",
+    item: {
+      type: "systemMessage",
+      id: key,
+      turnId: "turn_1",
+      text: "The queued model switch was refused.",
+      eventKind: "warning",
+      raw: { warning: { source: "model_switch" } },
+    },
+  };
 }
 
 test("shows the current model label alongside a Change-model trigger", () => {
@@ -373,6 +383,47 @@ test("a deferred rejection that arrives before the set response keeps the author
   });
 
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+test("reconnect hydration clears an accepted model when thread/read contains a newer deferred rejection", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+  const oldRejection = modelSwitchRejectionNotice(0);
+  let overlay = [oldRejection];
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", { id: "thr_a", modelProvider: "anthropic/claude-sonnet-4-5" }),
+    overlay,
+  }));
+  const model = testModel({
+    status: { type: "active" },
+    activeTurnId: "turn_1",
+    overlay: { [oldRejection.key]: oldRejection },
+  });
+  putThreadModel("ref_a", model);
+  const lease = acquireBackgroundThread("ref_a");
+  await lease.ready;
+
+  try {
+    render(<ModelSwitch sessionRef="ref_a" model={model} />);
+    await pickModel(user, "gpt", /gpt-5\.5/i);
+    await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+    overlay = [oldRejection, modelSwitchRejectionNotice(1)];
+    const readsBeforeReconnect = fake.calls.filter((call) => call.method === "thread/read").length;
+    act(() => {
+      fake.emitStateChange("reconnecting");
+      fake.emitReady();
+    });
+
+    await waitFor(() => {
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(readsBeforeReconnect);
+      expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+    });
+  } finally {
+    await lease.release();
+  }
 });
 
 // A cold exited session takes the SAME wire call as a live one: the hub resumes
