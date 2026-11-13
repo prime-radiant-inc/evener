@@ -80,17 +80,12 @@ func TestDescribeImage_StillDescribesPDFsWhenSessionModelSeesImages(t *testing.T
 	}
 }
 
-// A generated description is steering text every later serving model can
-// read; skipping it is safe only while every model that might serve sees the
-// bytes natively. A model_fallbacks entry that cannot (a text-only row) must
-// keep the descriptions coming even when the primary is vision-capable.
-func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T) {
+// Under Jesse's ruling on #6190, when the active primary model sees media inline
+// and VisionModel == "", model_fallbacks entries (including text-only rows) do NOT
+// trigger preventive side-channel calls.
+func TestDescribeImage_FallbackThatCannotSeeImagesDoesNotPreventNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("session-described")}, nil
-		},
-	})
+	openai := newFakeErrAdapter("openai", nil)
 	// The session's client must answer from the same (embedded) registry the
 	// profile resolves on, the one-registry shape production wires.
 	client := llm.NewClient()
@@ -99,11 +94,32 @@ func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-codex"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("native-vision result = %+v, want success with no description despite text-only fallback", result)
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel fired %d calls, want 0 when active primary sees images inline", len(openai.Requests()))
+	}
+}
+
+// When the active primary model is text-only, the side-channel runs.
+func TestDescribeImage_TextOnlyPrimaryModelRunsSideChannel(t *testing.T) {
+	t.Parallel()
+	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("session-described")}, nil
+		},
+	})
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-codex")))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "session-described" {
-		t.Fatalf("fallback-chain result = %+v, want the side-channel description for the text-only fallback", result)
+		t.Fatalf("text-only primary result = %+v, want side-channel description", result)
 	}
 	if len(openai.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want the description the fallback needs", len(openai.Requests()))
+		t.Fatalf("side-channel calls = %d, want 1 for text-only primary", len(openai.Requests()))
 	}
 }
 
@@ -385,11 +401,28 @@ func TestDescribeImage_PDFRouteFailureRetriesOnADocumentCapableSessionModel(t *t
 	}
 }
 
-// An unknown same-provider fallback resolves to a synthesized row with no
-// input modalities of its own, so it conservatively keeps the side-channel:
-// the chain check cannot treat the named model as vision-capable when the
-// catalog says nothing about it.
-func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
+// An unknown fallback does not prevent the native skip when the active primary
+// model sees media inline and VisionModel is unset (#6190).
+func TestDescribeImage_UncataloguedFallbackDoesNotPreventNativeSkip(t *testing.T) {
+	t.Parallel()
+	openai := newFakeErrAdapter("openai", nil)
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
+		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-not-in-catalog"}}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("uncatalogued-fallback result = %+v, want native skip with no description", result)
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(openai.Requests()))
+	}
+}
+
+// When the active primary model is uncatalogued, it does not qualify for native vision
+// and the side-channel runs.
+func TestDescribeImage_UncataloguedPrimaryModelRunsSideChannel(t *testing.T) {
 	t.Parallel()
 	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
@@ -398,12 +431,11 @@ func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
 	})
 	client := llm.NewClient()
 	client.Register(openai)
-	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
-		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-not-in-catalog"}}))
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-not-in-catalog")))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("uncatalogued-fallback result = %+v, want the side-channel description", result)
+		t.Fatalf("uncatalogued-primary result = %+v, want side-channel description", result)
 	}
 	if len(openai.Requests()) != 1 {
 		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
@@ -428,20 +460,16 @@ func TestDescribeImage_UnroutableRouteBlindSessionModelReportsUnavailable(t *tes
 	}
 }
 
-// An entry the resolver cannot answer right now may serve later — the round
-// runner re-resolves every entry on each failing round — so an error at
-// decision time must keep the descriptions flowing: an image-stripping
-// fallback that recovers would otherwise inherit history holding neither the
-// image bytes nor their description.
-func TestDescribeImage_UnresolvableFallbackKeepsTheSideChannel(t *testing.T) {
+// Under Jesse's ruling on #6190, when the active primary model sees media inline
+// and VisionModel is unset, fallbacks (even unresolvable ones) do not trigger
+// preventive side-channel calls.
+func TestDescribeImage_UnresolvableFallbackDoesNotPreventNativeSkip(t *testing.T) {
 	t.Parallel()
-	openai := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	})
+	openai := newFakeErrAdapter("openai", nil)
+	client := llm.NewClient()
+	client.Register(openai)
 	var resolves atomic.Int32
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{
 			ModelFallbacks: []string{"ghostprov/ghost-model"},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
@@ -455,11 +483,11 @@ func TestDescribeImage_UnresolvableFallbackKeepsTheSideChannel(t *testing.T) {
 		}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("unresolvable-fallback result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("unresolvable-fallback result = %+v, want native skip with no description", result)
 	}
-	if len(openai.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(openai.Requests()))
 	}
 }
 
@@ -526,18 +554,11 @@ func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	}
 }
 
-// A gateway namespaces the model ids it serves: a fallback ref like
-// "anthropic/claude-opus-4-5" can be THIS instance's own text-only row, not a
-// switch to the first-party Anthropic row the id also names. The chain check
-// must resolve the ref to the gateway's row — the first-party row's vision
-// capability says nothing about the model that actually serves.
-func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testing.T) {
+// When the active primary model on a gateway sees images inline, fallbacks do not
+// trigger side-channel calls (#6190).
+func TestDescribeImage_NamespacedFallbackOnAGatewayDoesNotBreakTheNativeSkip(t *testing.T) {
 	t.Parallel()
-	gw := newFakeErrAdapter("gw", []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	})
+	gw := newFakeErrAdapter("gw", nil)
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
@@ -570,11 +591,11 @@ func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testin
 		withConfig(SessionConfig{ModelFallbacks: []string{"anthropic/claude-opus-4-5"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("namespaced-fallback result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("namespaced-fallback result = %+v, want native skip with no description", result)
 	}
-	if len(gw.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	if len(gw.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(gw.Requests()))
 	}
 }
 
@@ -607,14 +628,10 @@ func TestDescribeImage_RouteFailureDoesNotRetryMediaOnAnInheritedRowProfile(t *t
 	}
 }
 
-// A disabled row on the gateway must not win the current-instance match: the
-func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
+// A disabled row in fallbacks does not prevent native skip when the primary sees images (#6190).
+func TestDescribeImage_DisabledGatewayRowFallbackDoesNotBreakTheNativeSkip(t *testing.T) {
 	t.Parallel()
-	gw := newFakeErrAdapter("gw", []func(req llm.Request) (llm.Response, error){
-		func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("a png")}, nil
-		},
-	})
+	gw := newFakeErrAdapter("gw", nil)
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
@@ -669,11 +686,30 @@ func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
 		}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
-	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
-		t.Fatalf("disabled-gateway-row result = %+v, want the side-channel description", result)
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("disabled-gateway-row result = %+v, want native skip with no description", result)
 	}
-	if len(gw.Requests()) != 1 {
-		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	if len(gw.Requests()) != 0 {
+		t.Fatalf("side-channel calls = %d, want 0", len(gw.Requests()))
+	}
+}
+
+// VisionSetting off, none, and disabled all skip the side-channel even when the primary is text-only.
+func TestDescribeImage_VisionSettingOffNoneDisabled(t *testing.T) {
+	t.Parallel()
+	for _, setting := range []string{"off", "OFF", "none", "NONE", "disabled", "DISABLED"} {
+		t.Run(setting, func(t *testing.T) {
+			openai := newFakeErrAdapter("openai", nil)
+			sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2-codex")),
+				withConfig(SessionConfig{VisionModel: setting}))
+			result := sess.describeImageCall(context.Background(), visionImageResult())
+			if result.outcome != visionSideChannelSuccess || result.description != "" {
+				t.Fatalf("setting %q result = %+v, want success with no description", setting, result)
+			}
+			if len(openai.Requests()) != 0 {
+				t.Fatalf("setting %q fired %d calls, want 0", setting, len(openai.Requests()))
+			}
+		})
 	}
 }
 

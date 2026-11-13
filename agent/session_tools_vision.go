@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -176,6 +175,16 @@ func visionUsageAvailable(usage llm.Usage) bool {
 // reachable as "off/some-model".
 const visionModelOff = "off"
 
+// isVisionDisabledSetting reports whether the setting disables the vision
+// side-channel. "off", "none", and "disabled" (case-insensitive) are the
+// recognized sentinels. Only slash-free values can be the sentinel: a value
+// with a slash always parses as "provider/model", so a provider named "off"
+// stays reachable as "off/some-model".
+func isVisionDisabledSetting(setting string) bool {
+	setting = strings.ToLower(strings.TrimSpace(setting))
+	return setting == "off" || setting == "none" || setting == "disabled"
+}
+
 // resolveVisionRoute maps the session's vision_model setting to the route the
 // side-channel executes on. "" resolves to the session's active route, "off"
 // (case-insensitive) disables the call, "provider/model" pins a provider, and
@@ -187,7 +196,7 @@ func resolveVisionRoute(profile *provider.Profile, setting string) (providerName
 	if setting == "" {
 		return profile.ID(), profile.Model(), false
 	}
-	if strings.EqualFold(setting, visionModelOff) {
+	if isVisionDisabledSetting(setting) {
 		return "", "", true
 	}
 	if prov, model, ok := strings.Cut(setting, "/"); ok && prov != "" && model != "" {
@@ -246,22 +255,6 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 // per-attempt), so today's error says nothing about whether the entry serves
 // later — and an image-stripping fallback that recovers must find the
 // description still flowing.
-func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fallbacks []string, mt string) bool {
-	if profile.Registry() != s.client.Registry() {
-		return false
-	}
-	if !profile.SeesToolResultMedia(mt) {
-		return false
-	}
-	for _, ref := range fallbacks {
-		res, err := profile.ResolveModelFactsForRef(ref)
-		if err != nil || !llm.RowSeesToolResultMedia(res, mt) {
-			return false
-		}
-	}
-	return true
-}
-
 // sessionModelTakesRequestMedia reports whether the session profile can see a
 // describe-request's media part: a raster image needs image input (a
 // user-message image is the one shape every protocol vouches for), a document
@@ -339,7 +332,6 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Lock()
 	profile := s.profile
 	visionSetting := s.cfg.VisionModel
-	modelFallbacks := slices.Clone(s.cfg.ModelFallbacks)
 	s.mu.Unlock()
 	visionSetting = strings.TrimSpace(visionSetting)
 
@@ -353,18 +345,17 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		mt = "image/png"
 	}
 
-	// Native vision replaces the side-channel when every model that could
-	// serve a later round sees this result's bytes inline
-	// (sessionChainSeesToolResultMedia: the media's input modality on a row
-	// whose adapter delivers it, checked across the session model and its
-	// fallbacks): a describing call would only duplicate bytes the serving
-	// model already sees, and its failures would call native vision
-	// unavailable. An image qualifies on any delivering protocol; a document
-	// only where the tool-result shape carries one (Anthropic, #4465), so the
-	// other protocols keep describing PDFs out of band. An explicitly
+	// Native vision replaces the side-channel when the currently active
+	// session model sees this result's bytes inline on its client registry
+	// (profile.SeesToolResultMedia: the media's input modality on a row whose
+	// adapter delivers it, #6190). A describing call would only duplicate
+	// bytes the serving model already sees, and its failures would call native
+	// vision unavailable. An image qualifies on any delivering protocol; a
+	// document only where the tool-result shape carries one (Anthropic, #4465),
+	// so other protocols keep describing PDFs out of band. An explicitly
 	// configured vision model is a deliberate instruction to describe with
 	// that model and stays honored.
-	if visionSetting == "" && s.sessionChainSeesToolResultMedia(profile, modelFallbacks, mt) {
+	if visionSetting == "" && profile.Registry() == s.client.Registry() && profile.SeesToolResultMedia(mt) {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
