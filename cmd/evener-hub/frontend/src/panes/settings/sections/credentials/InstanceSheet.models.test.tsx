@@ -443,6 +443,38 @@ describe("per-model summary rows and drill-in editor", () => {
     expect(fake.calls.some((c) => c.method === "evener/instance/modelEdit")).toBe(false);
   });
 
+  test("create mode escapes an empty effort draft through the same Reset", async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    credentialsStore.setState({ instances: [entry()], availableProviders: [], listingFromPreviousConnection: false });
+
+    render(
+      <>
+        <Toast />
+        <InstanceSheet name="work" {...handlers()} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "+ Add custom model" }));
+    const modelIdInput = (await screen.findByLabelText("Model ID")) as HTMLInputElement;
+    await user.type(modelIdInput, "custom-1");
+
+    const effortRow = screen.getByRole("group", { name: "Allowed effort levels" });
+    expect(within(effortRow).queryByRole("button", { name: "Reset" })).toBeNull();
+
+    // Toggling a tier on and back off drafts an empty array: a validation dead
+    // end unless Reset can return the draft to unset (no authored baseline).
+    await user.click(within(effortRow).getByRole("button", { name: "low" }));
+    await user.click(within(effortRow).getByRole("button", { name: "low" }));
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(within(effortRow).getByRole("button", { name: "Reset" })).toBeTruthy();
+
+    await user.click(within(effortRow).getByRole("button", { name: "Reset" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(effortRow).queryByRole("button", { name: "Reset" })).toBeNull();
+  });
+
   test("auto-opens Routing & wire overrides when a routing field is authored", async () => {
     const user = userEvent.setup();
     const fake = new FakeClient("ready");
