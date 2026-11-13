@@ -115,6 +115,7 @@
 /* Over a pop it slides out to the right and uncovers the pane beneath. */
 .leavingOver {
   composes: leaving;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: slideRight from "../../styles/motion.module.css";
   z-index: var(--z-raised);
 }

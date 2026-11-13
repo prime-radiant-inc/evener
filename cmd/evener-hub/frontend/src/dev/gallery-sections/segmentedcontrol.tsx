@@ -33,9 +33,7 @@ const UNEQUAL_OPTIONS: readonly SegmentedControlOption[] = [
 
 function UnequalControl() {
   const [value, setValue] = useState("all");
-  return (
-    <SegmentedControl label="Unequal labels" value={value} options={UNEQUAL_OPTIONS} onChange={setValue} />
-  );
+  return <SegmentedControl label="Unequal labels" value={value} options={UNEQUAL_OPTIONS} onChange={setValue} />;
 }
 
 const STACKED_OPTIONS: readonly SegmentedControlOption[] = [

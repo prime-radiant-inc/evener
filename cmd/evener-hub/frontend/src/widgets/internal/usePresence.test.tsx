@@ -12,7 +12,7 @@ interface FakeAnimation {
   cancel: () => void;
 }
 
-function fakeAnimation(endTime: number): FakeAnimation {
+function fakeAnimation(endTime: number, currentTime: number | null = 0): FakeAnimation {
   let resolve: () => void = () => {};
   let reject: (reason: unknown) => void = () => {};
   const finished = new Promise<void>((res, rej) => {
@@ -23,6 +23,7 @@ function fakeAnimation(endTime: number): FakeAnimation {
   finished.catch(() => {});
   const animation = {
     playState: "running",
+    currentTime,
     effect: { getComputedTiming: () => ({ endTime }) },
     finished,
   } as unknown as Animation;
@@ -96,7 +97,8 @@ test("a looping animation inside the layer is not waited on", () => {
 
 test("when the exit's end never arrives, the exit token bounds the removal", () => {
   vi.useFakeTimers();
-  running = [fakeAnimation(80).animation];
+  // The animation has run its whole length, but its end is never reported.
+  running = [fakeAnimation(80, 80).animation];
   const { rerender } = render(<Layer open />);
   rerender(<Layer open={false} />);
   // The token's own length is not enough to give up on the animation...
@@ -104,6 +106,19 @@ test("when the exit's end never arrives, the exit token bounds the removal", () 
   expect(layer()?.getAttribute("data-motion")).toBe("closing");
   // ...but a few frames past it the layer is removed regardless.
   act(() => vi.advanceTimersByTime(100));
+  expect(layer()).toBeNull();
+});
+
+test("an exit the main thread kept from starting gets its length once more, and no longer", () => {
+  vi.useFakeTimers();
+  // Still at its first frame when the token's bound passes: a heavy commit held
+  // the thread, so the user has not seen the exit yet.
+  running = [fakeAnimation(80, 0).animation];
+  const { rerender } = render(<Layer open />);
+  rerender(<Layer open={false} />);
+  act(() => vi.advanceTimersByTime(180));
+  expect(layer()?.getAttribute("data-motion")).toBe("closing");
+  act(() => vi.advanceTimersByTime(180));
   expect(layer()).toBeNull();
 });
 

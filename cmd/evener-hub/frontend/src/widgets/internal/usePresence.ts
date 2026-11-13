@@ -42,12 +42,25 @@ function runningExit(layer: HTMLElement): Animation[] {
   return running;
 }
 
+// How long an animation still has to run, in milliseconds: none once it has
+// finished or been cancelled, its whole length while it waits for its first
+// frame.
+function remainingMs(animation: Animation): number {
+  if (animation.playState === "finished" || animation.playState === "idle") return 0;
+  const end = animation.effect?.getComputedTiming().endTime;
+  if (typeof end !== "number" || !Number.isFinite(end)) return 0;
+  const current = animation.currentTime;
+  const elapsed = typeof current === "number" ? current : 0;
+  return Math.max(0, end - elapsed);
+}
+
 /**
  * Calls `done` once, when the motion now running on `element` is over: at once
  * (synchronously) when no finite animation runs on it or on the recipe
  * elements inside it, otherwise when every one of them has finished or been
  * cancelled, and at the latest a moment past `token`'s duration if an
- * animation's end never arrives. Returns a function that cancels the wait.
+ * animation's end never arrives (twice that when the main thread kept the
+ * motion from starting). Returns a function that cancels the wait.
  * The one way something stays on screen only for the length of its motion:
  * usePresence waits on a leaving layer with it, and the phone stack waits on a
  * pane transition.
@@ -64,7 +77,21 @@ export function afterMotion(element: HTMLElement, token: MotionDurationToken, do
     finish();
     return () => {};
   }
-  const timer = setTimeout(finish, motionDurationMs(token, element) + FALLBACK_SLACK_MS);
+  // The bound counts from the first frame the motion can paint. Work that holds
+  // the main thread right after the change (a heavy pane mounting) delays that
+  // frame, so a motion still short of its end when the bound passes gets its
+  // remaining time once more before it is cut.
+  let extended = false;
+  const fallback = () => {
+    const remaining = extended ? 0 : Math.max(0, ...running.map(remainingMs));
+    if (remaining === 0) {
+      finish();
+      return;
+    }
+    extended = true;
+    timer = setTimeout(fallback, remaining + FALLBACK_SLACK_MS);
+  };
+  let timer = setTimeout(fallback, motionDurationMs(token, element) + FALLBACK_SLACK_MS);
   // A cancelled animation rejects `finished`; the motion is over either way.
   Promise.all(running.map((animation) => animation.finished)).then(finish, finish);
   return () => {

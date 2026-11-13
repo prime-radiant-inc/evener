@@ -865,10 +865,16 @@ async function measureOverview(send) {
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }
     }
-    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
-      text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
-      label: measure(element.querySelector('span'), element.textContent)
-    }));
+    // A category is a label line over an optional detail line (the stacked
+    // SegmentedControl); each line must show its whole text.
+    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
+      const lines = Array.from(element.children);
+      return {
+        text: lines.map(line => line.textContent).join('\\n'), checked: element.getAttribute('aria-checked'), box: box(element),
+        label: measure(lines[0], lines[0]?.textContent),
+        detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
+      };
+    });
     const values = ${JSON.stringify(LONG_VALUES)}.map(expected => {
       const element = Array.from(aside.querySelectorAll('*')).find(e => e.textContent === expected &&
         !Array.from(e.children).some(child => child.textContent === expected));
@@ -1015,14 +1021,17 @@ function assertOverview(result, viewport, theme) {
   )
     failures.push("About is not exclusively selected");
   for (const category of result.categories) {
-    if (
-      !category.label.fullText ||
-      category.label.clips.length ||
-      category.label.inlineOverflow ||
-      !category.label.textRects.length ||
-      category.box.width > result.sidebar.width + 1
-    )
-      failures.push(`clipped category ${category.text}: ${JSON.stringify(category.label)}`);
+    for (const line of [category.label, category.detail]) {
+      if (line === null) continue;
+      if (
+        !line.fullText ||
+        line.clips.length ||
+        line.inlineOverflow ||
+        !line.textRects.length ||
+        category.box.width > result.sidebar.width + 1
+      )
+        failures.push(`clipped category ${category.text}: ${JSON.stringify(line)}`);
+    }
   }
   for (let i = 0; i < result.values.length; i++) {
     const value = result.values[i];
