@@ -62,7 +62,7 @@ import {
 	sectionLabel,
 	summaryText,
 	usualPlace,
-} from "./attention";
+} from "@evener/appwire-client/state/navigation";
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";

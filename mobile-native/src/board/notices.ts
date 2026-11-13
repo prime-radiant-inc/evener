@@ -1,5 +1,5 @@
 import type { HubNotice, Source } from "@evener/appwire-client";
-import { plural } from "./attention";
+import { plural } from "@evener/appwire-client/state/navigation";
 
 /** A hub-level problem the Board shows under its chips (spec 7.1). The
  * subject's id routes the action; the text is only for reading. */

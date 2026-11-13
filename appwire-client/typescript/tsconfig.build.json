@@ -133,6 +133,7 @@
     "state/navigation/hostGrouping.ts",
     "state/navigation/immutable.ts",
     "state/navigation/invalidation.ts",
+    "state/navigation/liveAttention.ts",
     "state/navigation/merge.ts",
     "state/navigation/revalidator.ts",
     "state/navigation/selectors.ts",

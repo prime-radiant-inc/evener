@@ -38,6 +38,66 @@ it has no human-attention value — and a delegate whose delivered input is not
 yet consumed reads as running work, not attention
 ([`delegateDotState`](../../appwire-client/typescript/delegateDetails.ts)).
 
+## Live bands on the rail
+
+The rail's Live section answers "who needs me" before anything else. It reads
+as three bands, each a fold that starts open and remembers being closed:
+Needs you, Working, Idle. The phone Board shows the same bands from the same
+shared model
+([`liveBands`](../../appwire-client/typescript/state/navigation/liveAttention.ts)),
+so the two clients agree on which band a session is in and on each band's
+order:
+
+- **Needs you** is failed first, then a pending question or approval, then a
+  warning or restart, oldest first within each. This is the hub's own
+  needs-you order, so the band reads in the order Next needs you walks it.
+  The band also shows needs-you sessions that Live's loaded pages have not
+  reached, so a session that needs a person is never behind "+N older", and
+  it shows every row of the hub's tier, including one the rail files as
+  archived by age: the tier never decays, and the header's count and Next
+  needs you walk the same rows. The two sections are read separately; while the
+  needs-you section lists a session, its copy is the one the rail shows.
+- **Working** keeps the hub's Live order.
+- **Idle** is newest finished turn first.
+
+The rail differs from the Board in two deliberate places
+([`railLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)).
+A session the rail shows as working because a background job still runs — a
+resting one, or one whose warning blocks nothing — sits in Working, after the
+sessions mid-turn, so its band agrees with its indicator. And a
+row the hub lists in Live that the shared model places in no band (its host
+is offline, or it has not loaded) rests at the end of Idle instead of leaving
+Live, with its host and "offline" named on the row.
+
+Live is grouped by attention in every Organize-by mode; hosts group the
+Hosts/Projects section below it. A Live row names its host only when Live
+spans hosts and the row is away from this hub, or its host is offline.
+
+A Live row says why it is in its band only where the band's name and the
+row's indicator have not already said it: the kind of attention on a
+Needs-you row, and what a working row is waiting on or running. The words
+come from the shared
+[`whyLine`](../../appwire-client/typescript/state/navigation/liveAttention.ts);
+the rail prints its state word and leaves the sentence that only says to
+open the session to the phone.
+
+The order on screen is the order the keyboard walks: the live-session chords
+(Alt+Shift+Arrow) follow the bands top to bottom
+([`liveBandRefs`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)),
+and revealing a session opens the band that holds it. Rows do not animate
+when a session changes band.
+
+A row that changes band is a new row under its new fold. Two things keep
+that from costing the reader anything: while a dialog opened from a row's
+own menu is open (a rename in progress, a confirmation), the bands hold every
+row where it was, with its fresh facts (or as it last was, if the sections
+stop supplying it), and settle when the dialog closes
+([`holdLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts));
+and a row that had keyboard focus keeps it across the move. A Live row is
+one row whichever section or page supplied it, so Live's own page arriving
+after the needs-you section does not replace a row the reader is using
+([`Tree`](../../cmd/evener-hub/frontend/src/widgets/tree/index.tsx)).
+
 ## The floating control
 
 The Next-needs-you control floats above the composer at every web width —

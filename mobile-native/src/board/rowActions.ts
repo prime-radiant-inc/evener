@@ -7,7 +7,7 @@ import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
 import { localSessionId } from "../sessionDeletionResult";
 import type { ToastMessage } from "../Toast";
-import type { ClassifiedRow } from "./attention";
+import type { ClassifiedRow } from "@evener/appwire-client/state/navigation";
 import { journalOperation, organizationFree } from "./organizationCheck";
 import type { ProjectMenuAction } from "./projectMenu";
 

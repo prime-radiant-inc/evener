@@ -74,6 +74,23 @@ describe("next at the last loaded row with more pages", () => {
     expect(ctx.world.opened).toEqual(["c"]);
   });
 
+  test("a page that carries only rows already shown still moves: on to the next page, then around", async () => {
+    ctx.world.remaining = 2;
+    const controller = createLiveSessionController(ctx.deps);
+    controller.next();
+    // The page lands with nothing new (its rows were already on screen).
+    ctx.world.remaining = 1;
+    ctx.world.loads[0]?.resolve(true);
+    await settle();
+    expect(ctx.world.opened).toEqual([]);
+    expect(ctx.world.loads).toHaveLength(2);
+    // The last page is duplicate-only too: Live is exhausted, so next wraps.
+    ctx.world.remaining = 0;
+    ctx.world.loads[1]?.resolve(true);
+    await settle();
+    expect(ctx.world.opened).toEqual(["a"]);
+  });
+
   test("a repeated press while the load is fresh waits on the same load", async () => {
     const controller = createLiveSessionController(ctx.deps);
     controller.next();

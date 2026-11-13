@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { whyLine } from "../board/attention";
+import { whyLine } from "@evener/appwire-client/state/navigation";
 import { StateMark } from "../board/StateMark";
 import { paletteFor } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";

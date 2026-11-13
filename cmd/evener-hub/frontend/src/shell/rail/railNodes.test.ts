@@ -10,7 +10,6 @@ import {
   archivedSessionGroups,
   displayState,
   hostProjectNodes,
-  liveNodesGroupedByHost,
   overrideLookup,
   pinSectionDisclosureID,
   projectNodes,
@@ -20,6 +19,8 @@ import {
   subagentIsCurrent,
   watchCountLabel,
 } from "./railNodes";
+
+const noLiveFold = () => undefined;
 
 describe("subagentIsCurrent", () => {
   test("a descendant in any current state makes the subagent current, not only an active one", () => {
@@ -307,8 +308,8 @@ describe("resource projection semantics", () => {
   test("uses persisted overrides and flat membership for deep-link reveal", () => {
     const p = project({ key: "p1", sessions: [session({ ref: "top", row_id: "top" })] });
     expect(overrideLookup(new Map([["x", true]]))("x", false)).toBe(true);
-    expect(revealExpansionIds([p], [], "top", "flat")).toEqual(["projectnode:p1"]);
-    expect(revealExpansionIds([p], [], "missing", "flat")).toEqual([]);
+    expect(revealExpansionIds([p], noLiveFold, "top", "flat")).toEqual(["projectnode:p1"]);
+    expect(revealExpansionIds([p], noLiveFold, "missing", "flat")).toEqual([]);
   });
 });
 
@@ -450,15 +451,6 @@ describe("host grouping (organize by)", () => {
     expect(childIds(devboxCopy)).toEqual([]);
   });
 
-  test("liveNodesGroupedByHost groups rows under hosts only while more than one host is in play", () => {
-    const rows = sessionNodes([on("local", "l1"), on("devbox", "d1")]);
-    const grouped = liveNodesGroupedByHost(rows, sources, overrideLookup(new Map()));
-    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
-    const local = grouped[0];
-    expect(local).toMatchObject({ kind: "host", host: { id: "local", online: true }, expanded: true });
-    expect(childIds(local)).toEqual(["navigation:local:l1"]);
-  });
-
   // A deep-link reveal has to walk the same ids the grouped builders mint,
   // or the row it targets stays hidden behind a group that never opens.
   test("revealExpansionIds walks the host-first chain: the host group, then the project's copy", () => {
@@ -467,11 +459,11 @@ describe("host grouping (organize by)", () => {
       sources: ["local", "devbox"],
       sessions: [on("devbox", "d1"), on("local", "l1")],
     });
-    expect(revealExpansionIds([evener], [], "devbox:d1", "host-project")).toEqual([
+    expect(revealExpansionIds([evener], noLiveFold, "devbox:d1", "host-project")).toEqual([
       "host:devbox",
       "projectnode:evener@devbox",
     ]);
-    expect(revealExpansionIds([evener], [], "devbox:d1", "flat")).toEqual(["projectnode:evener"]);
+    expect(revealExpansionIds([evener], noLiveFold, "devbox:d1", "flat")).toEqual(["projectnode:evener"]);
   });
 
   test("revealExpansionIds walks the project-first chain: the project, then its per-host branch", () => {
@@ -480,14 +472,14 @@ describe("host grouping (organize by)", () => {
       sources: ["local", "devbox"],
       sessions: [on("local", "l1"), on("devbox", "d1")],
     });
-    expect(revealExpansionIds([evener], [], "devbox:d1", "project-host")).toEqual([
+    expect(revealExpansionIds([evener], noLiveFold, "devbox:d1", "project-host")).toEqual([
       "projectnode:evener",
       "projectnode:evener@host:devbox",
     ]);
     // Single-host rows render flat children, so the chain stops at the
     // project fold - a branch id would name a fold that does not exist.
     const solo = project({ key: "solo", sources: ["local", "devbox"], sessions: [on("devbox", "d1")] });
-    expect(revealExpansionIds([solo], [], "devbox:d1", "project-host")).toEqual(["projectnode:solo"]);
+    expect(revealExpansionIds([solo], noLiveFold, "devbox:d1", "project-host")).toEqual(["projectnode:solo"]);
   });
 
   test("revealExpansionIds does not walk nested summaries: a subagent ref names no rail row", () => {
@@ -500,22 +492,22 @@ describe("host grouping (organize by)", () => {
       sources: ["local"],
       sessions: [session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] })],
     });
-    expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([]);
-    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual([]);
+    expect(revealExpansionIds([nested], noLiveFold, "devbox:child", "host-project")).toEqual([]);
+    expect(revealExpansionIds([nested], noLiveFold, "devbox:child", "flat")).toEqual([]);
   });
 
   test("revealExpansionIds opens the project fold for a top-level row, adding the host branch only when rows span hosts", () => {
     const carrier = on("local", "root");
     const solo = project({ key: "evener", sources: ["local"], sessions: [carrier] });
-    expect(revealExpansionIds([solo], [], "local:root", "flat")).toEqual(["projectnode:evener"]);
-    expect(revealExpansionIds([solo], [], "local:root", "project-host")).toEqual(["projectnode:evener"]);
+    expect(revealExpansionIds([solo], noLiveFold, "local:root", "flat")).toEqual(["projectnode:evener"]);
+    expect(revealExpansionIds([solo], noLiveFold, "local:root", "project-host")).toEqual(["projectnode:evener"]);
     // A project whose rows span hosts adds its per-host branch first.
     const spread = project({
       key: "spread",
       sources: ["local", "devbox"],
       sessions: [on("local", "l1"), on("devbox", "d2"), carrier],
     });
-    expect(revealExpansionIds([spread], [], "local:root", "project-host")).toEqual([
+    expect(revealExpansionIds([spread], noLiveFold, "local:root", "project-host")).toEqual([
       "projectnode:spread",
       "projectnode:spread@host:local",
     ]);
@@ -523,26 +515,21 @@ describe("host grouping (organize by)", () => {
 
   test("revealExpansionIds routes an archived-tier row to the archived group fold", () => {
     const archived = project({ key: "old", sessions: [on("local", "achild", { tier: "archived" })] });
-    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual(["archivedgroup:old"]);
-    expect(revealExpansionIds([archived], [], "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
+    expect(revealExpansionIds([archived], noLiveFold, "local:achild", "host-project")).toEqual(["archivedgroup:old"]);
+    expect(revealExpansionIds([archived], noLiveFold, "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
       "projectnode:old",
     ]);
   });
 
-  test("revealExpansionIds opens a Live host subheader only while Live renders grouped", () => {
-    const twoHosts = [on("local", "l1"), on("devbox", "d1")];
-    expect(revealExpansionIds([], twoHosts, "devbox:d1", "project-host")).toEqual(["livehost:devbox"]);
-    expect(revealExpansionIds([], [on("local", "l1")], "local:l1", "project-host")).toEqual([]);
-    // Flat mode renders Live ungrouped, so no subheader exists to expand.
-    expect(revealExpansionIds([], twoHosts, "devbox:d1", "flat")).toEqual([]);
+  test("revealExpansionIds falls back to the Live fold for a row no loaded project holds", () => {
+    const liveFoldOf = (ref: string) => (ref === "devbox:d1" ? "liveband:working" : undefined);
+    expect(revealExpansionIds([], liveFoldOf, "devbox:d1", "project-host")).toEqual(["liveband:working"]);
+    expect(revealExpansionIds([], liveFoldOf, "devbox:d1", "flat")).toEqual(["liveband:working"]);
+    expect(revealExpansionIds([], liveFoldOf, "local:l1", "project-host")).toEqual([]);
   });
 
   test("revealExpansionIds is empty for a ref nothing loaded holds (the location path owns it)", () => {
-    expect(revealExpansionIds([], [], "missing", "host-project")).toEqual([]);
-    // A single host (or none) keeps today's flat list, byte for byte.
-    const single = sessionNodes([on("local", "l1"), on("local", "l2")]);
-    expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);
-    expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
+    expect(revealExpansionIds([], noLiveFold, "missing", "host-project")).toEqual([]);
   });
 
   test("host-first copies carry the host they nest under; the first speaks for the project", () => {
@@ -673,15 +660,15 @@ describe("host grouping (organize by)", () => {
       sources: ["devbox"],
       sessions: [on("devbox", "a1", { tier: "archived" })],
     });
-    expect(revealExpansionIds([evener], [], "devbox:a1", "flat")).toEqual(["archivedgroup:evener"]);
-    expect(revealExpansionIds([evener], [], "devbox:a1", "host-project")).toEqual(["archivedgroup:evener"]);
+    expect(revealExpansionIds([evener], noLiveFold, "devbox:a1", "flat")).toEqual(["archivedgroup:evener"]);
+    expect(revealExpansionIds([evener], noLiveFold, "devbox:a1", "host-project")).toEqual(["archivedgroup:evener"]);
   });
 
   test("a whole-archived project's rows reveal under its own node, not the archived group", () => {
     // archivedProjectNodes renders every row (whatever its tier) under the
     // project's own node, so the reveal must not route to the group fold.
     const old = project({ key: "old", sessions: [on("devbox", "a1", { tier: "archived" })] });
-    expect(revealExpansionIds([old], [], "devbox:a1", "flat", { rowsUnderProjectNode: true })).toEqual([
+    expect(revealExpansionIds([old], noLiveFold, "devbox:a1", "flat", { rowsUnderProjectNode: true })).toEqual([
       "projectnode:old",
     ]);
   });

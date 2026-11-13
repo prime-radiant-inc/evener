@@ -25,7 +25,7 @@ import {
 	type SessionActivityCounts,
 	type StableDelegateState,
 } from "@evener/appwire-client";
-import { hubTime, waitingOnSubagents } from "../board/attention";
+import { hubTime, waitingOnSubagents } from "@evener/appwire-client/state/navigation";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";

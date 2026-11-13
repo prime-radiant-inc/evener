@@ -8,6 +8,7 @@ import {
   refreshArchivedList,
 } from "../../stores/archivedList";
 import { navigationStore } from "../../stores/navigation/store";
+import { liveBandFoldOf, type RailLiveBands } from "./liveBands";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { pinSectionDisclosureID, type RailGroupingMode, revealExpansionIds } from "./railNodes";
 import type { RailResources } from "./railPending";
@@ -18,10 +19,15 @@ interface RevealRequestGuard {
   token: symbol;
 }
 
+// Only the primary project list falls back to Live: the other catalogs'
+// rows never render there.
+const noLiveFold = () => undefined;
+
 interface RailRevealInputs {
   revealTarget: string | null | undefined;
   onRevealConsumed: (() => void) | undefined;
   resources: RailResources;
+  liveBands: RailLiveBands;
   archivedLists: Record<string, ArchivedList>;
   expansion: ReadonlyMap<string, boolean>;
   isExpanded: (id: string, defaultOpen: boolean) => boolean;
@@ -37,6 +43,7 @@ export function useRailReveal({
   revealTarget,
   onRevealConsumed,
   resources,
+  liveBands,
   archivedLists,
   expansion,
   isExpanded,
@@ -131,10 +138,13 @@ export function useRailReveal({
     // the always-flat tiers keep flat ids whatever the mode. A test run's
     // archived rows still route to the archived-group fold; a whole-archived
     // project renders every row under its own node instead.
+    const liveFoldOf = (ref: string) => liveBandFoldOf(liveBands, ref);
     const chain = [
-      ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
-      ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
-      ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
+      ...revealExpansionIds(resources.projects, liveFoldOf, revealTarget, groupingMode),
+      ...revealExpansionIds(resources.testRuns, noLiveFold, revealTarget, "flat"),
+      ...revealExpansionIds(resources.archivedProjects, noLiveFold, revealTarget, "flat", {
+        rowsUnderProjectNode: true,
+      }),
     ];
     const nextFold = chain.find((id) => expansion.get(id) !== true);
     if (nextFold) {
@@ -200,9 +210,11 @@ export function useRailReveal({
         return;
       }
       const carrierChain = [
-        ...revealExpansionIds(resources.projects, resources.live, carrierRef, groupingMode),
-        ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
-        ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
+        ...revealExpansionIds(resources.projects, liveFoldOf, carrierRef, groupingMode),
+        ...revealExpansionIds(resources.testRuns, noLiveFold, carrierRef, "flat"),
+        ...revealExpansionIds(resources.archivedProjects, noLiveFold, carrierRef, "flat", {
+          rowsUnderProjectNode: true,
+        }),
       ];
       const nextCarrierFold = carrierChain.find((id) => expansion.get(id) !== true);
       if (nextCarrierFold) {
@@ -275,13 +287,14 @@ export function useRailReveal({
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
-    // needs_you has no fold of its own, and the rail renders none of its rows
-    // today, so Live is the only section that can hide this one.
-    if (section === "live" && !openRevealSection(LIVE_SECTION_KEY, true)) return;
+    // A needs_you row renders in Live's Needs-you band, so the Live fold
+    // hides either section's rows.
+    if (!openRevealSection(LIVE_SECTION_KEY, true)) return;
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
   }, [
     revealTarget,
     resources,
+    liveBands,
     expansion,
     groupingMode,
     consumeReveal,

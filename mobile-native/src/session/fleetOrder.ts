@@ -1,10 +1,10 @@
 // Moving between sessions from inside one (spec 6, 8.1, 8.3, 13.2): who else
 // needs you (the Back count and Next's destination), and the Live order the
 // title bar's swipes walk. Both come from the Board's own bands
-// (src/board/attention.ts), so the Session and the Board never disagree about
+// (liveAttention in @evener/appwire-client/state/navigation), so the Session and the Board never disagree about
 // who needs you.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { type LiveBands, liveRows } from "../board/attention";
+import { type LiveBands, liveRows } from "@evener/appwire-client/state/navigation";
 
 export function othersNeedingYou(bands: LiveBands, currentRef: string): NavigationSessionSummary[] {
 	return bands.needsYou.map((item) => item.row).filter((row) => row.ref !== currentRef);

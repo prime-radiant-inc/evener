@@ -3,7 +3,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { nativeNavigationActions } from "../navigationActionRepository";
 import { NavigationActions } from "../navigationActions";
-import type { BoardState } from "./attention";
+import type { BoardState } from "@evener/appwire-client/state/navigation";
 import { pinnedItems } from "./boardItems";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import {

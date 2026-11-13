@@ -24,7 +24,7 @@ import {
 	type Usual,
 	type WhyLine,
 	whyLine,
-} from "./attention";
+} from "@evener/appwire-client/state/navigation";
 import { FreshDot } from "../reader/FreshDot";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";

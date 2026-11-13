@@ -3,7 +3,7 @@
 // than tick, a reader wakes once, when the soonest silence crosses the
 // threshold, so the line turns Quiet on time and nothing runs in between.
 import { useEffect, useState } from "react";
-import { AGENT_QUIET_AFTER_MS } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS } from "@evener/appwire-client/state/navigation";
 
 /** The caller's `now`, moved on to the moment the soonest of its running
  * agents' silences crosses into Quiet. `silencesAt` gives those silences, in

@@ -1,0 +1,28 @@
+{
+  "name": "rail-live-band-count-hover",
+  "description": "rail Live band header: the count Badge stays visible (opacity 1, visibility visible, non-zero width inside the row's right edge) while the header row is hovered on a hover-capable desktop layout - a band has no actions to swap into the right slot, so the hover-hide rule for .rightSlot occupants must not reach it",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/tree/tree.module.css",
+    "widgets/badge/badge.module.css",
+    "shell/rail/Rail.module.css",
+    "shell/rail/RailRow.module.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "forcePseudoStates": [
+    { "selector": "#band-row", "pseudoClasses": ["hover"] },
+    { "selector": "#probe-row", "pseudoClasses": ["hover"] }
+  ],
+  "mutation": {
+    "declaration": "harness: the Badge wrapper's class bandCount swapped for rightSlot, i.e. the count back in the shared slot the hover-hide rule targets",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "With the Badge inside .rightSlot, .railRow:hover .rightSlot > :not(.actions) sets opacity 0 and visibility hidden on it under (hover: hover) and (min-width: 900px), failing the opacity and visibility assertions. Restoring bandCount returns the case to PASS."
+  }
+}

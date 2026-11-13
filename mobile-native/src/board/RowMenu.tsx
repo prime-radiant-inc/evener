@@ -16,7 +16,7 @@ import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { FreshDot } from "../reader/FreshDot";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type ClassifiedRow, stateWord, whyLine } from "./attention";
+import { type ClassifiedRow, stateWord, whyLine } from "@evener/appwire-client/state/navigation";
 import { Fact, WhyText } from "./BoardRow";
 import { ROW_ACTION_LABELS, type RowAction } from "./rowActions";
 import { StateMark } from "./StateMark";

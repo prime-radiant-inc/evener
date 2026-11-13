@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>rail-live-band-count-hover layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  .railBox {
+    width: 280px;
+    box-sizing: border-box;
+  }
+</style>
+<script>
+  // Headless Chrome reports (hover: none); the hide rule under test sits in
+  // `@media (hover: hover) and (min-width: 900px)`. Where the host lacks hover,
+  // relax only that media condition to its width half so the rule applies as it
+  // does on a hover-capable desktop; `gated` counts the rules found so the
+  // assertion fails if the gate ever disappears from the stylesheet.
+  const HOVER_GATE = "(hover: hover) and (min-width: 900px)";
+  let gated = 0;
+  const relax = (rules) => {
+    for (const rule of rules) {
+      if (rule instanceof CSSMediaRule && rule.media.mediaText.includes("hover: hover")) {
+        gated += 1;
+        if (!matchMedia("(hover: hover)").matches) rule.media.mediaText = "(min-width: 900px)";
+      }
+      if (rule.cssRules) relax(rule.cssRules);
+    }
+  };
+  window.addEventListener("load", () => {
+    for (const sheet of document.styleSheets) relax(sheet.cssRules);
+  });
+  window.measure = () => {
+    const row = document.getElementById("band-row");
+    const count = document.getElementById("band-count");
+    const r = row.getBoundingClientRect();
+    const c = count.getBoundingClientRect();
+    const cs = getComputedStyle(count);
+    const probe = document.getElementById("slot-probe");
+    return {
+      row: { left: r.left, right: r.right },
+      count: { left: c.left, right: c.right, width: c.width },
+      opacity: Number(cs.opacity),
+      visibility: cs.visibility,
+      wide: matchMedia("(min-width: 900px)").matches,
+      gated,
+      rowHovered: row.matches(":hover"),
+      probeHidden: getComputedStyle(probe).visibility === "hidden",
+    };
+  };
+</script>
+</head>
+<body data-font-size="m">
+<div class="railBox">
+  <div class="section">
+    <div class="tree">
+      <div role="treeitem" class="row" aria-expanded="true" aria-level="1">
+        <span class="railRow" id="band-row" data-testid="rail-row-band">
+          <span class="textCol">
+            <span class="titleLine">
+              <span class="label bandLabel">Needs you</span>
+              <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
+            </span>
+          </span>
+          <span class="bandCount" id="band-slot" data-testid="rail-row-band-count"><span class="badge badgeAttention" id="band-count">3</span></span>
+        </span>
+      </div>
+      <div role="treeitem" class="row" aria-level="1">
+        <span class="railRow" id="probe-row">
+          <span class="textCol"><span class="titleLine"><span class="label">Probe</span></span></span>
+          <span class="rightSlot"><span class="time" id="slot-probe">4m</span></span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
