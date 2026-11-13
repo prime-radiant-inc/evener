@@ -20,6 +20,7 @@ import {
   type Band,
   type BoardState,
   hostLabeler,
+  hubTime,
   LIVE_BAND_ORDER,
   liveBands,
   usualPlace,
@@ -56,7 +57,16 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
   live: readonly Row[],
   needsYou: readonly Row[],
 ): RailLiveBands<Row> {
-  const shared = liveBands<Row>(live, needsYou, () => true);
+  // The two sections are read separately, so one can be fresher than the
+  // other: a session in both is shown from whichever copy the hub updated
+  // last, so a question the needs-you read already knows about is not hidden
+  // behind an older Live copy.
+  const queued = new Map(needsYou.map((row) => [row.ref, row]));
+  const current = live.map((row) => {
+    const other = queued.get(row.ref);
+    return other && (hubTime(other.updated_at) ?? 0) > (hubTime(row.updated_at) ?? 0) ? other : row;
+  });
+  const shared = liveBands<Row>(current, needsYou, () => true);
   const bands: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
   const placed = new Set<string>();
   const presentedWorking: RailLiveRow<Row>[] = [];
@@ -72,7 +82,7 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
     }
   }
   bands.working.push(...presentedWorking);
-  for (const row of live) if (!placed.has(row.ref)) bands.idle.push({ session: row, state: "shutDown" });
+  for (const row of current) if (!placed.has(row.ref)) bands.idle.push({ session: row, state: "shutDown" });
   return bands;
 }
 
@@ -106,6 +116,18 @@ export function holdLiveBands<Row extends NavigationSessionSummary>(
 /** Live's refs in the order the rail shows them, band by band. */
 export function liveBandRefs(bands: RailLiveBands<NavigationSessionSummary>): string[] {
   return LIVE_BAND_ORDER.flatMap((band) => bands[band].map((row) => row.session.ref));
+}
+
+/** The refs the live-session chords walk: the order on screen, or nothing
+ * while Live itself has yet to load, so a press demands Live's first page
+ * instead of cycling the needs-you rows that happened to arrive first. */
+export function liveCycleRefs(
+  live: readonly NavigationSessionSummary[],
+  needsYou: readonly NavigationSessionSummary[],
+  liveUnloaded: boolean,
+): string[] {
+  if (liveUnloaded && live.length === 0) return [];
+  return liveBandRefs(railLiveBands(live, needsYou));
 }
 
 export function liveBandId(band: Band): string {

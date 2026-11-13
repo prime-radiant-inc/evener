@@ -55,7 +55,8 @@ order:
   reached, so a session that needs a person is never behind "+N older", and
   it shows every row of the hub's tier, including one the rail files as
   archived by age: the tier never decays, and the header's count and Next
-  needs you walk the same rows.
+  needs you walk the same rows. The two sections are read separately, so a
+  session in both shows from whichever copy the hub updated last.
 - **Working** keeps the hub's Live order.
 - **Idle** is newest finished turn first.
 

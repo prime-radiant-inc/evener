@@ -1,6 +1,14 @@
 import type { Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { holdLiveBands, liveBandFoldOf, liveBandId, liveBandNodes, liveBandRefs, railLiveBands } from "./liveBands";
+import {
+  holdLiveBands,
+  liveBandFoldOf,
+  liveBandId,
+  liveBandNodes,
+  liveBandRefs,
+  liveCycleRefs,
+  railLiveBands,
+} from "./liveBands";
 import type { RailSession } from "./railNodes";
 
 function row(ref: string, overrides: Partial<RailSession> = {}): RailSession {
@@ -85,6 +93,18 @@ describe("railLiveBands", () => {
     expect(refsOf(bands.needsYou)).toEqual(["local:esc"]);
     expect(bands.needsYou[0]?.state).toBe("approval");
     expect(bands.working).toEqual([]);
+  });
+
+  test("a fresher needs-you copy decides the band when Live's own copy is older", () => {
+    const stale = row("local:a", { state: "active", updated_at: at(1) });
+    const asking = row("local:a", { state: "awaiting", ask_pending: true, updated_at: at(5) });
+    const bands = railLiveBands([stale, row("local:b")], [asking]);
+    expect(refsOf(bands.needsYou)).toEqual(["local:a"]);
+    expect(bands.needsYou[0]?.state).toBe("question");
+    expect(bands.working).toEqual([]);
+    // The other way round, Live's copy is the newer one and stands.
+    const answered = row("local:a", { state: "active", updated_at: at(9) });
+    expect(refsOf(railLiveBands([answered], [asking]).working)).toEqual(["local:a"]);
   });
 
   test("a needs-you session the rail files as archived still shows: the hub's tier never decays", () => {
@@ -192,5 +212,18 @@ describe("liveBandNodes", () => {
     const after = liveBandNodes(railLiveBands([asking], []), sources, open);
     expect(after.map((node) => node.band)).toEqual(["needsYou"]);
     expect(after[0]?.children[0]).not.toBe(before);
+  });
+});
+
+describe("liveCycleRefs", () => {
+  test("is the order on screen once Live has loaded", () => {
+    const live = [row("local:idle"), row("local:work", { state: "active" })];
+    expect(liveCycleRefs(live, [], false)).toEqual(["local:work", "local:idle"]);
+  });
+
+  test("is empty while Live itself has not loaded, even if needs-you rows already show", () => {
+    const asking = row("local:ask", { state: "awaiting", ask_pending: true });
+    expect(liveCycleRefs([], [asking], true)).toEqual([]);
+    expect(liveCycleRefs([], [asking], false)).toEqual(["local:ask"]);
   });
 });

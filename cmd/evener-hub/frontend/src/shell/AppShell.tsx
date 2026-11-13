@@ -46,7 +46,7 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
-import { liveBandRefs, railLiveBands } from "./rail/liveBands";
+import { liveCycleRefs } from "./rail/liveBands";
 import { isAppDrivenNavigation, navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import {
@@ -613,7 +613,11 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       // below the current one.
       liveRefs: () => {
         const state = navigationStore.getState();
-        return liveBandRefs(railLiveBands(selectLiveRows(state), selectNeedsYouRows(state)));
+        return liveCycleRefs(
+          selectLiveRows(state),
+          selectNeedsYouRows(state),
+          !!state.manifest?.data && selectSectionCanDemand("live", state),
+        );
       },
       liveRemaining: () => selectSectionRemaining("live", navigationStore.getState()),
       canDemandUnloaded: () => {
