@@ -52,6 +52,7 @@ import {
   setFavorite,
   unpinSession,
 } from "./actions";
+import { liveBandNodes, railLiveBands } from "./liveBands";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -64,7 +65,6 @@ import {
   catalogOverflowNode,
   hostProjectNodes,
   type IsExpanded,
-  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
@@ -567,10 +567,15 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const liveBands = useMemo(
+    () => railLiveBands(resources.live, resources.needsYou),
+    [resources.live, resources.needsYou],
+  );
   useRailReveal({
     revealTarget,
     onRevealConsumed,
     resources,
+    liveBands,
     archivedLists,
     expansion: expanded,
     isExpanded,
@@ -977,12 +982,10 @@ function NavigationRail({
     seenHostFolds.current = new Set(hostFoldIds);
   }, [projectsSectionNodes, hostFoldIds, expanded, setRowExpanded]);
   const liveNodes = [
-    // Live answers "which machine" the same way in either mode: rows group
-    // under host subheaders exactly while they span more than one host
-    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
-    ...(groupingMode !== "flat"
-      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
-      : sessionNodes(resources.live)),
+    // Live answers "who needs me" before "which machine": its rows sit in
+    // attention bands in every grouping mode, and a row names its host only
+    // where it is not the one most of Live runs on (liveBandNodes).
+    ...liveBandNodes(liveBands, displaySources, isExpanded),
     ...sectionOverflowNode(
       "section:live",
       "live",

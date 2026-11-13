@@ -4,7 +4,7 @@
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { compactDuration, delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
-import { hubTime, subagentQuietLine, waitingOnSubagents } from "../board/attention";
+import { hubTime, subagentQuietLine, waitingOnSubagents } from "@evener/appwire-client/state/navigation";
 import type { TimelineRow } from "../timeline";
 
 type Activity = Extract<TimelineRow, { kind: "activity" }>;

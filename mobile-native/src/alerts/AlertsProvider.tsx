@@ -9,7 +9,7 @@
 // about sessions wherever you are. That is a second set of navigation reads
 // while the Board or a Session is in front.
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { liveBands } from "../board/attention";
+import { liveBands } from "@evener/appwire-client/state/navigation";
 import { createBoardController } from "../board/boardData";
 import { type Notice, notices } from "../board/notices";
 import { useConnection } from "../ConnectionProvider";

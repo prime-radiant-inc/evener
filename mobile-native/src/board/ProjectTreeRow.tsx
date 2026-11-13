@@ -7,7 +7,7 @@ import type { ReactElement, ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { projectName } from "../organizationNavigation";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { plural } from "./attention";
+import { plural } from "@evener/appwire-client/state/navigation";
 import type { OrganizeBy } from "./boardMemory";
 import { bandHeaderText, FoldChevron } from "./BoardRow";
 import type { ProjectTreeItem } from "./projectTree";

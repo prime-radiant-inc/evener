@@ -1,29 +1,17 @@
-// The Board's attention model (spec 13.1-13.2) as pure functions over the
-// navigation rows the hub already sends. Where the spec wants a fact the rows
-// don't carry yet, the fallback from spec 18 lives here, and each server
-// addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent counts). S4's seen marker lives in hubSeen.ts, beside
-// boardMemory.ts's fallback. S5 (activity) has landed: whyLine and liveBands
-// take the activity poll's own data (its caller polls evener/activity/read
-// and hands the read back in - this file has no client of its own), with no
-// fallback left when it's given. A subagent failure never puts a Board row in
-// Needs you; the row's subagent chip (subagentChip) counts it, and the
-// session's Agents list holds the detail.
-import type { AttentionClass, DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import {
-	approvalWaiting,
-	attentionState,
-	compactDuration,
-	DELEGATE_QUIET_AFTER_MS,
-	parseTimestampMs,
-	quietState,
-	taskSettledCount,
-} from "@evener/appwire-client";
-import {
-	quotaWaitRemainingMs,
-	subagentTallyToShow,
-	waitingForQuotaText,
-} from "@evener/appwire-client/state/navigation";
+// Live's attention model as pure functions over the navigation rows the hub
+// sends: which band a row sits in (Needs you, Working, Idle), each band's
+// order, and the line that says why a row is where it is. The phone Board and
+// the web rail both read it, so the two agree on who needs you. The activity
+// read (evener/activity/read) is the caller's to fetch and hand in; this file
+// has no client of its own. A subagent failure never puts a row in Needs you:
+// the session's own activity surfaces count it.
+import { DELEGATE_QUIET_AFTER_MS, type DelegateTiming } from "../../delegateDetails";
+import { compactDuration, parseTimestampMs } from "../../displayFormat";
+import { quietState } from "../../sessionActivity";
+import { type AttentionClass, approvalWaiting, attentionState } from "../../sessionAttention";
+import { taskSettledCount } from "../../taskListData";
+import type { NavigationSessionSummary, SessionActivity } from "../../types.gen";
+import { quotaWaitRemainingMs, subagentTallyToShow, waitingForQuotaText } from "./selectors";
 
 export type BoardState = AttentionClass;
 
@@ -32,33 +20,33 @@ export type Band = "needsYou" | "working" | "idle";
 /** Live's bands in the one attention order every screen reads them in. */
 export const LIVE_BAND_ORDER: readonly Band[] = ["needsYou", "working", "idle"];
 
-export interface ClassifiedRow {
-	row: NavigationSessionSummary;
-	state: BoardState;
-	/** Updates since you last opened it: the row's blue dot, wherever it
-	 * sits. Absent reads as seen. */
-	unseen?: boolean;
+export interface ClassifiedRow<Row extends NavigationSessionSummary = NavigationSessionSummary> {
+  row: Row;
+  state: BoardState;
+  /** Updates since you last opened it: the row's blue dot, wherever it
+   * sits. Absent reads as seen. */
+  unseen?: boolean;
 }
 
-export interface LiveBands {
-	needsYou: ClassifiedRow[];
-	working: ClassifiedRow[];
-	idle: ClassifiedRow[];
+export interface LiveBands<Row extends NavigationSessionSummary = NavigationSessionSummary> {
+  needsYou: ClassifiedRow<Row>[];
+  working: ClassifiedRow<Row>[];
+  idle: ClassifiedRow<Row>[];
 }
 
 const WORDS: Record<BoardState, string> = {
-	failed: "Failed",
-	question: "Question",
-	approval: "Approval",
-	warning: "Warning",
-	restartNeeded: "Restart needed",
-	working: "Working",
-	idle: "Idle",
-	shutDown: "Shut down",
+  failed: "Failed",
+  question: "Question",
+  approval: "Approval",
+  warning: "Warning",
+  restartNeeded: "Restart needed",
+  working: "Working",
+  idle: "Idle",
+  shutDown: "Shut down",
 };
 
 export function stateWord(state: BoardState): string {
-	return WORDS[state];
+  return WORDS[state];
 }
 
 // The states that put a session in the hub's needs_you section on their own.
@@ -72,33 +60,33 @@ const EXPLAINED = new Set(["awaiting", "warning", "restartRequired", "errored"])
  * inference stays because a hub without S2a never sets that flag, so its rows
  * still need the needs_you section's membership to say why they're there. */
 export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[]): Set<string> {
-	const refs = new Set<string>();
-	for (const row of needsYouSection) if (!EXPLAINED.has(row.state)) refs.add(row.ref);
-	return refs;
+  const refs = new Set<string>();
+  for (const row of needsYouSection) if (!EXPLAINED.has(row.state)) refs.add(row.ref);
+  return refs;
 }
 
 export function boardState(row: NavigationSessionSummary, approval: boolean): BoardState {
-	return attentionState(row.state, {
-		askPending: row.ask_pending,
-		approvalPending: approval || row.approval_pending === true,
-		runningChildren: row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0,
-		offline: row.offline,
-	});
+  return attentionState(row.state, {
+    askPending: row.ask_pending,
+    approvalPending: approval || row.approval_pending === true,
+    runningChildren: row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0,
+    offline: row.offline,
+  });
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
  * section marks approvals (approvalRefs), and isSeen and movedSinceSeen
  * say whether anything is new since the person last looked. */
-export function rowClassifier(
-	needsYouSection: readonly NavigationSessionSummary[],
-	isSeen: (row: NavigationSessionSummary) => boolean,
-	movedSinceSeen: (row: NavigationSessionSummary) => boolean,
-): (row: NavigationSessionSummary) => ClassifiedRow {
-	const approvals = approvalRefs(needsYouSection);
-	return (row) => {
-		const state = boardState(row, approvals.has(row.ref));
-		return { row, state, unseen: rowUnseen(row, state, isSeen(row), movedSinceSeen(row)) };
-	};
+export function rowClassifier<Row extends NavigationSessionSummary = NavigationSessionSummary>(
+  needsYouSection: readonly NavigationSessionSummary[],
+  isSeen: (row: NavigationSessionSummary) => boolean,
+  movedSinceSeen: (row: NavigationSessionSummary) => boolean,
+): (row: Row) => ClassifiedRow<Row> {
+  const approvals = approvalRefs(needsYouSection);
+  return (row) => {
+    const state = boardState(row, approvals.has(row.ref));
+    return { row, state, unseen: rowUnseen(row, state, isSeen(row), movedSinceSeen(row)) };
+  };
 }
 
 /** The blue dot (Jesse's ruling): only a live session that has run, and
@@ -110,53 +98,53 @@ export function rowClassifier(
  * (#4164): a pin can keep one on the Board while it still runs, and the rail
  * files it as archived, so nothing new rides on it (#4199). */
 function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
-	// An offline row is shutDown (boardState).
-	if (!row.live || row.dormant || state === "shutDown") return false;
-	// A row the rail files as archived is new to no one (#4164, #4199).
-	if (row.archived) return false;
-	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
-	return !seen || moved;
+  // An offline row is shutDown (boardState).
+  if (!row.live || row.dormant || state === "shutDown") return false;
+  // A row the rail files as archived is new to no one (#4164, #4199).
+  if (row.archived) return false;
+  if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
+  return !seen || moved;
 }
 
 const BANDS: Record<BoardState, Band | null> = {
-	failed: "needsYou",
-	question: "needsYou",
-	approval: "needsYou",
-	warning: "needsYou",
-	restartNeeded: "needsYou",
-	working: "working",
-	idle: "idle",
-	shutDown: null,
+  failed: "needsYou",
+  question: "needsYou",
+  approval: "needsYou",
+  warning: "needsYou",
+  restartNeeded: "needsYou",
+  working: "working",
+  idle: "idle",
+  shutDown: null,
 };
 
 export function bandOf(state: BoardState): Band | null {
-	return BANDS[state];
+  return BANDS[state];
 }
 
 /** A hub timestamp in milliseconds, or null when the hub sent none or one
  * that doesn't parse. */
 export function hubTime(value?: string | null): number | null {
-	return parseTimestampMs(value ?? undefined) ?? null;
+  return parseTimestampMs(value ?? undefined) ?? null;
 }
 
 // A row without a readable updated_at sorts as the oldest.
 function time(row: NavigationSessionSummary): number {
-	return hubTime(row.updated_at) ?? 0;
+  return hubTime(row.updated_at) ?? 0;
 }
 function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
-	return a.row.ref < b.row.ref ? -1 : a.row.ref > b.row.ref ? 1 : 0;
+  return a.row.ref < b.row.ref ? -1 : a.row.ref > b.row.ref ? 1 : 0;
 }
 function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
-	return time(a.row) - time(b.row) || byRef(a, b);
+  return time(a.row) - time(b.row) || byRef(a, b);
 }
 // Idle orders by when the turn ended (S4): updated_at moves on
 // renames and model rounds too, so it stands in only for a row without a
 // readable turn_ended_at.
 function endedTime(row: NavigationSessionSummary): number {
-	return hubTime(row.turn_ended_at) ?? time(row);
+  return hubTime(row.turn_ended_at) ?? time(row);
 }
 function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
-	return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
+  return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
 }
 // Spec 7.1's order: failed leads, then a question, an approval or a turn
 // that ended on needs_response, then a warning or restart-needed, regardless
@@ -173,23 +161,23 @@ function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 // mark's own fallback (approvalRefs, inferred from needs_you section
 // membership) is the only signal such a row has.
 function needsYouRank(item: ClassifiedRow): number {
-	if (item.state === "failed") return 0;
-	if (
-		item.row.ask_pending ||
-		approvalWaiting(item.row.state, item.row.approval_pending === true) ||
-		item.state === "approval"
-	)
-		return 1;
-	return 2;
+  if (item.state === "failed") return 0;
+  if (
+    item.row.ask_pending ||
+    approvalWaiting(item.row.state, item.row.approval_pending === true) ||
+    item.state === "approval"
+  )
+    return 1;
+  return 2;
 }
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
+  return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
 }
 // Stuck first, else keep relative order: Array.prototype.sort is stable, so a
 // comparator that only distinguishes stuck from not leaves the hub's own
 // order (ruling 10) untouched within each group (spec 7.1, S5).
 function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
-	return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
+  return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
 }
 
 /** Splits Live into the spec's three bands. Rows from the needs_you section
@@ -199,61 +187,63 @@ function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
  * Working keeps the hub's Live order (ruling 10),
  * except a row isStuck marks (S5's quietState "stuck", from the activity
  * poll), which floats to the top of the band (spec 7.1). */
-export function liveBands(
-	live: readonly NavigationSessionSummary[],
-	needsYouSection: readonly NavigationSessionSummary[],
-	isSeen: (row: NavigationSessionSummary) => boolean,
-	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
-	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
-): LiveBands {
-	const classify = rowClassifier(needsYouSection, isSeen, movedSinceSeen);
-	const rows = new Map<string, NavigationSessionSummary>();
-	for (const row of live) rows.set(row.ref, row);
-	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
-	const bands: LiveBands = { needsYou: [], working: [], idle: [] };
-	for (const row of rows.values()) {
-		const item = classify(row);
-		const band = bandOf(item.state);
-		if (band) bands[band].push(item);
-	}
-	bands.needsYou.sort(needsYouOrder);
-	bands.idle.sort(newestEndedFirst);
-	bands.working.sort(workingOrder(isStuck));
-	return bands;
+export function liveBands<Row extends NavigationSessionSummary = NavigationSessionSummary>(
+  live: readonly Row[],
+  needsYouSection: readonly Row[],
+  isSeen: (row: NavigationSessionSummary) => boolean,
+  isStuck: (row: NavigationSessionSummary) => boolean = () => false,
+  movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
+): LiveBands<Row> {
+  const classify = rowClassifier<Row>(needsYouSection, isSeen, movedSinceSeen);
+  const rows = new Map<string, Row>();
+  for (const row of live) rows.set(row.ref, row);
+  for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
+  const bands: LiveBands<Row> = { needsYou: [], working: [], idle: [] };
+  for (const row of rows.values()) {
+    const item = classify(row);
+    const band = bandOf(item.state);
+    if (band) bands[band].push(item);
+  }
+  bands.needsYou.sort(needsYouOrder);
+  bands.idle.sort(newestEndedFirst);
+  bands.working.sort(workingOrder(isStuck));
+  return bands;
 }
 
 /** Live's rows, band by band in LIVE_BAND_ORDER. */
-export function liveRows(bands: LiveBands): ClassifiedRow[] {
-	return LIVE_BAND_ORDER.flatMap((band) => bands[band]);
+export function liveRows<Row extends NavigationSessionSummary = NavigationSessionSummary>(
+  bands: LiveBands<Row>,
+): ClassifiedRow<Row>[] {
+  return LIVE_BAND_ORDER.flatMap((band) => bands[band]);
 }
 
 export interface LiveSummary {
-	needsYou: number;
-	working: number;
-	idle: number;
+  needsYou: number;
+  working: number;
+  idle: number;
 }
 
 /** The Live summary line's counts, or null when fewer than two bands have
  * sessions and the band headers already say it all (spec 7.1). */
 export function liveSummary(bands: LiveBands): LiveSummary | null {
-	const counts: LiveSummary = {
-		needsYou: bands.needsYou.length,
-		working: bands.working.length,
-		idle: bands.idle.length,
-	};
-	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
+  const counts: LiveSummary = {
+    needsYou: bands.needsYou.length,
+    working: bands.working.length,
+    idle: bands.idle.length,
+  };
+  return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
 
 /** "1 session", "3 sessions": `separator` joins the count to its noun, a
  * no-break space where the two must stay on one line. */
 export const plural = (count: number, noun: string, separator = " ") =>
-	`${count}${separator}${noun}${count === 1 ? "" : "s"}`;
+  `${count}${separator}${noun}${count === 1 ? "" : "s"}`;
 /** A section's VoiceOver label, shared by its chip and its header. */
 export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 export function summaryText(band: Band, count: number): string {
-	if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;
-	return `${count} ${band}`;
+  if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;
+  return `${count} ${band}`;
 }
 
 export type Hue = "danger" | "attention";
@@ -265,32 +255,32 @@ export type Hue = "danger" | "attention";
 export type WhyKind = "reason" | "quota" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
 
 export interface WhyLine {
-	/** Absent on a line that stands in for a why line (a held change's). */
-	kind?: WhyKind;
-	word?: string;
-	hue?: Hue;
-	/** The line reads "May be stuck" (spec 7.1, 13.1): the whole text draws in
-	 * the attention ink, since there is no word to color apart from the rest,
-	 * and the row's meter echoes it. */
-	stuck?: boolean;
-	text: string;
+  /** Absent on a line that stands in for a why line (a held change's). */
+  kind?: WhyKind;
+  word?: string;
+  hue?: Hue;
+  /** The line reads "May be stuck" (spec 7.1, 13.1): the whole text draws in
+   * the attention ink, since there is no word to color apart from the rest,
+   * and the row's meter echoes it. */
+  stuck?: boolean;
+  text: string;
 }
 
 // Until S1 carries the question, the approval's target and the error, the
 // reason says what the person can do next.
 const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
-	failed: { hue: "danger", text: "open the session to see what went wrong" },
-	question: { hue: "attention", text: "waiting for your answer" },
-	approval: { hue: "attention", text: "waiting for your permission" },
-	warning: { hue: "attention", text: "open the session to see it" },
-	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
+  failed: { hue: "danger", text: "open the session to see what went wrong" },
+  question: { hue: "attention", text: "waiting for your answer" },
+  approval: { hue: "attention", text: "waiting for your permission" },
+  warning: { hue: "attention", text: "open the session to see it" },
+  restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
 };
 
 /** The why line of a session or subagent waiting on its subagents: on the
  * Board, in the tray, in the Agents and Jobs lists and on a subagent's row (spec
  * 13.1). */
 export function waitingOnSubagents(count: number): string {
-	return `Waiting on ${plural(count, "subagent")}`;
+  return `Waiting on ${plural(count, "subagent")}`;
 }
 
 /** No update for this long reads "Quiet" in a session's tray, on a
@@ -303,16 +293,16 @@ export const AGENT_QUIET_AFTER_MS = DELEGATE_QUIET_AFTER_MS;
 /** The why line of a running agent with nothing more to say: Quiet once it
  * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */
 export function quietOrWorking(silentMs: number): string {
-	return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
+  return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
 }
 
 /** A running subagent's quietOrWorking line from its timing, with the silence
  * that turns it Quiet (useNowPastQuiet) only while that silence grows with
  * the clock; a snapshot silence has nothing to time. */
 export function subagentQuietLine(timing: DelegateTiming): { text: string; quietForMs?: number } {
-	const quietFor = timing.quietForMs ?? 0;
-	const text = quietOrWorking(quietFor);
-	return timing.quietLive ? { text, quietForMs: quietFor } : { text };
+  const quietFor = timing.quietForMs ?? 0;
+  const text = quietOrWorking(quietFor);
+  return timing.quietLive ? { text, quietForMs: quietFor } : { text };
 }
 
 /** whyLine's working-row text once an activity read exists (S5). The
@@ -323,12 +313,12 @@ export function subagentQuietLine(timing: DelegateTiming): { text: string; quiet
  * the session last set out to do, else the job it is running, else
  * "Working". */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
-	if (activity.runningSubagents > 0) return { kind: "subagents", text: waitingOnSubagents(activity.runningSubagents) };
-	const quiet = quietState(activity, msSinceReadMs);
-	if (quiet?.state === "stuck")
-		return { kind: "stuck", text: `May be stuck · no updates for ${compactDuration(quiet.forMs)}`, stuck: true };
-	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
-	return commandOrWorking(row, activity.latestIntent);
+  if (activity.runningSubagents > 0) return { kind: "subagents", text: waitingOnSubagents(activity.runningSubagents) };
+  const quiet = quietState(activity, msSinceReadMs);
+  if (quiet?.state === "stuck")
+    return { kind: "stuck", text: `May be stuck · no updates for ${compactDuration(quiet.forMs)}`, stuck: true };
+  if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
+  return commandOrWorking(row, activity.latestIntent);
 }
 
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
@@ -336,13 +326,18 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
  * as it read before S5, including a working row's pre-S5 fallback
  * (workingActivity). A row whose model call waits out a usage limit says
  * when it resumes while that time is still ahead. */
-export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
-	const quotaWait = quotaWaitRemainingMs(item.row, Date.now());
-	if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
-	if (item.state === "working")
-		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
-	const reason = REASONS[item.state];
-	return reason ? { kind: "reason", word: WORDS[item.state], ...reason } : null;
+export function whyLine(
+  item: ClassifiedRow,
+  activity?: SessionActivity,
+  msSinceReadMs = 0,
+  nowMs = Date.now(),
+): WhyLine | null {
+  const quotaWait = quotaWaitRemainingMs(item.row, nowMs);
+  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+  if (item.state === "working")
+    return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
+  const reason = REASONS[item.state];
+  return reason ? { kind: "reason", word: WORDS[item.state], ...reason } : null;
 }
 
 /** A working row's own words, where nothing louder applies: what the session
@@ -351,9 +346,9 @@ export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSince
  * what the job is for; the daemon cuts one to a line and drops it when a turn
  * begins (activity_meter.go). */
 function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): WhyLine {
-	if (latestIntent) return { kind: "intent", text: latestIntent };
-	const command = row.running_job_command;
-	return command ? { kind: "job", text: `Running ${command}` } : { kind: "state", text: "Working" };
+  if (latestIntent) return { kind: "intent", text: latestIntent };
+  const command = row.running_job_command;
+  return command ? { kind: "job", text: `Running ${command}` } : { kind: "state", text: "Working" };
 }
 
 /** What a working session is doing when there is no activity read at all (an
@@ -362,41 +357,41 @@ function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string):
  * subagents under its children -- those hold only fork originals and cluster
  * members -- so the tally is the only place a subagent count comes from. */
 export function workingActivity(row: NavigationSessionSummary): WhyLine {
-	const running = row.subagents?.running ?? 0;
-	if (running > 0) return { kind: "subagents", text: waitingOnSubagents(running) };
-	return commandOrWorking(row);
+  const running = row.subagents?.running ?? 0;
+  if (running > 0) return { kind: "subagents", text: waitingOnSubagents(running) };
+  return commandOrWorking(row);
 }
 
 /** The native session-list chip names running subagents only. */
 export function subagentChipText(tally: { running: number }): string {
-	return tally.running > 0 ? `${tally.running} running` : "";
+  return tally.running > 0 ? `${tally.running} running` : "";
 }
 
 export interface Usual {
-	project?: string;
-	host?: string;
+  project?: string;
+  host?: string;
 }
 
 function mostCommon(values: readonly string[]): string | undefined {
-	const counts = new Map<string, number>();
-	for (const value of values) if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
-	let best: string | undefined;
-	let bestCount = 0;
-	for (const [value, count] of counts)
-		if (count > bestCount || (count === bestCount && best !== undefined && value < best)) {
-			best = value;
-			bestCount = count;
-		}
-	return best;
+  const counts = new Map<string, number>();
+  for (const value of values) if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
+  let best: string | undefined;
+  let bestCount = 0;
+  for (const [value, count] of counts)
+    if (count > bestCount || (count === bestCount && best !== undefined && value < best)) {
+      best = value;
+      bestCount = count;
+    }
+  return best;
 }
 
 /** The fleet's usual project and host: the most common among Live rows. A row
  * prints either only when it differs (spec 7.2). */
 export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
-	return {
-		project: mostCommon(rows.map((row) => row.project)),
-		host: mostCommon(rows.map((row) => row.host_id)),
-	};
+  return {
+    project: mostCommon(rows.map((row) => row.project)),
+    host: mostCommon(rows.map((row) => row.host_id)),
+  };
 }
 
 /** The task in progress, by its own position in the list ("Task 4 of 7 · Fix
@@ -410,17 +405,17 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
  * fallback for a payload that, contrary to the contract, carries `current`
  * without `current_id`. */
 export function taskLine(row: NavigationSessionSummary): string | null {
-	const tasks = row.tasks;
-	if (!tasks?.current) return null;
-	const position = tasks.current_id ?? taskSettledCount(tasks) + 1;
-	return `Task ${position} of ${tasks.total} · ${tasks.current}`;
+  const tasks = row.tasks;
+  if (!tasks?.current) return null;
+  const position = tasks.current_id ?? taskSettledCount(tasks) + 1;
+  return `Task ${position} of ${tasks.total} · ${tasks.current}`;
 }
 
 export interface LastLine {
-	task?: string;
-	project?: string;
-	host?: string;
-	model?: string;
+  task?: string;
+  project?: string;
+  host?: string;
+  model?: string;
 }
 
 /** The row's last line (spec 7.2): the task in progress first, then the
@@ -429,26 +424,26 @@ export interface LastLine {
  * Subagent failures never appear here; they show only in the session's
  * Agents chip and list. */
 export function lastLine(
-	row: NavigationSessionSummary,
-	usual: Usual,
-	hostLabel: (hostId: string) => string,
-	showModel = false,
+  row: NavigationSessionSummary,
+  usual: Usual,
+  hostLabel: (hostId: string) => string,
+  showModel = false,
 ): LastLine | null {
-	const line: LastLine = {};
-	const task = taskLine(row);
-	if (task) line.task = task;
-	if (row.project && row.project !== usual.project) line.project = row.project;
-	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
-	if (showModel && row.model_name) line.model = row.model_name;
-	return Object.keys(line).length > 0 ? line : null;
+  const line: LastLine = {};
+  const task = taskLine(row);
+  if (task) line.task = task;
+  if (row.project && row.project !== usual.project) line.project = row.project;
+  if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
+  if (showModel && row.model_name) line.model = row.model_name;
+  return Object.keys(line).length > 0 ? line : null;
 }
 
 /** Names a host by its manifest source's label. A host the manifest doesn't
  * name, or every host before the manifest loads, goes to the fallback. */
 export function hostLabeler(
-	sources: readonly { id: string; label: string }[] | undefined,
-	fallback: (hostId: string) => string = (hostId) => hostId,
+  sources: readonly { id: string; label: string }[] | undefined,
+  fallback: (hostId: string) => string = (hostId) => hostId,
 ): (hostId: string) => string {
-	const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
-	return (hostId) => labels.get(hostId) ?? fallback(hostId);
+  const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
+  return (hostId) => labels.get(hostId) ?? fallback(hostId);
 }

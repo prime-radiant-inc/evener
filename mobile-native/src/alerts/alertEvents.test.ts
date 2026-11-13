@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import { liveBands, whyLine } from "../board/attention";
+import { liveBands, whyLine } from "@evener/appwire-client/state/navigation";
 import type { Notice } from "../board/notices";
 import type { Alert } from "./alertCenter";
 import { AlertFeed, detectNoticeAlerts, detectSessionAlerts } from "./alertEvents";

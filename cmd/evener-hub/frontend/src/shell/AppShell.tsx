@@ -21,6 +21,7 @@ import { cancelConversationHandoff, conversationHandoffGeneration } from "../sto
 import {
   selectLiveRows,
   selectLocation,
+  selectNeedsYouRows,
   selectNextSectionOffset,
   selectSectionCanDemand,
   selectSectionRemaining,
@@ -45,6 +46,7 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
+import { liveBandRefs, railLiveBands } from "./rail/liveBands";
 import { isAppDrivenNavigation, navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import {
@@ -607,7 +609,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     };
     const liveSessions = createLiveSessionController({
       generation: () => navigationStore.getState().clientGenerationID,
-      liveRefs: () => selectLiveRows(navigationStore.getState()).map((row) => row.ref),
+      // The order the rail shows Live in, so the chord's next row is the row
+      // below the current one.
+      liveRefs: () => {
+        const state = navigationStore.getState();
+        return liveBandRefs(railLiveBands(selectLiveRows(state), selectNeedsYouRows(state)));
+      },
       liveRemaining: () => selectSectionRemaining("live", navigationStore.getState()),
       canDemandUnloaded: () => {
         const state = navigationStore.getState();

@@ -6,7 +6,7 @@
 // "does not provide an export named 'relativeAge'". Vite and Metro resolve the
 // star barrel, so no other gate noticed; only the scripts path broke.
 //
-// The probe loads the barrel and each of its nine modules through the same tsx
+// The probe loads the barrel and each of its ten modules through the same tsx
 // a script uses, then compares the barrel's runtime exports against the union
 // of the modules' own. Explicit named re-exports make the two equal; a return
 // to `export *` loses every name (the probe's import fails outright), and
@@ -31,6 +31,7 @@ const moduleNames = [
 	"hostGrouping",
 	"immutable",
 	"invalidation",
+	"liveAttention",
 	"merge",
 	"revalidator",
 	"selectors",

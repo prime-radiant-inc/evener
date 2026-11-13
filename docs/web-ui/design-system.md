@@ -386,7 +386,8 @@ Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes: numbe
 number}`.
 
 The browser rail uses a deliberately smaller status grammar instead of `<Cadence>` because its
-navigation summaries carry no frame trace and every session row must stay one line. Its indicator
+navigation summaries carry no frame trace and a session row stays one line unless it has a reason
+to say more (below). Its indicator
 is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red diamond = Failed, turning alive
 ring = Working. The shape difference keeps needs-you and failed distinct without hue, and the
 accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
@@ -426,7 +427,19 @@ The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
-and textual state lines do not appear on the row.
+do not appear on the row.
+
+**Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
+band that has sessions is a fold in the section's `Tree`, its name in medium ink with a
+`Badge` count (attention tone on Needs you only), and all three start open. Rows do not
+animate when a session changes band. A Live row may carry one second line, in caption
+type and medium ink, that truncates and never wraps, and it prints only what the band
+and the dot have not already said: on a Needs-you row the kind of attention (question,
+approval, failure, warning, restart) in the dot's own ink; on a working row what it is
+waiting on or running, or its wait for a usage limit. A row that is simply working or
+idle keeps one line. The same line names the row's host where Live spans hosts and the
+row is away from this hub, or the host is offline. Rows outside Live keep the one-line
+face; their only second line is the usage-limit wait.
 
 The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
 one filled primary on screen: the rail is chrome, so its CTA must not outrank the current

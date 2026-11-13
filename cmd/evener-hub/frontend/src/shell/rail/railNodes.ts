@@ -11,11 +11,15 @@
 
 import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
 import {
+  type Band,
+  type BoardState,
   canonicalHostId,
   orderedHosts,
   projectHostIds as ownerHostIds,
   projectNodeExpansionKey,
+  subagentTallyToShow,
 } from "@evener/appwire-client/state/navigation";
+import { isTopLevelSession } from "./sessionKind";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -92,6 +96,20 @@ export interface SessionRailNode extends WidgetTreeNode {
   // tier roots at depth 1, where project rows sit too, so depth no longer
   // separates the two shapes.
   crossProjectTier?: boolean;
+  // Set only on a row inside one of Live's bands: the attention class the
+  // band was chosen from, which the row's why line is read from too.
+  live?: BoardState;
+  // A Live row's host, present only where the row has to name it (see
+  // liveBandNodes).
+  liveHost?: { label: string; online: boolean };
+}
+
+/** One of Live's bands as a tree branch (liveBands.ts). The band is a fold:
+ * collapsing it hides its rows and keeps its count. */
+export interface BandRailNode extends WidgetTreeNode {
+  kind: "band";
+  band: Band;
+  children: SessionRailNode[];
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -131,9 +149,8 @@ export interface LoadingRailNode extends WidgetTreeNode {
 }
 
 /** One configured host as a tree group - the rail's organize-by setting.
- * Hosts are the top groups in "host, then project" mode, a sub-branch inside
- * each project in "project, then host" mode, and the Live section's
- * subheaders whenever its rows span more than one host. Carries no rollup
+ * Hosts are the top groups in "host, then project" mode and a sub-branch
+ * inside each project in "project, then host" mode. Carries no rollup
  * of its own: the rows under it keep their own signals, and an honest
  * per-host attention count would need wire support the manifest does not
  * carry. */
@@ -195,7 +212,13 @@ export function catalogOverflowNode(
   return overflowNode(id, remaining, [{ catalog, offset, limit }]);
 }
 
-export type RailNode = SessionRailNode | ProjectRailNode | HostRailNode | LoadingRailNode | OverflowRailNode;
+export type RailNode =
+  | SessionRailNode
+  | ProjectRailNode
+  | HostRailNode
+  | BandRailNode
+  | LoadingRailNode
+  | OverflowRailNode;
 
 type ProjectNodeCacheEntry = Readonly<{
   children: RailNode[];
@@ -349,12 +372,51 @@ function toArchivedSessionNode(session: RailSession, isExpanded: IsExpanded): Se
   return node;
 }
 
-/** Builds rail nodes for a flat session list - the Needs-you, Live, and
- * Pinned tiers, each of which is just TreeNode[] on the wire.
+// A Live row's node, cached per session object and per the facts the band
+// adds to it, so an unchanged row keeps its node (and its memoized render)
+// while a row that changes class or starts naming its host gets a fresh one.
+const liveSessionNodeCache = new WeakMap<object, Map<string, SessionRailNode>>();
+export function liveSessionNode(
+  session: RailSession,
+  state: BoardState,
+  host?: { label: string; online: boolean },
+): SessionRailNode {
+  const variant = host ? `${state}|${host.online ? "on" : "off"}|${host.label}` : state;
+  let variants = liveSessionNodeCache.get(session);
+  if (!variants) {
+    variants = new Map();
+    liveSessionNodeCache.set(session, variants);
+  }
+  let node = variants.get(variant);
+  if (!node) {
+    node = { id: session.row_id, kind: "session", session, children: [], crossProjectTier: true, live: state };
+    if (host) node.liveHost = host;
+    variants.set(variant, node);
+  }
+  return node;
+}
+
+type BandNodeCacheEntry = Readonly<{ expanded: boolean; children: SessionRailNode[]; value: BandRailNode }>;
+const bandNodeCache = new Map<string, BandNodeCacheEntry>();
+export function cachedBandNode(id: string, band: Band, expanded: boolean, children: SessionRailNode[]): BandRailNode {
+  const cached = bandNodeCache.get(id);
+  if (
+    cached &&
+    cached.expanded === expanded &&
+    cached.children.length === children.length &&
+    cached.children.every((child, index) => child === children[index])
+  )
+    return cached.value;
+  const value: BandRailNode = { id, kind: "band", band, expanded, children };
+  bandNodeCache.set(id, { expanded, children, value });
+  return value;
+}
+
+/** Builds rail nodes for a flat session list - the Pinned tiers, each of
+ * which is just TreeNode[] on the wire.
  * Every row this returns is the root of a cross-project tier, so each one
- * carries the crossProjectTier mark - host grouping nests these rows under
- * subheaders, and the mark is how RailRow keeps telling a tier root from a
- * project-nested row. */
+ * carries the crossProjectTier mark: it is how RailRow tells a tier root from
+ * a project-nested row. */
 export function sessionNodes(nodes: readonly RailSession[]): SessionRailNode[] {
   return nodes.map((n) => toSessionNode(n, true));
 }
@@ -373,6 +435,28 @@ export function pinSectionDisclosureID(sectionID: string): string {
 export function displayState(node: Pick<NavigationSessionSummary, "state" | "approval_pending">): string {
   if (approvalWaiting(node.state, node.approval_pending === true)) return "awaiting";
   return node.state;
+}
+
+// The state a session row's dot is drawn from. Only attention that waits on a
+// person outranks work: a question, an approval (which displayState presents
+// as awaiting), or a restart. A finished turn (awaiting without a question)
+// is not attention: running work reads as working instead. A warning shares
+// the amber dot family only when it also blocks on a question; otherwise
+// running jobs remain what is happening.
+export function effectiveSessionState(session: NavigationSessionSummary): string {
+  const presented = displayState(session);
+  const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
+  if (presented === "errored") return "errored";
+  const attentionOutranksWork =
+    (presented === "awaiting" && session.ask_pending === true) ||
+    session.approval_pending === true ||
+    presented === "restartRequired" ||
+    (presented === "warning" && session.ask_pending === true);
+  if (attentionOutranksWork) return presented;
+  if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
+    return "active";
+  }
+  return presented;
 }
 
 export interface ActiveWorkSummary {
@@ -589,10 +673,6 @@ export function hostGroupId(hostId: string): string {
   return `host:${hostId}`;
 }
 
-export function liveHostGroupId(hostId: string): string {
-  return `livehost:${hostId}`;
-}
-
 function hostProjectCopyId(projectId: string, hostId: string): string {
   return `${projectId}@${hostId}`;
 }
@@ -788,7 +868,7 @@ function sourcesSignature(sources: readonly Source[]): string {
  * A branch holds only that host's loaded rows and starts collapsed; its
  * identity rides the project's cached children, so it needs no cache of its
  * own. Branches render only while the loaded rows themselves span hosts -
- * the same line liveNodesGroupedByHost draws: a project whose rows sit on
+ * a project whose rows sit on
  * one host keeps today's flat children, so a lone "this host" branch cannot
  * bury every session one expansion deeper for no grouping gained. */
 function hostBranchNodes(
@@ -807,33 +887,12 @@ function hostBranchNodes(
   return branches;
 }
 
-/** The Live tier's flat rows, grouped under host subheaders whenever they
- * span more than one host; a single host (or none) keeps today's flat list,
- * byte for byte. Like every host group these default expanded: collapsing
- * them is the rare move. */
-export function liveNodesGroupedByHost(
-  nodes: SessionRailNode[],
-  sources: readonly Source[],
-  isExpanded: IsExpanded,
-): RailNode[] {
-  const hostIds = new Set(nodes.map((n) => n.session.host_id));
-  if (hostIds.size <= 1) return nodes;
-  return orderedHosts(hostIds, sources).map(({ id: hostId, label, online }): HostRailNode => {
-    const id = liveHostGroupId(hostId);
-    return cachedHostNode(
-      id,
-      { id: hostId, label, online },
-      isExpanded(id, true),
-      nodes.filter((n) => n.session.host_id === hostId),
-    );
-  });
-}
-
 /** The expansion chain, outermost first, a deep-link reveal must walk to
  * expose the row `ref` renders at: the project's own node in flat mode, the
  * owning host group then the project's copy in "Host, then project", the
- * project then its per-host branch in "Project, then host", and a Live host
- * subheader for a live row whenever Live groups. Only TOP-LEVEL rows can be
+ * project then its per-host branch in "Project, then host", and the Live band
+ * that holds a row no loaded project does (`liveFoldOf`, the rail's
+ * liveBandFoldOf). Only TOP-LEVEL rows can be
  * found in the primary lists. Archived fork originals are found recursively
  * through their continuation and each original's disclosure; activity children
  * instead resolve through location to their carrier. An archived-tier row
@@ -846,7 +905,7 @@ export function liveNodesGroupedByHost(
  * fold it needs is already open. */
 export function revealExpansionIds(
   projects: readonly RailProject[],
-  live: readonly RailSession[],
+  liveFoldOf: (ref: string) => string | undefined,
   ref: string,
   mode: RailGroupingMode,
   options?: { rowsUnderProjectNode?: boolean },
@@ -884,12 +943,8 @@ export function revealExpansionIds(
     }
     return [id, ...originalFolds];
   }
-  const carrier = live.find((n) => n.ref === ref);
-  if (!carrier) return [];
-  // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
-  // so a subheader id would name a fold that does not exist.
-  if (mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1) return [liveHostGroupId(carrier.host_id)];
-  return [];
+  const liveFold = liveFoldOf(ref);
+  return liveFold === undefined ? [] : [liveFold];
 }
 
 /** The expansion ids that mean "this project's rows are in view" under the

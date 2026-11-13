@@ -1,6 +1,6 @@
 import type { EvenerDelegateInfo, SandboxEscalationRequested, TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import { boardState } from "../board/attention";
+import { boardState } from "@evener/appwire-client/state/navigation";
 import { contextChips, sessionStateLine, type StateSource } from "./sessionState";
 
 const counts = (total = 0, failed = 0) => ({ known: true, total, active: total - failed, failed, completed: 0 });

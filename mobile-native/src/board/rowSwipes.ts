@@ -3,7 +3,7 @@
 // Undo after an archive.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ToastController } from "../Toast";
-import type { ClassifiedRow } from "./attention";
+import type { ClassifiedRow } from "@evener/appwire-client/state/navigation";
 import type { NavigationActions } from "../navigationActions";
 import { archiveTarget, type JournalOutcome, journalOutcome, type RowActionContext, swipeActions } from "./rowActions";
 import type { SwipeAction } from "./SwipeRow";

@@ -88,7 +88,7 @@ import type {
 	Turn,
 	TurnModel,
 } from "@evener/appwire-client";
-import { hubTime } from "./board/attention";
+import { hubTime } from "@evener/appwire-client/state/navigation";
 
 // --- the conversation native holds -------------------------------------------
 

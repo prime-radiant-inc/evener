@@ -1,0 +1,24 @@
+{
+  "name": "rail-live-band-rows",
+  "description": "rail Live band rows at the default 280px rail: a session row's second 'why' line never wraps (one caption line tall, truncating inside the row), a row with a why line starts its title at the same x as one without, and the why line sits under the title text rather than under the status dot",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/tree/tree.module.css",
+    "widgets/badge/badge.module.css",
+    "shell/rail/Rail.module.css",
+    "shell/rail/RailRow.module.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "RailRow.module.css: .why { white-space: nowrap } removed",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line."
+  }
+}

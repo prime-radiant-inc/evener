@@ -12,7 +12,7 @@ import type { DraftLibrary } from "../draftLibrary";
 import { isReady } from "../connectionDisplay";
 import { createBoardController } from "../board/boardData";
 import { type SearchScope, createSearchController, sessionResults } from "../board/boardSearch";
-import { liveBands, liveRows, usualPlace } from "../board/attention";
+import { liveBands, liveRows, usualPlace } from "@evener/appwire-client/state/navigation";
 import { BandHeader, BoardRow, Hairline } from "../board/BoardRow";
 import { ResultRow } from "../board/SearchResults";
 import { useBoardReadRetry } from "../board/useBoardReadRetry";

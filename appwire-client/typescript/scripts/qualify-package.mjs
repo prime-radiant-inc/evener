@@ -640,7 +640,8 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
       // sources and no needs-you rows, and the row age formatter is pure),
-      // hostGrouping (a project's hosts come from its rows).
+      // hostGrouping (a project's hosts come from its rows), liveAttention (an
+      // empty Live has three empty bands).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -675,6 +676,7 @@ assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
 assert.deepEqual(client.projectHostIds(undefined, [{ host_id: "devbox" }]), ["devbox"]);
+assert.deepEqual(client.liveBands([], [], () => true), { needsYou: [], working: [], idle: [] });
 `,
     },
     // The credentials state layer: the listing core each app's Providers &

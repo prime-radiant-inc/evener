@@ -6,7 +6,7 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from "react-native";
-import type { BoardState, WhyLine } from "../board/attention";
+import type { BoardState, WhyLine } from "@evener/appwire-client/state/navigation";
 import { StateMark } from "../board/StateMark";
 import { FLOATING_SHADOW } from "../design/underBar";
 import { allowFontScaling, useColors, useTextScale } from "../ui";

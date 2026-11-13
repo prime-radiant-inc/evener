@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { AGENT_QUIET_AFTER_MS } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS } from "@evener/appwire-client/state/navigation";
 import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { useNowPastQuiet } from "./quietClock";
 

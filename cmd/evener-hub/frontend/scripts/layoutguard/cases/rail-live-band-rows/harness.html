@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>rail-live-band-rows layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  .railBox {
+    width: 280px;
+    box-sizing: border-box;
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- The rail's Live band DOM (widgets/tree treeitem-then-group nesting;
+     RailRow.tsx's BandRow and SessionRow content spans) over the REAL class
+     names. -->
+<div class="railBox">
+  <div class="section">
+    <div class="tree">
+
+      <div role="treeitem" class="row" aria-expanded="true" aria-level="1">
+        <span class="railRow" data-testid="rail-row-band">
+          <span class="textCol">
+            <span class="titleLine">
+              <span class="label bandLabel">Needs you</span>
+              <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
+            </span>
+          </span>
+          <span class="rightSlot"><span class="badge badgeAttention">3</span></span>
+        </span>
+      </div>
+      <div role="group" class="group">
+
+        <div role="treeitem" class="row" aria-level="2">
+          <span class="railRow" id="row-long">
+            <span class="textCol">
+              <span class="titleLine">
+                <span class="signal"></span>
+                <span class="label" id="label-why">Verify Vite Build</span>
+              </span>
+              <span class="why" id="why-long" data-testid="rail-row-why"><span class="whyReason" data-hue="attention">Waiting on approval</span> &middot; a-remarkably-long-host-name-that-cannot-possibly-fit-in-a-narrow-rail.internal.example.com (offline) and then some more words to be sure</span>
+            </span>
+            <span class="rightSlot"><span class="time">4m</span></span>
+          </span>
+        </div>
+
+        <div role="treeitem" class="row" aria-level="2">
+          <span class="railRow">
+            <span class="textCol">
+              <span class="titleLine">
+                <span class="label" id="label-quiet">Rename Session Gloss</span>
+              </span>
+            </span>
+            <span class="rightSlot"><span class="time">9m</span></span>
+          </span>
+        </div>
+
+        <div role="treeitem" class="row" aria-level="2">
+          <span class="railRow">
+            <span class="textCol">
+              <span class="titleLine">
+                <span class="label">Short Why</span>
+              </span>
+              <span class="why" id="why-short" data-testid="rail-row-why">Idle</span>
+            </span>
+            <span class="rightSlot"><span class="time">1h</span></span>
+          </span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const el = (id) => document.getElementById(id);
+  const rect = (id) => {
+    const r = el(id).getBoundingClientRect();
+    return { left: r.left, right: r.right, height: r.height };
+  };
+  return {
+    why: rect("why-long"),
+    whyShort: rect("why-short"),
+    whyOverflows: el("why-long").scrollWidth > el("why-long").clientWidth,
+    row: rect("row-long"),
+    whyLabel: rect("label-why"),
+    quietLabel: rect("label-quiet"),
+  };
+};
+</script>
+</body>
+</html>

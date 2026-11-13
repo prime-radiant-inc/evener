@@ -25,7 +25,7 @@ import {
 	type TurnModel,
 	words,
 } from "@evener/appwire-client";
-import { hubTime } from "../board/attention";
+import { hubTime } from "@evener/appwire-client/state/navigation";
 import { readerKey } from "../readerPosition";
 import type { SessionAccounting } from "../transcriptPresentation";
 import { type RunStep, rowTurnId, type TimelineRow, timelineGap } from "../timeline";

@@ -5,7 +5,7 @@
 // (docs/design/mobile/redesign/prototype/core.js, EV.alert and releaseHeld),
 // which the usability rounds tested (findings.md: round 1 problems 2 and 3,
 // round 3 problem 1, round 4 problem 2).
-import type { WhyLine } from "../board/attention";
+import type { WhyLine } from "@evener/appwire-client/state/navigation";
 
 /** The Board states that put a session in Needs you (spec 13.2). */
 export type NeedsYouKind = "failed" | "question" | "needsYou" | "approval" | "warning" | "restartNeeded";
