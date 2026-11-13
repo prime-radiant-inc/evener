@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -361,6 +362,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
+	plans.warnings = append(plans.warnings, deliveryPlans.warnings...)
 	if len(stop.deliveries) != 0 {
 		// A receipt still in flight will untrack itself when its executor
 		// commits or abandons it, waking this drain.
@@ -507,11 +509,12 @@ type delegateDeliveryWake struct {
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
-// for retryable, non-inline admissions the stop tracks: their receiver-side
-// write already committed and only the acknowledgment append failed, while the
-// executor that owned the plan has returned. Without the retry the stop waits
-// on a receipt no plan can resolve. In-flight and inline receipts are left to
-// their owners.
+// for retryable admissions the stop tracks: their receiver-side write already
+// committed and only the acknowledgment append failed, while the executor that
+// owned the plan has returned. Without the retry the stop waits on a receipt
+// no plan can resolve. In-flight receipts are left to their owners; an inline
+// receipt whose owning tool commit is gone is abandoned and its lost result
+// recorded.
 //
 // The acks commit one receipt at a time, but the snapshots, owner replays, and
 // wakes are planned once per touched delegate, owner, and receiver after the
@@ -524,14 +527,17 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	sort.Slice(tokens, func(i, j int) bool { return tokens[i].processID < tokens[j].processID })
 	updated := make(map[string]struct{})
 	owners := make(map[string]struct{})
+	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
-		return c.deliveryAckPlansLocked(
+		plans := c.deliveryAckPlansLocked(
 			slices.Sorted(maps.Keys(updated)),
 			slices.Sorted(maps.Keys(owners)),
 		)
+		plans.warnings = append(plans.warnings, lost...)
+		return plans
 	}
 	buildWakes := func() []delegateDeliveryWake {
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
@@ -545,7 +551,36 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	}
 	for _, token := range tokens {
 		receipt := c.deliveries[token.processID]
-		if receipt == nil || receipt.token != token || !receipt.retryable || receipt.inline {
+		if receipt == nil || receipt.token != token {
+			continue
+		}
+		// A caller-committed inline receipt already persisted its result in
+		// the caller's tool round; only its store acknowledgment is
+		// outstanding, so it falls through to the ordinary retry.
+		if receipt.inline {
+			if receipt.commitQueued || (receipt.callerCommitted && !receipt.retryable) {
+				// A live tool round still owns the reply and will complete it.
+				continue
+			}
+			if !receipt.retryable {
+				if owner, ok := c.deliveryReceiverLocked(receipt.ownerID).(*Session); ok && owner != nil {
+					// The reply has not queued its commit yet; wait for it.
+					continue
+				}
+				// No owner can complete the receipt: it was never answered by
+				// its tool round. Abandon it and record the lost result.
+				_, _ = c.completeDeliveryAckLocked(token, false)
+				lost = append(lost, events.WarningData{
+					Message:    fmt.Sprintf("delegate %s delivery %s result lost: its owning tool commit is gone", receipt.delegateID, token.deliveryID),
+					Source:     "delegate",
+					Code:       events.WarningCodeDelegateDeliveryResultLost,
+					DelegateID: receipt.delegateID,
+				})
+				continue
+			}
+			// A retryable reply already persisted the receipt's result; only
+			// its acknowledgment failed, so retry it like a non-inline receipt.
+		} else if !receipt.retryable {
 			continue
 		}
 		ack, err := c.completeDeliveryAckLocked(token, true)
@@ -594,6 +629,36 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 		}
 	}
 	return buildPlans(), buildWakes(), nil
+}
+
+// noteDelegateDeliveryCommitQueued records that an inline receipt's owning
+// tool commit is queued on its session and can still complete it. The caller
+// holds no session lock. c.mu is the only lock taken here: a session pumping
+// deliveries holds its delivery mutex across BeginDelivery, so reading that
+// session's map from Reconcile would invert the lock order.
+func (c *delegateTreeController) noteDelegateDeliveryCommitQueued(token delegateDeliveryToken) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.commitQueued = true
+	}
+}
+
+// noteDelegateDeliveryCommitTaken clears the queued mark when the tool round
+// takes its commit: the round now owns the reply and will complete the receipt
+// or leave it retryable for the acknowledgment.
+func (c *delegateTreeController) noteDelegateDeliveryCommitTaken(token delegateDeliveryToken) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.commitQueued = false
+	}
 }
 
 // delegateStopDeliveryRetryDelay spaces retries of a stop delivery

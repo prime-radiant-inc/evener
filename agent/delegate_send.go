@@ -397,7 +397,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// and replay the owed deliveries as best effort: an acknowledgment failure
 	// there is not the start's failure and must not latch finalization recovery
 	// or leave an unlaunched runner. The failure path requeues the parcels; a
-	// covering stop still repairs any receipt left behind.
+	// covering stop repairs any non-inline receipt left behind. An inline
+	// receipt is answered by its tool commit, and the stop abandons it only
+	// after proving that commit is gone, recording the lost result.
 	if execErr := s.executeDelegateMutationPlans(plans); execErr != nil {
 		s.emit(warningDataFromErrorCode(events.WarningCodeDelegateStartDeliveryReplay, "delegate start delivery replay failed", execErr))
 	}

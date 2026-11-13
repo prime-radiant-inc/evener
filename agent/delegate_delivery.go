@@ -61,6 +61,14 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
+	// callerCommitted marks an inline admission whose result the caller
+	// already persisted in its own tool round. Its store acknowledgment can
+	// still be retried after the reply is gone; nothing is lost.
+	callerCommitted bool
+	// commitQueued marks an inline admission whose owning tool commit is
+	// queued on its session. It is cleared when the commit is taken into its
+	// tool round, whose reply then completes or fails the receipt.
+	commitQueued bool
 	// heldClaim is the receiver's own claim on a held delivery an inline
 	// reply took over, restored if the reply's tool round is abandoned.
 	heldClaim *delegateDeliveryClaim
@@ -280,12 +288,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	admit := func(claim delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
 		receipt := &delegateDeliveryAdmission{
-			token:      delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
-			delegateID: plan.delegateID,
-			ownerID:    plan.ownerDelegateID,
-			claim:      claim,
-			cold:       cold,
-			inline:     plan.waiter != nil || plan.callerCommitted,
+			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
+			delegateID:      plan.delegateID,
+			ownerID:         plan.ownerDelegateID,
+			claim:           claim,
+			cold:            cold,
+			inline:          plan.waiter != nil || plan.callerCommitted,
+			callerCommitted: plan.callerCommitted,
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -1074,6 +1083,9 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 		return errDelegateDeliveryReceiverUnavailable
 	}
 	s.delegateController.emitDelegateUpdates(plans)
+	for _, warning := range plans.warnings {
+		s.emit(warning)
+	}
 	for _, attention := range plans.attention {
 		if err := s.delegateController.executeDelegateAttentionCleanup(attention); err != nil {
 			if plans.attentionFinalization != nil {
