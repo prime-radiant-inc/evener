@@ -406,3 +406,34 @@ test("a linked reply whose composed text parses to nothing recaps nothing, not t
   const reply = userMessage({ text: "[answers]\nDeploy? Yes", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
   expect(answeredAskUserSuffix(turnsModel([ask], [reply]), ask)).toBeUndefined();
 });
+
+test("a linked reply never guesses between same-execution ask calls", () => {
+  // The link names the execution turn, not the individual call, and the
+  // fence keeps a call appended after a scoped answer pending even though
+  // it shares the answered call's turn (agent's
+  // TestAskFenceScopedAnswerPreservesPostAdmissionAppend). With two
+  // answerable calls in one execution, the reply's turn link cannot say
+  // which call it resolved - the recap shows nothing rather than claim a
+  // specific one answered.
+  const first = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_1" });
+  const second = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_2" });
+  const reply = userMessage({ text: "do the first thing", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("a free-prose recap carries only the reply's first line, with an ellipsis for the rest", () => {
+  // The recap's home is a single collapsed row; spec §4.3 lets the reply be
+  // any free prose, so a multi-paragraph answer must not be pasted whole
+  // into the ask row's summary.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({
+    text: "Option B — but see my notes below:\nActually use Postgres everywhere, and then re-run the migration.",
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+  });
+  expect(answeredAskUserSuffix(turnsModel([ask], [reply]), ask)).toBe(
+    " — answered: Option B — but see my notes below: …",
+  );
+});

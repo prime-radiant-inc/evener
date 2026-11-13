@@ -1181,8 +1181,12 @@ test("a completed intent group closes after its trailing tool calls", () => {
 // The wire serves the reply as a userMessage whose observation carries the
 // answer link exactly this way (internal/apptranscript's answerObservation);
 // this drives the real wire fold (hydrateThread), projection and row
-// rendering together, so the reply row's bubble - the thing the issue
-// reported as blank - is pinned on the same path a served transcript takes.
+// rendering together. The reply bubble itself already renders on main - the
+// issue's reported-blank symptom traces to a stale build - so the
+// discriminating pins here are the durable link surviving the fold (red on
+// pre-fix main) and the ask row's "— answered:" recap rendering FROM that
+// link: the recap is the visible behavior this change adds on the wire path
+// a served transcript takes.
 test("an answered round renders its reply text in the thread", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   const thread = {
@@ -1254,4 +1258,12 @@ test("an answered round renders its reply text in the thread", () => {
   expect(
     model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.id === "item_reply")?.answerToTurnIds,
   ).toEqual(["turn_q"]);
+  // And the ask row renders its recap FROM the link - the visible behavior
+  // this change adds on the served-transcript path. At chat level the summary
+  // line sits behind the row's intent trigger, so open it and read the
+  // row's own summary element.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain(
+    '— answered: "Authorize a bounded Jobs investigation"',
+  );
 });

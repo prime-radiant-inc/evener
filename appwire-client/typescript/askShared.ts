@@ -160,6 +160,16 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   if (at === -1) return undefined;
   const reply = findAnswerReply(items.slice(at + 1), item);
   if (!reply) return undefined;
+  // The wire's answer link names an execution TURN, not the individual call,
+  // and the fence can keep a later sibling call pending even though its turn
+  // is named (a scoped answer admits the pending set; a call appended after
+  // admission survives — agent's TestAskFenceScopedAnswerPreservesPostAdmissionAppend).
+  // With answerable sibling calls in the same execution the reply could
+  // belong to any of them, so the linked path claims nothing rather than
+  // recap the wrong call. The shape fallback keeps its pre-link behavior.
+  // (Exposing admission's call-level AskResolution on the wire would lift
+  // this guard; the link stays turn-granular until then.)
+  if (reply.answerToTurnIds !== undefined && askSiblingsShareTheTurn(items, item)) return undefined;
   if (reply.text.startsWith("[answers]")) {
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
@@ -178,9 +188,20 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   // A linked reply whose text is not the composed form is the spec's other
   // reply form - free prose (§4.3: "either the numbered [answers] form ...
   // or free prose; treat either as the reply to everything you asked") -
-  // and the reply's own words are the answer.
-  const prose = reply.text.trim();
-  return prose !== "" ? ` — answered: ${prose}` : undefined;
+  // and the reply's own words are the answer. The recap's home is one
+  // collapsed row, so only the reply's first line carries, with an
+  // ellipsis when the reply said more.
+  const trimmed = reply.text.trim();
+  const [first, ...rest] = trimmed.split("\n");
+  const more = rest.some((line) => line.trim() !== "");
+  return first !== "" ? ` — answered: ${first}${more ? " …" : ""}` : undefined;
+}
+
+// askSiblingsShareTheTurn reports whether another answerable ask call shares
+// item's execution turn - the population whose recap the turn-granular link
+// cannot disambiguate.
+function askSiblingsShareTheTurn(items: readonly ItemModel[], item: ItemModel): boolean {
+  return items.some((i) => i.id !== item.id && i.turnId === item.turnId && parseAskUserQuestions(i) !== undefined);
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item
