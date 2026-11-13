@@ -459,6 +459,137 @@ test("following-bottom intent survives a passive measurement correction and clea
   }
 });
 
+test("an away wheel retires end-follow before its delayed scroll can be read as a measurement growth", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-delayed-reanchor", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+    const end = scene.port().scrollTop;
+    expect(end).toBe(scene.port().scrollHeight - scene.port().clientHeight);
+    // Clear the record the scene's own start wheel left, so this test pins its
+    // own wheel.
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    // The wheel starts the reader away from the end. Its marker frame passes
+    // before the browser's own scroll event reaches the listener, so the
+    // delayed scroll cannot be the marker's veto.
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+    });
+    await act(async () => scene.frames.release());
+    // A resize that lands before the wheel's delayed movement must not consume
+    // the recorded offset.
+    await act(async () => scene.external.notify());
+    await act(async () => {
+      scene.port().scrollTop = end - 900;
+    });
+
+    // A measurement growth arrives before that scroll event: it must not pin
+    // the reader back to the end. The wheel's recorded start offset outlives
+    // the one-frame marker, so the geometry says the reader left.
+    scene.geometry.rowHeights[0] = (scene.geometry.rowHeights[0] ?? 0) + 100;
+    await act(async () => scene.external.notify());
+    expect(scene.flow().isFollowingBottom()).toBe(false);
+    expect(scene.flow().pillVisible).toBe(true);
+    // The row above the viewport grew, so the virtualizer preserves the
+    // reading position by that amount; what must not happen is a pin to the
+    // new end (which would put the reader back at scrollHeight - clientHeight).
+    expect(scene.port().scrollTop).toBeLessThan(scene.port().scrollHeight - scene.port().clientHeight - 4);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("a wheel-away record clears when the reader returns to the end", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-return-to-end", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    const end = scene.port().scrollTop;
+    // Settle the previous-geometry record at the end, so the wheel records the
+    // offset the reader actually left.
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    // Wheel away, then return to the true end before any re-anchor consumes
+    // the record.
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+      scene.port().scrollTop = end - 900;
+    });
+    await act(async () => scene.frames.release());
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+
+    // A backward measurement correction at the true end must keep following:
+    // the stale wheel offset must not retire it.
+    scene.geometry.rowHeights[0] = Math.max(100, (scene.geometry.rowHeights[0] ?? 0) - 100);
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("a delayed wheel whose marker expired retires on its own scroll event", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-delayed-scroll", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    const end = scene.port().scrollTop;
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+    });
+    await act(async () => scene.frames.release());
+    // A resize before the delayed movement retains the recorded offset.
+    await act(async () => scene.external.notify());
+
+    // The delayed scroll lands with a height change, so the listener cannot
+    // use its stable-geometry backward-move branch; the recorded wheel start
+    // must retire follow and report the movement.
+    scene.geometry.rowHeights[0] = (scene.geometry.rowHeights[0] ?? 0) + 100;
+    await act(async () => {
+      scene.port().scrollTop = end - 900;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    expect(scene.flow().isFollowingBottom()).toBe(false);
+    expect(scene.flow().pillVisible).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
 test.each(["before", "after"] as const)(
   "backward wheel delivered %s compositor movement survives idle before partial measurement",
   async (delivery) => {
@@ -2539,6 +2670,35 @@ describe("late content growth with no scroll event", () => {
     } finally {
       resizeObserver.restore();
       raf.mockRestore();
+    }
+  });
+
+  test("a compositor-applied wheel whose marker expired retires follow before its scroll", async () => {
+    const frames = controllableFrames();
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set, result } = mountWithContent();
+      // The compositor applies the wheel before the passive handler runs: the
+      // live metrics are already away, the previous measurement is the bottom.
+      const away: ScrollMetrics = {
+        scrollTop: MOUNTED_AT_BOTTOM.scrollTop - 120,
+        scrollHeight: MOUNTED_AT_BOTTOM.scrollHeight,
+        clientHeight: MOUNTED_AT_BOTTOM.clientHeight,
+      };
+      definePort(el, away);
+      set(away);
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+      // The marker frame passes before the wheel's scroll event.
+      act(() => frames.runAll());
+      // The resize observation lands first; the recorded departure must retire
+      // follow instead of pinning the reader back.
+      await act(async () => resizeObserver.trigger());
+      expect(result.current.isFollowingBottom()).toBe(false);
+      expect(result.current.pillVisible).toBe(true);
+      expect(el.scrollTop).toBe(away.scrollTop);
+    } finally {
+      resizeObserver.restore();
+      frames.restore();
     }
   });
 
