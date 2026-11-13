@@ -345,6 +345,15 @@
   font-weight: var(--font-weight-medium);
 }
 
+/* A band's count sits where a row's right slot would, but it is not one: a
+ * band has no actions to swap in on hover, so the count never hides. */
+.bandCount {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+}
+
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
  * cell (the Task-7 needs-you Badge and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed

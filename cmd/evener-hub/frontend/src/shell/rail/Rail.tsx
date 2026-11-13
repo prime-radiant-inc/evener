@@ -37,6 +37,7 @@ import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { useDismissNavigationChrome } from "../navigationChrome";
+import { useOptionalNeedsYou } from "../needsYouContext";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
@@ -52,7 +53,7 @@ import {
   setFavorite,
   unpinSession,
 } from "./actions";
-import { liveBandNodes, railLiveBands } from "./liveBands";
+import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -567,10 +568,21 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
-  const liveBands = useMemo(
+  const currentLiveBands = useMemo(
     () => railLiveBands(resources.live, resources.needsYou),
     [resources.live, resources.needsYou],
   );
+  // A row that changes band is unmounted and mounted again under its new
+  // fold, which would close a dialog opened from its menu and discard what
+  // the reader typed there. While a dialog is open the bands hold still;
+  // closing it lets the rows settle where they belong.
+  const dialogOpen = useOptionalNeedsYou()?.snapshot.blocked ?? false;
+  const shownLiveBands = useRef(currentLiveBands);
+  const liveBands = useMemo(() => {
+    const shown = dialogOpen ? holdLiveBands(shownLiveBands.current, currentLiveBands) : currentLiveBands;
+    shownLiveBands.current = shown;
+    return shown;
+  }, [currentLiveBands, dialogOpen]);
   useRailReveal({
     revealTarget,
     onRevealConsumed,

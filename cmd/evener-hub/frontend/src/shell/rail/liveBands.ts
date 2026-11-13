@@ -6,10 +6,15 @@
 //
 // The rail differs from the shared model in two places, both so that no row
 // the hub lists in Live goes missing and a row's band agrees with its dot:
-// a resting session with work still running (a background job) presents as
-// working on the rail, so it sits in Working; and a row the shared model
-// bands nowhere (its host is offline, or it has not loaded) rests at the end
-// of Idle rather than dropping out of Live.
+// a session the rail presents as working (a resting one, or one with a
+// warning that blocks nothing, whose background job still runs) sits in
+// Working; and a row the shared model bands nowhere (its host is offline, or
+// it has not loaded) rests at the end of Idle rather than dropping out of
+// Live.
+//
+// The needs-you section's rows join as the hub sends them, archived ones
+// included: the hub's tier never decays with age, and the header's count and
+// Next needs you both walk the same rows.
 import { LOCAL_HOST, type NavigationSessionSummary, type Source } from "@evener/appwire-client";
 import {
   type Band,
@@ -54,17 +59,45 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
   const shared = liveBands<Row>(live, needsYou, () => true);
   const bands: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
   const placed = new Set<string>();
-  const restingWithWork: RailLiveRow<Row>[] = [];
+  const presentedWorking: RailLiveRow<Row>[] = [];
   for (const band of LIVE_BAND_ORDER) {
     for (const item of shared[band]) {
       placed.add(item.row.ref);
-      if (band === "idle" && presentsWorking(item.row)) restingWithWork.push({ session: item.row, state: "working" });
+      if (band !== "working" && presentsWorking(item.row))
+        presentedWorking.push({ session: item.row, state: "working" });
       else bands[band].push({ session: item.row, state: item.state });
     }
   }
-  bands.working.push(...restingWithWork);
+  bands.working.push(...presentedWorking);
   for (const row of live) if (!placed.has(row.ref)) bands.idle.push({ session: row, state: "shutDown" });
   return bands;
+}
+
+/** The bands to show while the reader is mid-interaction with a row (a dialog
+ * opened from it): every row `previous` showed keeps its band and place, with
+ * its fresh facts, so the row - and the dialog and draft it owns - is not
+ * torn down by moving to another band. Rows that left are dropped and new
+ * rows join the band they belong to. */
+export function holdLiveBands<Row extends NavigationSessionSummary>(
+  previous: RailLiveBands<Row>,
+  next: RailLiveBands<Row>,
+): RailLiveBands<Row> {
+  const fresh = new Map<string, RailLiveRow<Row>>();
+  for (const band of LIVE_BAND_ORDER) for (const row of next[band]) fresh.set(row.session.ref, row);
+  const shown = new Set<string>();
+  const held: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
+  for (const band of LIVE_BAND_ORDER) {
+    for (const row of previous[band]) {
+      const now = fresh.get(row.session.ref);
+      if (!now) continue;
+      shown.add(row.session.ref);
+      held[band].push(now);
+    }
+  }
+  for (const band of LIVE_BAND_ORDER) {
+    for (const row of next[band]) if (!shown.has(row.session.ref)) held[band].push(row);
+  }
+  return held;
 }
 
 /** Live's refs in the order the rail shows them, band by band. */

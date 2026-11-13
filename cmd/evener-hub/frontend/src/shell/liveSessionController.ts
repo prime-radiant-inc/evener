@@ -112,7 +112,19 @@ export function createLiveSessionController(deps: LiveSessionDeps): LiveSessionC
         const refs = deps.liveRefs();
         if (direction === "next") {
           const newlyLoaded = refs.find((ref) => !owner.beforeRefs.has(ref));
-          if (newlyLoaded) deps.openLiveSession(newlyLoaded);
+          if (newlyLoaded) {
+            deps.openLiveSession(newlyLoaded);
+            return;
+          }
+          // A page can land carrying only rows already shown (the rail joins
+          // needs-you rows into Live ahead of their page). The press still
+          // moves: on to the next page while one remains, else around.
+          if (deps.liveRemaining() > 0) {
+            demandPage("next", owner.beforeRefs);
+            return;
+          }
+          const wrapped = adjacentLiveSessionRef(refs, deps.focusedSessionRef(), "next");
+          if (wrapped !== null) deps.openLiveSession(wrapped);
           return;
         }
         // previous: the tail sits behind any remaining pages.

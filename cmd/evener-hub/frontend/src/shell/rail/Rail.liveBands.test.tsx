@@ -3,7 +3,7 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/session";
 import { resetConnectionStoreForTests } from "../../stores/connection";
@@ -12,6 +12,7 @@ import { resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
+import { NeedsYouProvider } from "../NeedsYouProvider";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { liveBandRefs, railLiveBands } from "./liveBands";
 import { Rail } from "./Rail";
@@ -84,7 +85,9 @@ async function mountRail(
   await act(async () => initNavigation(client, capability()));
   const view = render(
     <ClientProvider client={client}>
-      <Rail {...props} />
+      <NeedsYouProvider>
+        <Rail {...props} />
+      </NeedsYouProvider>
     </ClientProvider>,
   );
   const settled = async () => {
@@ -235,4 +238,24 @@ test("revealing a session inside a folded band opens the band", async () => {
     if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
     else delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   }
+});
+
+test("a rename in progress survives its session changing band, and the row moves once the dialog closes", async () => {
+  const { hub, announce } = await mountRail({ live: [session("a", { state: "active", rename: true }), session("b")] });
+  fireEvent.click(within(rowFor("local:a")).getByRole("button", { name: /Actions for/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const draft = () => within(screen.getByRole("dialog")).getByRole("textbox") as HTMLInputElement;
+  fireEvent.change(draft(), { target: { value: "Half-typed name" } });
+
+  // The turn ends on a question while the dialog is open.
+  hub.live = [session("a", { state: "awaiting", ask_pending: true, rename: true }), session("b")];
+  hub.needsYou = [hub.live[0] as NavigationSessionSummary];
+  await announce();
+  await waitFor(() => expect(within(rowFor("local:a")).queryByTestId("rail-row-why-text")).toBeTruthy());
+  expect(draft().value).toBe("Half-typed name");
+  expect(rowsOf("working")).toEqual(["local:a"]);
+
+  fireEvent.keyDown(draft(), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(rowsOf("needsYou")).toEqual(["local:a"]));
 });

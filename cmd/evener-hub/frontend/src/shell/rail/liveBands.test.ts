@@ -1,6 +1,6 @@
 import type { Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { liveBandFoldOf, liveBandId, liveBandNodes, liveBandRefs, railLiveBands } from "./liveBands";
+import { holdLiveBands, liveBandFoldOf, liveBandId, liveBandNodes, liveBandRefs, railLiveBands } from "./liveBands";
 import type { RailSession } from "./railNodes";
 
 function row(ref: string, overrides: Partial<RailSession> = {}): RailSession {
@@ -62,6 +62,39 @@ describe("railLiveBands", () => {
     expect(refsOf(bands.working)).toEqual(["local:turn", "local:job"]);
     expect(bands.working[1]?.state).toBe("working");
     expect(bands.idle).toEqual([]);
+  });
+
+  test("a warning that blocks nothing yields to a job still running, and a blocking one does not", () => {
+    const bands = railLiveBands(
+      [
+        row("local:warn-job", { state: "warning", running_job_count: 1 }),
+        row("local:warn-ask-job", { state: "warning", ask_pending: true, running_job_count: 1 }),
+        row("local:failed-job", { state: "errored", running_job_count: 1 }),
+        row("local:warn", { state: "warning" }),
+      ],
+      [],
+    );
+    expect(refsOf(bands.working)).toEqual(["local:warn-job"]);
+    expect(refsOf(bands.needsYou)).toEqual(["local:failed-job", "local:warn-ask-job", "local:warn"]);
+  });
+
+  test("a needs-you session the rail files as archived still shows: the hub's tier never decays", () => {
+    const stale = row("local:stale", { state: "awaiting", ask_pending: true, archived: true });
+    const bands = railLiveBands([row("local:idle")], [stale]);
+    expect(refsOf(bands.needsYou)).toEqual(["local:stale"]);
+  });
+
+  test("while held, a row keeps the band and place it had, with its fresh facts; new rows join their band", () => {
+    const before = railLiveBands([row("local:a", { state: "active" }), row("local:b"), row("local:gone")], []);
+    const after = railLiveBands(
+      [row("local:a", { state: "awaiting", ask_pending: true }), row("local:b"), row("local:new", { state: "active" })],
+      [],
+    );
+    const held = holdLiveBands(before, after);
+    expect(refsOf(held.needsYou)).toEqual([]);
+    expect(refsOf(held.working)).toEqual(["local:a", "local:new"]);
+    expect(held.working[0]?.state).toBe("question");
+    expect(refsOf(held.idle)).toEqual(["local:b"]);
   });
 
   test("a live row the shared model bands nowhere rests at the end of Idle instead of leaving Live", () => {

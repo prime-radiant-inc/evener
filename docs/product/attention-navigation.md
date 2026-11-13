@@ -52,14 +52,18 @@ order:
   warning or restart, oldest first within each. This is the hub's own
   needs-you order, so the band reads in the order Next needs you walks it.
   The band also shows needs-you sessions that Live's loaded pages have not
-  reached, so a session that needs a person is never behind "+N older".
+  reached, so a session that needs a person is never behind "+N older", and
+  it shows every row of the hub's tier, including one the rail files as
+  archived by age: the tier never decays, and the header's count and Next
+  needs you walk the same rows.
 - **Working** keeps the hub's Live order.
 - **Idle** is newest finished turn first.
 
 The rail differs from the Board in two deliberate places
 ([`railLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)).
-A resting session with a background job still running shows the rail's
-working indicator, so it sits in Working, after the sessions mid-turn. And a
+A session the rail shows as working because a background job still runs — a
+resting one, or one whose warning blocks nothing — sits in Working, after the
+sessions mid-turn, so its band agrees with its indicator. And a
 row the hub lists in Live that the shared model places in no band (its host
 is offline, or it has not loaded) rests at the end of Idle instead of leaving
 Live, with its host and "offline" named on the row.
@@ -81,6 +85,14 @@ The order on screen is the order the keyboard walks: the live-session chords
 ([`liveBandRefs`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)),
 and revealing a session opens the band that holds it. Rows do not animate
 when a session changes band.
+
+A row that changes band is a new row under its new fold. Two things keep
+that from costing the reader anything: while a dialog is open (a rename in
+progress, a confirmation), the bands hold every row where it was, with its
+fresh facts, and settle when the dialog closes
+([`holdLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts));
+and a row that had keyboard focus keeps it across the move
+([`Tree`](../../cmd/evener-hub/frontend/src/widgets/tree/index.tsx)).
 
 ## The floating control
 

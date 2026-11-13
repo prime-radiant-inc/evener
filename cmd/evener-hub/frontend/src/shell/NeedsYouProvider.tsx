@@ -1,21 +1,8 @@
-import {
-  createContext,
-  type ReactElement,
-  type ReactNode,
-  useContext,
-  useEffect,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import { createNeedsYouController, type NeedsYouController, type NeedsYouSnapshot } from "./needsYouActions";
+import { type ReactElement, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
+import { NeedsYouContext, NeedsYouControllerContext } from "./needsYouContext";
 
-type NeedsYouValue = { controller: NeedsYouController; snapshot: NeedsYouSnapshot };
-const NeedsYouContext = createContext<NeedsYouValue | null>(null);
-// The controller on its own: its identity never changes while the provider
-// lives, so a consumer holding one keyed subscription (see
-// useNextNeedsYouMount) reads the controller without also inheriting a
-// re-render for every queue snapshot the full value above carries.
-const NeedsYouControllerContext = createContext<NeedsYouController | null>(null);
+export { useNeedsYou, useOptionalNeedsYou, useOptionalNeedsYouController } from "./needsYouContext";
 
 export function NeedsYouProvider({ children }: { children: ReactNode }): ReactElement {
   // The controller is built during render so the shell's content commits on the
@@ -51,18 +38,4 @@ function ConnectedNeedsYouProvider({
       <NeedsYouContext.Provider value={{ controller, snapshot }}>{children}</NeedsYouContext.Provider>
     </NeedsYouControllerContext.Provider>
   );
-}
-
-export function useNeedsYou(): NeedsYouValue {
-  const value = useContext(NeedsYouContext);
-  if (!value) throw new Error("useNeedsYou must be used within NeedsYouProvider");
-  return value;
-}
-
-export function useOptionalNeedsYou(): NeedsYouValue | null {
-  return useContext(NeedsYouContext);
-}
-
-export function useOptionalNeedsYouController(): NeedsYouController | null {
-  return useContext(NeedsYouControllerContext);
 }

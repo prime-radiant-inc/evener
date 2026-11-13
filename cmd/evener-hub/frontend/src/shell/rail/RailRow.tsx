@@ -117,6 +117,7 @@ const CLASS = {
   why: requireClass(styles.why, "RailRow.module.css", "why"),
   whyReason: requireClass(styles.whyReason, "RailRow.module.css", "whyReason"),
   bandLabel: requireClass(styles.bandLabel, "RailRow.module.css", "bandLabel"),
+  bandCount: requireClass(styles.bandCount, "RailRow.module.css", "bandCount"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -901,7 +902,7 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
           <TrailingChevron info={info} />
         </span>
       </span>
-      <span className={CLASS.rightSlot}>
+      <span className={CLASS.bandCount} data-testid="rail-row-band-count">
         <Badge count={node.children.length} tone={node.band === "needsYou" ? "attention" : undefined} />
       </span>
     </span>

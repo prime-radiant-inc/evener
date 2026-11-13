@@ -257,7 +257,9 @@ The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
 - Empty live list is a no-op; a single live session cycles onto itself,
   which the same-URL navigation no-ops.
 - The live section paginates (limit 50). `next` at the last loaded row
-  demand-loads the following page and continues into it; `previous` from
+  demand-loads the following page and continues into it (a page that
+  carries only rows already shown continues to the next, and wraps once
+  Live is exhausted); `previous` from
   an unloaded section, or wrapping at the first loaded row while pages
   remain, demand-loads through the remaining pages to the true tail.
 - Both chords suppress in editable targets: Alt+Shift+ArrowLeft/Right are
