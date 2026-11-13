@@ -107,37 +107,79 @@ func (w *Writer) RecordedLength() int64 {
 }
 
 // CommitBoundary is the append point a caller captured before writing, so it
-// can take the lines it wrote since back out. Opaque: only RetractToBoundary
-// consumes one.
+// can take the lines it wrote since back out. Capturing also HOLDS the file's
+// recorded-entry notifications for the lines written after it: the caller is
+// about to write records a later retract could take back out, and a hook
+// consumer would otherwise keep state for entries no reader can find. The
+// caller must end the hold with ReleaseCommitBoundary (the commit stands, the
+// held notifications fire in order) or RetractToBoundary (the lines are
+// taken out, the held notifications are dropped). Opaque: only the two
+// boundary operations consume one.
 type CommitBoundary struct {
 	length  int64
 	ordinal uint64
 	turns   turnPlacement
+	// warnings is the length of this writer's retained-warning queue at
+	// capture: a retract truncates the queue back to it, so diagnostics
+	// queued for lines the retract removes go with them.
+	warnings int
 }
 
-// CaptureCommitBoundary records where this file's next entry would land: the
-// recorded length, the next entry ordinal and the placement state. A caller
-// that holds every writer on the file off for the whole transaction (the
-// session's transcript door does) can pass the boundary to RetractToBoundary
-// to take the transaction's own lines back out again. Nil-safe: a writer that
-// does not exist has nothing to retract.
+// CaptureCommitBoundary records where this file's next entry would land —
+// the recorded length, the next entry ordinal and the placement state — and
+// starts holding this file's recorded-entry notifications (see
+// CommitBoundary). A caller that holds every writer on the file off for the
+// whole transaction (the session's transcript door does) can pass the
+// boundary to RetractToBoundary to take the transaction's own lines back out
+// again. Nil-safe: a writer that does not exist has nothing to retract.
 func (w *Writer) CaptureCommitBoundary() CommitBoundary {
 	if w == nil || w.tail == nil {
 		return CommitBoundary{}
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	return CommitBoundary{length: w.tail.recordedLength, ordinal: w.tail.nextOrdinal, turns: w.tail.turns}
+	w.tail.holdRecorded = true
+	return CommitBoundary{length: w.tail.recordedLength, ordinal: w.tail.nextOrdinal, turns: w.tail.turns, warnings: len(w.retainedWarnings)}
+}
+
+// ReleaseCommitBoundary ends the notification hold b started, firing every
+// notification held since in ordinal order, under the append lock, after the
+// recorded length covers their entries — the contract OnRecorded states.
+// Call it when the transaction whose boundary was captured commits. Nil-safe.
+// The recorded length covering a held entry while its notification has not
+// fired suspends AtRecordedBoundary's one-snapshot guarantee for the hold's
+// duration: a reader in that window sees a coherent prefix that stops at the
+// last released entry, never a line the transaction may still take out.
+func (w *Writer) ReleaseCommitBoundary() {
+	if w == nil || w.tail == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	held := w.tail.heldRecords
+	w.tail.heldRecords = nil
+	w.tail.holdRecorded = false
+	for _, rec := range held {
+		if w.tail.onRecorded != nil {
+			w.tail.onRecorded(rec)
+		}
+	}
 }
 
 // RetractToBoundary takes back out of the file every line written since b was
 // captured, restoring the recorded length, the next entry ordinal and the
-// placement state b captured. It is the rollback of a failed durable append,
-// initiated by the caller for lines that did land: the one use is a
-// transaction that must not leave a half-applied marker behind (#1158) — the
-// fold's compaction markers are what a resume anchors on to discard every
-// entry before them, so the fold takes its whole commit back out when the
-// staged copies the anchor would depend on could not all be written.
+// placement state b captured, and dropping the held recorded-entry
+// notifications and retained-warning diagnostics those lines queued. It is
+// the rollback of a failed durable append, initiated by the caller for lines
+// that did land: the one use is a transaction that must not leave a
+// half-applied marker behind (#1158) — the fold's compaction markers are what
+// a resume anchors on to discard every entry before them, so the fold takes
+// its whole commit back out when the staged copies the anchor would depend
+// on could not all be written.
 //
 // removed reports whether the lines are gone, which only the truncate
 // decides, exactly as in an append's own rollback; err names a truncate, seek
@@ -146,38 +188,75 @@ func (w *Writer) CaptureCommitBoundary() CommitBoundary {
 // residual crash window an ordinary rollback leaves. The caller must hold
 // every writer on the file off between capture and retract (the session's
 // transcript door): a line some other writer appended in that span would be
-// taken out with the transaction's own. Sequence numbers stay spent, as in any
-// rollback: a reader in another process may have seen the lines.
+// taken out with the transaction's own. Sequence numbers stay spent, as in
+// any rollback: a reader in another process may have seen the lines. A
+// boundary whose length is zero is refused: a live file's recorded prefix
+// always holds its header, so a zero boundary is not one this writer
+// captured, and truncating to it would wipe the file.
 //
-// The state restore happens only when the lines are gone: a truncate that
-// failed leaves the file, the counters and the placement as they were. The
-// retracted lines' failure-counter observations stand (the count is monotone
-// by contract), and a writer the failed append poisoned stays poisoned — the
-// retract works regardless, because it only ever removes bytes.
+// When the lines do not come out (removed false, or an earlier refusal) the
+// held notifications FIRE instead: those lines are records every reader
+// finds, so their consumers must see them, exactly as if no boundary had been
+// captured, and no exit may leave the hold stuck swallowing later entries'
+// notifications. The placement restore replays only what the transaction's
+// own writes could have changed and is skipped when the running execution
+// moved since the capture: a BeginExecution that began while the boundary
+// was held owns the placement state now, and restoring over it would send
+// the new execution's entries to the wrong span. The state restore happens
+// only when the lines are gone: a truncate that failed leaves the file, the
+// counters and the placement as they were. The retracted lines'
+// failure-counter observations stand (the count is monotone by contract),
+// and a writer the failed append poisoned stays poisoned — the retract works
+// regardless, because it only ever removes bytes.
 func (w *Writer) RetractToBoundary(b CommitBoundary) (removed bool, err error) {
 	if w == nil || w.tail == nil {
 		return true, nil // a writer that never existed recorded nothing to take out
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed.Load() {
-		return false, errors.New("transcript writer is closed: cannot retract")
-	}
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
+	// Every exit that does not take the lines out fires the held notifications
+	// instead: those lines are records every reader finds, so their consumers
+	// must see them, and no exit may leave the hold stuck swallowing later
+	// entries' notifications.
+	refuse := func(err error) (bool, error) {
+		w.tail.holdRecorded = false
+		for _, rec := range w.tail.heldRecords {
+			if w.tail.onRecorded != nil {
+				w.tail.onRecorded(rec)
+			}
+		}
+		w.tail.heldRecords = nil
+		return false, err
+	}
+	if w.closed.Load() {
+		return refuse(errors.New("transcript writer is closed: cannot retract"))
+	}
+	if b.length == 0 {
+		return refuse(errors.New("cannot retract to a zero-length boundary: it was not captured from this file"))
+	}
 	if w.tail.recordedLength < b.length || w.tail.nextOrdinal < b.ordinal {
 		// The file shrank below the boundary since it was captured: some other
 		// writer's rollback is in flight. Truncating would cut into lines the
 		// boundary never covered.
-		return false, fmt.Errorf("transcript shrank below the captured boundary (length %d < %d, ordinal %d < %d)", w.tail.recordedLength, b.length, w.tail.nextOrdinal, b.ordinal)
+		return refuse(fmt.Errorf("transcript shrank below the captured boundary (length %d < %d, ordinal %d < %d)", w.tail.recordedLength, b.length, w.tail.nextOrdinal, b.ordinal))
 	}
 	removed, err = w.rollbackAppendLocked(b.length)
 	if !removed {
-		return removed, err
+		return refuse(err)
+	}
+	w.tail.holdRecorded = false
+	w.tail.heldRecords = nil
+	if len(w.retainedWarnings) > b.warnings {
+		w.retainedWarnings = w.retainedWarnings[:b.warnings]
+		w.pendingWarnings.Store(int32(len(w.retainedWarnings)))
 	}
 	w.tail.recordedLength = b.length
 	w.tail.nextOrdinal = b.ordinal
-	w.tail.turns = b.turns
+	if w.tail.turns.running == b.turns.running {
+		w.tail.turns = b.turns
+	}
 	w.dirty = err != nil // the truncate's own sync settled the shorter file
 	return removed, err
 }

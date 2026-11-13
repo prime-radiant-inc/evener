@@ -13,19 +13,22 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
-// foldTailFaultFS fails the next Sync on the transcript file once armed. The
-// fold's compaction markers are buffered writes that carry no fsync of their
-// own, so with a young SyncInterval the first fsync after arming is the one a
-// staged retained-tail copy makes: its durable write fails, the writer rolls
-// the line back out, and the copy records nothing — the transcript I/O failure
-// shape of issue #1158.
+// foldTailFaultFS counts Sync calls on the transcript file once armed and
+// fails exactly the Nth, one-shot. The fold's compaction markers are buffered
+// writes that carry no fsync of their own, so with a young SyncInterval the
+// syncs after arming are the staged retained-tail copies' durable writes:
+// arming on the second makes the first copy land durably and the second fail
+// and roll back — the transcript I/O failure shape of issue #1158, with lines
+// on both sides of the failure for the withhold to take back out.
 type foldTailFaultFS struct {
 	afero.Fs
-	mu      sync.Mutex
-	failure error
+	mu         sync.Mutex
+	failOnNth  int // 0 disarms
+	syncsSince int
 }
 
 type foldTailFaultFile struct {
@@ -41,31 +44,45 @@ func (fs *foldTailFaultFS) OpenFile(name string, flag int, mode os.FileMode) (af
 	return &foldTailFaultFile{File: file, fs: fs}, nil
 }
 
-func (fs *foldTailFaultFS) arm(err error) {
+// arm fails exactly the nth Sync call made after arming.
+func (fs *foldTailFaultFS) arm(nth int) {
 	fs.mu.Lock()
-	fs.failure = err
+	fs.syncsSince = 0
+	fs.failOnNth = nth
 	fs.mu.Unlock()
+}
+
+// syncsSinceArm reports how many Sync calls were made since the last arming.
+func (fs *foldTailFaultFS) syncsSinceArm() int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.syncsSince
 }
 
 func (file *foldTailFaultFile) Sync() error {
 	file.fs.mu.Lock()
-	failure := file.fs.failure
-	file.fs.failure = nil
-	file.fs.mu.Unlock()
-	if failure != nil {
-		return failure
+	file.fs.syncsSince++
+	nth := file.fs.failOnNth
+	if nth > 0 && file.fs.syncsSince == nth {
+		file.fs.failOnNth = 0
+		file.fs.mu.Unlock()
+		return errors.New("opaque staged tail sync failure")
 	}
+	file.fs.mu.Unlock()
 	return file.File.Sync()
 }
 
 // TestCompactionWithholdsMarkerWhenRetainedTailWriteFails pins the durability
-// contract of issue #1158: a fold whose staged retained-tail copy cannot be
-// written durably must not publish its compaction marker. The marker is what a
-// resume anchors on to discard every entry before it, so a marker whose
-// replacement copies never landed silently loses the turns it folded away.
-// Here the original entries must stay readable through a resume, with no
-// duplicate copies of the retained turns left behind, while the in-memory fold
-// still stands (the live history is compacted and Compact succeeds).
+// contract of issue #1158: a fold whose staged retained-tail copies cannot
+// all be written durably must not publish its compaction marker. The marker
+// is what a resume anchors on to discard every entry before it, so a marker
+// whose replacement copies never landed silently loses the turns it folded
+// away. Here the first staged copy lands durably and the second fails, so the
+// transaction's lines span both sides of the failure: the original entries
+// must stay readable through a resume with the landed copy taken back out
+// (each original exactly once), the fold's records must never reach a
+// recorded-entry or published-length consumer, and the in-memory fold still
+// stands (the live history is compacted and Compact succeeds).
 func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -83,7 +100,7 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 
 	// Swap in a writer over a faultable filesystem, mirroring the production
 	// interval so the buffered marker records take no opportunistic fsync: the
-	// armed fault then lands on the staged copy write, not on the markers.
+	// armed fault then lands on the staged copy writes, not on the markers.
 	if err := s.closeAttachedTranscript(); err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +111,42 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 	}
 	writer.SyncInterval = time.Hour
 	s.attachTranscript(writer, nil)
+	boundaryLength := s.TranscriptRecordedLength()
+
+	// The wired consumers a served session projects through: the recorded
+	// entry hook and the published-length handoff. A withheld fold must not
+	// deliver a single record or a length past the pre-fold boundary to
+	// either.
+	var recordedMu sync.Mutex
+	var recorded []transcript.Record
+	publishedLengths := make(chan int64, 16)
+	s.SetTranscriptRecordedFunc(func(rec transcript.Record) {
+		recordedMu.Lock()
+		recorded = append(recorded, rec)
+		recordedMu.Unlock()
+	})
+	s.SetTranscriptPublishedFunc(func(length int64, _ *appwire.ConversationProvenanceState) {
+		select {
+		case publishedLengths <- length:
+		default:
+		}
+	})
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.beforeFoldTranscriptCommit = func() {
-			fs.arm(errors.New("opaque staged tail sync failure"))
+			fs.arm(2) // the first staged copy lands, the second fails
 		}
 	})
 
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
+	}
+
+	// The scenario really ran: the first staged copy's durable write synced
+	// (and landed) before the armed fault hit the second. Fewer than two
+	// syncs means the fault hit some other write and the assertions below
+	// would prove nothing.
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("only %d sync(s) since arming, want the first staged copy to land before the second failed: the fault hit the wrong write", n)
 	}
 
 	entries := readPersistedTranscriptEntries(t, dir, s.ID())
@@ -128,8 +173,25 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 			}
 		}
 		if n != 1 {
-			t.Fatalf("resumed history holds input %d %d times, want exactly 1: the original must stay readable and un-duplicated", i, n)
+			t.Fatalf("resumed history holds input %d %d times, want exactly 1: the original must stay readable and the landed copy must be taken back out", i, n)
 		}
+	}
+
+	// Nothing the transaction wrote reached a consumer: no recorded entry was
+	// delivered, and the settled published length is the pre-fold boundary.
+	recordedMu.Lock()
+	delivered := recorded
+	recordedMu.Unlock()
+	if len(delivered) != 0 {
+		t.Fatalf("the withheld fold delivered %d recorded entr(ies) to the consumer hook, want none: the first is %+v", len(delivered), delivered[0])
+	}
+	select {
+	case length := <-publishedLengths:
+		if length != boundaryLength {
+			t.Fatalf("published length %d after the withheld fold, want the pre-fold boundary %d", length, boundaryLength)
+		}
+	default:
+		t.Fatal("no published length reached the consumer after the fold settled")
 	}
 
 	// The fold still published in memory: the live history is compacted and

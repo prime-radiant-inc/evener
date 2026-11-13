@@ -96,25 +96,37 @@ func TestRecordOnMissingOrClosedWriterIsNotRecorded(t *testing.T) {
 }
 
 func TestRetractToBoundaryTakesBackTheLinesWrittenSinceIt(t *testing.T) {
+	t.Parallel()
 	w, path := newRecordWriter(t)
+	var seen []Record
+	w.OnRecorded(func(rec Record) { seen = append(seen, rec) })
 	kept, err := w.Record(steeringTurn("kept"), RecordOptions{Door: DoorDurable})
 	if err != nil || !kept.Recorded {
 		t.Fatalf("kept = %+v, %v", kept, err)
+	}
+	if len(seen) != 1 || seen[0].Ordinal != kept.Ordinal {
+		t.Fatalf("recorded hook before any boundary = %+v, want the kept entry", seen)
 	}
 	boundary := w.CaptureCommitBoundary()
 	if boundary.length != kept.Offset+kept.Length || boundary.ordinal != kept.Ordinal+1 {
 		t.Fatalf("boundary = %+v, want the end of %+v", boundary, kept)
 	}
 	var spent int
-	for _, text := range []string{"transient", "transact", "retract"} {
+	for _, text := range []string{"transient", "transact"} {
 		rec, err := w.Record(steeringTurn(text), RecordOptions{Door: DoorDurable})
 		if err != nil || !rec.Recorded {
 			t.Fatalf("%s = %+v, %v", text, rec, err)
 		}
 		spent = rec.Seq
 	}
+	if len(seen) != 1 {
+		t.Fatalf("recorded hook fired for %d entries under a captured boundary, want none: a held line must not reach any consumer", len(seen)-1)
+	}
 	if removed, retractErr := w.RetractToBoundary(boundary); !removed || retractErr != nil {
 		t.Fatalf("retract = %v, %v", removed, retractErr)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("recorded hook fired for retracted entries: %d extra deliveries", len(seen)-1)
 	}
 	if w.RecordedLength() != boundary.length {
 		t.Fatalf("recorded length after retract = %d, want the boundary %d", w.RecordedLength(), boundary.length)
@@ -142,5 +154,50 @@ func TestRetractToBoundaryTakesBackTheLinesWrittenSinceIt(t *testing.T) {
 	}
 	if next.Seq <= spent {
 		t.Fatalf("next append reuses sequence number %d after %d was spent", next.Seq, spent)
+	}
+	if len(seen) != 2 || seen[1].Ordinal != next.Ordinal {
+		t.Fatalf("recorded hook after the boundary ended = %+v, want the settled entry", seen)
+	}
+}
+
+func TestReleaseCommitBoundaryFiresHeldNotificationsInOrder(t *testing.T) {
+	t.Parallel()
+	w, _ := newRecordWriter(t)
+	var seen []Record
+	w.OnRecorded(func(rec Record) { seen = append(seen, rec) })
+	if kept, err := w.Record(steeringTurn("kept"), RecordOptions{Door: DoorDurable}); err != nil || !kept.Recorded {
+		t.Fatalf("kept = %+v, %v", kept, err)
+	}
+	boundary := w.CaptureCommitBoundary()
+	var want []uint64
+	for _, text := range []string{"held-one", "held-two", "held-three"} {
+		rec, err := w.Record(steeringTurn(text), RecordOptions{Door: DoorDurable})
+		if err != nil || !rec.Recorded {
+			t.Fatalf("%s = %+v, %v", text, rec, err)
+		}
+		want = append(want, rec.Ordinal)
+	}
+	if len(want) == 0 || want[0] != boundary.ordinal {
+		t.Fatalf("first held entry took ordinal %d, want the boundary's next ordinal %d", want[0], boundary.ordinal)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("recorded hook fired for %d held entries, want none", len(seen)-1)
+	}
+	w.ReleaseCommitBoundary()
+	if len(seen) != len(want)+1 {
+		t.Fatalf("recorded hook saw %d entries after release, want the %d held ones in order", len(seen)-1, len(want))
+	}
+	for i, ordinal := range want {
+		if seen[i+1].Ordinal != ordinal {
+			t.Fatalf("held entry %d delivered at ordinal %d, want %d in recorded order", i, seen[i+1].Ordinal, ordinal)
+		}
+	}
+	// A release ends the hold: later appends fire immediately again.
+	rec, err := w.Record(steeringTurn("after release"), RecordOptions{Door: DoorDurable})
+	if err != nil || !rec.Recorded {
+		t.Fatalf("after release = %+v, %v", rec, err)
+	}
+	if len(seen) != len(want)+2 || seen[len(seen)-1].Ordinal != rec.Ordinal {
+		t.Fatalf("recorded hook after release-end = %+v, want the settled entry delivered immediately", seen)
 	}
 }

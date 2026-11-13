@@ -142,6 +142,22 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 	s.pinnedNoteGen++
 }
 
+// restorePinnedNoteLocked puts back the note a fold captured for handoff when
+// that fold's transcript commit was withheld: the handoff steering turn the
+// claim was spending never landed, so the note must stay durably pending for
+// the next cycle, or the metadata save would persist the claim's cleared
+// note and a restart would lose it with no surviving record. The rewind is
+// guarded exactly like the claim: only the claim's own generation bump may
+// be undone — anything else that moved the generation (or a note set since)
+// belongs to whoever wrote it and stays theirs. Callers hold s.mu.
+func (s *Session) restorePinnedNoteLocked(note string, gen uint64) {
+	if s.pinnedNoteGen != gen+1 || s.pinnedNoteText != "" {
+		return
+	}
+	s.pinnedNoteText = note
+	s.pinnedNoteGen = gen
+}
+
 // selfCompactNudge is the low-headroom warning. The pressure is real either
 // way; only the remedy is tool-dependent, so a session without compact_context
 // gets the same warning worded as something it can actually do. loadedNames

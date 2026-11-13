@@ -380,7 +380,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// expands it into the model request — would otherwise race those
 	// mutations with torn multi-word Turn reads.
 	published = append([]schema.Turn(nil), published...)
+	// What the transaction's own records will advance in memory: the pair
+	// log's last-write slot, the latest USER_INPUT entry index, and the
+	// conversation frontier the marker's record adopts (its node, the
+	// frontier id and the covered inputs — the durable carrier of the
+	// frontier is the marker line itself, so a withheld marker must leave no
+	// live reference to it for later records to build on).
 	lastRecordedBeforeCommit := s.lastRecorded
+	userInputEntryBeforeCommit := s.userInputEntry
+	frontiersBeforeCommit := len(s.conversation.frontiers)
+	frontierIDBeforeCommit := s.conversation.frontierID
+	inputsBeforeCommit := slices.Clone(s.conversation.inputs)
 	s.mu.Unlock()
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
@@ -395,6 +405,12 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// transaction's own.
 	writer := s.attachedTranscript()
 	boundary := writer.CaptureCommitBoundary()
+	// The capture also holds the file's recorded-entry notifications, and this
+	// flag holds the session's per-record published-length handoffs, for the
+	// whole commit: nothing the transaction records reaches a consumer until
+	// the commit's fate is settled, so no consumer keeps state for entries a
+	// retract may take out.
+	s.holdTranscriptPublications = true
 	var mergedTailWriteErrs []error
 	// The staged writer invokes this only after a marker lands and before
 	// new steering. Together the phases match the published history:
@@ -449,16 +465,41 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		removed, retractErr := writer.RetractToBoundary(boundary)
 		if removed {
 			commit.markerWithheld = true
-			// The transaction's records are gone, so the pair log's last-write
-			// bookkeeping must not remember an append no reader can find.
 			s.mu.Lock()
+			// The transaction's records are gone, so the bookkeeping they
+			// advanced must not remember appends no reader can find: the pair
+			// log's last write, the USER_INPUT entry index, the conversation
+			// frontier the marker's record adopted (its node is the durable
+			// carrier a retracted line no longer provides), and the note the
+			// handoff turn was spending — its steering never landed, so the
+			// note must stay durably pending for the next cycle, behind the
+			// generation guard against a newer note.
 			s.lastRecorded = lastRecordedBeforeCommit
+			s.userInputEntry = userInputEntryBeforeCommit
+			s.conversation.frontiers = s.conversation.frontiers[:frontiersBeforeCommit]
+			s.conversation.frontierID = frontierIDBeforeCommit
+			s.conversation.inputs = inputsBeforeCommit
+			if commit.restoreNoteLocked != nil {
+				commit.restoreNoteLocked()
+			}
 			s.mu.Unlock()
 		}
 		if retractErr != nil {
 			mergedTailWriteErrs = append(mergedTailWriteErrs, retractErr)
 		}
+	} else {
+		// The commit stands: the held recorded-entry notifications fire, in
+		// the order their entries were written.
+		writer.ReleaseCommitBoundary()
 	}
+	// Every path ends the publication hold here and publishes the one settled
+	// boundary: the published-length handoff is monotone, so a fold that
+	// stands publishes its full commit, a withheld one publishes a length the
+	// consumer's high-water mark already covers (and never published the
+	// vanished intermediate lengths at all), and a failed retract publishes
+	// the lines that are still standing.
+	s.holdTranscriptPublications = false
+	s.publishTranscriptLocked(writer.RecordedLength())
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -779,6 +820,12 @@ type foldCommit struct {
 	// that describe the live session and skips the ones that announce the
 	// durable anchor the transcript never received.
 	markerWithheld bool
+	// restoreNoteLocked, when a fold captured a pinned note for handoff, puts
+	// the claimed note back when the transcript commit is withheld: the
+	// handoff steering never landed, so the note must survive the restart the
+	// next resume replays to. Generation-guarded, like the claim it reverses;
+	// runs under s.mu inside the withhold branch. See restorePinnedNoteLocked.
+	restoreNoteLocked func()
 }
 
 // foldPublicationID renders the winning publication's identity from the
@@ -823,21 +870,32 @@ func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) b
 // pinned-note claim from stageCompactionEffects down to runPreCompactHook.
 type noteClaimRegistrarKey struct{}
 
-func withNoteClaimRegistrar(ctx context.Context, register func(claimLocked func())) context.Context {
+// pinnedNoteClaim pairs what a fold captured for a note handoff: the claim
+// consumes the captured note when the fold wins publication, and the restore
+// puts it back when the fold's transcript commit is withheld — the handoff
+// turn the claim was spending never landed, so the note must stay durably
+// pending for the next cycle. Both are generation-checked; both run under
+// s.mu.
+type pinnedNoteClaim struct {
+	claim   func()
+	restore func()
+}
+
+func withNoteClaimRegistrar(ctx context.Context, register func(pinnedNoteClaim)) context.Context {
 	return context.WithValue(ctx, noteClaimRegistrarKey{}, register)
 }
 
-// registerNoteClaim hands the fold's generation-checked note claim to the
+// registerNoteClaim hands the fold's note claim (with its restore) to the
 // enclosing fold staging for its publication transaction. It reports false
 // when no registrar is installed — a direct runPreCompactHook caller outside
 // any publication transaction — in which case the claim belongs with the
 // caller's own deferred commit.
-func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
-	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(func()))
+func registerNoteClaim(ctx context.Context, claim pinnedNoteClaim) bool {
+	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(pinnedNoteClaim))
 	if !ok {
 		return false
 	}
-	register(claimLocked)
+	register(claim)
 	return true
 }
 
@@ -867,10 +925,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	ctx = contextmgr.WithCompactionMeta(ctx, s.buildCompactionMeta())
 
 	// The publication transaction claims the pinned note (if the hook below
-	// captures one) atomically with the publish; the fold registers its
-	// generation-checked claim here as it runs.
-	var noteClaimLocked func()
-	ctx = withNoteClaimRegistrar(ctx, func(claimLocked func()) { noteClaimLocked = claimLocked })
+	// captures one) atomically with the publish, and restores it when the
+	// commit is withheld; the fold registers its generation-checked pair here
+	// as it runs.
+	var noteClaim pinnedNoteClaim
+	ctx = withNoteClaimRegistrar(ctx, func(claim pinnedNoteClaim) { noteClaim = claim })
 
 	// pendingCompactionTurns records checkpoint/summary turns the fold
 	// produced; handleCompactionTurn's own side effects (transcript write,
@@ -1161,8 +1220,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
 	commit.claimCompactionLocked = func() { s.claimCompactionLocked(commit) }
 	commit.claimNoteLocked = func() {
-		if noteClaimLocked != nil {
-			noteClaimLocked()
+		if noteClaim.claim != nil {
+			noteClaim.claim()
+		}
+	}
+	commit.restoreNoteLocked = func() {
+		if noteClaim.restore != nil {
+			noteClaim.restore()
 		}
 	}
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
@@ -1339,12 +1403,19 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn,
 		// claim is generation-checked so it consumes exactly the note this
 		// fold captured, never a newer one pinned mid-fold; a fold publisher
 		// runs it inside the publication transaction itself, while a direct
-		// caller outside one commits it with the rest.
-		claimLocked := func() { s.claimPinnedNoteLocked(gen) }
-		if !registerNoteClaim(ctx, claimLocked) {
+		// caller outside one commits it with the rest. The restore is the
+		// claim's withheld-commit half: a fold whose transcript commit was
+		// taken back out never landed the handoff turn the claim was
+		// spending, so the note goes back to durably pending, behind the
+		// same generation guard.
+		claim := pinnedNoteClaim{
+			claim:   func() { s.claimPinnedNoteLocked(gen) },
+			restore: func() { s.restorePinnedNoteLocked(note, gen) },
+		}
+		if !registerNoteClaim(ctx, claim) {
 			deferred = append(deferred, func() {
 				s.mu.Lock()
-				claimLocked()
+				claim.claim()
 				s.mu.Unlock()
 			})
 		}
