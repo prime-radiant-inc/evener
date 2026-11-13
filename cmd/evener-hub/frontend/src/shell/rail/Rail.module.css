@@ -61,6 +61,9 @@
    * than .identity's own, so the chip reads as part of the row above it. */
   gap: var(--rhythm-item);
   padding: var(--space-3) var(--space-4) var(--space-2);
+  /* Lets the brand row answer the rail's own width (the narrow rule under
+   * .mark), not the window's. */
+  container: railheader / inline-size;
 }
 
 /* The brand row and its chip read as one identity block, so a chip hugs the
@@ -102,6 +105,16 @@
   color: var(--on-accent);
 }
 
+/* Near the rail's width floor the mark draws in toward the wordmark: at the
+ * largest font-size pref the wordmark is wide enough that the full gap would
+ * push Hide sidebar past the rail's edge. The header's content box is the
+ * rail's width less its two --space-4 paddings. */
+@container railheader (max-width: 192px) {
+  .mark {
+    margin-right: var(--space-1);
+  }
+}
+
 .wordmark {
   /* The app's own name never truncates: at the 200px width floor the row's
    * content (mark, wordmark, three 32px actions) fits exactly, and letting
@@ -119,7 +132,7 @@
 
 /* Settings, Search and Hide sidebar: one cluster with no gap, so their squares
  * tile and the row keeps its width budget. */
-.actions {
+.brandActions {
   flex: none;
   display: flex;
   align-items: center;
@@ -177,7 +190,7 @@
  * both rail edges, so a row's hover wash and the selected row's raised fill
  * are rounded pills rather than edge-to-edge bands. The section headings stay
  * full-bleed above it, their label on the header's own left edge. */
-.tree {
+.railTree {
   padding: 0 var(--space-2);
 }
 
@@ -185,16 +198,16 @@
  * pane's own surface with the card shadow and semibold ink, so "you are here"
  * reads as an object rather than a darker wash. Tree owns the treeitem and
  * exposes selection only as aria-selected, so these reach it by attribute
- * through .tree, the same way the guide-rail rule below reaches role=group.
+ * through .railTree, the same way the guide-rail rule below reaches role=group.
  * The :hover twin holds the fill under the pointer (tree.module.css draws the
  * same precedence line for its own selected wash). A pressed row takes the
  * stronger wash first, which is the only feedback a touch gets. */
-.tree [role="treeitem"]:active {
+.railTree [role="treeitem"]:active {
   background: var(--hover-2);
 }
 
-.tree [role="treeitem"][aria-selected="true"],
-.tree [role="treeitem"][aria-selected="true"]:hover {
+.railTree [role="treeitem"][aria-selected="true"],
+.railTree [role="treeitem"][aria-selected="true"]:hover {
   background: var(--surface-1);
   box-shadow: var(--shadow-card);
   font-weight: var(--font-weight-semibold);

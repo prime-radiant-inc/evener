@@ -102,8 +102,8 @@ const CLASS = {
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
   mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
-  actions: requireClass(styles.actions, "Rail.module.css", "actions"),
-  tree: requireClass(styles.tree, "Rail.module.css", "tree"),
+  brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
+  railTree: requireClass(styles.railTree, "Rail.module.css", "railTree"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -279,7 +279,7 @@ function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   // rounded pill instead of an edge-to-edge band; Tree's own box stays the
   // widget's.
   return (
-    <div className={CLASS.tree}>
+    <div className={CLASS.railTree}>
       <Tree {...props} releaseModifierKeys={!isMobile} />
     </div>
   );
@@ -299,6 +299,7 @@ function EvenerMark() {
         stroke="currentColor"
         strokeWidth={1.75}
         strokeLinecap="round"
+        aria-hidden="true"
         focusable="false"
       >
         <path d="M3.5 5.75h9M3.5 10.25h9" />
@@ -1040,7 +1041,7 @@ function NavigationRail({
             <span data-testid="rail-wordmark" className={CLASS.wordmark}>
               evener
             </span>
-            <div className={CLASS.actions}>
+            <div className={CLASS.brandActions}>
               <IconButton
                 data-testid="rail-settings"
                 label="Settings"

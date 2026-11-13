@@ -43,7 +43,7 @@
 
   /* The active tab in the globally-focused group lifts onto --surface-1,
    * the pane surface it's actually the tab for. */
-  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-0);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-1);
   --dv-activegroup-visiblepanel-tab-color: var(--ink-hi);
 
   /* The active tab of a group that ISN'T the globally-focused one (visible
