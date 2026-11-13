@@ -194,6 +194,23 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     }
   }
 
+  // An accepted copy enqueued against a session instance an authoritative
+  // read proves replaced: the replacement's fence rejects any replay of the
+  // old payload before the journal is asked, so the copy retires here instead.
+  async retireReplacedInstanceAcceptedCopies(targetRef: string, currentInstance: string): Promise<void> {
+    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
+    if (!accepted) return;
+    const obsolete = accepted
+      .filter((record) => PENDING_TURN_METHODS.includes(record.method))
+      .filter((record) => {
+        const enqueuedInstance = record.instanceId ?? record.threadId;
+        return enqueuedInstance !== undefined && enqueuedInstance !== currentInstance;
+      })
+      .map((record) => record.clientMutationId);
+    if (obsolete.length === 0) return;
+    await this.reconcileIdentities(obsolete);
+  }
+
   async #reconcileAcceptedCopiesLoop(targetRef: string, first: ReadonlySet<string>): Promise<void> {
     let ids = first;
     for (;;) {

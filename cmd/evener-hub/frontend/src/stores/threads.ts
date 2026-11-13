@@ -6090,6 +6090,24 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
       });
     }
   }
+  if (runtime && authoritative) {
+    // A copy accepted before another client replaced this session cannot be
+    // proven by replay: the replacement's identity fence rejects the old
+    // payload before the journal is ever asked, and that rejection is
+    // retryable by default, so the copy would wait forever. An authoritative
+    // read that presents the replacement instance is itself the proof the old
+    // session is gone — retire the copy rather than keep a Delivering row no
+    // action can clear.
+    const currentInstance = threadInstanceID(model);
+    if (currentInstance !== undefined) {
+      void runtime.dispatcher
+        .retireReplacedInstanceAcceptedCopies(ref, currentInstance)
+        .then(() => refreshMutationPins(runtime, [ref]))
+        .catch(() => {
+          // A later authoritative read runs the same retirement.
+        });
+    }
+  }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),

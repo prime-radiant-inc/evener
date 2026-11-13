@@ -401,4 +401,82 @@ describe("accepted-copy journal replay", () => {
       resetThreadsStoreForTests();
     }
   });
+
+  test("an authoritative read retires an accepted copy whose session instance was replaced", {
+    timeout: 30_000,
+  }, async () => {
+    resetThreadsStoreForTests();
+    const selected = "local:replaced-instance";
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+    await storage.enqueueIntent({
+      targetRef: selected,
+      // Enqueued against the ORIGINAL instance; another client's clear
+      // replaced it before this client came back online.
+      instanceId: "instance-original",
+      threadId: "thr_replaced",
+      method: "turn/queue",
+      payload: { ref: selected, input: [{ type: "text", text: "offline send" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "offline send" }] },
+    });
+    await storage.markAttempted("m1");
+    await storage.settleReceipt("m1", "pending");
+    setMutationStorageForTests(storage);
+    const cache = new SessionEntryCache({
+      indexedDB: new IDBFactory(),
+      keyRange: IDBKeyRange,
+      databaseName: "replaced-instance",
+    });
+    setProductionEntryCacheForTests(cache);
+    const fixture = observeProductionEntryForTests(cache, selected);
+    try {
+      const fake = new FakeClient("ready");
+      fake.on("thread/read", ({ ref: requested }) => {
+        const response = currentRead(requested ?? selected);
+        response.snapshot = { incarnation: "inc-1", length: 1 };
+        response.thread.evener.mutationStateAuthoritative = true;
+        // The daemon now presents the REPLACEMENT instance.
+        response.thread.evener.instanceId = "instance-replacement";
+        response.thread.turns = [
+          {
+            id: "turn_recipient",
+            itemsView: "full",
+            status: "completed",
+            version: 1,
+            items: [
+              {
+                type: "userMessage",
+                id: "item-other",
+                turnId: "turn_recipient",
+                clientMutationId: "m-other",
+                version: 1,
+                text: "delivered elsewhere",
+              },
+            ],
+          },
+        ];
+        return { ...response };
+      });
+      fake.on("thread/unsubscribe", () => ({}));
+      connectionStore.getState().connect(fake);
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+
+      // The authoritative read proves the session this copy was enqueued
+      // against no longer exists, so the copy retires rather than waiting
+      // for a replay the replacement's fence will always reject.
+      await vi.waitFor(
+        async () => {
+          expect(await storage.getOptimistic("m1")).toBeUndefined();
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      fixture.dispose();
+      storage.close();
+      cache.close();
+      resetThreadsStoreForTests();
+    }
+  });
 });
