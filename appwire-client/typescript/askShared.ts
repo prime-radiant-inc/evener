@@ -160,8 +160,8 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   if (at === -1) return undefined;
   const reply = findAnswerReply(items.slice(at + 1), item);
   if (!reply) return undefined;
-  const answers = parseAskAnswerLines(reply.text);
-  if (answers.size > 0) {
+  const answers = reply.text.startsWith("[answers]") ? parseAskAnswerLines(reply.text) : undefined;
+  if (answers !== undefined && answers.size > 0) {
     const multiple = questions.length > 1;
     const parts = questions
       .map((q) => {
@@ -180,27 +180,55 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   return prose !== "" ? ` — answered: ${prose}` : undefined;
 }
 
+// isUserAuthoredSteer answers one wire-level question: is this steering item
+// the human speaking, as opposed to the daemon injecting one on its own
+// (SteeringSourceUser) or a human-note update recorded through the same
+// source (session_notes_selfecho.go's steeringOrigin machinery stamps a note
+// SteeringKindHumanNote even though a human wrote it - writing a note is not
+// the human speaking through the transcript). Shared with web layoutRoles.ts,
+// which asks the same wire question for its own, unrelated reason (routing
+// the item to a divider instead of a user bubble); callers add their own
+// `item.type === "steering"` gate first, since this only reads the fields a
+// non-steering item never sets. Lived in deriveAskQuestions until the answer
+// carrier below needed it too; it moved here so the shared leaf owns it and
+// deriveAskQuestions re-exports (deriveAskQuestions imports this module, so
+// the other direction would cycle).
+export function isUserAuthoredSteer(item: ItemModel): boolean {
+  return item.source === "user" && item.steeringKind !== "human-note";
+}
+
 // One user-role item that can carry a round's answer: a recorded user
-// message, or the user-sourced steering a fenced answer records (the ask
+// message, or the user-authored steering a fenced answer records (the ask
 // fence's steering append publishes the same answer evidence - agent's
-// session_client_mutation). Daemon-sourced steering is machinery, not an
-// answer.
+// session_client_mutation). Daemon-sourced steering is machinery, and a
+// human-note steer is the whiteboard speaking, not an answer.
 function isAnswerCarrier(item: ItemModel): boolean {
-  return item.type === "userMessage" || (item.type === "steering" && item.source === "user");
+  return item.type === "userMessage" || (item.type === "steering" && isUserAuthoredSteer(item));
 }
 
 // findAnswerReply locates the reply that answered this call among the items
-// after it. The durable rule decides first: a reply carrying the wire's
-// answer link (ThreadItem.observation.answerToTurnIds, onto the model as
-// answerToTurnIds) is server-stamped evidence naming the round it answers,
-// so the first linked reply after the call answers this call exactly when it
-// names this item's turn - and a reply linked to another round is refuted
-// even when its text shape looks like this round's composed reply. Without
+// after it, in one pass. The durable rule decides first: a reply carrying
+// the wire's answer link (ThreadItem.observation.answerToTurnIds, onto the
+// model as answerToTurnIds) is server-stamped evidence naming the round it
+// answers. The FIRST linked reply after the call is that round's answer: the
+// ask fence lets only one round rest pending at a time (a session asking
+// yields the floor until answered), so no reply linked to another round can
+// sit between this call and its own answer - and one that names another
+// round refutes this call even when its text shape looks like this round's
+// composed reply, since the stamp says what it actually answered. Without
 // any link (an older daemon, or a reply the observation never reached) the
 // composed "[answers]" text shape is the only evidence, exactly as before
 // the link existed.
 function findAnswerReply(later: readonly ItemModel[], item: ItemModel): ItemModel | undefined {
-  const linked = later.find((i) => isAnswerCarrier(i) && i.answerToTurnIds !== undefined);
-  if (linked !== undefined) return linked.answerToTurnIds?.includes(item.turnId) ? linked : undefined;
-  return later.find((i) => i.type === "userMessage" && i.text.startsWith("[answers]"));
+  let shapeMatch: ItemModel | undefined;
+  for (const candidate of later) {
+    if (candidate.answerToTurnIds !== undefined) {
+      if (!isAnswerCarrier(candidate)) continue;
+      return candidate.answerToTurnIds.includes(item.turnId) ? candidate : undefined;
+    }
+    if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
+      shapeMatch = candidate;
+    }
+  }
+  return shapeMatch;
 }
