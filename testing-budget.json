@@ -368,7 +368,7 @@
   "primeradiant.com/evener/internal/commitprovenance": 2.0,
   "primeradiant.com/evener/llm/effort": 2.0,
   "primeradiant.com/evener/scripts/native/ios/fixture-provider": 2.0,
-  "primeradiant.com/evener/scripts/native/ios/qualification": 2.0,
+  "primeradiant.com/evener/scripts/native/ios/qualification": 4.82,
   "primeradiant.com/evener/tools/commit-provenance": 6.18
  },
  "metric": "package-cpu-seconds"

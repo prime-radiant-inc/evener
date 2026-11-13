@@ -1202,6 +1202,49 @@ func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
 	}
 }
 
+// TestCheckedInTimingBudgetAcceptsTheQualificationPackageLoadedRunnerWall pins
+// #6277's classification of the qualification package's wall row. Its wall time
+// is real harness work, not suite fat: TestRunnerCleanupCancellationFixture
+// drives run-ui-tests.sh's cleanup against a TERM-ignoring fake xcodebuild, so
+// the cleanup's shared three-second TERM-to-KILL wait (30 x sleep 0.1) must
+// genuinely elapse — the stop budget a Mac run reaches when xcodebuild hangs —
+// and the checkout-selector test spawns about thirty real git processes. Green
+// main runs read 4.19-4.82s wall (the twelve most recent green main runs,
+// 43312955907 through 43370996859) against a wall row that was never more than
+// the 2s bless floor, so ordinary runner load — 5.13-5.81s on the runs #6277
+// cites, slowest PR #6274 job 131528736227 at 5.81s — tripped the 2.5x
+// backstop and dropped unrelated PRs from the lane. The wall row carries the
+// slowest green reading (4.82), and this test brackets it there: 5.81s passes
+// only while the row stays above 2.3s, and the 12.04s/12.06s pair around
+// 2.5x of 4.82 pins the row to within a hundredth of the classified value.
+// Deflating the row toward the floor, inflating it, or deleting it — the fail
+// half goes vacuous, because a missing row is warn-only — all red this test.
+func TestCheckedInTimingBudgetAcceptsTheQualificationPackageLoadedRunnerWall(t *testing.T) {
+	const pkg = "primeradiant.com/evener/scripts/native/ios/qualification"
+	for _, tc := range []struct {
+		name    string
+		wall    string
+		wantErr bool
+	}{
+		{"the cited loaded-runner reading passes", "5.81", false},
+		{"a wall at 2.5x of the classified row passes", "12.04", false},
+		{"a wall past 2.5x of the classified row fails", "12.06", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			measured := filepath.Join(dir, "measured.tsv")
+			writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t"+tc.wall+"\nCPU\t"+pkg+"\t0.52\n")
+			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+			if tc.wantErr && err == nil {
+				t.Fatalf("a wall %ss past the classified row's 2.5x must fail the backstop (#6277):\n%s", tc.wall, out)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("a wall %ss reading must pass the classified row (#6277):\n%s", tc.wall, out)
+			}
+		})
+	}
+}
+
 // TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot pins the way CI's
 // web-unit lane uses the lib: sourced in a bare step by a relative path, with
 // no repo_root set and a report path relative to the caller's directory, after
