@@ -321,7 +321,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
   },
   {
     "Name": "model_list",
-    "Description": "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated."
+    "Description": "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated. Paging never re-enumerates providers: one whose status kind is failure or timeout keeps that status for this session. To use one of its models once the problem clears, pass provider/model as the delegate model override; the spawn lists that provider again and names its current models if the requested one is not offered. A resumed session captures a new snapshot."
   },
   {
     "Name": "read_transcript",
