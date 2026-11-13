@@ -37,7 +37,6 @@ import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { useDismissNavigationChrome } from "../navigationChrome";
-import { useOptionalNeedsYou } from "../needsYouContext";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
@@ -574,9 +573,14 @@ function NavigationRail({
   );
   // A row that changes band is unmounted and mounted again under its new
   // fold, which would close a dialog opened from its menu and discard what
-  // the reader typed there. While a dialog is open the bands hold still;
-  // closing it lets the rows settle where they belong.
-  const dialogOpen = useOptionalNeedsYou()?.snapshot.blocked ?? false;
+  // the reader typed there. While a row's own dialog is open the bands hold
+  // still; closing it lets the rows settle where they belong. Only a row's
+  // dialog counts: on a phone the rail itself sits inside a modal drawer.
+  const [rowDialogs, setRowDialogs] = useState(0);
+  const onRowDialogChange = useCallback((open: boolean) => {
+    setRowDialogs((count) => Math.max(0, count + (open ? 1 : -1)));
+  }, []);
+  const dialogOpen = rowDialogs > 0;
   const shownLiveBands = useRef(currentLiveBands);
   const liveBands = useMemo(() => {
     const shown = dialogOpen ? holdLiveBands(shownLiveBands.current, currentLiveBands) : currentLiveBands;
@@ -709,6 +713,7 @@ function NavigationRail({
   );
   const rowActions = useMemo<RailRowActions>(
     () => ({
+      onRowDialogChange,
       onOpenOverview: (session) => {
         workspaceStore.getState().openPane("session", { ref: session.ref });
         activitySidebarStore.getState().openFor(session.ref);
@@ -870,7 +875,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, onRowDialogChange],
   );
   const pinSectionDialogs = usePinSectionDialogs(runAction);
   function closeDeleteDialog() {

@@ -164,6 +164,8 @@ export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 export interface RailRowActions {
   onOpenOverview(session: RailSession): void;
+  /** A row's menu opened (true) or closed (false) one of its dialogs. */
+  onRowDialogChange(open: boolean): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -398,6 +400,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
         onDelete: () => actions.onDeleteSession(session),
       }}
       triggerTabIndex={-1}
+      onDialogOpenChange={actions.onRowDialogChange}
     />
   );
 }

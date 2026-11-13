@@ -372,6 +372,14 @@ function toArchivedSessionNode(session: RailSession, isExpanded: IsExpanded): Se
   return node;
 }
 
+// A Live row is one row whichever section or page supplied its summary: a
+// summary's row_id names the resource it came from, so a needs-you row that
+// Live's own page later re-supplies would otherwise change identity and be
+// torn down in place.
+export function liveRowId(ref: string): string {
+  return `liverow:${ref}`;
+}
+
 // A Live row's node, cached per session object and per the facts the band
 // adds to it, so an unchanged row keeps its node (and its memoized render)
 // while a row that changes class or starts naming its host gets a fresh one.
@@ -389,7 +397,7 @@ export function liveSessionNode(
   }
   let node = variants.get(variant);
   if (!node) {
-    node = { id: session.row_id, kind: "session", session, children: [], crossProjectTier: true, live: state };
+    node = { id: liveRowId(session.ref), kind: "session", session, children: [], crossProjectTier: true, live: state };
     if (host) node.liveHost = host;
     variants.set(variant, node);
   }

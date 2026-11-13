@@ -78,6 +78,15 @@ describe("railLiveBands", () => {
     expect(refsOf(bands.needsYou)).toEqual(["local:failed-job", "local:warn-ask-job", "local:warn"]);
   });
 
+  test("an approval only the needs-you section reports stays in Needs you over a Live copy that reads as working", () => {
+    const live = row("local:esc", { state: "active" });
+    const queued = { ...live, row_id: "navigation:needs_you:local:esc" };
+    const bands = railLiveBands([live], [queued]);
+    expect(refsOf(bands.needsYou)).toEqual(["local:esc"]);
+    expect(bands.needsYou[0]?.state).toBe("approval");
+    expect(bands.working).toEqual([]);
+  });
+
   test("a needs-you session the rail files as archived still shows: the hub's tier never decays", () => {
     const stale = row("local:stale", { state: "awaiting", ask_pending: true, archived: true });
     const bands = railLiveBands([row("local:idle")], [stale]);
@@ -155,6 +164,18 @@ describe("liveBandNodes", () => {
     const bands = railLiveBands([row("buildbox:a")], []);
     const [node] = liveBandNodes(bands, sources, open).flatMap((band) => band.children);
     expect(node?.liveHost).toEqual({ label: "buildbox", online: false });
+  });
+
+  test("a row keeps one identity whichever section supplied it, so it never remounts when Live's copy arrives", () => {
+    const fromQueue = row("local:ask", {
+      state: "awaiting",
+      ask_pending: true,
+      row_id: "navigation:needs_you:local:ask",
+    });
+    const fromLive = { ...fromQueue, row_id: "navigation:live:local:ask" };
+    const idOf = (bands: ReturnType<typeof railLiveBands<RailSession>>) =>
+      liveBandNodes(bands, sources, open)[0]?.children[0]?.id;
+    expect(idOf(railLiveBands([], [fromQueue]))).toBe(idOf(railLiveBands([fromLive], [fromQueue])));
   });
 
   test("unchanged rows keep their nodes, so a rebuild re-renders nothing", () => {

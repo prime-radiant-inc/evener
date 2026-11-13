@@ -4,6 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/session";
 import { resetConnectionStoreForTests } from "../../stores/connection";
@@ -54,6 +55,8 @@ function session(id: string, overrides: Partial<NavigationSessionSummary> = {}):
 async function mountRail(
   initial: { live: NavigationSessionSummary[]; needsYou?: NavigationSessionSummary[] },
   props: { revealTarget?: string; onRevealConsumed?: () => void } = {},
+  // The phone renders the rail inside the Sessions drawer, itself a modal.
+  frame: (rail: ReactElement) => ReactElement = (rail) => rail,
 ) {
   const hub = { live: initial.live, needsYou: initial.needsYou ?? [] };
   let revision = 1;
@@ -85,9 +88,7 @@ async function mountRail(
   await act(async () => initNavigation(client, capability()));
   const view = render(
     <ClientProvider client={client}>
-      <NeedsYouProvider>
-        <Rail {...props} />
-      </NeedsYouProvider>
+      <NeedsYouProvider>{frame(<Rail {...props} />)}</NeedsYouProvider>
     </ClientProvider>,
   );
   const settled = async () => {
@@ -244,7 +245,7 @@ test("a rename in progress survives its session changing band, and the row moves
   const { hub, announce } = await mountRail({ live: [session("a", { state: "active", rename: true }), session("b")] });
   fireEvent.click(within(rowFor("local:a")).getByRole("button", { name: /Actions for/ }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
-  const draft = () => within(screen.getByRole("dialog")).getByRole("textbox") as HTMLInputElement;
+  const draft = () => screen.getByRole("textbox") as HTMLInputElement;
   fireEvent.change(draft(), { target: { value: "Half-typed name" } });
 
   // The turn ends on a question while the dialog is open.
@@ -257,5 +258,17 @@ test("a rename in progress survives its session changing band, and the row moves
 
   fireEvent.keyDown(draft(), { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(rowsOf("needsYou")).toEqual(["local:a"]));
+});
+
+test("inside the phone's Sessions drawer, itself a modal, a session that starts needing you still moves", async () => {
+  const { hub, announce } = await mountRail({ live: [session("a", { state: "active" }), session("b")] }, {}, (rail) => (
+    <div role="dialog" aria-modal="true" aria-label="Sessions">
+      {rail}
+    </div>
+  ));
+  hub.live = [session("a", { state: "awaiting", ask_pending: true }), session("b")];
+  hub.needsYou = [hub.live[0] as NavigationSessionSummary];
+  await announce();
   await waitFor(() => expect(rowsOf("needsYou")).toEqual(["local:a"]));
 });

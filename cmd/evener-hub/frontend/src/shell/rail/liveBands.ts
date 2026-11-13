@@ -63,7 +63,10 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
   for (const band of LIVE_BAND_ORDER) {
     for (const item of shared[band]) {
       placed.add(item.row.ref);
-      if (band !== "working" && presentsWorking(item.row))
+      // Only a row with nothing else to say yields to its running work: a
+      // failure, question, approval or restart keeps its class, however the
+      // model arrived at it.
+      if ((item.state === "idle" || item.state === "warning") && presentsWorking(item.row))
         presentedWorking.push({ session: item.row, state: "working" });
       else bands[band].push({ session: item.row, state: item.state });
     }

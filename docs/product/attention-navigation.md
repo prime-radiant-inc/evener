@@ -87,11 +87,13 @@ and revealing a session opens the band that holds it. Rows do not animate
 when a session changes band.
 
 A row that changes band is a new row under its new fold. Two things keep
-that from costing the reader anything: while a dialog is open (a rename in
-progress, a confirmation), the bands hold every row where it was, with its
-fresh facts, and settle when the dialog closes
+that from costing the reader anything: while a dialog opened from a row's
+own menu is open (a rename in progress, a confirmation), the bands hold every
+row where it was, with its fresh facts, and settle when the dialog closes
 ([`holdLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts));
-and a row that had keyboard focus keeps it across the move
+and a row that had keyboard focus keeps it across the move. A Live row is
+one row whichever section or page supplied it, so Live's own page arriving
+after the needs-you section does not replace a row the reader is using
 ([`Tree`](../../cmd/evener-hub/frontend/src/widgets/tree/index.tsx)).
 
 ## The floating control
