@@ -34,6 +34,48 @@ for focus and links (the signature would then appear almost nowhere at
 rest), and one accent value for both themes (no single indigo clears 4.5:1
 as link text on the dark surfaces and also carries white).
 
+## 2026-11-13 soft shape, quiet depth and a tactile press
+
+The same request ("clean, modern, easy to comprehend, fun to use") also
+revised the shape, elevation, motion and layout rulings. The page frame stays
+flat; the objects a reader acts on are rounded and sit one step up.
+
+- **Shape.** The radius ladder moves from 3/4/4/8px to 6/8/12/16px
+  (`--radius-chip`/`-control`/`-pane`/`-panel`), with `--radius-pill`
+  unchanged. Chips, badges and counters are pills, `Card` is a rounded
+  surface, and nested corners are concentric. PaneScaffold and tables stay
+  square. This supersedes the earlier ruling that the ladder was a ceiling and
+  8px was reserved for one floating card. The `corner-shape: squircle`
+  prototype is removed: one corner geometry in every engine.
+- **Depth.** `--shadow-card` becomes a real, faint shadow where it was `none`,
+  joined by `--shadow-raised` for the prompt card and `--focus-halo` under its
+  focus line. `--shadow-overlay` rings with `--edge` and blurs wider. Secondary
+  buttons, the selected rail row and dock tab, and the segmented-control thumb
+  lift onto `--surface-1`.
+- **Motion.** A held control scales down slightly (`--motion-duration-press`,
+  90ms) and overlays enter on `--motion-easing-pop`. Both answer a user's own
+  action and both sit behind the reduced-motion gate, so "no idle motion"
+  stands.
+- **Transcript.** A run of tool rows is one card with hairline dividers, kind
+  icons at full strength in `--field` seats and evidence as an inset band,
+  where rows were loose lines with half-strength icons. The user's message is
+  a `--surface-1` slip with a tight corner toward the avatar. Avatars are
+  round, and the agent's is the evener mark.
+- **Shell.** Rail rows and dock tabs are inset pills; the rail header leads
+  with the mark; a dragged sash shows the accent; status-bar counters are
+  pills.
+- **New session.** The form leads with the task: heading, provider notice,
+  task card, then working-directory and effective-access tiles, where the
+  directory and access summary sat above and beside the prompt. Phone setting
+  rows and the phone settings navigation are grouped rounded lists. Cold
+  starts show three keycap hints in a row instead of a two-column shortcut
+  table.
+
+Alternatives considered: rounding everything including the page frame and
+tables (the frame then competes with the objects inside it), and keeping tool
+rows unenclosed with only a rounded hover (a burst of calls still reads as
+loose lines rather than one event in the conversation).
+
 ## 2026-11-11 one palette for web and phone (#2439)
 
 The web and the iPhone app now render one palette,

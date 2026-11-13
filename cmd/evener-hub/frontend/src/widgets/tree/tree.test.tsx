@@ -349,11 +349,15 @@ test("a node outside the selectable set omits aria-selected entirely", () => {
   expect(row("a").hasAttribute("aria-selected")).toBe(false);
 });
 
-test("declares the selected-row wash on aria-selected, using tokens", () => {
+test("declares the selected-row lift on aria-selected, using tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "tree.module.css"), "utf8");
-  expect(css).toMatch(/\.row\[aria-selected="true"\]/);
-  expect(css).toContain("var(--hover-2)");
+  const selected = /\.row\[aria-selected="true"\],\s*\.row\[aria-selected="true"\]:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(selected).toContain("background: var(--surface-1)");
+  expect(selected).toContain("box-shadow: var(--shadow-card)");
+  // The pressed wash must come first, or it would repaint a selected row.
+  expect(css.indexOf(".row:active")).toBeGreaterThan(-1);
+  expect(css.indexOf(".row:active")).toBeLessThan(css.indexOf('.row[aria-selected="true"]'));
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {

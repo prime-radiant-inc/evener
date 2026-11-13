@@ -25,9 +25,9 @@
 /* A batch is one pending ask_user moment - the app's clearest "a human is
  * needed right now" state (topic 16 / kata crcf) - so it sits in a
  * Card tone="attention" envelope; this is only its layout inside the card.
- * The Send button inside stays --accent (blue) - amber owns the container,
- * blue owns the primary action, per the mockup's Alt A/D split, never Alt B's
- * all-amber. */
+ * The Send button inside stays the --accent primary: attention owns the
+ * container and accent owns the one action that resolves it, so the dock is
+ * never all-amber. */
 .batch {
   display: flex;
   flex-direction: column;

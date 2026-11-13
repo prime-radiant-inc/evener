@@ -17,15 +17,24 @@
   background: var(--hover-1);
 }
 
-/* The selected row (a tree that supplies isSelected): the same aria-selected
- * wash the command palette and segmented control use, a step stronger than the
- * resting hover. Declared after :hover - and repeated with :hover - so the
- * selected state holds under the pointer instead of flicking back to the
- * lighter hover tone (disclosure.module.css's [open] rule draws the same
- * precedence line). */
+/* A pressed row takes the stronger wash, which is the only feedback a touch
+ * gets. Declared before the selected rule so a pressed selected row keeps its
+ * own fill. */
+.row:active {
+  background: var(--hover-2);
+}
+
+/* The selected row (a tree that supplies isSelected) is "you are here": it
+ * lifts onto the content surface with the card shadow and semibold ink, so it
+ * reads as an object rather than a darker wash. Declared after :hover - and
+ * repeated with :hover - so the selected state holds under the pointer instead
+ * of flicking back to the hover tone (disclosure.module.css's [open] rule
+ * draws the same precedence line). */
 .row[aria-selected="true"],
 .row[aria-selected="true"]:hover {
-  background: var(--hover-2);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+  font-weight: var(--font-weight-semibold);
 }
 
 .row:focus-visible {

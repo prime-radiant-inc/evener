@@ -187,30 +187,12 @@
 }
 
 /* The rows' inset: RailTree's wrapper keeps every row one --space-2 clear of
- * both rail edges, so a row's hover wash and the selected row's raised fill
- * are rounded pills rather than edge-to-edge bands. The section headings stay
- * full-bleed above it, their label on the header's own left edge. */
+ * both rail edges, so the hover wash and the selected row's raised fill that
+ * Tree draws (tree.module.css) are rounded pills rather than edge-to-edge
+ * bands. The section headings stay full-bleed above it, their label on the
+ * header's own left edge. */
 .railTree {
   padding: 0 var(--space-2);
-}
-
-/* The selected row is the session the workspace is showing: it lifts onto the
- * pane's own surface with the card shadow and semibold ink, so "you are here"
- * reads as an object rather than a darker wash. Tree owns the treeitem and
- * exposes selection only as aria-selected, so these reach it by attribute
- * through .railTree, the same way the guide-rail rule below reaches role=group.
- * The :hover twin holds the fill under the pointer (tree.module.css draws the
- * same precedence line for its own selected wash). A pressed row takes the
- * stronger wash first, which is the only feedback a touch gets. */
-.railTree [role="treeitem"]:active {
-  background: var(--hover-2);
-}
-
-.railTree [role="treeitem"][aria-selected="true"],
-.railTree [role="treeitem"][aria-selected="true"]:hover {
-  background: var(--surface-1);
-  box-shadow: var(--shadow-card);
-  font-weight: var(--font-weight-semibold);
 }
 
 /* The organize-by switcher row: sits between the Live section and the

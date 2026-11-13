@@ -14,7 +14,9 @@
 .line {
   height: var(--space-3);
   border-radius: var(--radius-pill);
-  background: var(--surface-2);
+  /* --edge reads on every ground a skeleton sits on, including a --surface-1
+   * card, which the raised surface tokens match exactly in the light theme. */
+  background: var(--edge);
 }
 
 .line:last-child {

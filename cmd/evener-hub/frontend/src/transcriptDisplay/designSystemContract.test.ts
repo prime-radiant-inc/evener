@@ -208,8 +208,20 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
   expectOnlyAllowedChrome(
     cardPath,
     new Map([
-      [".example", [["background", "var(--surface-canvas)"]]],
-      [".inventory", [["background", "var(--surface-inset)"]]],
+      [
+        ".example",
+        [
+          ["border-radius", "var(--radius-control)"],
+          ["background", "var(--surface-canvas)"],
+        ],
+      ],
+      [
+        ".inventory",
+        [
+          ["border-radius", "var(--radius-control)"],
+          ["background", "var(--surface-inset)"],
+        ],
+      ],
     ]),
   );
   expectOnlyAllowedOverflow(cardPath, new Map());
@@ -259,10 +271,13 @@ test("keeps width ownership and neutral preview/status surfaces explicit", () =>
   const exampleRule = expectExactlyOneRule(cardPath, ".example");
   expectDeclarations(exampleRule, [
     ["min-width", "0"],
+    ["border-radius", "var(--radius-control)"],
     ["background", "var(--surface-canvas)"],
     ["padding", "var(--space-3)"],
   ]);
   const inventoryRule = expectExactlyOneRule(cardPath, ".inventory");
   expect(declarationValues(inventoryRule, "background")).toEqual(["var(--surface-inset)"]);
-  expect(cardStyles).not.toMatch(/\b(?:border|border-radius|box-shadow|overflow(?:-[xy])?)\s*:/);
+  // A tinted inset takes the control radius so it sits inside the rounded Card
+  // without a square corner; an edge, a shadow or a clip would make it a card.
+  expect(cardStyles).not.toMatch(/(?:^|[\s;{])(?:border|box-shadow|overflow(?:-[xy])?)\s*:/);
 });

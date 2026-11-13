@@ -32,6 +32,9 @@
   padding: 2px;
   border-radius: var(--radius-pill);
   background: var(--field);
+  /* --field alone is within a hair of the page ground in the light theme, so
+   * the off track carries its own edge. */
+  box-shadow: inset 0 0 0 1px var(--edge-strong);
 }
 
 /* A refusal has to look refused. aria-disabled is the switch's refusal that
@@ -47,6 +50,7 @@
 
 .control[aria-checked="true"] .track {
   background: var(--accent);
+  box-shadow: none;
 }
 
 .control:focus-visible {
