@@ -432,7 +432,15 @@ build on disk, and whether the selected channel is ahead of the on-disk build.
 Install and Restart are separate actions:
 
 - **Install update** downloads and installs the channel's archive with the
-  same code as `evener upgrade`. It does not restart the hub. The section then
+  same code as `evener upgrade`. Every managed installer — the hub's own
+  Install action, `evener upgrade`, and another hub installing into the same
+  prefix — shares one install transaction
+  ([`acquireInstallLock`](../internal/selfupdate/install_lock_unix.go),
+  [`installExtractedBinaries`](../internal/selfupdate/update.go)): an
+  exclusive `flock` on `.install.lock` in the managed bin directory
+  serializes concurrent installs, each binary is staged under a temporary
+  name, and a commit failure rolls back to the captured pre-install binaries
+  and entrypoint links. It does not restart the hub. The section then
   shows "Installed `<build>`, running `<build>`" until Restart is used.
 - **Restart hub** execs the binary at the hub's launch path in place: same PID,
   arguments, working directory, environment, and stdio. Before answering, the
@@ -636,11 +644,24 @@ Source refusals before a write leave no recovery intent. Recovery does not
 reinterpret the operation from a newly observed executable or hide its failure.
 
 **Stable installation paths.** Keep executable symlinks and their parent
-directories unchanged until pending deployment recovery finishes. Host-entry
-validation does not freeze remote filesystem path resolution: redirecting a
-configured `evener_path` symlink between attempts can send a retried write to its
-new destination. Destination-drift handling is deferred in
-[#4802](https://github.com/prime-radiant-inc/evener/issues/4802).
+directories unchanged while a deployment is in flight. A push resolves the
+configured `evener_path` through its symlinks to the real file and stages the
+replacement over that resolved file, never over the link itself; `deployPush`
+re-resolves the target after staging and refuses to write when the resolution
+changed mid-attempt. A retried write of a retained deployment resolves only its
+recorded install target and revalidates the launch path against it, so a symlink
+redirected between attempts refuses rather than following the link to a new
+destination, and the untouched attempt's evidence stays separate. A new
+explicit Deploy re-resolves and re-verifies the target as a fresh attempt, so
+redirecting a link and deploying again is the supported way to move an
+installation.
+
+**Concurrent deployers.** Two controllers racing to install on the same host
+are outside what deployment protects against: there is no host-side
+installation lock, and each push stages under a fresh `mktemp` name so
+concurrent writes cannot interleave into a torn file, but the last writer
+wins. The ordinary single-controller checks — a proven-older host is upgraded,
+a proven-newer host refuses the downgrade — remain the whole guarantee.
 
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs

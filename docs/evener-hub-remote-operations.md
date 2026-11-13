@@ -220,6 +220,26 @@ Before automatic deployment or restart, the manager reads `evener launch-check -
 
 Managed lifecycle decisions resolve the selected executable, configuration and state root. A `config_path` host entry needs no paired `addr`. Neither `[[hosts]].addr` nor the manager's bootstrap listener option is a probe target. Before automatic or explicit deployment writes the executable, the manager proves predecessor capability and process/service ownership and retains selected launch intent. Retained repair writes only its pinned install target, without remote lock authorization. The newly installed pathname cannot retroactively authorize an unsupported old running image. Stopping a live owner requires a matching live report (boot ID, PID, config and root) and an unchanged launch definition. Missing or mismatched evidence refuses before the stop and preserves pending intent. If the selected process is gone, a validated start does not stop anything or require remote lock evidence; the new hub takes its own lock or exits.
 
+On a Linux host, ownership proof reads the selected state root's existing
+`hub.lock` inode through the global `/proc/locks` table
+(`selectedLockRemote`): a successful read that returns no owner under ambient
+lock churn is retried at most three times within one SSH command, and sustained
+unrelated churn can still leave discovery empty. Retries are an availability
+mitigation, not a completeness guarantee, and never create, unlink, replace or
+acquire the lock. When a known candidate PID is available (for example a
+supervisor's MainPID), the candidate is proven independently by reading only
+that process's own `/proc/<pid>/fdinfo` for the matching FLOCK WRITE row
+(`selectedLockPIDPreferring`); a global probe that failed for any other reason
+keeps its refusal rather than being papered over by the candidate.
+
+The owner's environment is extracted with a portable byte-stream reader rather
+than shell tooling (`ownerEnvironmentRemote`): `/proc/<pid>/environ` is decoded
+as NUL-delimited bytes on the remote host, where only the `HOME`,
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `EVENER_HUB_LISTEN_ADDR` keys are
+retained. Unrelated values are filtered before stdout crosses SSH, and values
+are streamed rather than passed as command arguments, so no private
+environment value reaches the controller or a child process's argv.
+
 Restarts revalidate selected intent and wait for a verified successor PID/birth, boot and build with the expected service association. Every readiness poll resolves the endpoint again, so wildcard and port-zero listeners can move without freezing an old bound port into configuration. Attachment then discovers and verifies that new endpoint before sending a credential. A non-loopback-only listener is an attachment limitation, not permission to change the server configuration.
 
 An explicit attach may start a stopped selected owner. Existing service definitions are preserved. Only a fresh ad-hoc start applies `[[hosts]].addr` (ahead of the internal `HubListenAddr` default) as listener intent. With neither override, current remote config/defaults apply. Failed first starts and stopped replacements retain selected intent for root, registration and service revalidation, rather than replaying stored shell text or guessing from another port. This retry state lives only in the manager process, separate from durable operation receipts. Recorder hooks, operation identities and the per-host gate still cover the lifecycle.
