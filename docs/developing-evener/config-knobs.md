@@ -131,7 +131,7 @@ packages and test files do not count.
 | `SSH_CONNECTION` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `SSH_TTY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `TERM` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
-| `TMPDIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `Makefile`, `agent`, `agent/execenv` and 23 more |
+| `TMPDIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `Makefile`, `agent`, `agent/execenv` and 22 more |
 | `USER` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `USERPROFILE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmdutil` |
 | `WAYLAND_DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
