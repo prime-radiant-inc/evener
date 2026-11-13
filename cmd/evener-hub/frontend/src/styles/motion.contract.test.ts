@@ -452,6 +452,8 @@ const CONSUMERS: [file: string, selector: string, recipe: string][] = [
   ["widgets/mermaid/mermaid.module.css", ".viewerPanel", "float"],
   ["panes/session/transcript/selectionquote.module.css", ".bar", "float"],
   ["shell/holdhints/holdhints.module.css", ".root", "fade"],
+  ["shell/mobile/StackHost.module.css", ".paneEnter", "slideRight"],
+  ["shell/mobile/StackHost.module.css", ".leavingOver", "slideRight"],
   ["widgets/disclosure/disclosure.module.css", ".body", "bodyReveal"],
   ["panes/session/transcript/toolcallitem.module.css", ".body", "bodyReveal"],
   ["panes/session/transcript/streamingtext.module.css", ".live", "caret"],

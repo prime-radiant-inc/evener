@@ -72,4 +72,49 @@
    * of stretching this column to fit its content - same reasoning as
    * AppShell.module.css's own .content and PaneScaffold's own .body. */
   min-height: 0;
+  /* The shown pane and a leaving pane share this box during a slide
+   * (stackTransition.ts). Isolation keeps their stacking inside it, and the
+   * inline clip keeps a pane that is off to the right from widening the
+   * page. */
+  position: relative;
+  isolation: isolate;
+  overflow-x: clip;
+}
+
+/* The shown pane. It fills the body exactly as a pane sitting directly in
+ * the body would, and is opaque so a pane beneath it never shows through.
+ * It stacks at the body's ground level, after a leaving pane put under it. */
+.paneSlot {
+  position: relative;
+  z-index: 0;
+  height: 100%;
+  background: var(--surface-0);
+}
+
+/* A push: the new pane slides in from the right edge over the old one. */
+.paneEnter {
+  composes: slideRight from "../../styles/motion.module.css";
+}
+
+/* The old pane's last frame while a slide runs: inert, opaque, and never a
+ * target for the pointer, so the shown pane takes every tap at once. */
+.leaving {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-0);
+  pointer-events: none;
+}
+
+/* Under a push it stays put beneath the arriving pane: the same level as the
+ * shown pane, and earlier in the body. */
+.leavingUnder {
+  composes: leaving;
+  z-index: 0;
+}
+
+/* Over a pop it slides out to the right and uncovers the pane beneath. */
+.leavingOver {
+  composes: leaving;
+  composes: slideRight from "../../styles/motion.module.css";
+  z-index: var(--z-raised);
 }

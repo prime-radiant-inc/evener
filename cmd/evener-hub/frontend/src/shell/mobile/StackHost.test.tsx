@@ -5,7 +5,7 @@ import { bindFilePath } from "@evener/appwire-client/docContent";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
-import { lazy, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
@@ -41,6 +41,7 @@ import {
   workspaceStore,
 } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
+import stackStyles from "./StackHost.module.css";
 
 test("ordinary mobile Back skips attention parked records", async () => {
   const x = workspaceStore.getState().openPane("doc", { ref: "independent" });
@@ -135,10 +136,20 @@ test("ordinary focus after an attention hop publishes its own session URL", asyn
 // need a real example of. A local click counter proves whether a mount
 // survived a focus change (StackHost's own remount-safety contract, same
 // one DockHost's PaneHost documents - see this component's own comment).
+// The doc panes mounted right now, by label: what a pane's subscriptions
+// would see.
+const liveDocPanes = new Set<string>();
+
 function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?: string }>) {
   const [clicks, setClicks] = useState(0);
   const visible = usePaneVisible();
   const label = params.ref ?? params.path ?? "unknown";
+  useEffect(() => {
+    liveDocPanes.add(label);
+    return () => {
+      liveDocPanes.delete(label);
+    };
+  }, [label]);
   return (
     <div>
       <p data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
@@ -1672,4 +1683,190 @@ test("exact Open origin Back: valid local history wins over a recorded origin", 
   expect(workspaceStore.getState().panes).toEqual(retained);
   await user.click(screen.getByRole("button", { name: "Back" }));
   await findStackedEmptyState("welcome");
+});
+
+// --- pane-to-pane motion -------------------------------------------------------
+// jsdom runs no animation, so these tests stand in for the Slide recipe: an
+// element carrying the push entrance, or a leaving layer marked closing,
+// reports one running animation whose end the test chooses. Everything else
+// is the real stack. Without the stand-in (every other test in this file, and
+// a browser under reduced motion) no animation runs and each change is the
+// instant swap.
+function installSlideAnimations() {
+  const finishers: Array<() => void> = [];
+  const enterClass = (stackStyles.paneEnter ?? "").split(" ")[0] ?? "";
+  const previous = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value(this: Element, options?: { subtree?: boolean }) {
+      if (options?.subtree) return [];
+      const sliding =
+        (enterClass !== "" && this.classList.contains(enterClass)) || this.getAttribute("data-motion") === "closing";
+      if (!sliding) return [];
+      const finished = new Promise<void>((resolve) => finishers.push(resolve));
+      return [{ playState: "running", effect: { getComputedTiming: () => ({ endTime: 240 }) }, finished }];
+    },
+  });
+  return {
+    async finish() {
+      for (const resolve of finishers.splice(0)) resolve();
+      await act(async () => {});
+    },
+    restore() {
+      if (previous) Object.defineProperty(Element.prototype, "getAnimations", previous);
+      else Reflect.deleteProperty(Element.prototype, "getAnimations");
+    },
+  };
+}
+
+function stackBody(): HTMLElement {
+  const body = document.querySelector("[data-stacked-pane-type]");
+  if (!(body instanceof HTMLElement)) throw new Error("no stack body");
+  return body;
+}
+
+// The frames still on screen that no longer take input: the leaving pane.
+function leavingFrames(): HTMLElement[] {
+  return [...stackBody().querySelectorAll<HTMLElement>("[inert]")];
+}
+
+async function showDoc(ref: string): Promise<void> {
+  await act(async () => {
+    workspaceStore.getState().openPane("doc", { ref });
+  });
+  await screen.findByText(new RegExp(`doc pane: ${ref} `));
+}
+
+test("a step deeper slides the new pane in over the old frame, which is inert and gone when the slide ends", async () => {
+  const slides = installSlideAnimations();
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "push_from" });
+    render(<StackHost />);
+    await screen.findByText(/doc pane: push_from /);
+
+    await showDoc("push_to");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    const [frame] = leavingFrames();
+    expect(leavingFrames()).toHaveLength(1);
+    expect(frame?.getAttribute("aria-hidden")).toBe("true");
+    expect(frame?.textContent).toContain("push_from");
+    // Only the shown pane is alive: the old one unmounted in the same commit.
+    expect([...liveDocPanes]).toEqual(["push_to"]);
+    // The arriving pane takes input at once.
+    const counter = screen.getByRole("button", { name: "clicks: 0" });
+    expect(counter.closest("[inert]")).toBeNull();
+    await user.click(counter);
+    expect(screen.getByRole("button", { name: "clicks: 1" })).toBeTruthy();
+
+    await slides.finish();
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+    expect(stackBody().textContent).not.toContain("push_from");
+  } finally {
+    slides.restore();
+  }
+});
+
+test("Back slides the top frame out to uncover the pane beneath, which is live at once", async () => {
+  const slides = installSlideAnimations();
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "pop_under" });
+    render(<StackHost />);
+    await screen.findByText(/doc pane: pop_under /);
+    await showDoc("pop_top");
+    await slides.finish();
+
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByText(/doc pane: pop_under /);
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("pop");
+    const [frame] = leavingFrames();
+    expect(leavingFrames()).toHaveLength(1);
+    expect(frame?.getAttribute("data-motion")).toBe("closing");
+    expect(frame?.textContent).toContain("pop_top");
+    expect([...liveDocPanes]).toEqual(["pop_under"]);
+    expect(screen.getByRole("button", { name: "clicks: 0" }).closest("[inert]")).toBeNull();
+
+    await slides.finish();
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+  } finally {
+    slides.restore();
+  }
+});
+
+test("changes that are not a step deeper or back replace the pane without a slide", async () => {
+  const slides = installSlideAnimations();
+  try {
+    const user = userEvent.setup();
+    // The first pane does not slide in.
+    workspaceStore.getState().openPane("doc", { ref: "replace_a" });
+    render(<StackHost />);
+    await screen.findByText(/doc pane: replace_a /);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // A pane chosen in the Sessions drawer.
+    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    await showDoc("replace_b");
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Browser history.
+    setLastPopstateWasTrustedForTests(true);
+    await showDoc("replace_c");
+    expect(leavingFrames()).toEqual([]);
+
+    // The shown pane closing under the user.
+    await act(async () => {
+      const shown = workspaceStore.getState().focusedPaneId;
+      const other = workspaceStore.getState().panes.find((pane) => pane.id !== shown && pane.type === "doc");
+      if (!shown || !other) throw new Error("fixture lacks a second doc pane");
+      workspaceStore.getState().focusPane(other.id);
+    });
+    await slides.finish();
+    await act(async () => {
+      const shown = workspaceStore.getState().focusedPaneId;
+      if (shown) workspaceStore.getState().closePane(shown);
+    });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+  } finally {
+    slides.restore();
+  }
+});
+
+test("rapid steps and Backs keep one leaving frame at most and always end on the focused pane", async () => {
+  const slides = installSlideAnimations();
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "rapid_0" });
+    render(<StackHost />);
+    await screen.findByText(/doc pane: rapid_0 /);
+    for (let step = 1; step <= 5; step++) {
+      await showDoc(`rapid_${step}`);
+      expect(leavingFrames().length).toBeLessThanOrEqual(1);
+      await userEvent.click(screen.getByRole("button", { name: "Back" }));
+      expect(leavingFrames().length).toBeLessThanOrEqual(1);
+    }
+    await slides.finish();
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+    const focused = workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId);
+    const shownRef = (focused?.params as { ref?: string } | undefined)?.ref;
+    expect(shownRef).toBeDefined();
+    expect([...liveDocPanes]).toEqual([shownRef]);
+    expect(stackBody().textContent).toContain(`doc pane: ${shownRef} `);
+  } finally {
+    slides.restore();
+  }
+});
+
+test("with no slide running, as under reduced motion, a step deeper is the instant swap", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "instant_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: instant_a /);
+  await showDoc("instant_b");
+  expect(leavingFrames()).toEqual([]);
+  expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+  expect(stackBody().textContent).not.toContain("instant_a");
 });

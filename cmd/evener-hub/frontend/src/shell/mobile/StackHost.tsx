@@ -37,7 +37,7 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -66,7 +66,14 @@ import {
 } from "../workspace";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
+import { type ScrollOffsets, type StackTransitionKind, startStackTransition } from "./stackTransition";
 import { TreeDrawer } from "./TreeDrawer";
+
+const TRANSITION_CLASSES = {
+  enter: styles.paneEnter ?? "",
+  leavingUnder: styles.leavingUnder ?? "",
+  leavingOver: styles.leavingOver ?? "",
+};
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -252,6 +259,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // two panes forever instead of walking back through real history).
   const wentBackRef = useRef(false);
 
+  // Pane-to-pane motion (stackTransition.ts). popPendingRef marks a Back tap
+  // whose focus change has not landed yet, so that change slides as a pop; a
+  // Back that changes nothing leaves it set until the next press clears it.
+  // chromeWasOpenRef is whether the drawer or the Overview was open at the
+  // last commit: a pane chosen there replaces the stack's top, it is not a
+  // step deeper, and the same tap usually closes the surface it came from.
+  const stackBodyRef = useRef<HTMLDivElement>(null);
+  const paneSlotRef = useRef<HTMLDivElement>(null);
+  const committedSlotRef = useRef<HTMLDivElement | null>(null);
+  const transitionFocusRef = useRef<string | null>(focusedPaneId);
+  const popPendingRef = useRef(false);
+  const chromeWasOpenRef = useRef(false);
+  const endTransitionRef = useRef<(() => void) | null>(null);
+  const scrollOffsetsRef = useRef<ScrollOffsets>(new Map());
+
   // Installs the ONE popstate listener that feeds lastPopstateWasTrusted
   // (module-level - see its own comment above for why). A REAL browser
   // back/forward gesture (the hardware/gesture button, not this
@@ -358,7 +380,84 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (activityOpen) setPanelOpen(false);
   }, [activityOpen]);
 
+  // Records the shown pane's scroll offsets as they change: the old pane's
+  // last frame is a detached subtree, which has lost them by the time it
+  // slides.
+  useEffect(() => {
+    const body = stackBodyRef.current;
+    if (!body) return;
+    const offsets = scrollOffsetsRef.current;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Element) offsets.set(target, [target.scrollTop, target.scrollLeft]);
+    };
+    body.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => body.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
+
+  // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
+  // 4). A pop is a focus change a Back tap caused. A push is any other change
+  // the user made from inside the shown pane to a pane beyond the landing
+  // screen; everything else replaces the pane without motion: the first
+  // pane, a choice made in the drawer or the Overview, browser history
+  // (whose own back gesture already animates on some phones), an attention
+  // entry being restored, the shown pane closing under the user, and a deep
+  // link still resolving.
+  useLayoutEffect(() => {
+    const chromeOpen = panelOpen || activityOpen;
+    const chromeWasOpen = chromeWasOpenRef.current;
+    chromeWasOpenRef.current = chromeOpen;
+    const outgoing = committedSlotRef.current;
+    const incoming = paneSlotRef.current;
+    committedSlotRef.current = incoming;
+    const previousId = transitionFocusRef.current;
+    if (previousId === focusedPaneId) return;
+    transitionFocusRef.current = focusedPaneId;
+    endTransitionRef.current?.();
+    const popped = popPendingRef.current;
+    popPendingRef.current = false;
+    const previousPane = panes.find((pane) => pane.id === previousId);
+    let kind: StackTransitionKind | null = null;
+    if (previousId === null || !focusedPane) kind = null;
+    else if (popped) kind = "pop";
+    else if (
+      !chromeOpen &&
+      !chromeWasOpen &&
+      !lastPopstateWasTrusted &&
+      !routeDeferred &&
+      previousPane !== undefined &&
+      previousPane.type !== "welcome" &&
+      focusedPane.type !== "welcome" &&
+      !attentionEntryOwnsPane(focusedPane)
+    )
+      kind = "push";
+    const body = stackBodyRef.current;
+    const offsets = scrollOffsetsRef.current;
+    if (kind && body && outgoing && incoming && outgoing !== incoming && !outgoing.isConnected) {
+      endTransitionRef.current = startStackTransition(
+        body,
+        kind,
+        outgoing,
+        incoming,
+        offsets,
+        TRANSITION_CLASSES,
+        () => {
+          endTransitionRef.current = null;
+        },
+      );
+    }
+    offsets.clear();
+  }, [focusedPaneId, focusedPane, panes, panelOpen, activityOpen, routeDeferred]);
+
+  useLayoutEffect(() => () => endTransitionRef.current?.(), []);
+
+  // A press starts a new intent: a Back tap's pending pop does not outlive it.
+  const clearPendingPop = useCallback(() => {
+    popPendingRef.current = false;
+  }, []);
+
   function handleBack(): void {
+    popPendingRef.current = true;
     if (focusedPane?.type === "doc") {
       const retained = documentPaneState(focusedPane);
       if (retained) {
@@ -502,11 +601,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     // Same "don't record this as a forward step" rule as handleBack: leaving
     // a panel pane for its parent must not make the panel poppable right back.
     wentBackRef.current = true;
+    popPendingRef.current = true;
     workspaceStore.getState().openPane("session", { ref });
   }
 
   return (
-    <div className={styles.host}>
+    <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
       <div className={styles.topBar}>
         <div className={styles.leading}>
           {showBack && (
@@ -523,7 +623,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         </span>
         {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
       </div>
-      <div className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
+      <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
           // key forces a fresh mount on every distinct pane id, including
           // switching BACK to a previously-seen one - without it, two
@@ -533,8 +633,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           // (see StackedPane's own comment). Two different pane TYPES
           // already remount naturally (React unmounts on element type
           // change), but same-type-different-params (e.g. two session
-          // panes) would not, without this.
-          <StackedPane key={focusedPane.id} pane={focusedPane} />
+          // panes) would not, without this. The slot is keyed with it, so
+          // the slot React detaches is the old pane's whole last frame.
+          <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
+            <StackedPane pane={focusedPane} />
+          </div>
         )}
       </div>
       <div className={styles.activityOverlay}>
