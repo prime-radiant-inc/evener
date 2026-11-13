@@ -285,12 +285,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// replacement claims the target. Releasing it from the settle instead would
 		// strand the very dispatch it exists for.
 		for (const release of this.#retireWithSettle.splice(0)) release();
-		// The quit boundary is the last durable chance for ids still held only
-		// in memory (#4674): their record must exist before the process goes
-		// away, because the reload can recover them from nowhere else and a
-		// read can never name them. It follows the outbox stop so the state
-		// updates and the outbox's synchronous release stay in one slice: a
-		// start racing this stop owns whatever it acquires after that.
+		// A caller that explicitly stops the runtime gets its still-retained
+		// ids their durable record first (#4674): a start can reload them from
+		// nowhere else and a read can never name them. Production quits are
+		// process death that runs no JS, so what covers those is the receipt
+		// and read triggers, not this one. The write follows the outbox stop
+		// so the state updates and the outbox's synchronous release stay in
+		// one slice: a start racing this stop owns whatever it acquires after
+		// that.
 		await this.#retainConsumedDurable([...this.#unsettledConsumed]);
 	}
 

@@ -1759,7 +1759,7 @@ test("a drain's consumed messages left unsettled by a refused write settle on th
 	await runtime.stop();
 });
 
-test("a drain's consumed ids a quit caught before a read survive it and settle on the reload", async () => {
+test("a drain's consumed ids a stop caught before a read survive it and settle on the reload", async () => {
 	let nextId = 0;
 	const sharedDatabase = openDatabase();
 	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`, sharedDatabase);
@@ -1779,9 +1779,9 @@ test("a drain's consumed ids a quit caught before a read survive it and settle o
 	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
 	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
 
-	// Storage answers again, but no authoritative read runs before the quit -
-	// and a read could not name the ids anyway, because the drain consumed
-	// them - so only what the quit wrote durably can settle the row.
+	// Storage answers again, but nothing triggers a settle before the stop -
+	// and the ids live only in memory until some trigger writes them durably
+	// - so what the stop writes is what the reload settles from.
 	database!.exec("PRAGMA query_only = OFF");
 	await runtime.stop();
 
