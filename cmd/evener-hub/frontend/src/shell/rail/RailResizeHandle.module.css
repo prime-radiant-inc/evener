@@ -32,7 +32,7 @@
   border-radius: var(--radius-pill);
   background: var(--accent);
   opacity: 0;
-  transition: opacity var(--motion-duration-overlay) var(--motion-easing-standard);
+  transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .resizeHandle:hover::after,

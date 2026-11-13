@@ -1166,8 +1166,10 @@ test("the open-state rotation turns the square svg, never the 1lh-tall span", ()
 test("the row's motion uses only existing motion tokens - no invented duration", () => {
   const css = rowCss();
   expect(css.match(/(?:transition|animation):[^;]*?\d+m?s/g)).toBe(null);
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toContain("var(--motion-easing-standard)");
+  // A chevron turning is the Move recipe: the hover duration, standard easing.
+  expect(css).toMatch(
+    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
 });
 
 test("all of the row's motion sits behind a prefers-reduced-motion gate", () => {

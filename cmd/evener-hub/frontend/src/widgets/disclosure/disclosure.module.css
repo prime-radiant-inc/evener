@@ -134,6 +134,6 @@
  * less motion gets an instant open. */
 @media (prefers-reduced-motion: no-preference) {
   .chevron {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
   }
 }

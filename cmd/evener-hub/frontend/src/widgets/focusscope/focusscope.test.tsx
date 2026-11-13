@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRoot } from "react-dom/client";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { FocusScope, LayerFocusScope } from "./index";
 
 test("renders its children", () => {
@@ -48,6 +48,25 @@ test("on mount, skips an element with tabindex=-1", () => {
     </FocusScope>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Land here" }));
+});
+
+test("moving focus in on mount never scrolls the page", () => {
+  const focus = vi.spyOn(HTMLElement.prototype, "focus");
+  try {
+    const { unmount } = render(
+      <FocusScope>
+        <button type="button">first</button>
+      </FocusScope>,
+    );
+    const mounted = focus.mock.calls.filter(([options]) => options?.preventScroll === true);
+    expect(mounted.length).toBeGreaterThan(0);
+    expect(focus.mock.calls[0]?.[0]).toEqual({ preventScroll: true });
+    unmount();
+    render(<FocusScope>{null}</FocusScope>);
+    expect(focus.mock.calls.at(-1)?.[0]).toEqual({ preventScroll: true });
+  } finally {
+    focus.mockRestore();
+  }
 });
 
 test("with no tabbable descendants, focuses the scope itself as a fallback", () => {

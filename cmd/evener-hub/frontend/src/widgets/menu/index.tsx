@@ -237,10 +237,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerDocument.defaultView ?? window;
     const triggerRect = triggerEl.getBoundingClientRect();
-    const placed = computeMenuPosition(triggerRect, popupEl.getBoundingClientRect(), {
-      width: ownerWindow.innerWidth,
-      height: ownerWindow.innerHeight,
-    });
+    // The popup's own size is its untransformed layout box (offset*), not its
+    // rect: this runs in the commit that mounts it, while the entrance still
+    // holds it at its scaled-down `from` keyframe, and a rect would place a
+    // popup that is about to be larger than the box it was measured as.
+    const placed = computeMenuPosition(
+      triggerRect,
+      { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
+      { width: ownerWindow.innerWidth, height: ownerWindow.innerHeight },
+    );
     setPosition(placed);
     setOrigin(transformOriginFor(triggerRect, placed));
   }, [isOpen, ownerDocument]);

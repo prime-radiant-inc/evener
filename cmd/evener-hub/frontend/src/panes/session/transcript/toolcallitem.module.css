@@ -668,7 +668,7 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .chevron > svg {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
   }
 }
 

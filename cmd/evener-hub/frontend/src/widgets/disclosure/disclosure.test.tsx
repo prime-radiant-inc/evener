@@ -378,8 +378,10 @@ test("every motion declaration uses an existing motion token - no invented durat
   const css = motionCss();
   const durations = css.match(/(?:transition|animation):[^;]*?(\d+m?s)/g);
   expect(durations).toBe(null); // no literal duration anywhere
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toContain("var(--motion-easing-standard)");
+  // A chevron turning is the Move recipe: the hover duration, standard easing.
+  expect(css).toMatch(
+    /\.chevron\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
 });
 
 test("the chevron rotation sits inside a prefers-reduced-motion: no-preference gate", () => {

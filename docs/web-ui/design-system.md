@@ -140,7 +140,7 @@ losing the conversation that made the evidence relevant.
   empty, unfocused, no send in flight — a composer
   with room folds to one row: the placeholder beside the model and effort, with the
   session menu and Send at the right. The paperclip returns with the expanded card,
-  and focusing or typing grows it back through the spatial-motion budget. The space
+  and focusing or typing grows it back on the spatial recipe (§5). The space
   around the card keeps its outgoing height until the animation starts, so a
   transcript resting at its end stays there through the fold. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
@@ -367,11 +367,11 @@ danger = failure/destruction; accent = links, focus, selection and the one prima
 on a surface. Accent is the brand hue, an indigo, and it is never a status. No decorative status
 hues, invented activity, speculative progress bars or color-only distinctions.
 
-**Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior. The one continuous motion allowed for agent liveness is `StatusDot`'s
-working spinner: it turns only while the owning status authority reports active
-work and becomes the static working dot under reduced motion. See §5 for the exact
-budgets and exceptions.
+**Motion is evidence.** Nothing moves on its own. Preserve measured cadence and
+reduced-motion behavior. The one continuous motion allowed for agent liveness is
+`StatusDot`'s working ring: it turns only while the owning status authority reports active
+work and becomes the static working dot under reduced motion. See §5 and
+[motion.md](motion.md) for the recipes and the other two continuous animations.
 
 **Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
 a surface has room and frame evidence: a state dot plus a 64×10px activity
@@ -632,19 +632,15 @@ fails when a plain agent paragraph runs past 100 characters per line at 1440 or 
 the column is not centred in its pane. Pane bodies pad `--space-5` on desktop and `--space-4`
 below 900px (`panescaffold.module.css`).
 
-**Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
-`--motion-duration-hover` (150ms: color/background/border/shadow transitions on
-hover/focus/press for interactive chrome; transitions name their properties explicitly, never
-`transition: all`), `--motion-duration-press` (90ms: the `transform` of a held control),
-`--motion-easing-standard` (`ease-out`) and `--motion-easing-pop`
-(`cubic-bezier(0.2, 0.9, 0.3, 1.15)`: a slight overshoot for an overlay's enter). The press
+**Motion** — the duration, easing and scale tokens are tabulated in §5 and declared in
+`tokens.css`; transitions name their properties explicitly, never `transition: all`. The press
 is a `transform: scale()` on `:active` by one of two tokens: `--press-scale-control` (0.97)
 for buttons and button-like chips, and `--press-scale-row` (0.985) for full-width rows,
 whose ends would otherwise travel much further. It is transform only, so nothing around the
 control reflows; a refused (`disabled` or `aria-disabled`) control does not respond; the
 `transform` transition sits in the control's one base `transition` list, and the `:active`
-scale alone lives inside `@media (prefers-reduced-motion: no-preference)`. See §5 for the
-budget these back.
+scale alone lives inside `@media (prefers-reduced-motion: no-preference)`. See
+[motion.md](motion.md) for the recipes these back.
 
 **Focus rings** — `--focus-ring` (2px solid accent) and `--focus-ring-danger` (2px solid danger).
 Every interactive widget gets `outline: var(--focus-ring)` on `:focus-visible`; `--focus-ring-danger`
@@ -761,9 +757,9 @@ during implementation (noted inline); this table is the one to trust.
 | **KeyHint** | `{keys: string[]; compact?: boolean}` | One `<kbd>` per key, "+"-separated, each drawn as a keycap: `--surface-1`, a 1px `--edge` hairline, `--radius-chip`, and a heavier `--edge-strong` foot drawn as a shadow so the cap keeps its box; the literal key name `"Mod"` renders as ⌘ on Apple platforms, `Ctrl` elsewhere. `compact` renders one bare glyph run (⇧↵) for a hint inside another control (a Send button), with the same words visually hidden so the enclosing name is unchanged. `chordLabel(keys)` is exported alongside. |
 | **Menu** | `{items: MenuEntry[]; triggerTabIndex?: number; variant?: "default"\|"quiet"} & ({trigger: ReactNode} \| {icon: ReactNode; label: string})` (`MenuEntry` = `{id; label; onSelect; disabled?}` \| `{kind: "separator"; id}`) | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. The default trigger is a raised control (`--surface-1`, `--edge`, `--shadow-card`); the popup is a `--radius-pane` overlay whose items sit `--space-1` inside its edge and round their own wash. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). `trigger` is visible content that also names the button. The icon-only form takes `icon` (decorative, wrapped `aria-hidden`) and a required `label` that becomes the trigger's `aria-label`; it is square at IconButton's `sm` size (28px) with IconButton's tap floor (≤899px or a coarse pointer), so callers never pad, size or centre the trigger themselves (the rail's row and section "⋯", SessionMenu). `triggerTabIndex={-1}` when nested in a roving-tabindex row; `variant="quiet"` drops the trigger's border for dense rows. |
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
-| **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, 120ms fade-scale on `--motion-easing-pop`, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
+| **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |
-| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `expandable` adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time). |
+| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry and its Slide-recipe edge animation differ. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `expandable` adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time). |
 | **FocusScope** | `{trap?: boolean; autoFocus?: boolean (true); children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. `autoFocus={false}` skips both the move-in and the restore, for a popover whose focus must stay in its anchoring input. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
@@ -986,70 +982,60 @@ widget stay aligned.
 
 ---
 
-## 5. Motion budget
+## 5. Motion
 
-The law widened 2026-08-13 from "default none" to **"no idle motion"**: decorative idle
-animation stays banned, but input-response transitions on interactive chrome are now
-budgeted. Five budgets, on `--motion-easing-standard` (`ease-out`) unless noted:
+Motion explains something and never decorates: it acknowledges a control, shows where a
+surface came from and went, keeps one object one object across a change, or signals that
+the agent's state really changed. Nothing moves on its own, and the screen is still
+otherwise. Everything that moves is one of six recipes (Respond, Press, Float, Slide,
+Spatial, Move) built from the tokens below; what arrives with motion leaves with motion,
+quicker and plainer; and under `prefers-reduced-motion: reduce` every transform, fade and
+scroll animation becomes an instant change to the end state.
+[motion.md](motion.md) is the reference for the recipes, the reveal and exit rules, the
+scrolling rules and the checklist for a change; `src/styles/motion.contract.test.ts`
+enforces what can be checked mechanically.
 
-- **Attention onset** (`--motion-duration-attention`, 200ms) — a state crossing into
-  needs-you. Cadence's dot, StatusDot, and Switch all use it for their own state-driven color
-  transitions.
-- **Overlay fade-scale** (`--motion-duration-overlay`, 120ms) — Dialog, Sheet, and Menu's
-  open/close. A layer that scales in (Dialog, Menu, Popover, HoverCard, the transcript's
-  selection-quote bubble) enters on `--motion-easing-pop`, a slight overshoot that settles
-  inside the same 120ms; nothing that is not an overlay's enter uses that curve.
-- **Hover/focus response** (`--motion-duration-hover`, 150ms) — color, background,
-  border, and shadow transitions on interactive chrome (buttons, inputs, rows, chips, ...)
-  as a control is hovered, focused or held. Transitions name their properties explicitly; a
-  blanket `transition: all` is never used.
-- **The press** (`--motion-duration-press`, 90ms) — a held control scales down a touch and
-  springs back on release: `--press-scale-control` for Button, IconButton, a Menu trigger
-  and the status-bar counters; `--press-scale-row` for wide rows (ListRow, Tree rows,
-  command-palette rows, the New session directory tile). Transform only, never on a refused
-  control, and the scale applies only inside
-  `@media (prefers-reduced-motion: no-preference)`. It answers the user's own press, so it
-  is not idle motion.
-- **Spatial** (`--motion-duration-spatial`, 240ms) — a user-initiated geometry change (see
-  "Spatial motion" below).
+| Token | Value | Use |
+|---|---|---|
+| `--motion-duration-press` | 90ms | A held control giving under the pointer |
+| `--motion-duration-exit` | 80ms | A floating layer leaving |
+| `--motion-duration-overlay` | 120ms | A floating layer arriving; a revealed body fading in |
+| `--motion-duration-hover` | 150ms | Hover, focus and selection responses; small moves |
+| `--motion-duration-spatial-exit` | 180ms | An edge-attached surface leaving |
+| `--motion-duration-attention` | 200ms | A state crossing into needs-you |
+| `--motion-duration-spatial` | 240ms | An edge-attached surface arriving; user-initiated geometry |
+| `--motion-duration-activity` | 800ms | One turn of the working ring |
+| `--motion-easing-standard` | `ease-out` | Everything, unless noted |
+| `--motion-easing-pop` | `cubic-bezier(0.2, 0.9, 0.3, 1.15)` | A floating layer's entrance only |
+| `--motion-easing-exit` | `ease-in` | Every exit |
+| `--motion-scale-from` | 0.96 | The scale a floating layer grows from and shrinks to |
+| `--press-scale-control` / `--press-scale-row` | 0.97 / 0.985 | How far a pressed button / row gives |
 
-Forbidden: decorative idle pulses, shimmer loops on live data, and animation that invents
-progress. The two sanctioned continuous animations below are the only exceptions. Every
-widget with motion of its own respects
-`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
-SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
+Three animations may run continuously, and only these; each shows a static equivalent under
+reduced motion, and each is defined once:
 
-**Agent liveness (Jesse, 2026-10-11):** session and agent status is always `StatusDot`, and its
-`working` state is an activity indicator: the dot becomes an open alive ring that turns
-continuously. This is the one continuous motion allowed for agent liveness, and only on
-StatusDot. It plays wherever a StatusDot shows `working` (rail rows, while the navigation summary
-reports active work including running jobs or descendants; pane tabs; ancestor spines; the command
-palette; delegate rows), and stops the moment the status authority stops reporting work. It
-communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and failed
-(a diamond) stay static and shape-distinct. Under `prefers-reduced-motion: reduce` the ring does
-not render; working is the static alive dot. One turn takes `--motion-duration-activity` (800ms)
-on linear easing, so the rotation's speed stays constant.
+- **The working ring.** Session and agent status is always `StatusDot`, and its `working`
+  state is an open alive ring that turns (`--motion-duration-activity`, linear). It plays
+  wherever a StatusDot shows `working` (rail rows, while the navigation summary reports
+  active work including running jobs or descendants; pane tabs; ancestor spines; the command
+  palette; delegate rows) and stops the moment the status authority stops reporting work. It
+  communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and
+  failed (a diamond) stay static and shape-distinct.
+- **The pulsing grid.** The transcript's content-free "Thinking…" placeholder, shown for a
+  live reasoning item while the Reasoning content flag is off, uses the catalog `Loader`'s
+  pulsing pixel grid. It renders no reasoning text, disappears once the thought is no longer
+  the turn's current activity, and is the only animation the transcript itself adds. It is a
+  user-facing wait placeholder, not an agent-status indicator, and unlike Cadence it is not
+  activity-gated, so it keeps pulsing if the stream stalls; Cadence's decaying trace remains
+  the honest liveness signal.
+- **The streaming caret.** A blinking bar at the end of text that is still streaming, in
+  the surrounding ink; it exists only while the text is live.
 
-One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
-shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
-`Loader`'s pulsing pixel grid (Jesse's call). It renders no reasoning text, disappears once the
-thought is no longer the turn's current activity, and is the only animation the transcript itself
-adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
-decaying trace remains the honest liveness signal. It is a user-facing wait placeholder, not an
-agent-status indicator; agent status is StatusDot's job. Every other idle pulse or shimmer stays
-banned.
-
-### Spatial motion (2026-09-29, zoom activity surfaces)
-
-The spatial budget, `--motion-duration-spatial` (240ms, still `--motion-easing-standard`), is for
-user-initiated geometry changes: the activity sidebar sliding in, a zoom column opening, a column
-collapsing to a spine. Spatial motion answers *where did it go* — a panel that arrives from the
-edge it lives on, a column that narrows into the spine it became. Motion that doesn't preserve
-spatial continuity is decoration and stays banned. Data arriving (a job finishing, a watch firing)
-never animates geometry: state change is what the attention hues are for. Architecture: one library
-(`motion`), one wrapper module (`src/motion`), one reduced-motion switch (`MotionProvider`,
-`reducedMotion="user"`), durations from tokens, never literals. Components import the wrapper, never
-the library.
+Every other idle pulse, shimmer on live data and animation that invents progress is banned.
+Data arriving (a job finishing, a watch firing, a new row) never animates geometry: the
+attention hues carry that news. User-initiated geometry (the composer fold, an expandable
+sheet, a zoom column) runs through the one `src/motion` wrapper, which reads the tokens;
+components import the wrapper, never the library.
 
 ---
 
@@ -1361,8 +1347,8 @@ authoritative frame, terminal/error/cancel state, session change, or pending
 failure; it must never appear for an untouched empty session. Reuse the static
 `Skeleton` widget, keep its accessible loading status and decorative bars, and
 do not add shimmer, pulse, or other motion that implies live data (the one
-motion exception, the Reasoning placeholder's `Loader` grid, is recorded in the
-motion budget above).
+motion exception, the Reasoning placeholder's `Loader` grid, is recorded in
+§5).
 
 Below 700px both speaker rows become a grid rather than a flex row: the avatar
 and the speaker header share the first row and the prose spans the full pane

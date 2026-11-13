@@ -70,25 +70,7 @@ interface Pending {
 
 // Known violations that later work owns. Delete an entry when its fix lands:
 // the test fails on an entry that no longer violates.
-const PENDING: Pending[] = [
-  {
-    rule: "default-easing",
-    file: "panes/session/composer/composer.module.css",
-    reason:
-      "two transitions (the card's border-color and an opacity reveal) name a duration but no easing, so they run on the raw `ease` default",
-  },
-  {
-    rule: "ungated-transform",
-    file: "panes/session/chrome/topnotespanel.module.css",
-    reason: "the chevron rotation (the Move recipe) is not gated by reduced motion",
-  },
-  {
-    rule: "continuous-keyframes-duplicated",
-    file: "panes/session/transcript/streamingtext.module.css",
-    reason:
-      "streamingCaretBlink is declared here and again in messages/agentmessageitem.module.css; the caret's keyframes belong in one place",
-  },
-];
+const PENDING: Pending[] = [];
 
 // --- parsing -----------------------------------------------------------------
 
@@ -231,13 +213,21 @@ function violationsIn(file: string, css: string): Violation[] {
     if (d.value === "none" || !(d.property === "animation" || d.property === "animation-name")) continue;
     if (!gated(d) && !reduceSwitchesOff("animation")) add("ungated-animation", d.value);
   }
-  // A transform transition moves something; its stylesheet gates that move.
-  const movesTransform = motion.some(
+  // A transform transition moves something. Either the transition itself is
+  // declared under no-preference, or the transform it carries (a press scale)
+  // is, or reduce switches transitions off: otherwise the move still plays.
+  const transformTransitions = motion.filter(
     (d) =>
       d.property === "transition" &&
       splitTopLevel(d.value, /,/).some((item) => splitTopLevel(item, /\s/)[0] === "transform"),
   );
-  if (movesTransform && !/prefers-reduced-motion/.test(css)) add("ungated-transform", "transform transition");
+  if (transformTransitions.length > 0) {
+    const gatedTransform = declarations(css, /^transform$/).some((d) => d.value !== "none" && gated(d));
+    const ungatedTransition = transformTransitions.some((d) => !gated(d));
+    if (ungatedTransition && !gatedTransform && !reduceSwitchesOff("transition")) {
+      add("ungated-transform", "transform transition");
+    }
+  }
 
   if (file !== MOTION) {
     for (const match of css.matchAll(/@keyframes\s+([\w-]+)/g)) {
@@ -311,6 +301,12 @@ describe("the rule checker", () => {
     ]);
     expect(
       rulesFor(".a { transition: transform var(--motion-duration-hover) var(--motion-easing-standard); }"),
+    ).toEqual(["ungated-transform"]);
+    // Mentioning reduced motion elsewhere does not gate the transform.
+    expect(
+      rulesFor(
+        ".a { transition: transform var(--motion-duration-hover) var(--motion-easing-standard); } @media (prefers-reduced-motion: no-preference) { .b { animation: x var(--motion-duration-hover) var(--motion-easing-standard); } }",
+      ),
     ).toEqual(["ungated-transform"]);
     expect(rulesFor("@keyframes fadeIn { from { opacity: 0; } }")).toEqual(["keyframes-outside-recipes"]);
     expect(rulesFor(".a { transition-timing-function: linear; }")).toEqual(["raw-easing"]);
@@ -421,6 +417,13 @@ describe("styles/motion.module.css", () => {
     expect(recipes).not.toMatch(/\.bodyReveal\[data-motion/);
   });
 
+  test("the streaming caret blinks once, inside the reduced-motion gate, and stays as a still bar", () => {
+    expect(gate).toMatch(/\.caret::after[^{]*\{\s*animation:\s*streamingCaretBlink 1s step-end infinite;/);
+    expect(recipes.match(/@keyframes\s+streamingCaretBlink/g)).toHaveLength(1);
+    expect(keyframes(recipes, "streamingCaretBlink")).toMatch(/50%\s*\{\s*opacity:\s*0;\s*\}/);
+    expect(recipes).toMatch(/\.caret::after[^{]*\{[^}]*content:\s*"";[^}]*background:\s*currentColor/);
+  });
+
   test("every animation in the recipes sits inside the reduced-motion gate", () => {
     const outside = mediaRanges(recipes)
       .filter((range) => /prefers-reduced-motion:\s*no-preference/.test(range.condition))
@@ -451,6 +454,8 @@ const CONSUMERS: [file: string, selector: string, recipe: string][] = [
   ["shell/holdhints/holdhints.module.css", ".root", "fade"],
   ["widgets/disclosure/disclosure.module.css", ".body", "bodyReveal"],
   ["panes/session/transcript/toolcallitem.module.css", ".body", "bodyReveal"],
+  ["panes/session/transcript/streamingtext.module.css", ".live", "caret"],
+  ["panes/session/transcript/messages/agentmessageitem.module.css", ".stream", "caretLast"],
 ];
 
 describe("the layers compose their recipe", () => {

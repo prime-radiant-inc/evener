@@ -384,7 +384,9 @@ test("footer and tabs explain summary counts through paging and activity changes
   expectCounts(2, 6);
   expect(footer.getByText("Jobs")).toBeTruthy();
   expect(footer.getByRole("button", { name: /Jobs, 2 of 6 running/ }).title).toBe("Jobs, 2 of 6 running");
-  expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" }).textContent).toBe("Watches\n2/3");
+  // The tab carries its label and its count as two separate elements.
+  const watchesTab = within(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" }));
+  expect(watchesTab.getByText("Watches")).not.toBe(watchesTab.getByText("2/3"));
   expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
   expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();

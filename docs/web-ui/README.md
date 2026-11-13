@@ -18,6 +18,9 @@ Design documentation for the web hub (`cmd/evener-hub`).
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
+- **[motion.md](motion.md)** — how the web hub moves and why: the four jobs motion may do,
+  the six recipes with their tokens, reveals, the three continuous animations, scrolling,
+  and the checklist for adding an animation. The reference behind design-system.md §5.
 - **[decisions.md](decisions.md)** — historical choices from the 2026-06 visual
   brainstorm onward, with point-in-time source verdicts. Read this before changing a
   transcript or navigator behaviour: it distinguishes a reasoned departure from

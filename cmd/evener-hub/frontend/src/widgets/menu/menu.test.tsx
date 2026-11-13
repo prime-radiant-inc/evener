@@ -546,6 +546,40 @@ test("a scroll in an unrelated popout container leaves the menu open", () => {
   }
 });
 
+// jsdom performs no layout: supplies the untransformed layout box the Menu
+// measures its popup by (offsetWidth/offsetHeight) for the UL in `win`.
+function stubPopupLayoutBox(win: Window & typeof globalThis, width: number, height: number) {
+  const isPopup = (el: HTMLElement) => el.tagName === "UL";
+  vi.spyOn(win.HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return isPopup(this) ? width : 0;
+  });
+  vi.spyOn(win.HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return isPopup(this) ? height : 0;
+  });
+}
+
+// The popup animates in from a scaled-down keyframe in the commit that
+// measures it, and a rect reports the box after transforms. Placement must
+// come from the untransformed layout box: the two are given different widths
+// here so only one placement can result.
+test("places the popup from its untransformed layout box, not its mid-animation rect", () => {
+  const SETTLED_WIDTH = 200;
+  const ANIMATING_WIDTH = 192; // scale(0.96)
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const box = (left: number, width: number) =>
+      ({ left, right: left + width, top: 20, bottom: 40, width, height: 20 }) as DOMRect;
+    if (this.tagName === "BUTTON") return box(window.innerWidth - 40, 40);
+    if (this.tagName === "UL") return box(0, ANIMATING_WIDTH);
+    return box(0, 0);
+  });
+  stubPopupLayoutBox(window, SETTLED_WIDTH, 100);
+  render(<Menu trigger="Actions" items={items()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+  // Hard against the right edge the popup right-aligns to the trigger, so its
+  // own width lands in the arithmetic.
+  expect(screen.getByRole("menu").style.left).toBe(`${window.innerWidth - SETTLED_WIDTH}px`);
+});
+
 // Menu placement has always flipped and clamped against a viewport. In a
 // popout that has to be the popout's own viewport: a 600x150 window places a
 // menu near its bottom-right corner very differently from the opener's.
@@ -570,6 +604,7 @@ test("places a popout menu from the popout window's own viewport", () => {
     if (this.tagName === "UL") return rect(0, 0, 200, 120);
     return rect(0, 0, 0, 0);
   });
+  stubPopupLayoutBox(win, 200, 120);
   const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
   try {
     const trigger = doc.querySelector("button");

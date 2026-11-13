@@ -67,7 +67,11 @@ export function LayerFocusScope({
     restoreTargetRef.current = doc.activeElement;
     if (scope) {
       const first = tabbable(scope)[0];
-      (first ?? scope).focus();
+      // preventScroll: the layer is already placed where the user is looking
+      // (a fixed or anchored overlay); a plain focus() of the unstyled scope
+      // wrapper at the end of <body> scrolls the page to it, and the scroll
+      // closes a Popover or Menu that was just opened.
+      (first ?? scope).focus({ preventScroll: true });
     }
     return () => {
       const target = restoreTargetRef.current;

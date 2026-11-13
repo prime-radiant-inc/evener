@@ -57,7 +57,7 @@ function formatElapsed(startedAt: number, now: number): string {
  * placeholder for a live reasoning item with the Reasoning content flag off
  * (transcriptDisplay's projector emits it; ThinkBlock renders it) - a
  * user-approved use of this grid as the only motion the transcript adds,
- * recorded in docs/web-ui/design-system.md's motion budget.
+ * recorded in docs/web-ui/motion.md (Continuous motion).
  *
  * The grid's animation is the one deliberate exception to the app's ban on
  * idle animation (Direction, Global Constraints): it only exists at all
