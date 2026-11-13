@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import { AnimatePresence, MotionProvider, m, spatialTransition } from "./index";
+import { AnimatePresence, MotionProvider, m, spatialExitTransition, spatialTransition } from "./index";
 import { motionDurationMs } from "./tokens";
 
 describe("MotionProvider", () => {
@@ -73,6 +73,28 @@ describe("spatialTransition", () => {
     document.documentElement.style.removeProperty("--motion-duration-spatial");
     // Back to the absent-token values: the same memoized object returns.
     expect(spatialTransition()).toBe(first);
+  });
+});
+
+describe("spatialExitTransition", () => {
+  test("reads the spatial exit duration and the exit easing", () => {
+    document.documentElement.style.setProperty("--motion-duration-spatial-exit", "200ms");
+    document.documentElement.style.setProperty("--motion-easing-exit", "ease-in-out");
+    expect(spatialExitTransition()).toEqual({ duration: 0.2, ease: "easeInOut" });
+    document.documentElement.style.removeProperty("--motion-duration-spatial-exit");
+    document.documentElement.style.removeProperty("--motion-easing-exit");
+  });
+
+  test("falls back to the shipped exit values when the tokens are absent", () => {
+    expect(spatialExitTransition()).toEqual({ duration: 0.18, ease: "easeIn" });
+  });
+
+  test("is memoized apart from the entrance even when both tokens read the same", () => {
+    document.documentElement.style.setProperty("--motion-duration-spatial", "180ms");
+    document.documentElement.style.setProperty("--motion-easing-standard", "ease-in");
+    expect(spatialExitTransition()).not.toBe(spatialTransition());
+    document.documentElement.style.removeProperty("--motion-duration-spatial");
+    document.documentElement.style.removeProperty("--motion-easing-standard");
   });
 });
 

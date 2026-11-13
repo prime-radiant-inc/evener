@@ -12,13 +12,20 @@
 }
 
 .control {
+  /* The painted track's size and the gap between its outer edge and the
+   * thumb (the track's 1px edge plus its 1px padding). The thumb's size and
+   * its travel derive from these, so the thumb always fills the track's
+   * height and crosses exactly to the far end. */
+  --switch-track-inline-size: 32px;
+  --switch-track-block-size: 18px;
+  --switch-track-inset: 2px;
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 32px;
-  height: 18px;
+  width: var(--switch-track-inline-size);
+  height: var(--switch-track-block-size);
   padding: 0;
   border: 0;
   background: transparent;
@@ -27,12 +34,12 @@
 
 .track {
   display: block;
-  width: 32px;
-  height: 18px;
+  width: var(--switch-track-inline-size);
+  height: var(--switch-track-block-size);
   /* --field alone is within a hair of the page ground in the light theme, so
-   * the track carries its own edge. Edge plus padding is the 2px the thumb
+   * the track carries its own edge. Edge plus padding is the inset the thumb
    * sits inside. */
-  padding: 1px;
+  padding: calc(var(--switch-track-inset) - 1px);
   border: 1px solid var(--edge-strong);
   border-radius: var(--radius-pill);
   background: var(--field);
@@ -61,8 +68,8 @@
 
 .thumb {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: calc(var(--switch-track-block-size) - 2 * var(--switch-track-inset));
+  height: calc(var(--switch-track-block-size) - 2 * var(--switch-track-inset));
   border-radius: 50%;
   background: var(--ink-hi);
   transform: translateX(0);
@@ -72,7 +79,8 @@
  * clears contrast on a solid accent in both themes. */
 .control[aria-checked="true"] .thumb {
   background: var(--on-accent);
-  transform: translateX(14px);
+  /* The track's inner width less the thumb: inline - 2 * inset - (block - 2 * inset). */
+  transform: translateX(calc(var(--switch-track-inline-size) - var(--switch-track-block-size)));
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {
@@ -84,11 +92,13 @@
   }
 }
 
+/* The thumb crossing is the Move recipe and its fill change is Respond: both
+ * on the hover budget, the move only without reduced motion. */
 @media (prefers-reduced-motion: no-preference) {
   .thumb {
     transition:
-      transform var(--motion-duration-overlay) var(--motion-easing-standard),
-      background-color var(--motion-duration-overlay) var(--motion-easing-standard);
+      transform var(--motion-duration-hover) var(--motion-easing-standard),
+      background-color var(--motion-duration-hover) var(--motion-easing-standard);
   }
 
   .track {

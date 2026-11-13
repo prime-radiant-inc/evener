@@ -8,7 +8,7 @@
 // table the status bar's chips read, so the two surfaces cannot drift.
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { AnimatePresence, m, spatialTransition } from "../../motion";
+import { AnimatePresence, m, spatialExitTransition, spatialTransition } from "../../motion";
 import { ActivityBodyClock } from "../../panes/session/chrome/activityTime";
 import { popAgentCascade } from "../../panes/zoom/actions";
 import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
@@ -129,6 +129,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // style pass), and the token changes with the theme at most, so paying
   // that read on every render taxes each scope change for nothing.
   const transition = useMemo(() => spatialTransition(), []);
+  const exitTransition = useMemo(() => spatialExitTransition(), []);
 
   // Esc closes the sidebar while it's open - the dismiss gesture every
   // transient surface in this app honors. defaultPrevented means something
@@ -152,9 +153,11 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
         <m.aside
           ref={sidebar}
           className={mobile ? CLASS.sidebarMobile : CLASS.sidebar}
-          initial={{ x: 320 }}
+          // The Slide recipe: in from the right edge it lives on and back out
+          // to it, by the sidebar's own width.
+          initial={{ x: "100%" }}
           animate={{ x: 0 }}
-          exit={{ x: 320 }}
+          exit={{ x: "100%", transition: exitTransition }}
           transition={transition}
           data-testid="activity-sidebar"
           aria-label="Overview"

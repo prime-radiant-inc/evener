@@ -26,6 +26,9 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
     expect(intrinsic.group.className).not.toContain("fullWidth");
     expect(intrinsic.group.querySelectorAll('[role="radio"]')).toHaveLength(3);
 
+    const unequal = selected("Unequal labels", "All");
+    expect(unequal.group.querySelectorAll('[role="radio"]')).toHaveLength(3);
+
     const sixOption = selected("Six-option transcript detail", "Tools");
     expect(sixOption.group.className).toContain("fullWidth");
     expect(sixOption.group.querySelectorAll('[role="radio"]')).toHaveLength(6);

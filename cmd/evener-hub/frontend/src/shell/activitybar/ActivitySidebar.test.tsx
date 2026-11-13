@@ -260,6 +260,20 @@ test("exact child focus switches demand without sibling leakage or a navigation 
   expect(client.calls.filter((c) => c.method === "evener/navigation/read")).toHaveLength(0);
 });
 
+// The Slide recipe (docs/web-ui/motion.md): the distance is the surface's own
+// size, never a pixel constant, and what slid in slides back out.
+test("the Overview slides in by its own width and leaves again", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount(true);
+  act(() => activitySidebarStore.getState().openWith("agents"));
+  const aside = await screen.findByTestId("activity-sidebar");
+  expect(aside.style.transform).toMatch(/translateX\(100%\)/);
+  act(() => activitySidebarStore.getState().close());
+  await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+});
+
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   const client = activityClient();
   connectionStore.getState().connect(client);

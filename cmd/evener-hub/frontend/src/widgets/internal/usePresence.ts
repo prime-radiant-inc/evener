@@ -43,6 +43,37 @@ function runningExit(layer: HTMLElement): Animation[] {
 }
 
 /**
+ * Calls `done` once, when the motion now running on `element` is over: at once
+ * (synchronously) when no finite animation runs on it or on the recipe
+ * elements inside it, otherwise when every one of them has finished or been
+ * cancelled, and at the latest a moment past `token`'s duration if an
+ * animation's end never arrives. Returns a function that cancels the wait.
+ * The one way something stays on screen only for the length of its motion:
+ * usePresence waits on a leaving layer with it, and the phone stack waits on a
+ * pane transition.
+ */
+export function afterMotion(element: HTMLElement, token: MotionDurationToken, done: () => void): () => void {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    done();
+  };
+  const running = runningExit(element);
+  if (running.length === 0) {
+    finish();
+    return () => {};
+  }
+  const timer = setTimeout(finish, motionDurationMs(token, element) + FALLBACK_SLACK_MS);
+  // A cancelled animation rejects `finished`; the motion is over either way.
+  Promise.all(running.map((animation) => animation.finished)).then(finish, finish);
+  return () => {
+    settled = true;
+    clearTimeout(timer);
+  };
+}
+
+/**
  * Keeps a layer mounted while it leaves, so what arrived with motion leaves
  * with motion (docs/web-ui/motion.md, "Exits need presence").
  *
@@ -74,26 +105,16 @@ export function usePresence(
 
   useLayoutEffect(() => {
     if (open || !mounted) return;
-    let settled = false;
     const finish = () => {
-      if (settled) return;
-      settled = true;
       setMounted(false);
       onExitedRef.current?.();
     };
     const element = layer.current;
-    const running = element ? runningExit(element) : [];
-    if (element === null || running.length === 0) {
+    if (element === null) {
       finish();
       return;
     }
-    const timer = setTimeout(finish, motionDurationMs(exitToken, element) + FALLBACK_SLACK_MS);
-    // A cancelled animation rejects `finished`; the layer is leaving either way.
-    Promise.all(running.map((animation) => animation.finished)).then(finish, finish);
-    return () => {
-      settled = true;
-      clearTimeout(timer);
-    };
+    return afterMotion(element, exitToken, finish);
   }, [open, mounted, layer, exitToken]);
 
   return { mounted: open || mounted, phase: open ? "open" : "closing" };

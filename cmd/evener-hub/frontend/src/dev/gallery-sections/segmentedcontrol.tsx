@@ -23,6 +23,21 @@ function InteractiveControl() {
   return <SegmentedControl label="Interactive detail" value={value} options={SHORT_OPTIONS} onChange={setValue} />;
 }
 
+// Labels of very different lengths: the thumb still lands on each option
+// exactly, because every column takes the widest option's width.
+const UNEQUAL_OPTIONS: readonly SegmentedControlOption[] = [
+  { value: "all", label: "All" },
+  { value: "needs-you", label: "Needs you right now" },
+  { value: "done", label: "Done" },
+];
+
+function UnequalControl() {
+  const [value, setValue] = useState("all");
+  return (
+    <SegmentedControl label="Unequal labels" value={value} options={UNEQUAL_OPTIONS} onChange={setValue} />
+  );
+}
+
 const STACKED_OPTIONS: readonly SegmentedControlOption[] = [
   { value: "agents", label: "Agents", detail: "18/1069", accessibleLabel: "Agents, 18 of 1069 active" },
   { value: "jobs", label: "Jobs", detail: "2/201", accessibleLabel: "Jobs, 2 of 201 running" },
@@ -86,6 +101,7 @@ export default function SegmentedControlGallerySection() {
         <div className={styles.stack}>
           <div className={styles.row}>
             <InteractiveControl />
+            <UnequalControl />
             <SegmentedControl
               label="Small detail"
               value="intent"
