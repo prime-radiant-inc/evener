@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { appendPopout } from "../internal/popoutTestUtils";
@@ -44,6 +45,25 @@ test("when open, the panel is portaled to document.body, not nested under the tr
     ancestor = ancestor.parentElement;
   }
   expect(reachedBody).toBe(true);
+});
+
+// A panel with nothing tabbable leaves focus on the focus scope's own wrapper,
+// which is the panel's parent. Escape pressed there never passes through the
+// panel, so the dismiss handler has to sit outside the scope.
+test("Escape closes a panel whose content has nothing tabbable", async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  render(
+    <Popover open onClose={onClose} trigger={<button type="button">open</button>} data-testid="panel">
+      <p>panel body</p>
+    </Popover>,
+  );
+  const panel = screen.getByTestId("panel");
+  expect(panel.contains(document.activeElement)).toBe(false);
+  expect(document.activeElement?.contains(panel)).toBe(true);
+
+  await user.keyboard("{Escape}");
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
 
 // closeOnScroll: the model picker's own list scrolls, and a page scroll behind

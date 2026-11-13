@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRoot } from "react-dom/client";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { FocusScope } from "./index";
 
 test("renders its children", () => {
@@ -50,13 +50,25 @@ test("on mount, skips an element with tabindex=-1", () => {
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Land here" }));
 });
 
-test("with no tabbable descendants, focuses the scope itself as a fallback", () => {
+// The fallback target is the scope's own in-flow wrapper. Under a portaled
+// overlay that wrapper sits at the end of <body> around a position:fixed panel,
+// so a scrolling focus drags the document to the bottom and the overlay's
+// close-on-scroll dismisses it as it opens. jsdom never scrolls; the focus
+// call's own options are the observable.
+test("with no tabbable descendants, focuses the scope itself as a fallback without scrolling to it", ({
+  onTestFinished,
+}) => {
+  const focus = vi.spyOn(HTMLElement.prototype, "focus");
+  onTestFinished(() => focus.mockRestore());
   const { container } = render(
     <FocusScope>
       <p>Nothing focusable here.</p>
     </FocusScope>,
   );
-  expect(document.activeElement).toBe(container.firstElementChild);
+  const scope = container.firstElementChild;
+  expect(document.activeElement).toBe(scope);
+  const scopeFocusCalls = focus.mock.calls.filter((_, index) => focus.mock.contexts[index] === scope);
+  expect(scopeFocusCalls).toEqual([[{ preventScroll: true }]]);
 });
 
 test("restores focus to the previously focused element when the scope unmounts", () => {

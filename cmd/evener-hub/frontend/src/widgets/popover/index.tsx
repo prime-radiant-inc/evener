@@ -181,7 +181,7 @@ export function Popover({
     };
   }, [open, onClose, closeOnScroll, panelWindow]);
 
-  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function handleOverlayKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       // Stop the event from also reaching an enclosing overlay (e.g. a Dialog
       // this popover is nested in), mirroring Menu's Escape handling.
@@ -197,18 +197,22 @@ export function Popover({
       {open &&
         panelDocument !== null &&
         createPortal(
-          <FocusScope trap autoFocus={autoFocus}>
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes on Escape; the panel is a portaled overlay container, not itself interactive */}
-            <div
-              ref={panelRef}
-              className={CLASS.panel}
-              data-testid={rest["data-testid"]}
-              style={position ? { top: position.top, left: position.left } : { top: TRIGGER_GAP, left: 0 }}
-              onKeyDown={handlePanelKeyDown}
-            >
-              {children}
-            </div>
-          </FocusScope>,
+          // The Escape handler wraps the scope, not the panel: a panel with
+          // nothing tabbable leaves focus on the scope's own wrapper, the
+          // panel's parent, and a key pressed there never reaches the panel.
+          // biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes on Escape; this wraps a portaled overlay and is not itself interactive
+          <div onKeyDown={handleOverlayKeyDown}>
+            <FocusScope trap autoFocus={autoFocus}>
+              <div
+                ref={panelRef}
+                className={CLASS.panel}
+                data-testid={rest["data-testid"]}
+                style={position ? { top: position.top, left: position.left } : { top: TRIGGER_GAP, left: 0 }}
+              >
+                {children}
+              </div>
+            </FocusScope>
+          </div>,
           panelDocument.body,
         )}
     </span>

@@ -48,7 +48,15 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
     restoreTargetRef.current = doc.activeElement;
     if (scope) {
       const first = tabbable(scope)[0];
-      (first ?? scope).focus();
+      if (first) {
+        first.focus();
+      } else {
+        // The wrapper is an in-flow box, and under a portaled overlay it sits
+        // at the end of <body> around a position:fixed panel. Scrolling to it
+        // would move the page away from the panel's anchor, and an overlay
+        // that closes on scroll would dismiss itself as it opens.
+        scope.focus({ preventScroll: true });
+      }
     }
     return () => {
       const target = restoreTargetRef.current;
