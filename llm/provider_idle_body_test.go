@@ -9,16 +9,14 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
-
-type idleTestRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f idleTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestProviderIdleNonStreamingBody(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
-		client := ClientWithAdapterTimeout(&http.Client{Transport: idleTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		client := ClientWithAdapterTimeout(&http.Client{Transport: transporttest.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Body: r, Header: make(http.Header), Request: req}, nil
 		})}, &AdapterTimeout{StreamRead: time.Minute})
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.invalid", nil)
