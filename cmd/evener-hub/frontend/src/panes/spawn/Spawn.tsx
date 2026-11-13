@@ -81,7 +81,7 @@ import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
-import { AttachIcon } from "../session/composer/attachments/AttachIcon";
+import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
@@ -2710,15 +2710,7 @@ function SpawnForm({
                    (ModelSwitchTrigger) and the same StatusRow quiet-effort
                    recipe rather than a bespoke boxed variant below the card. */
                 <div className={CLASS.leading}>
-                  <IconButton
-                    label="Attach image"
-                    icon={<AttachIcon />}
-                    variant="quiet"
-                    size="xs"
-                    type="button"
-                    data-testid="spawn-attach"
-                    onClick={() => fileInputRef.current?.click()}
-                  />
+                  <AttachImageControl inputRef={fileInputRef} testId="spawn-attach" />
                   {/* The label follows the same rules the old desktop field's
                       did - the required-choice word when the hub has confirmed
                       no default (kata xgk8), otherwise the chosen model, the

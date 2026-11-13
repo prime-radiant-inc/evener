@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
@@ -284,6 +284,39 @@ test("a focused pane never focuses the prompt field on mount on mobile", async (
   renderSpawn(readyClient());
   await settled();
   expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+test("the prompt card's attach opens the picker directly where the browser's picker has a camera", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const clickSpy = vi.spyOn(input, "click").mockImplementation(() => {});
+  fireEvent.click(screen.getByTestId("spawn-attach"));
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(clickSpy).toHaveBeenCalledTimes(1);
+  expect(input.hasAttribute("capture")).toBe(false);
+});
+
+test("on Android, the prompt card's attach offers the picker and the camera", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+    "Mozilla/5.0 (Linux; Android 15; Pixel 9) Chrome/141.0 Mobile",
+  );
+  renderSpawn(readyClient());
+  await settled();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const captures: (string | null)[] = [];
+  vi.spyOn(input, "click").mockImplementation(() => {
+    captures.push(input.getAttribute("capture"));
+  });
+  const trigger = within(screen.getByTestId("spawn-attach")).getByRole("button");
+  fireEvent.click(trigger);
+  const count = screen.getAllByRole("menuitem").length;
+  for (let index = 0; index < count; index += 1) {
+    if (index > 0) fireEvent.click(trigger);
+    fireEvent.click(screen.getAllByRole("menuitem")[index] as HTMLElement);
+  }
+  expect(captures).toHaveLength(2);
+  expect(captures.filter((capture) => capture !== null)).toHaveLength(1);
 });
 
 // The card and the session composer are the SAME object: both render
