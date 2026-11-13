@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
@@ -216,16 +216,133 @@ test("closing returns focus to whatever triggered the dialog", () => {
   expect(document.activeElement).toBe(trigger);
 });
 
-// jsdom does not evaluate real CSS animations or media queries, so (as in
-// the button/cadence exemplars) the 120ms fade-scale and its
-// prefers-reduced-motion opt-out are verified by reading the CSS module's
-// own source, the same way token-contract.test.ts reads stylesheets.
-test("the panel's open animation honors prefers-reduced-motion, using only tokens", () => {
+// --- leaving with motion ---------------------------------------------------
+// jsdom runs no animations, so these stand in a running exit animation on
+// every element the layer marks closing, and finish it by hand.
+
+function withRunningExit(): { finish: () => Promise<void>; restore: () => void } {
+  let resolve: () => void = () => {};
+  const finished = new Promise<void>((res) => {
+    resolve = res;
+  });
+  const exit = {
+    playState: "running",
+    effect: { getComputedTiming: () => ({ endTime: 80 }) },
+    finished,
+  } as unknown as Animation;
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value(this: Element) {
+      return this.getAttribute("data-motion") === "closing" ? [exit] : [];
+    },
+  });
+  return {
+    finish: async () => {
+      await act(async () => resolve());
+    },
+    restore: () => {
+      delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
+    },
+  };
+}
+
+test("a closing dialog stays while it leaves, already inert, unmodal and handing focus back", async () => {
+  const exit = withRunningExit();
+  try {
+    render(<button type="button">Open dialog</button>);
+    const trigger = screen.getByRole("button", { name: "Open dialog" });
+    trigger.focus();
+    const { rerender, container } = render(
+      <Dialog open onClose={vi.fn()} title="t">
+        <button type="button">Inside</button>
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Inside" }));
+
+    rerender(
+      <Dialog open={false} onClose={vi.fn()} title="t">
+        <button type="button">Inside</button>
+      </Dialog>,
+    );
+    const scrim = container.firstElementChild as HTMLElement;
+    expect(scrim.getAttribute("data-motion")).toBe("closing");
+    expect(scrim.hasAttribute("inert")).toBe(true);
+    // Nothing that asks whether a modal is open still finds one, and focus is
+    // back on the trigger before the exit has finished.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await exit.finish();
+    expect(container.firstElementChild).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    exit.restore();
+  }
+});
+
+test("reopening a dialog during its exit restores it whole: modal, trapped and focused inside", async () => {
+  const exit = withRunningExit();
+  try {
+    const { rerender, container } = render(
+      <Dialog open onClose={vi.fn()} title="t">
+        <button type="button">Inside</button>
+      </Dialog>,
+    );
+    rerender(
+      <Dialog open={false} onClose={vi.fn()} title="t">
+        <button type="button">Inside</button>
+      </Dialog>,
+    );
+    rerender(
+      <Dialog open onClose={vi.fn()} title="t">
+        <button type="button">Inside</button>
+      </Dialog>,
+    );
+    await exit.finish();
+    expect(screen.getByRole("dialog").getAttribute("aria-modal")).toBe("true");
+    expect((container.firstElementChild as HTMLElement).hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Inside" }));
+  } finally {
+    exit.restore();
+  }
+});
+
+test("a closing dialog keeps showing what it held when it closed", () => {
+  const exit = withRunningExit();
+  try {
+    const { rerender } = render(
+      <Dialog open onClose={vi.fn()} title="t">
+        <p data-testid="content">kept</p>
+      </Dialog>,
+    );
+    // A caller that clears its own state on close passes empty children.
+    rerender(
+      <Dialog open={false} onClose={vi.fn()} title="t">
+        {null}
+      </Dialog>,
+    );
+    expect(screen.getByTestId("content")).toBeTruthy();
+  } finally {
+    exit.restore();
+  }
+});
+
+// jsdom does not evaluate real CSS animations or media queries, so the motion
+// is pinned at the declaration level: both panel sizes float by the shared
+// recipe (which owns the keyframes and the reduced-motion gate,
+// styles/motion.contract.test.ts) and the scrim fades with them.
+test("both panel sizes float in and out by the shared recipe, and the scrim fades with them", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  expect(css).toContain("animation:");
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+  for (const variant of ["dialogVariant", "dialogVariantLarge"]) {
+    const rule = new RegExp(`\\.${variant}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/composes:\s*float from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
+    expect(rule).not.toMatch(/animation/);
+  }
+  expect(/\.scrimFloat\s*\{([^}]*)\}/.exec(css)?.[1]).toMatch(/composes:\s*fade from/);
+  expect(/\.scrimEdge\s*\{([^}]*)\}/.exec(css)?.[1]).toMatch(/composes:\s*scrimSlide from/);
+  expect(css).not.toMatch(/@keyframes/);
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
@@ -286,14 +403,6 @@ test("the large size variant's CSS fills most of the viewport instead of the com
   expect(body).toMatch(/max-width:\s*calc\(100vw/);
   expect(body).toMatch(/max-height:\s*calc\(100vh/);
   expect(body).not.toContain("560px");
-});
-
-test("the large size variant also honors prefers-reduced-motion", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const reducedMotionBlock = /@media \(prefers-reduced-motion: reduce\)\s*{([\s\S]*?)}\s*}/.exec(css);
-  expect(reducedMotionBlock).toBeTruthy();
-  expect(reducedMotionBlock![1]).toContain("dialogVariantLarge");
 });
 
 // Beautiful UI chrome bands (design doc §6): the header and footer sit on an

@@ -67,3 +67,13 @@ export function computePopoverPosition(
     ),
   };
 }
+
+// The corner a placed popup grows out of: the side of the trigger it opened
+// on (below or, flipped, above) and the edge it aligned to (the trigger's left
+// or, flipped, its right). A Float layer scales from here, so it reads as
+// coming out of its trigger whichever way the placement resolved.
+export function transformOriginFor(triggerRect: { top: number; left: number }, placed: PopoverPosition): string {
+  const vertical = placed.top < triggerRect.top ? "bottom" : "top";
+  const horizontal = placed.left < triggerRect.left ? "right" : "left";
+  return `${horizontal} ${vertical}`;
+}

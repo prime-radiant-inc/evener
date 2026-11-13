@@ -78,8 +78,10 @@
  * trigger's own getBoundingClientRect() - never these two static values,
  * which is what used to clip the popup at a scrolling ancestor's edge or
  * overflow the viewport's own, with no way for a mere descendant to escape
- * either via CSS alone. */
+ * either via CSS alone. It floats in and out (the Float recipe) from the
+ * trigger's corner, which index.tsx sets inline with the placement. */
 .popup {
+  composes: float from "../../styles/motion.module.css";
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
@@ -93,35 +95,6 @@
   background: var(--surface-2);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: menuFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
-}
-
-@keyframes menuFadeScale {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes menuFade {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .popup {
-    animation: none;
-  }
 }
 
 .item {
@@ -145,9 +118,10 @@
   background: var(--hover-1);
 }
 
+/* A phone's menu is a bottom sheet in spirit: it fades without the scale. */
 @media (max-width: 899px) {
   .popup {
-    animation-name: menuFade;
+    --motion-float-from: 1;
   }
 }
 

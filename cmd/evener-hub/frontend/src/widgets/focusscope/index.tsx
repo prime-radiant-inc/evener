@@ -28,17 +28,36 @@ export interface FocusScopeProps {
  * Dialog/Sheet/Menu own all visible chrome) so there is always a valid
  * fallback focus target even when the scope's content has nothing tabbable.
  */
-export function FocusScope({ trap = false, autoFocus = true, children }: FocusScopeProps) {
+export function FocusScope(props: FocusScopeProps) {
+  return <LayerFocusScope {...props} released={false} />;
+}
+
+/**
+ * FocusScope for a layer that stays mounted while it leaves (see
+ * widgets/internal/usePresence.ts). `released` is the layer's closing phase:
+ * releasing the scope stops the trap and restores focus at once, exactly as
+ * an unmount would, so a leaving layer neither holds nor takes focus; the
+ * later unmount restores nothing a second time. Un-releasing it (the layer
+ * reopened during its exit) captures the restore target and moves focus in
+ * again, as a fresh mount does. Internal to the overlay widgets, not barrelled.
+ */
+export function LayerFocusScope({
+  trap = false,
+  autoFocus = true,
+  released,
+  children,
+}: FocusScopeProps & { released: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
   const ownerDocumentRef = useRef<Document | null>(null);
 
-  // Mount: capture the restore target, then move focus in. Unmount:
-  // restore, if the target is still focusable and still in the document.
+  // Mount (or un-release): capture the restore target, then move focus in.
+  // Unmount (or release): restore, if the target is still focusable and still
+  // in the document.
   // Skipped entirely for autoFocus={false} scopes (combobox popovers), whose
   // anchoring input must keep focus for continued typing.
   useEffect(() => {
-    if (!autoFocus) return;
+    if (!autoFocus || released) return;
     const scope = ref.current;
     // The scope's own document: in a Dockview popout the active element and the
     // focus target both belong to that window, and the opener's document knows
@@ -65,11 +84,11 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
         focusable.focus();
       }
     };
-  }, [autoFocus]);
+  }, [autoFocus, released]);
 
-  // Tab-cycling, active only while trapping. Re-binds if `trap` changes.
+  // Tab-cycling, active only while trapping an unreleased scope.
   useEffect(() => {
-    if (!trap) return;
+    if (!trap || released) return;
     const scope = ref.current;
     if (!scope) return;
 
@@ -95,7 +114,7 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
 
     scope.addEventListener("keydown", onKeyDown);
     return () => scope.removeEventListener("keydown", onKeyDown);
-  }, [trap]);
+  }, [trap, released]);
 
   return (
     <div ref={ref} tabIndex={-1}>

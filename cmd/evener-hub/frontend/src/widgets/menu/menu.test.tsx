@@ -291,13 +291,18 @@ test("keeps the menu trigger and items at the narrow-viewport tap floor", () => 
 });
 
 // jsdom does not evaluate real CSS animations or media queries - see the
-// exemplar/dialog pattern this mirrors.
-test("the popup's open animation honors prefers-reduced-motion, using only tokens", () => {
+// exemplar/dialog pattern this mirrors. The popup floats by the shared recipe
+// (its keyframes and reduced-motion gate live there); on a phone it keeps the
+// fade and drops the scale.
+test("the popup floats by the shared recipe, and fades without the scale on a phone", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
-  expect(css).toContain("animation:");
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+  const popup = /\.popup\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(popup).toMatch(/composes:\s*float from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/animation|@keyframes/);
+  expect(css).toMatch(
+    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}\\s*\\{\\s*\\.popup\\s*\\{[^}]*--motion-float-from:\\s*1;`),
+  );
 });
 
 // --- fix-wave: nested-overlay Escape containment (Important) -----------

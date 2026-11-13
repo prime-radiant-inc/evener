@@ -12,8 +12,10 @@
  * inside the trigger's subtree, where any ancestor with overflow: hidden - a
  * pane, the mobile drawer - cuts it off, and offers no way to shift it back
  * inside the viewport at an edge. Both were measured happening; index.tsx's
- * own doc comment carries the numbers. */
+ * own doc comment carries the numbers. A one-line label fades in and out
+ * without the scale (the Float recipe's small-layer form, .fade). */
 .bubble {
+  composes: fade from "../../styles/motion.module.css";
   position: fixed;
   z-index: var(--z-tooltip);
   padding: var(--space-1) var(--space-2);

@@ -262,34 +262,34 @@
   --focus-halo: 0 0 0 4px var(--accent-bg);
 
   /* --- motion ---------------------------------------------------------
-   * The law is "no idle motion": nothing animates unless the user acted or
-   * the agent's state genuinely changed. Five budgets: attention onset (a
-   * state crossing into needs-you), the 120ms fade-scale overlays
-   * (menu/dialog, which may land with --motion-easing-pop's slight
-   * overshoot), 150ms hover/focus responses on interactive chrome
-   * (color/background/border/shadow only — transitions name their
-   * properties, never `all`), the 90ms press (a pressed button or row
-   * scales down a touch while held, transform only, and only under
-   * prefers-reduced-motion: no-preference), and the 240ms spatial budget
-   * for user-initiated geometry changes (the activity sidebar sliding in, a
-   * zoom column opening). Data arriving never animates geometry. No
-   * decorative idle pulses, no shimmer. The one continuous motion for agent
-   * liveness is StatusDot's working spinner, gated by reduced motion
-   * (design-system.md §5).
+   * Motion explains a change the user caused or a real change of agent
+   * state; nothing moves on its own. Every duration and easing below belongs
+   * to one of the recipes in docs/web-ui/motion.md: Respond (hover), Press,
+   * Float (overlay in, exit out, growing from --motion-scale-from), Slide
+   * (spatial in, spatial-exit out), Spatial, Move, the reveal fade, and the
+   * attention signal. An exit is plainer and about two thirds of its
+   * entrance. Transitions name their properties, never `all`. The shared
+   * recipe classes live in styles/motion.module.css, and
+   * styles/motion.contract.test.ts enforces what can be checked.
    */
-  --motion-duration-attention: 200ms;
+  --motion-duration-press: 90ms;
+  --motion-duration-exit: 80ms;
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
-  --motion-duration-press: 90ms;
-  /* How far a held control gives. A row is wide, so the same ratio would
-   * move its ends much further than a button's: rows take the gentler step. */
-  --press-scale-control: 0.97;
-  --press-scale-row: 0.985;
+  --motion-duration-spatial-exit: 180ms;
+  --motion-duration-attention: 200ms;
   --motion-duration-spatial: 240ms;
   /* one turn of StatusDot's continuous working spinner (agent liveness) */
   --motion-duration-activity: 800ms;
   --motion-easing-standard: ease-out;
   --motion-easing-pop: cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  --motion-easing-exit: ease-in;
+  /* The scale a floating layer grows from on entry and shrinks to on exit. */
+  --motion-scale-from: 0.96;
+  /* How far a held control gives. A row is wide, so the same ratio would
+   * move its ends much further than a button's: rows take the gentler step. */
+  --press-scale-control: 0.97;
+  --press-scale-row: 0.985;
 }
 
 /* Light theme: cool paper, neutral ink. Nested wrappers support the real

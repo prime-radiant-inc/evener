@@ -1147,7 +1147,10 @@ test("the demoted summary line is readable text (--ink-mid), not the placeholder
 test("the chevron rotation and the body fade are declared with real motion", () => {
   const css = rowCss();
   expect(css).toMatch(/\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform/);
-  expect(css).toMatch(/\.body\s*\{[^}]*animation:\s*tool-body-in/);
+  // The body fades in by the shared reveal recipe, which owns the keyframes,
+  // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
+  expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/@keyframes/);
 });
 
 // The chevron SPAN is 1lh tall (first-line alignment) and so not square:

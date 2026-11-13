@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { requireClass } from "../internal/requireClass";
+import { usePresence } from "../internal/usePresence";
 import { dismissToast, getToasts, pushToast, subscribe, type ToastKind, type ToastRecord } from "./store";
 import styles from "./toast.module.css";
 
@@ -38,19 +39,58 @@ export function useToasts(): { push: (kind: ToastKind, text: string, reason?: st
   return TOASTS;
 }
 
-/** The aria-live="polite" region that renders the active toast queue. */
+interface ShownToast {
+  record: ToastRecord;
+  leaving: boolean;
+}
+
+// The rendered list: every queued toast in queue order, plus each toast that
+// has just left the queue, held where it was until its exit has played.
+function reconcile(shown: readonly ShownToast[], queued: readonly ToastRecord[]): ShownToast[] {
+  const live = new Map(queued.map((record) => [record.id, record]));
+  const next: ShownToast[] = shown.map(({ record }) => {
+    const current = live.get(record.id);
+    return current ? { record: current, leaving: false } : { record, leaving: true };
+  });
+  const held = new Set(shown.map(({ record }) => record.id));
+  for (const record of queued) if (!held.has(record.id)) next.push({ record, leaving: false });
+  return next;
+}
+
+/** The aria-live="polite" region that renders the active toast queue. A
+ * dismissed toast floats out (the Float recipe) before it leaves the DOM; its
+ * dismissal timing is unchanged. */
 export function Toast() {
   const toasts = useSyncExternalStore(subscribe, getToasts);
+  const [queued, setQueued] = useState(toasts);
+  const [shown, setShown] = useState<ShownToast[]>(() => reconcile([], toasts));
+  if (queued !== toasts) {
+    setQueued(toasts);
+    setShown((current) => reconcile(current, toasts));
+  }
+  const forget = useCallback((id: string) => {
+    setShown((current) => current.filter((entry) => !(entry.leaving && entry.record.id === id)));
+  }, []);
   return (
     <section className={CLASS.region} aria-live="polite" aria-label="Notifications">
-      {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} />
+      {shown.map(({ record, leaving }) => (
+        <ToastItem key={record.id} toast={record} leaving={leaving} onExited={forget} />
       ))}
     </section>
   );
 }
 
-function ToastItem({ toast }: { toast: ToastRecord }) {
+function ToastItem({
+  toast,
+  leaving,
+  onExited,
+}: {
+  toast: ToastRecord;
+  leaving: boolean;
+  onExited: (id: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { mounted, phase } = usePresence(!leaving, rootRef, { onExited: () => onExited(toast.id) });
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // True pause/resume, not restart: hovering right before a toast would
   // have dismissed must not grant it a fresh full-length reprieve.
@@ -88,6 +128,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
     schedule(remainingMsRef.current);
   }
 
+  if (!mounted) return null;
   return (
     // Pointer-only convenience (pause the auto-dismiss clock while a sighted
     // mouse user is reading), not a new interactive affordance needing a
@@ -97,6 +138,9 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
     // independent of how long the DOM node then sticks around for.
     // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only pause convenience, aria-live already covers AT users, see above
     <div
+      ref={rootRef}
+      data-motion={phase}
+      inert={phase === "closing"}
       className={`${CLASS.toast} ${KIND_CLASS[toast.kind]}`}
       data-kind={toast.kind}
       data-reason={toast.reason}

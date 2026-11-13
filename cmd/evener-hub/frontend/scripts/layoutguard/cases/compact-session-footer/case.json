@@ -5,6 +5,7 @@
     "styles/global.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
+    "styles/motion.module.css",
     "widgets/tooltip/tooltip.module.css",
     "panes/session/composer/composer.module.css",
     "panes/session/chrome/sessionchrome.module.css",

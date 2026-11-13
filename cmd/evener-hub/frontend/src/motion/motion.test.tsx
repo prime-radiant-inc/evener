@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import { AnimatePresence, MotionProvider, m, spatialTransition } from "./index";
+import { motionDurationMs } from "./tokens";
 
 describe("MotionProvider", () => {
   test("renders children and exposes the wrapped primitives", () => {
@@ -69,5 +73,46 @@ describe("spatialTransition", () => {
     document.documentElement.style.removeProperty("--motion-duration-spatial");
     // Back to the absent-token values: the same memoized object returns.
     expect(spatialTransition()).toBe(first);
+  });
+});
+
+describe("motionDurationMs", () => {
+  test("reads a duration token in milliseconds, in either CSS unit", () => {
+    document.documentElement.style.setProperty("--motion-duration-exit", "100ms");
+    expect(motionDurationMs("--motion-duration-exit")).toBe(100);
+    document.documentElement.style.setProperty("--motion-duration-exit", "0.2s");
+    expect(motionDurationMs("--motion-duration-exit")).toBe(200);
+    document.documentElement.style.removeProperty("--motion-duration-exit");
+  });
+
+  test("reads the token as the given element computes it", () => {
+    const element = document.createElement("div");
+    element.style.setProperty("--motion-duration-spatial-exit", "300ms");
+    document.body.append(element);
+    try {
+      expect(motionDurationMs("--motion-duration-spatial-exit", element)).toBe(300);
+    } finally {
+      element.remove();
+    }
+  });
+
+  // The unit-test document loads no stylesheet, so every read here takes the
+  // fallback, which must be what tokens.css ships.
+  test("falls back to the value tokens.css ships where the stylesheet is absent", () => {
+    const tokens = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../styles/tokens.css"), "utf8");
+    const tokenNames = [
+      "--motion-duration-press",
+      "--motion-duration-exit",
+      "--motion-duration-overlay",
+      "--motion-duration-hover",
+      "--motion-duration-spatial-exit",
+      "--motion-duration-attention",
+      "--motion-duration-spatial",
+    ] as const;
+    for (const token of tokenNames) {
+      const shipped = new RegExp(`${token}:\\s*(\\d+)ms;`).exec(tokens);
+      expect(shipped, token).not.toBeNull();
+      expect(motionDurationMs(token), token).toBe(Number(shipped?.[1]));
+    }
   });
 });

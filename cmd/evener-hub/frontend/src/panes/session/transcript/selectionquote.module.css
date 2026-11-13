@@ -5,8 +5,11 @@
  * a lighter fill"). position: fixed, not absolute - SelectionQuote.tsx
  * computes viewport coordinates directly off range.getBoundingClientRect()
  * and the pane container's own getBoundingClientRect(), so no ancestor
- * needs a position:relative wrapper of its own. */
+ * needs a position:relative wrapper of its own. It floats in and out (the
+ * Float recipe), growing up out of the selection it sits above. */
 .bar {
+  composes: float from "../../../styles/motion.module.css";
+  transform-origin: center bottom;
   position: fixed;
   z-index: var(--z-menu);
   display: flex;
@@ -18,22 +21,4 @@
    * concentric around the control corner of the button inside. */
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: selectionQuoteEnter var(--motion-duration-overlay) var(--motion-easing-pop);
-}
-
-@keyframes selectionQuoteEnter {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bar {
-    animation: none;
-  }
 }

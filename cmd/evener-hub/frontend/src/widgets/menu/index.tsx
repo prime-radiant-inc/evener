@@ -9,10 +9,11 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { FocusScope } from "../focusscope";
+import { LayerFocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
+import { usePresence } from "../internal/usePresence";
 import { watchViewport } from "../internal/viewportWatch";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
@@ -23,6 +24,7 @@ import {
   computePopoverPosition as computeMenuPosition,
   type PopoverPosition as MenuPosition,
   TRIGGER_GAP,
+  transformOriginFor,
 } from "../popover/computePosition";
 import styles from "./menu.module.css";
 
@@ -174,12 +176,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const [position, setPosition] = useState<MenuPosition | null>(null);
+  const [origin, setOrigin] = useState<string | undefined>(undefined);
   const rootRef = useRef<HTMLDivElement>(null);
-  // Follows Dockview moving this menu's DOM between windows without a render,
-  // so the portal, listeners and placement rebind to the window it is in now.
-  const ownerDocument = useOwnedDocument(rootRef, isOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLUListElement>(null);
+  // The popup stays mounted while it leaves; everything that answers the user
+  // (dismissal, focus, aria-expanded) keys off isOpen.
+  const { mounted, phase } = usePresence(isOpen, popupRef);
+  // Follows Dockview moving this menu's DOM between windows without a render,
+  // so the portal, listeners and placement rebind to the window it is in now.
+  const ownerDocument = useOwnedDocument(rootRef, mounted);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
   const triggerId = useId();
 
@@ -230,12 +236,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // The trigger's own viewport: a menu in a Dockview popout must flip and
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerDocument.defaultView ?? window;
-    setPosition(
-      computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect(), {
-        width: ownerWindow.innerWidth,
-        height: ownerWindow.innerHeight,
-      }),
-    );
+    const triggerRect = triggerEl.getBoundingClientRect();
+    const placed = computeMenuPosition(triggerRect, popupEl.getBoundingClientRect(), {
+      width: ownerWindow.innerWidth,
+      height: ownerWindow.innerHeight,
+    });
+    setPosition(placed);
+    setOrigin(transformOriginFor(triggerRect, placed));
   }, [isOpen, ownerDocument]);
 
   function focusIndex(index: number) {
@@ -402,10 +409,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           trigger
         )}
       </button>
-      {isOpen &&
+      {mounted &&
         position &&
         createPortal(
-          <FocusScope trap>
+          <LayerFocusScope trap released={phase === "closing"}>
             {/* <ul role="menu">/<li role="menuitem"> is the WAI-ARIA APG menu
                 pattern's own example markup (w3.org/WAI/ARIA/apg/patterns/menu),
                 not an interactive role on an arbitrary static element. */}
@@ -415,7 +422,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
               role="menu"
               aria-labelledby={triggerId}
               className={CLASS.popup}
-              style={{ top: position.top, left: position.left }}
+              data-motion={phase}
+              inert={phase === "closing"}
+              style={{ top: position.top, left: position.left, transformOrigin: origin }}
               onKeyDown={handleMenuKeyDown}
             >
               {items.map((item, index) =>
@@ -453,7 +462,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
                 ),
               )}
             </ul>
-          </FocusScope>,
+          </LayerFocusScope>,
           // The owning document's body: a popout is a separate document.
           ownerDocument.body,
         )}

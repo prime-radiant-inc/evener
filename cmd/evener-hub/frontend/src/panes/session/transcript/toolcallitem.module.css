@@ -706,8 +706,10 @@
  * its own inside the card. Native renderers keep their own output boundaries.
  * Size is deliberately not declared: the Markdown widget composes with its
  * host (1em fallback), so a renderer's text inherits the ambient body step
- * (see widgets/markdown). */
+ * (see widgets/markdown). The band fades in as it opens (the reveal recipe);
+ * closing is instant. */
 .body {
+  composes: bodyReveal from "../../../styles/motion.module.css";
   margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
     calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
   padding: var(--tool-card-inset);
@@ -718,20 +720,6 @@
   min-width: 0;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .body {
-    animation: tool-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
-}
-
-@keyframes tool-body-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
 
 
 /* The tool-result error/denial text (ItemModel.error), shown verbatim above

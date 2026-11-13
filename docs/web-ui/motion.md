@@ -108,8 +108,10 @@ palette, Popover, Menu, HoverCard, the selection-quote bubble, Tooltip, Toast, h
   durations, with `--motion-easing-standard` in and `--motion-easing-exit` out.
 - A scrim fades with its layer: opacity only, the layer's own durations.
 - The transform origin is the side the layer is anchored to, so it grows out of its
-  trigger.
-- A Menu on a phone is a bottom sheet in spirit and uses the fade without the scale.
+  trigger. Popover, Menu and HoverCard set it with their placement, because a flipped
+  placement changes the side.
+- A Menu on a phone is a bottom sheet in spirit and fades without the scale: it keeps the
+  Float recipe and sets `--motion-float-from: 1`.
 
 ### 4. Slide
 
@@ -192,18 +194,31 @@ invents progress stay banned.
 ## How it is built
 
 - **Recipes are composed, not copied.** `src/styles/motion.module.css` defines each
-  recipe's keyframes and classes once. A widget `composes:` the recipe and adds nothing but
-  its own transform origin.
-- **Exits need presence.** A layer stays mounted while it leaves. The one presence helper
-  in `src/widgets/internal` keeps a closing layer in the document, marks it with
-  `data-motion="closing"`, and removes it when its exit animation ends. It removes the layer
-  at once under reduced motion, and a timeout bounded by the exit token removes it if the
-  animation event never fires. A closing layer does not take focus, does not trap focus,
-  and ignores the pointer.
+  recipe's keyframes and classes once: `float`, `fade`, `slideLeft`, `slideRight`,
+  `slideBottom`, `scrimSlide` (a sheet's scrim) and `bodyReveal`. A widget `composes:` the
+  recipe and adds nothing but its own transform origin, or `--motion-float-from` where a
+  layer drops Float's scale. Every recipe animation sits inside the recipe's own
+  `prefers-reduced-motion: no-preference` gate, so a consumer cannot forget it.
+- **Exits need presence.** A layer stays mounted while it leaves. The one presence helper,
+  `usePresence` in `src/widgets/internal`, keeps a closing layer in the document, has it
+  write `data-motion="closing"` (and `"open"` while open) on each recipe element, and
+  removes it when its exit animations finish. A recipe plays its entrance by default and
+  its exit under `data-motion="closing"`. When no exit animation is running, as under
+  reduced motion, the layer is removed in the same commit, before paint, and a timeout
+  bounded by the exit token removes it if the animation's end never arrives. Reopening
+  during the exit cancels the removal. A closing layer is `inert`, ignores the pointer,
+  drops its dialog role and `aria-modal`, and has already returned focus, exactly as an
+  unmount would. Everything that answers the user (dismissal, focus, `aria-expanded`)
+  keys off the open state, never off the layer still being mounted. A layer its caller
+  mounts and unmounts outright, such as the directory picker, has no exit and so no
+  entrance either.
 - **Reduced motion.** Each stylesheet that declares a transform or opacity animation gates
   it. The contract test fails a stylesheet that animates without a gate.
-- **TypeScript.** Code that needs a duration reads it from the token through `src/motion`.
-  `useReducedMotion` from that wrapper is the one way to ask about the preference.
+- **TypeScript.** Code that needs a duration reads it from the token through `src/motion`:
+  `spatialTransition()` for the motion library, `motionDurationMs()` (in
+  `src/motion/tokens.ts`, which does not load the library) for a timeout.
+  `useReducedMotion` from that wrapper is the one way to ask about the preference in code;
+  the overlays need not ask, because their recipes declare no animation under reduce.
 - **Third-party chrome.** Dockview ships its own transitions for sashes and drop targets.
   They are outside these recipes and are left as the library sets them.
 

@@ -6,6 +6,7 @@
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",
+    "styles/motion.module.css",
     "panes/session/transcript/toolcallitem.module.css",
     "widgets/failureglyph/failureglyph.module.css"
   ],
