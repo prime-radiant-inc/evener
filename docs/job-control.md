@@ -1785,7 +1785,10 @@ Rules:
   wake: a child report already pending while the receiving run is still
   finalizing is processed within that run, while one arriving after the
   receiver rests idle gets its own successor-run wake. An accepted terminal
-  communicate is not the completed-run boundary.
+  communicate is not the completed-run boundary. A draining delegate
+  coordinator is the exception: its pending terminal reports wait for an
+  update that triggers a turn, as they do for any other wake source — a drain
+  with no update leaves them for the next attention generation.
 - A completion whose reminder a settled request already carried counts as
   observed even when writing its resolution later fails: the retry re-reads
   the transcript, finds the reminder already injected, and repairs the delivery

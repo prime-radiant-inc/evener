@@ -23,18 +23,22 @@ Controls follow that ownership, not the preview text or connection status.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
   "Delivery uncertain" as a subtitle. That row is the browser's own
-  `blockedUnknown` record in its IndexedDB mutation outbox: the daemon never
-  acknowledged the send, so the row is the composition's one durable copy and
-  no server-side durable state describes it. Editing it carries the row's
-  inherited wire identity into the recovery: an unchanged resend replays the
-  existing mutation under that identity - the daemon's journal deduplicates
-  it, so work that already delivered cannot apply twice - while changed
-  content sends as a new message under a fresh identity. The row still
-  closes its ref's FIFO - the daemon may already hold it, so nothing behind it
-  may go - and when the hub
-  cannot answer, Remove is the exit that lets later messages move: it ends the
-  wire, retiring the row's remaining durable siblings in the same write, though
-  an attempt already in flight may still land and appear in the conversation.
+  `blockedUnknown` record in its IndexedDB mutation outbox — the browser's
+  durable recovery copy of the composition. The daemon never acknowledged the
+  send on a connection the browser could see, but a send that was accepted
+  durably by the daemon can lose its response and land here too, so the row
+  means acceptance is unknown, not that the daemon never received it;
+  reconciliation with authority is what settles the question, and until then no
+  server-side state the browser can read describes the message. Editing it
+  carries the row's inherited wire identity into the recovery: an unchanged
+  resend replays the existing mutation under that identity - the daemon's
+  journal deduplicates it, so work that already delivered cannot apply twice -
+  while changed content sends as a new message under a fresh identity. The row
+  still closes its ref's FIFO - the daemon may already hold it, so nothing
+  behind it may go - and when the hub cannot answer, Remove is the exit that
+  lets later messages move: it ends the wire, retiring the row's remaining
+  durable siblings in the same write, though an attempt already in flight may
+  still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Every undelivered message appears once, in the pending stack at the bottom of
