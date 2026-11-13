@@ -3,8 +3,9 @@
 // this phone until the review goes out, so Delete doesn't ask. Send review, at
 // the foot of the list, opens the Review sheet over this one.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
+import { subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
@@ -16,11 +17,23 @@ import { documentMemory } from "./nativeDocumentMemory";
 import { readerHosts } from "./readerHosts";
 
 export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Routes, "CommentsSheet">) {
-	const { hubId, sessionRef, path, root } = route.params;
+	const { hubId, sessionRef, messageSessionRef, path, root } = route.params;
+	const openedMessageRef = messageSessionRef ?? sessionRef;
+	const messageRef = useRef(openedMessageRef);
+	useEffect(() => {
+		messageRef.current = openedMessageRef;
+		return subscribeNativeIdentities((change) => {
+			if (change.hubId === hubId && change.from === messageRef.current) messageRef.current = change.to;
+		});
+	}, [hubId, openedMessageRef]);
 	const sheet = useSheet();
 	const host = useSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), sheet);
 	const memory = documentMemory(hubId);
 	const key = { sessionRef, path, ...(root !== undefined ? { root } : {}) };
+	const reviewParams = () => ({
+		...route.params,
+		...(messageRef.current === sessionRef ? {} : { messageSessionRef: messageRef.current }),
+	});
 	useSyncExternalStore(memory.subscribe, memory.getRevision);
 	const comments = memory.comments(key);
 	const { palette } = useColors();
@@ -56,7 +69,7 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 						<Pressable
 							accessibilityRole="button"
 							accessibilityLabel="Send review"
-							onPress={() => navigation.navigate("ReviewSheet", route.params)}
+							onPress={() => navigation.navigate("ReviewSheet", reviewParams())}
 							style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}
 						>
 							<Text

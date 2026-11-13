@@ -6,10 +6,10 @@
 // message, or as a queued one with Steer now, so sending raises no toast.
 import { basename } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import { getNativeMutationRuntime } from "../nativeMutationRuntime";
+import { getNativeMutationRuntime, subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { returnToSession } from "../session/returnToSession";
 import type { SendAction } from "../session/sendAction";
@@ -29,7 +29,7 @@ const VERDICTS: readonly { verdict: Verdict; label: string }[] = [
 ];
 
 export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes, "ReviewSheet">) {
-	const { hubId, sessionRef, path, sessionTitle, root, readTarget } = route.params;
+	const { hubId, sessionRef, messageSessionRef, path, sessionTitle, root, readTarget } = route.params;
 	const { client, state } = useConnection();
 	const online = state === "ready" && client !== null;
 	const memory = documentMemory(hubId);
@@ -43,6 +43,22 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	const sheet = useSheet({ dirty: verdict !== null || note.trim() !== "", discardTitle: "Discard this review?" });
 	const { palette } = useColors();
 	const scale = useTextScale();
+	// The session may resume to a different ref while this sheet is open. The
+	// document and its comments stay keyed to the ref the reader opened;
+	// eligibility, submission, and the return route follow the message target.
+	const openedMessageRef = messageSessionRef ?? sessionRef;
+	const messageRef = useRef(openedMessageRef);
+	const [messageTarget, setMessageTarget] = useState(openedMessageRef);
+	useEffect(() => {
+		messageRef.current = openedMessageRef;
+		setMessageTarget(openedMessageRef);
+		return subscribeNativeIdentities((change) => {
+			if (change.hubId === hubId && change.from === messageRef.current) {
+				messageRef.current = change.to;
+				setMessageTarget(change.to);
+			}
+		});
+	}, [hubId, openedMessageRef]);
 
 	// What Send does, read when the sheet opens and again each time the
 	// connection returns, which forgets the last answer. Until a read
@@ -52,7 +68,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		setSend(null);
 		if (!online || !client) return;
 		let current = true;
-		readSendAction(getNativeMutationRuntime(), client, hubId, sessionRef)
+		readSendAction(getNativeMutationRuntime(), client, hubId, messageTarget)
 			.then((next) => {
 				if (current) setSend(next);
 			})
@@ -62,7 +78,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		return () => {
 			current = false;
 		};
-	}, [online, client, hubId, sessionRef]);
+	}, [online, client, hubId, messageTarget]);
 
 	const canSend = online && send !== null && send.action !== "none";
 	const submit = async () => {
@@ -73,7 +89,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			// The session may have started or stopped working since the sheet
 			// read it, so Send asks again: queue while it works, never steer.
 			const runtime = getNativeMutationRuntime();
-			const now = await readSendAction(runtime, client, hubId, sessionRef);
+			const now = await readSendAction(runtime, client, hubId, messageTarget);
 			setSend(now);
 			if (now.action === "none") {
 				setSending(false);
@@ -93,6 +109,8 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
+		// Return to the conversation that owns the document; its deferred
+		// replacement moves it to the resolved ref after this sheet closes.
 		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
 	};
 

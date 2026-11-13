@@ -64,6 +64,14 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
 
+export interface NativeMutationIdentityChange {
+	readonly hubId: string;
+	readonly from: string;
+	readonly to: string;
+}
+
+export type NativeMutationIdentityListener = (change: NativeMutationIdentityChange) => void;
+
 export interface NativeMutationTargetIdentity {
 	readonly threadId: string;
 	readonly instanceId?: string;
@@ -184,6 +192,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	// re-registers it just when a send's provenance matters.
 	readonly #submittedHere = new Map<string, Map<string, number>>();
 	readonly #storageListeners = new Set<NativeMutationStorageListener>();
+	readonly #identityListeners = new Set<NativeMutationIdentityListener>();
 	#started = false;
 	// Bumped by every start and stop. A start attempt's failure rollback and
 	// in-flight cleanup only apply while it still owns the lifecycle: a stop or
@@ -439,6 +448,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return () => this.#storageListeners.delete(listener);
 	}
 
+	/** Publishes identity-changing resumes after the rows move and storage
+	 * notifies. A mounted screen follows its own ref; the flush and review paths
+	 * need no callback to keep a visible conversation on the work's identity. */
+	subscribeIdentities(listener: NativeMutationIdentityListener): () => void {
+		this.#identityListeners.add(listener);
+		return () => this.#identityListeners.delete(listener);
+	}
+
 	// The durable records a live frame proves the daemon has moved past
 	// (notificationMutationIdentities): a recorded item, or a queue transition.
 	// Positive evidence settles an accepted record (already applied) and an
@@ -623,10 +640,6 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		client: AppwireClientLike,
 		options: {
 			mayResumeFenced?: () => Promise<boolean>;
-			/** Called with the resolved ref when a resume changes the session's
-			 * identity, so a mounted screen can follow it instead of staying on
-			 * the ref the daemon retired. */
-			onResolvedIdentity?: (ref: string) => void;
 		} = {},
 	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
@@ -725,7 +738,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				// Subscribers match the composite key, so a bare ref reaches none of
 				// them and both projections would keep showing rows that moved.
 				this.#notifyStorageChange([targetKey, resolvedKey]);
-				options.onResolvedIdentity?.(resolvedRef);
+				this.#notifyIdentityChange({ hubId, from: targetRef, to: resolvedRef });
 			}
 			try {
 				// The resume cleared the fence, so read once more and reconcile in
@@ -929,11 +942,19 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 
 	#notifyStorageChange(targetRefs: readonly string[]): void {
 		const refs = [...new Set(targetRefs)];
-		for (const listener of this.#storageListeners) {
+		this.#notify(this.#storageListeners, refs, "Native mutation storage listener failed");
+	}
+
+	#notifyIdentityChange(change: NativeMutationIdentityChange): void {
+		this.#notify(this.#identityListeners, change, "Native mutation identity listener failed");
+	}
+
+	#notify<T>(listeners: ReadonlySet<(value: T) => void>, value: T, message: string): void {
+		for (const listener of listeners) {
 			try {
-				listener(refs);
+				listener(value);
 			} catch (error) {
-				console.error("Native mutation storage listener failed", error);
+				console.error(message, error);
 			}
 		}
 	}
@@ -960,4 +981,15 @@ let sharedNativeMutationRuntime: NativeMutationRuntime | undefined;
 export function getNativeMutationRuntime(): NativeMutationRuntime {
 	sharedNativeMutationRuntime ??= createNativeMutationRuntime();
 	return sharedNativeMutationRuntime;
+}
+
+/** Subscribe to identity changes without making a screen's effect depend on
+ * opening the mutations database. The recovery surface owns that failure and
+ * its Retry; a screen with no runtime simply has no identity to follow. */
+export function subscribeNativeIdentities(listener: NativeMutationIdentityListener): () => void {
+	try {
+		return getNativeMutationRuntime().subscribeIdentities(listener);
+	} catch {
+		return () => {};
+	}
 }

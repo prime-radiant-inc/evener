@@ -198,13 +198,14 @@ its source IDs. Inserting an image reconciles mentions against the resulting
 text: a label the insertion splits loses its mention and canonical selection,
 while a label before or after the insertion keeps its shifted offset.
 
-An identity-changing resume carries the edited draft to the resumed ref before
-the replacement screen opens: its text, image bytes, skill and command
-selections, recovery source IDs, and any pending submission's capture token and
-settlement markers move together, and recovery resend receipts move with their
-sources. An already-open resumed draft adopts the transferred record
-immediately. The retired ref keeps no draft or recovery ownership. A resumed
-destination that already holds work is left untouched.
+An identity-changing resume never carries the composer draft or its recovery
+ownership to the resumed ref. Its text, image bytes, skill and command
+selections, editing recovery source IDs, `unconfirmed` composition, capture
+token, and recovery resend acknowledgements all stay with the retired session.
+The replacement screen opens on the resumed ref with no retained draft and
+cannot restore the retired composition. Only the admitted message rows the
+resume is answering move; a resumed destination that already holds work is left
+untouched.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt

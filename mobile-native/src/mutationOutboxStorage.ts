@@ -649,21 +649,6 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			if (rows.length === 0) return [];
 			const ids = rows.map((row) => row.client_mutation_id);
-			// A recovery resend's receipt is the draft owner's proof that its
-			// captured sources were consumed. Its source rows move below, so the
-			// receipt must move with them in this same savepoint: a receipt left
-			// on the retired ref can never be read by the resumed draft, and the
-			// moved sources could never reconcile.
-			const sourceReceipts = this.recoveryResendsOf(ref);
-			if (sourceReceipts.length) {
-				const destinationReceipts = this.recoveryResendsOf(to.ref);
-				const merged = new Map(destinationReceipts.map((receipt) => [receipt.clientMutationId, receipt]));
-				for (const receipt of sourceReceipts)
-					if (!merged.has(receipt.clientMutationId))
-						merged.set(receipt.clientMutationId, { ...receipt, targetRef: to.ref });
-				this.writeRecoveryResends(to.ref, [...merged.values()]);
-				this.writeRecoveryResends(ref, []);
-			}
 			// Each row's target and sequence move in ONE write. Moving the target
 			// first would keep the source sequence, and both refs can already hold
 			// that number: the unique (target_ref, intent_sequence) index would
@@ -696,41 +681,14 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 					row.client_mutation_id,
 				);
 			}
-			// Recovery rows carry no unique sequence index, but they do carry the same
-			// wire identity as the outbox rows they came from: a resumed screen looks
-			// one up by ref, thread and instance, and an interrupted Edit whose columns
-			// still name the retired identity is discarded as a lost capture. Move the
-			// routing fields with the target while leaving composition and ownership
-			// untouched.
-			const recoveryRows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
-				`SELECT client_mutation_id, payload FROM ${TABLES.recovery} WHERE target_ref = ?`,
-				ref,
-			);
-			// The destination's stop counter is its own. A row carrying the source's
-			// epoch would be compared against an unrelated counter - falsely canceled
-			// by a lower one, or un-fenced by a higher one. Starting at the
-			// destination's current epoch (read above, before any move) keeps every
-			// existing stop effective.
+			// Recovery rows and resend receipts stay with the retired session. Its
+			// draft owns them, and the replacement screen must never restore that
+			// composition on the resumed ref. Only the admitted message rows the
+			// resume is answering move.
 			// A resume that names no instance still changed identity: the daemon's
 			// fence token is then the thread id, the same fused rule every other
 			// caller derives it by.
 			const fence = to.instanceId ?? to.threadId;
-			for (const row of recoveryRows) {
-				const payload = JSON.parse(row.payload) as Record<string, unknown>;
-				if (typeof payload.ref === "string") payload.ref = to.wireRef;
-				if (fence !== undefined) payload.expectedInstanceId = fence;
-				this.db.runSync(
-					`UPDATE ${TABLES.recovery}
-						 SET target_ref = ?, payload = ?, thread_id = COALESCE(?, thread_id),
-						     instance_id = COALESCE(?, instance_id)
-						 WHERE client_mutation_id = ?`,
-					to.ref,
-					JSON.stringify(payload),
-					to.threadId ?? null,
-					fence ?? null,
-					row.client_mutation_id,
-				);
-			}
 			for (const row of rows) {
 				// The dispatcher sends the payload verbatim as the RPC params, so the
 				// row's own wire ref and instance fence must move with it: a payload

@@ -58,6 +58,8 @@ vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory 
 vi.mock("../nativeMutationRuntime", async (original) => ({
 	...(await original<typeof import("../nativeMutationRuntime")>()),
 	getNativeMutationRuntime: () => harness.runtime,
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) =>
+		(harness.runtime as NativeMutationRuntime).subscribeIdentities(listener),
 }));
 
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
@@ -109,13 +111,13 @@ function storage(): SyncStringStorage {
 	};
 }
 
-const read = (): ThreadReadResponse => ({
-	thread: wireThread("local:fix", {
+const readAt = (ref: string): ThreadReadResponse => ({
+	thread: wireThread(ref, {
 		id: "thread-fix",
 		status: { type: status },
 		turns: [],
 		evener: {
-			ref: "local:fix",
+			ref,
 			instanceId: "instance-fix",
 			capabilities: capabilities(),
 			queue: { revision: 1 },
@@ -124,6 +126,7 @@ const read = (): ThreadReadResponse => ({
 		},
 	}),
 });
+const read = (): ThreadReadResponse => readAt("local:fix");
 
 const applied = (params: unknown): never =>
 	({
@@ -394,6 +397,22 @@ it("sends a review to a paused session by resuming it", async () => {
 	expect(sendDisabled(tree)).toBe(false);
 	await send(tree);
 	expect(mutations()).toEqual(["turn/start"]);
+});
+
+it("returns to the owning conversation after its session resumes elsewhere", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readAt("local:fix-2");
+	};
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+	await settle();
+	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
+	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

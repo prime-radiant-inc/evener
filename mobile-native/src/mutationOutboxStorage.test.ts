@@ -877,10 +877,10 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
 });
 
-// Recovery rows keep the wire identity of the row they came from. A resume that
-// changes ref/thread/instance must rewrite that routing identity along with the
-// target, or the resumed screen cannot prove the exact interrupted capture.
-test("retarget moves recovery routing identity and preserves composition and ownership", async () => {
+// Recovery rows belong to the draft at the retired ref. A resume moves the
+// message rows it is answering, but the old session's editing captures stay
+// where its draft can still settle them.
+test("retarget leaves recovery rows with the retired ref and moves only waiting outbox rows", async () => {
 	const destination = "local:thread-2";
 	const kinds = ["editing", "rejected", "orphaned"] as const;
 	const ids: string[] = [];
@@ -919,9 +919,8 @@ test("retarget moves recovery routing identity and preserves composition and own
 		const kind = kinds[index];
 		const row = rawRow("mutation_recovery", id)!;
 		expect(row).toMatchObject({
-			target_ref: destination,
-			thread_id: "thread-2",
-			instance_id: "instance-2",
+			target_ref: TARGET,
+			thread_id: "thread-1",
 			composer_text: `text ${kind}`,
 			draft_capture_token: `capture-${kind}`,
 			origin_client_id: `origin-${kind}`,
@@ -931,8 +930,8 @@ test("retarget moves recovery routing identity and preserves composition and own
 		});
 		expect(JSON.parse(row.composer_mentions!)).toEqual([{ kind: "skill", name: "skill", offset: 0 }]);
 		expect(JSON.parse(row.payload)).toEqual({
-			ref: "wire-2",
-			expectedInstanceId: "instance-2",
+			ref: TARGET,
+			expectedInstanceId: "instance-1",
 			note: `recovery ${kind}`,
 			clientMutationId: id,
 		});

@@ -4,7 +4,7 @@ import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useHeaderHeight } from "@react-navigation/elements";
-import type { NavigatorScreenParams } from "@react-navigation/native";
+import { useNavigationState, type NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
@@ -74,10 +74,9 @@ import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import { drafts } from "./nativeDrafts";
 import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
-import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import { getNativeMutationRuntime, nativeMutationTargetKey, subscribeNativeIdentities } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
@@ -343,6 +342,8 @@ export type Routes = {
 type ReviewSheetParams = {
 	hubId: string;
 	sessionRef: string;
+	/** The ref a resumed session moved to; absent means sessionRef. */
+	messageSessionRef?: string;
 	path: string;
 	sessionTitle: string;
 	root?: "artifacts" | "scratch";
@@ -426,6 +427,10 @@ function ConversationScreenView({
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const voiceClient = useVoiceClient();
 	const focused = useScreenInFront(route.key);
+	const topmost = useNavigationState((state) => {
+		const position = state.routes.findIndex((entry) => entry.key === route.key);
+		return position !== -1 && position === state.index;
+	});
 	const colors = useColors();
 	const textScale = useTextScale();
 	const detailPaneWidth = useDetailPaneWidth();
@@ -738,6 +743,50 @@ function ConversationScreenView({
 			instanceId: localInstance,
 		});
 	}, [recoveryAvailable, route.params.hubId, route.params.ref, localThread, localInstance, connected]);
+	// A resume can hand the work a different ref. Follow the runtime's
+	// publication here, in the mounted conversation itself, so a flush-driven
+	// resume moves the pane too. A sheet or screen above holds the move until it
+	// closes. The draft does not follow: it belongs to the session that owns it.
+	const pendingIdentity = useRef<string | null>(null);
+	const currentIdentity = useRef(route.params.ref);
+	useEffect(() => {
+		currentIdentity.current = route.params.ref;
+	}, [route.params.ref]);
+	const topmostNow = useRef(topmost);
+	topmostNow.current = topmost;
+	const replaceForIdentity = useCallback(
+		(to: string) => {
+			// Keep the route this screen was opened on: a Subagent route carries
+			// its coordinator here, and a Conversation route its title. The
+			// navigation state has the full params the session view reconstructed.
+			const current = navigation.getState().routes.find((entry) => entry.key === route.key);
+			const replace = navigation.replace as unknown as (name: string, params: object) => void;
+			replace(current?.name ?? "Conversation", { ...(current?.params ?? route.params), ref: to });
+		},
+		[navigation, route.key, route.params],
+	);
+	useEffect(() => {
+		return subscribeNativeIdentities((change) => {
+			if (
+				nativeMutationTargetKey(change.hubId, change.from) !==
+				nativeMutationTargetKey(route.params.hubId, currentIdentity.current)
+			)
+				return;
+			currentIdentity.current = change.to;
+			// A sheet above owns a host with unsaved edits (SessionInfo's rename,
+			// for one). Replacing the conversation under it would release that host
+			// and dismiss the sheet without its discard guard. Hold the move until
+			// the conversation is topmost again; later changes replace the pending one.
+			if (topmostNow.current) replaceForIdentity(change.to);
+			else pendingIdentity.current = change.to;
+		});
+	}, [recoveryAvailable, replaceForIdentity, route.params.hubId]);
+	useEffect(() => {
+		if (!topmost || pendingIdentity.current === null) return;
+		const to = pendingIdentity.current;
+		pendingIdentity.current = null;
+		replaceForIdentity(to);
+	}, [topmost, replaceForIdentity]);
 	// Focus is permission for this view's actions, not ownership of the
 	// canonical data. A mounted view that comes back in front observes the
 	// shared store and asks for a read only when canonical authority is
@@ -2500,24 +2549,6 @@ function ConversationScreenView({
 			const answered = await getNativeMutationRuntime()
 				.settleTarget(hubId, ref, client, {
 					mayResumeFenced: async () => true,
-					// The rows followed the resume; the pane has to as well, or the
-					// message and the work it starts land on a ref nobody is showing.
-					onResolvedIdentity: (resolved) => {
-						// The draft and its recovery ownership follow the same identity:
-						// a replacement screen that loaded the resumed ref must show the
-						// edited composition, not the retired ref's stranded copy.
-						drafts.handoff(
-							{ hubId: route.params.hubId, sessionRef: ref },
-							{ hubId: route.params.hubId, sessionRef: resolved },
-						);
-						navigation.replace("Conversation", {
-							hubId: route.params.hubId,
-							ref: resolved,
-							title: route.params.title,
-							openedBy: route.params.openedBy,
-							slideFrom: route.params.slideFrom,
-						});
-					},
 				})
 				.catch(() => undefined);
 			if (answered === "reconciled" || answered === "open") {

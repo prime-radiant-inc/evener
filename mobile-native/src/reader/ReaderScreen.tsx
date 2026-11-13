@@ -36,6 +36,7 @@ import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubProfiles } from "../connection";
+import { subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
@@ -90,6 +91,18 @@ function rowsOf(document: LoadedDocument | null): Row[] {
 
 export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Routes, "Reader">) {
 	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
+	// The session may resume to a different ref while this reader is open. Its
+	// document stays the one opened here, but returning to the session or filing
+	// a quote must land on the identity the resume resolved to.
+	const [messageRef, setMessageRef] = useState(sessionRef);
+	useEffect(() => {
+		setMessageRef(sessionRef);
+		return subscribeNativeIdentities((change) => {
+			if (change.hubId === hubId) {
+				setMessageRef((current) => (change.from === current ? change.to : current));
+			}
+		});
+	}, [hubId, sessionRef]);
 	const memory = documentMemory(hubId);
 	const { client, activeProfile, state } = useConnection();
 	const inFront = useScreenInFront(route.key);
@@ -252,7 +265,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const [canReview, setCanReview] = useState(false);
 	useEffect(() => {
 		if (!inFront || !client || activeProfile?.id !== hubId || state !== "ready") return;
-		const link = new SessionLink(client, sessionRef);
+		const link = new SessionLink(client, messageRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
 			const session = link.getSnapshot();
@@ -272,7 +285,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			unsubscribe();
 			link.dispose();
 		};
-	}, [inFront, client, activeProfile?.id, hubId, state, sessionRef, source, reload]);
+	}, [inFront, client, activeProfile?.id, hubId, state, messageRef, source, reload]);
 	useEffect(() => {
 		if (reference !== routeReference) navigation.setParams({ reference });
 	}, [reference, routeReference, navigation]);
@@ -357,7 +370,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 						{
 							type: "action",
 							label: "Open session",
-							onPress: () => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }),
+							onPress: () => returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle }),
 						},
 						{ type: "action", label: "Copy path", onPress: () => void copyText(namedFileTarget(reference)) },
 						...(text === null
@@ -396,6 +409,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		about,
 		reload,
 		share,
+		messageRef,
 	]);
 
 	const cellRenderer = useMemo(
@@ -443,13 +457,14 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
 	const endSelection = useCallback(() => setSelecting(null), []);
-	const sheetParams = {
+	const sheetParams = () => ({
 		hubId,
 		sessionRef,
 		path,
 		sessionTitle,
+		...(messageRef !== sessionRef ? { messageSessionRef: messageRef } : {}),
 		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
-	};
+	});
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
 	act.current = (action, block, words) => {
@@ -469,8 +484,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				return;
 			case "quote":
 				setSelecting(null);
-				holdQuote(hubId, sessionRef, selected);
-				returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle });
+				holdQuote(hubId, messageRef, selected);
+				returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle });
 				return;
 			case "copy":
 				void copyText(block.text);
@@ -479,7 +494,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				setSelecting(block.index);
 				return;
 			case "comments":
-				navigation.navigate("CommentsSheet", sheetParams);
+				navigation.navigate("CommentsSheet", sheetParams());
 		}
 	};
 	const onAction = useCallback(
@@ -590,7 +605,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 									label="Comments"
 									symbol="bubble.left"
 									text={String(comments.length)}
-									onPress={() => navigation.navigate("CommentsSheet", sheetParams)}
+									onPress={() => navigation.navigate("CommentsSheet", sheetParams())}
 								/>
 							) : null}
 						</View>
@@ -623,7 +638,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								<Pressable
 									accessibilityRole="button"
 									accessibilityLabel="Send review"
-									onPress={() => navigation.navigate("ReviewSheet", sheetParams)}
+									onPress={() => navigation.navigate("ReviewSheet", sheetParams())}
 									style={{ minHeight: 44, justifyContent: "center" }}
 								>
 									<Text

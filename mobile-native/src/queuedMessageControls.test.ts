@@ -5,7 +5,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { buildComposerInput, type InputAttachment } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { DraftDocument } from "./draftDocument";
-import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
 import {
@@ -131,7 +130,7 @@ test("offline edit and remove distinguish identical messages and restore exact I
 	expect(f.client.calls).toEqual([]);
 });
 
-test("interrupted Edit recovery restores exact composition after retarget to a different ref and instance", async () => {
+test("interrupted Edit recovery stays with its retired ref and is not restorable from the resumed ref", async () => {
 	const f = fixture();
 	const captured = await richSource(f);
 	await f.enqueue();
@@ -149,35 +148,21 @@ test("interrupted Edit recovery restores exact composition after retarget to a d
 		}),
 	).toHaveLength(1);
 	await f.reopen();
-	f.runtime.registerTarget(destination.hubId, resumedRef, f.client, {
-		threadId: "thread-2",
-		instanceId: "instance-2",
-	});
-	const [recovered] = (await f.runtime.read(resumedKey)).recovery;
+	const [recovered] = (await f.runtime.read(key)).recovery;
 	expect(recovered).toMatchObject({
 		clientMutationId: captured,
-		targetRef: resumedKey,
-		threadId: "thread-2",
-		instanceId: "instance-2",
+		targetRef: key,
 		recoveryKind: "editing",
 		composerText: "[image 9] /skill",
 	});
+	expect((await f.runtime.read(resumedKey)).recovery).toEqual([]);
 
 	const resumed = new DraftDocument(() => f.repository, { hubId: destination.hubId, sessionRef: resumedRef });
-	expect(await editQueuedMessageIntoDraft(f.runtime, resumedKey, captured, resumed)).toBe("restored");
-	expect(resumed.getSnapshot().record).toMatchObject({
-		draft: "[image 1] /skill",
-		images: [expect.objectContaining({ marker: 1 })],
-		composer: {
-			skillNames: ["skill"],
-			commandNames: ["command"],
-			mentions: [{ kind: "skill", name: "skill", offset: 10 }],
-			recoveryIds: [captured],
-		},
-	});
+	expect(await editQueuedMessageIntoDraft(f.runtime, resumedKey, captured, resumed)).toBe("lost");
+	expect(resumed.getSnapshot().record.draft).toBe("");
 });
 
-test("a resume carries the edited recovered composition to the new ref and retires the old draft", async () => {
+test("a resume leaves the edited recovered composition with the retired draft", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();
 	f.document.edit("current");
@@ -188,7 +173,6 @@ test("a resume carries the edited recovered composition to the new ref and retir
 
 	const resumedRef = "session-resumed";
 	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
-	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
 	expect(
 		f.runtime.storage.retarget(key, {
 			ref: resumedKey,
@@ -198,21 +182,16 @@ test("a resume carries the edited recovered composition to the new ref and retir
 		}),
 	).toHaveLength(1);
 
-	const library = new DraftLibrary(() => f.repository);
-	expect(library.handoff(destination, resumedDestination)).toBe(true);
-	const resumed = library.open(resumedDestination);
-	expect(resumed.getSnapshot().record).toMatchObject({
+	expect(f.repository.read(destination)).toMatchObject({
 		draft: "edited recovered text",
 		composer: { recoveryIds: [captured] },
 	});
-	expect((await f.runtime.read(resumedKey)).recovery).toMatchObject([
-		{ clientMutationId: captured, targetRef: resumedKey },
-	]);
-	expect((await f.runtime.read(key)).recovery).toEqual([]);
-	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
+	expect((await f.runtime.read(key)).recovery).toMatchObject([{ clientMutationId: captured, targetRef: key }]);
+	const resumed = new DraftDocument(() => f.repository, { hubId: destination.hubId, sessionRef: resumedRef });
+	expect(resumed.getSnapshot().record.draft).toBe("");
 });
 
-test("a migrated resend receipt reconciles under the resumed ref and clears its capture", async () => {
+test("a resend receipt stays under the retired ref and settles the retained draft", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();
 	f.document.edit("current");
@@ -223,7 +202,6 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 
 	const resumedRef = "session-resumed";
 	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
-	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
 	expect(
 		f.runtime.storage.retarget(key, {
 			ref: resumedKey,
@@ -233,18 +211,15 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 		}),
 	).toHaveLength(1);
 
-	const library = new DraftLibrary(() => f.repository);
-	expect(library.handoff(destination, resumedDestination)).toBe(true);
-	const resumed = library.open(resumedDestination);
-	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toMatchObject({
-		targetRef: resumedKey,
+	expect(await f.runtime.readRecoveryResend(key, [captured])).toMatchObject({
+		targetRef: key,
 		sourceIds: [captured],
 	});
-
-	await reconcileEditedResends(f.runtime, resumedKey, resumed);
-	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: null });
 	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toBeUndefined();
-	expect(f.repository.read(resumedDestination)).toEqual({ draft: "", unconfirmed: null });
+
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect(await f.runtime.readRecoveryResend(key, [captured])).toBeUndefined();
 });
 
 test("successful built-in completion durably cleans only captured sources without replay", async () => {

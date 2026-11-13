@@ -716,7 +716,7 @@ test("a fenced settle leaves the session alone when the caller refuses the resum
 // it, keeping its clientMutationId (the daemon's reconciliation key) and taking
 // the resumed instance fence, or it dispatches against an instance the daemon
 // no longer serves.
-test("a resume that changes identity retargets the parked row", async () => {
+test("a resume that changes identity retargets the parked row and publishes the change", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
 	const storage = runtime.storage;
 	const client = new FakeClient("ready");
@@ -732,6 +732,13 @@ test("a resume that changes identity retargets the parked row", async () => {
 	await registerAndStart(runtime, client);
 	await runtime.submit(request("send"));
 
+	const changes: Array<{ hubId: string; from: string; to: string }> = [];
+	const order: string[] = [];
+	runtime.subscribeStorage(() => order.push("storage"));
+	runtime.subscribeIdentities((change) => {
+		order.push("identity");
+		changes.push(change);
+	});
 	await runtime.settleTarget("hub-1", "ref-1", client, { mayResumeFenced: async () => true });
 	expect(await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 	const moved = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
@@ -740,6 +747,9 @@ test("a resume that changes identity retargets the parked row", async () => {
 	// move too - a payload still naming ref-1 would be refused however the
 	// columns read.
 	expect(moved[0]?.payload).toMatchObject({ ref: "ref-2" });
+	expect(changes).toEqual([{ hubId: "hub-1", from: "ref-1", to: "ref-2" }]);
+	// Storage notification precedes identity publication.
+	expect(order.slice(0, 2)).toEqual(["storage", "identity"]);
 	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 	await runtime.stop();
 });

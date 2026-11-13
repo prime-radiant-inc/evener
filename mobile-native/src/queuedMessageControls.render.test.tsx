@@ -2054,7 +2054,7 @@ it("parked Edit waits for a deferred encoder and keeps the pending image", async
 	expect(f.document.getSnapshot().record.parkedCompositions?.[0]?.images).toHaveLength(8);
 });
 
-it("actual screen keeps an occupied destination when the resume handoff is refused", async () => {
+it("actual screen leaves editing recovery with the retired ref and keeps the occupied destination", async () => {
 	const f = await mount();
 	act(() => f.document.edit("existing destination work"));
 	const oldRef = `${f.ref}-old`;
@@ -2087,7 +2087,8 @@ it("actual screen keeps an occupied destination when the resume handoff is refus
 	await act(async () => {
 		await submitOld("waiting message");
 	});
-	// The resume moved the editing row and its waiting message to the new ref.
+	// The resume moves the waiting message, but the editing row stays with the
+	// draft at the retired ref.
 	await act(async () => {
 		f.runtime.storage.retarget(oldKey, {
 			ref: f.targetKey,
@@ -2097,19 +2098,11 @@ it("actual screen keeps an occupied destination when the resume handoff is refus
 		});
 	});
 
-	// The occupied destination refuses the handoff, so its own work stays and
-	// the migrated editing row is marked released rather than auto-appended.
-	act(() => {
-		expect(drafts.handoff(oldDestination, { hubId: "hub-1", sessionRef: f.ref })).toBe(false);
-	});
-	expect(f.document.getSnapshot().record.releasedRecoveryIds).toContain(source.clientMutationId);
-
 	await f.recreateOffline();
 	await settle();
 	expect(f.document.getSnapshot().record.draft).toBe("existing destination work");
 	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
-	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
-		source.clientMutationId,
-	]);
+	expect((await f.runtime.read(oldKey)).recovery.map((row) => row.clientMutationId)).toEqual([source.clientMutationId]);
+	expect((await f.runtime.read(f.targetKey)).recovery).toEqual([]);
 	expect(nativeDrafts().read(oldDestination).draft).toBe("edited recovered");
 });
