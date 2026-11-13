@@ -75,9 +75,20 @@ export function isInformationalWarning(item: ItemModel): boolean {
 
 // The code an overlay warning notice carries on its raw, or undefined. Raw is
 // untyped wire JSON, so every step is checked.
-function noticeWarningCode(raw: unknown): unknown {
+function noticeWarningField(raw: unknown, field: string): unknown {
   if (!isPlainObject(raw) || !isPlainObject(raw.warning)) return undefined;
-  return raw.warning.code;
+  return raw.warning[field];
+}
+
+function noticeWarningCode(raw: unknown): unknown {
+  return noticeWarningField(raw, "code");
+}
+
+/** The checked source of a daemon overlay warning, when it carries one. */
+export function warningNoticeSource(item: { type: string; eventKind?: string; raw?: unknown }): string | undefined {
+  if (item.type !== "systemMessage" || item.eventKind !== "warning") return undefined;
+  const source = noticeWarningField(item.raw, "source");
+  return typeof source === "string" ? source : undefined;
 }
 
 /** A warning's words as both clients show them, each once. */

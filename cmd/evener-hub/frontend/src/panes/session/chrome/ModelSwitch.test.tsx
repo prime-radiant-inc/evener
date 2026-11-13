@@ -4,7 +4,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
@@ -83,6 +83,7 @@ function modelListResponse(): ModelListResponse {
 beforeEach(() => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
+  threadsStore.setState({ threads: new Map([["ref_a", testModel()]]) });
   // Toasts are module state and outlive cleanup(); without this a toast from an
   // earlier test in this file is still on screen, and an assertion that a
   // message is ABSENT matches the stale one instead.
@@ -96,6 +97,38 @@ beforeEach(() => {
 // the one deliberate assertion below.
 function trigger(): HTMLButtonElement {
   return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
+}
+
+async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string, optionName: RegExp): Promise<void> {
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard(query);
+  await user.click(await screen.findByRole("option", { name: optionName }));
+}
+
+function emitModelSwitchRejection(fake: ReturnType<typeof connectReadyFakeClient>): void {
+  fake.emitNotification({
+    method: "overlay/upserted",
+    params: {
+      threadId: "thr_a",
+      ref: "ref_a",
+      item: {
+        key: "notice:1",
+        kind: "notice",
+        turnId: "turn_1",
+        item: {
+          type: "systemMessage",
+          id: "notice:1",
+          turnId: "turn_1",
+          text: "The queued model switch was refused.",
+          eventKind: "warning",
+          raw: { warning: { source: "model_switch" } },
+        },
+      },
+    },
+  });
 }
 
 test("shows the current model label alongside a Change-model trigger", () => {
@@ -224,12 +257,7 @@ test("a successful mid-turn pick immediately shows the accepted next model", asy
   const view = render(
     <ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />,
   );
-  await user.click(trigger());
-  const combobox = await screen.findByRole("combobox");
-  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
-  await user.clear(combobox);
-  await user.keyboard("gpt");
-  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+  await pickModel(user, "gpt", /gpt-5\.5/i);
 
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
 
@@ -249,21 +277,60 @@ test("a later accepted mid-turn pick replaces the accepted next model", async ()
   fake.on("thread/model/set", () => ({}));
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
-  await user.click(trigger());
-  let combobox = await screen.findByRole("combobox");
-  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
-  await user.clear(combobox);
-  await user.keyboard("gpt");
-  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+  await pickModel(user, "gpt", /gpt-5\.5/i);
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
 
-  await user.click(trigger());
-  combobox = await screen.findByRole("combobox");
-  await user.clear(combobox);
-  await user.keyboard("opus");
-  await user.click(screen.getByRole("option", { name: /claude-opus-5/i }));
+  await pickModel(user, "opus", /claude-opus-5/i);
 
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+});
+
+test("accepted model display follows pick order when responses arrive out of order", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const resolvers = new Map<string, () => void>();
+  fake.on(
+    "thread/model/set",
+    ({ model }) =>
+      new Promise<Record<string, never>>((resolve) => {
+        resolvers.set(model, () => resolve({}));
+      }),
+  );
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(resolvers.has("gpt-5.5")).toBe(true));
+
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(resolvers.has("claude-opus-5")).toBe(true));
+
+  await act(async () => {
+    resolvers.get("claude-opus-5")?.();
+  });
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+  await act(async () => {
+    resolvers.get("gpt-5.5")?.();
+  });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
+test("an accepted next model remains visible after the composer remounts", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+  const model = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+
+  const view = render(<ModelSwitch sessionRef="ref_a" model={model} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  view.unmount();
+  render(<ModelSwitch sessionRef="ref_a" model={model} />);
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
 });
 
 test("a deferred model-switch rejection restores the authoritative model label", async () => {
@@ -273,19 +340,36 @@ test("a deferred model-switch rejection restores the authoritative model label",
   fake.on("thread/model/set", () => ({}));
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
-  await user.click(trigger());
-  const combobox = await screen.findByRole("combobox");
-  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
-  await user.clear(combobox);
-  await user.keyboard("gpt");
-  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+  await pickModel(user, "gpt", /gpt-5\.5/i);
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
 
   act(() => {
-    fake.emitNotification({
-      method: "warning",
-      params: { threadId: "thr_a", ref: "ref_a", source: "model_switch" },
-    });
+    emitModelSwitchRejection(fake);
+  });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+test("a deferred rejection that arrives before the set response keeps the authoritative model label", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  let resolveSet: (() => void) | undefined;
+  fake.on(
+    "thread/model/set",
+    () =>
+      new Promise<Record<string, never>>((resolve) => {
+        resolveSet = () => resolve({});
+      }),
+  );
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(resolveSet).toBeTypeOf("function"));
+
+  act(() => emitModelSwitchRejection(fake));
+  await act(async () => {
+    resolveSet?.();
   });
 
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
@@ -293,8 +377,8 @@ test("a deferred model-switch rejection restores the authoritative model label",
 
 // A cold exited session takes the SAME wire call as a live one: the hub resumes
 // the session behind thread/model/set and retries (cmd/evener-hub/app_model.go's
-// setThreadModelWithResume), so the choice is recorded server-side and there is
-// no client-side pending-model state to hold.
+// setThreadModelWithResume), so the choice is recorded server-side while the
+// shared thread store keeps it visible until the authoritative model changes.
 test("a cold exited session sends the same thread/model/set - the hub owns the resume", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();

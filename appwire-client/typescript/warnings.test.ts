@@ -17,8 +17,23 @@ import {
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
   WarningCodePluginCompatibility,
+  warningNoticeSource,
   warningWords,
 } from "./warnings";
+
+test("warningNoticeSource reads a daemon overlay warning's checked source", () => {
+  expect(
+    warningNoticeSource({
+      type: "systemMessage",
+      eventKind: "warning",
+      raw: { warning: { source: "model_switch" } },
+    }),
+  ).toBe("model_switch");
+  expect(
+    warningNoticeSource({ type: "systemMessage", eventKind: "error", raw: { warning: { source: "model_switch" } } }),
+  ).toBeUndefined();
+  expect(warningNoticeSource({ type: "systemMessage", eventKind: "warning", raw: { warning: [] } })).toBeUndefined();
+});
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go
 // (goConstants.ts's own header says why reading the source is what makes the

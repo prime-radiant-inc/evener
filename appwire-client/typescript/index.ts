@@ -950,6 +950,7 @@ export {
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
   WarningCodePluginCompatibility,
+  warningNoticeSource,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";

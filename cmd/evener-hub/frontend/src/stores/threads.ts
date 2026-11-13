@@ -64,6 +64,7 @@ import {
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
   WireError,
+  warningNoticeSource,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
@@ -251,8 +252,20 @@ export interface PromoteDisplayInput {
   commandNames?: readonly string[];
 }
 
+export interface AcceptedModelSwitch {
+  modelProvider: string;
+  model: string;
+  previousModelProvider: string;
+  previousModel: string;
+}
+
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
+  // A successful thread/model/set is immediately useful UI state even when the
+  // daemon queues it behind an active turn. It stays shared across every pane
+  // showing the ref until the authoritative model changes or the daemon emits
+  // its sourced rejection notice.
+  acceptedModelSwitches: ReadonlyMap<string, AcceptedModelSwitch>;
   mutationWriteStalled: boolean;
   // Refs whose durable reconcile failed for a reason other than storage: the
   // ref waits for discovery's retry before anything is dispatched.
@@ -589,6 +602,28 @@ const ensureGenerations = new Map<string, number>();
 // request generation current and keeps the existing immediate local commit
 // behavior.
 const goalUpdateGenerations = new Map<string, number>();
+
+interface ModelSwitchRequestState {
+  issued: number;
+  settledThrough: number;
+}
+
+const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
+
+function invalidateAcceptedModelSwitch(ref: string): void {
+  const requests = modelSwitchRequests.get(ref);
+  if (requests) requests.settledThrough = requests.issued;
+  const current = threadsStore.getState().acceptedModelSwitches;
+  if (!current.has(ref)) return;
+  const acceptedModelSwitches = new Map(current);
+  acceptedModelSwitches.delete(ref);
+  threadsStore.setState({ acceptedModelSwitches });
+}
+
+function modelSwitchRejectionRef(n: AnyNotification): string | undefined {
+  if (n.method !== "overlay/upserted") return undefined;
+  return warningNoticeSource(n.params.item.item) === "model_switch" ? n.params.ref : undefined;
+}
 
 function invalidateGoalResponseFallback(ref: string): void {
   goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
@@ -6517,6 +6552,11 @@ function acceptEntryNotification(
 }
 
 function handleNotification(n: AnyNotification): void {
+  if (n.method === "thread/model/changed") invalidateAcceptedModelSwitch(n.params.ref);
+  else {
+    const rejectedRef = modelSwitchRejectionRef(n);
+    if (rejectedRef) invalidateAcceptedModelSwitch(rejectedRef);
+  }
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
     // legacy has no history.invalidatedAtGeneration for the generic
@@ -7509,6 +7549,7 @@ function replaceThread(
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
+  acceptedModelSwitches: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
@@ -8416,7 +8457,23 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
+    const requests = modelSwitchRequests.get(ref) ?? { issued: 0, settledThrough: 0 };
+    modelSwitchRequests.set(ref, requests);
+    const sequence = ++requests.issued;
+    const previous = trackedThreadModel(ref);
     await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
+    if (sequence <= requests.settledThrough) return;
+    requests.settledThrough = sequence;
+    threadsStore.setState((state) => {
+      const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
+      acceptedModelSwitches.set(ref, {
+        modelProvider,
+        model,
+        previousModelProvider: previous?.modelProvider ?? "",
+        previousModel: previous?.model ?? "",
+      });
+      return { acceptedModelSwitches };
+    });
   },
 
   async setReasoningEffort(ref, level) {
@@ -9205,6 +9262,7 @@ export function resetThreadsStoreForTests(): void {
   for (const [ref, generation] of ensureGenerations) ensureGenerations.set(ref, generation + 1);
   discardPendingClearReplay();
   goalUpdateGenerations.clear();
+  modelSwitchRequests.clear();
   notesUpdateGenerations.clear();
   inflightHydrates.clear();
   resetCacheLifetimeForTests();
@@ -9252,6 +9310,7 @@ export function resetThreadsStoreForTests(): void {
     {
       ...threadsStore.getInitialState(),
       threads: new Map(),
+      acceptedModelSwitches: new Map(),
       frameTimes: new Map(),
       hydrations: new Map(),
       watchedThreads: new Map(),

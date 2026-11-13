@@ -20,7 +20,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { onConnectionNotification } from "../../../stores/connection";
-import { threadsStore } from "../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
@@ -48,27 +48,11 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // every cold session too.
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
-  const [acceptedModel, setAcceptedModel] = useState<{
-    sessionRef: string;
-    label: string;
-    previousLabel: string;
-  } | null>(null);
+  const acceptedModel = useThreadsStore((state) => state.acceptedModelSwitches.get(sessionRef));
   const displayedModelLabel =
-    acceptedModel?.sessionRef === sessionRef && acceptedModel.previousLabel === currentModelLabel
-      ? acceptedModel.label
+    acceptedModel?.previousModelProvider === model.modelProvider && acceptedModel.previousModel === model.model
+      ? modelLabel(acceptedModel.modelProvider, acceptedModel.model)
       : currentModelLabel;
-
-  // The accepted label bridges the successful RPC and the authoritative
-  // thread/model/changed notification. Any authoritative change settles it,
-  // including a switch made from another client.
-  useEffect(() => {
-    if (
-      acceptedModel !== null &&
-      (acceptedModel.sessionRef !== sessionRef || acceptedModel.previousLabel !== currentModelLabel)
-    ) {
-      setAcceptedModel(null);
-    }
-  }, [acceptedModel, currentModelLabel, sessionRef]);
 
   const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
     return modelListToCatalog(await threadsStore.getState().listModels(refresh));
@@ -77,28 +61,19 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // The hub announces a refreshed model list on evener/auth/updated (it serves
   // a stale list at once and refreshes it behind the request), so an open
   // picker re-reads it in place rather than showing the old list until it is
-  // reopened. A queued switch can still fail history validation at the turn
-  // boundary; its sourced warning restores the authoritative label.
+  // reopened.
   const [modelsRevision, setModelsRevision] = useState(0);
   useEffect(
     () =>
       onConnectionNotification((n) => {
         if (n.method === "evener/auth/updated") setModelsRevision((revision) => revision + 1);
-        if (n.method === "warning" && n.params.ref === sessionRef && n.params.source === "model_switch") {
-          setAcceptedModel(null);
-        }
       }),
-    [sessionRef],
+    [],
   );
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {
     try {
       await threadsStore.getState().setModel(sessionRef, entry.provider, entry.model);
-      setAcceptedModel({
-        sessionRef,
-        label: modelLabel(entry.provider, entry.model),
-        previousLabel: currentModelLabel,
-      });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't change model", err));
     }
