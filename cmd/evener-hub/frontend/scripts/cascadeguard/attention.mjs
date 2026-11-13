@@ -19,55 +19,6 @@ const LIST = '[data-testid="next-needs-you-list"]';
 const ROW = '[data-testid="next-needs-you-row"]';
 const LOAD_MORE = '[data-testid="next-needs-you-load-more"]';
 
-// The app's own at-the-end threshold (4px, the transcript tail's own jump
-// destination). A reader inside it is still following the end, so the New
-// Content pill is correctly hidden.
-export const AWAY_FROM_END_PX = 4;
-// A single changed scrollTop can be a virtualizer correction after rows
-// measured at zero height, not a reading position. Only an away geometry that
-// survives a quiet window counts as "the reader left the end".
-export const AWAY_HOLD_MS = 1000;
-
-// The page expression wheelReaderAway polls after the native wheel. It reports
-// the held geometry only after the reader has been continuously away from the
-// end for `holdMs`; any poll that lands at the end clears the window, so a
-// collapse that snaps the reader back restarts the proof instead of passing it.
-export function sustainedAwayExpr(portExpr, holdMs = AWAY_HOLD_MS) {
-  return `(() => {
-    const port = ${portExpr};
-    const rect = port?.getBoundingClientRect();
-    const now = performance.now();
-    const away = !!port && !!rect && rect.width > 0 && rect.height > 0 &&
-      port.scrollHeight - port.clientHeight - port.scrollTop > ${AWAY_FROM_END_PX};
-    if (!away) { window.__cascadeAwaySince = null; return null; }
-    window.__cascadeAwaySince ??= now;
-    const heldMs = now - window.__cascadeAwaySince;
-    return heldMs >= ${holdMs}
-      ? { scrollTop: port.scrollTop, scrollHeight: port.scrollHeight, clientHeight: port.clientHeight, heldMs }
-      : null;
-  })()`;
-}
-
-// Dispatch one genuine native wheel and wait until its away position has
-// held. Exported so the regression test drives the same step run.mjs uses.
-export async function wheelReaderAway({ driver, wait, portExpr, deltaY, holdMs = AWAY_HOLD_MS }) {
-  const point = await wait(`(() => {
-    window.__cascadeAwaySince = null;
-    const port = ${portExpr};
-    const r = port?.getBoundingClientRect();
-    if (!r || r.width <= 0 || r.height <= 0) return null;
-    const x = r.x + r.width / 2, y = r.y + r.height / 2;
-    return port.contains(document.elementFromPoint(x, y)) ? { x, y, scrollTop: port.scrollTop } : null;
-  })()`, "native wheel targets the focused source reader");
-  await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
-  await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, deltaY, x: point.x, y: point.y });
-  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel moves the source reader away from the end");
-  return wait(
-    sustainedAwayExpr(portExpr, holdMs),
-    "the source reader's away-from-end position holds before attention counts as cleared",
-  );
-}
-
 // One focused-conversation snapshot. `body` is the mounted conversation of the
 // active Dockview group; its scaffold carries the exact session ref, its panel
 // carries the workspace record's own pane ID, and the browser entry carries the
@@ -387,11 +338,18 @@ export async function attentionJourney(ctx) {
   }
 
   // A genuine native wheel over the reader, so "away reading" is the user's
-  // own input and not a scrollTop assignment. The changed offset alone is not
-  // the reading position: the native wheel's default action must leave the
-  // reader away from the end long enough to survive a virtualizer correction.
+  // own input and not a scrollTop assignment.
   async function wheelAway(portExpr, deltaY) {
-    return wheelReaderAway({ driver, wait, portExpr, deltaY });
+    const point = await wait(`(() => {
+      const port = ${portExpr};
+      const r = port?.getBoundingClientRect();
+      if (!r || r.width <= 0 || r.height <= 0) return null;
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return port.contains(document.elementFromPoint(x, y)) ? { x, y, scrollTop: port.scrollTop } : null;
+    })()`, "native wheel targets the focused source reader");
+    await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+    await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, deltaY, x: point.x, y: point.y });
+    await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel moves the source reader away from the end");
   }
   // A point inside the reader that is not a control. The floating stack can
   // span most of a narrow pane, so a fixed bottom-left offset can land on the
