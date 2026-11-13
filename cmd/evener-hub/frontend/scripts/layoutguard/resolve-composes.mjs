@@ -148,6 +148,12 @@ export function resolveComposes(cssTexts) {
       const name = names.trim();
       const entries = bodies.get(`.${name}`);
       if (entries === undefined || entries.length === 0) {
+        // A class that only appears inside compound or grouped selectors
+        // (.a::after, .b > div > :last-child) styles pseudo-elements and
+        // descendants, never the consumer's own box, so the consumer's
+        // declarations have nothing to inherit from it; only a class defined
+        // nowhere is an error.
+        if (new RegExp(`\\.${name}(?![A-Za-z0-9_-])`).test(combined)) return "";
         throw new Error(
           `composes references .${name}, but no such rule was found in the provided CSS sources - add the module that defines it to the case's cssFiles`,
         );

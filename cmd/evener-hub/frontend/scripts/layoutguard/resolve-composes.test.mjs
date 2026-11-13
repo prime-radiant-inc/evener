@@ -138,4 +138,13 @@ describe("resolveComposes", () => {
   test("names the missing source when a composed rule is not among the cssFiles", () => {
     expect(() => resolveComposes(['.a { composes: missing from "./x.module.css"; }'])).toThrow(/cssFiles/);
   });
+
+  test("composing a class that only styles pseudo-elements or descendants adds nothing to the consumer's box", () => {
+    const out = resolveComposes([
+      '.host { color: red; composes: tail from "./m.module.css"; }',
+      ".tail > div > :last-child::after { content: ''; }",
+    ]);
+    expect(out).toContain("color: red");
+    expect(out).not.toContain("composes");
+  });
 });
