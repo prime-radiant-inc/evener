@@ -3,11 +3,10 @@ package responses
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 // rejectingUserReq builds a request whose body cannot be built: an audio part
@@ -21,24 +20,12 @@ func rejectingUserReq() llm.Request {
 	return req
 }
 
-// noHTTPServer stands up a server that fails the test the moment any request
-// reaches it, so a test proving "the error is returned before the wire" cannot
-// silently start doing network I/O.
-func noHTTPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("no HTTP exchange was expected: the build error must short-circuit the call")
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // TestEntrypointsPropagateBuildErrors pins that Complete, Stream and
 // CountTokens return the structured build error before any HTTP exchange when
 // the request cannot be shaped at all — each entrypoint has its own early
 // return the wire plumbing can hide behind.
 func TestEntrypointsPropagateBuildErrors(t *testing.T) {
-	srv := noHTTPServer(t)
+	srv := transporttest.NoHTTPServer(t)
 	res := liveRes(srv, openaiCaps)
 	p := &Protocol{Client: srv.Client()}
 

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 type idleCloseObserver struct {
@@ -44,7 +46,7 @@ func TestProviderIdleRealHTTPUnblocksStalledBody(t *testing.T) {
 			<-ctx.Done()
 		}()
 		observed := false
-		base := idleTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		base := transporttest.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			resp, err := tr.RoundTrip(req)
 			if err != nil {
 				return resp, err
@@ -166,7 +168,7 @@ func TestProviderConnectPreservesShorterTLSHandshake(t *testing.T) {
 // read builds the reader, and every read reports its failure.
 func TestIdleGzipBodyRejectsANonGzipPayload(t *testing.T) {
 	tr := &idleResponseTransport{
-		base: idleTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		base: transporttest.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(strings.NewReader("not gzip at all")),
