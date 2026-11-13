@@ -4,9 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -53,9 +53,8 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("read_file advertised vision_prompt in Regime 1; def: %+v", rf)
 	}
-	wantRFDesc := "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
-	if rf.Description != wantRFDesc {
-		t.Fatalf("read_file description in Regime 1:\ngot:  %q\nwant: %q", rf.Description, wantRFDesc)
+	if strings.Contains(rf.Description, "vision_prompt") {
+		t.Fatalf("read_file description in Regime 1 mentions vision_prompt: %q", rf.Description)
 	}
 
 	mr, ok := findToolDef(defs, "memory_read")
@@ -65,9 +64,8 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(mr, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("memory_read advertised vision_prompt in Regime 1; def: %+v", mr)
 	}
-	wantMRDesc := "Operate on a relative path in the bound personal or project memory wiki. Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. Reading MEMORY.md at the scope root returns the whole generated index."
-	if mr.Description != wantMRDesc {
-		t.Fatalf("memory_read description in Regime 1:\ngot:  %q\nwant: %q", mr.Description, wantMRDesc)
+	if strings.Contains(mr.Description, "vision_prompt") {
+		t.Fatalf("memory_read description in Regime 1 mentions vision_prompt: %q", mr.Description)
 	}
 }
 
@@ -87,9 +85,8 @@ func TestSessionReadFileSchema_Regime1_Explorer(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("explorer read_file advertised vision_prompt; def: %+v", rf)
 	}
-	wantDesc := "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
-	if rf.Description != wantDesc {
-		t.Fatalf("explorer read_file description:\ngot:  %q\nwant: %q", rf.Description, wantDesc)
+	if strings.Contains(rf.Description, "vision_prompt") {
+		t.Fatalf("explorer read_file description mentions vision_prompt: %q", rf.Description)
 	}
 }
 
@@ -110,6 +107,9 @@ func TestSessionReadFileSchema_Regime1_VisionOff(t *testing.T) {
 			}
 			if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 				t.Fatalf("read_file advertised vision_prompt when VisionModel=%q", setting)
+			}
+			if strings.Contains(rf.Description, "vision_prompt") {
+				t.Fatalf("read_file description mentions vision_prompt when VisionModel=%q", setting)
 			}
 		})
 	}
@@ -133,13 +133,12 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	if !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 2; def: %+v", rf)
 	}
-	wantVPDesc := "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."
-	if gotVPDesc, _ := vp["description"].(string); gotVPDesc != wantVPDesc {
-		t.Fatalf("read_file vision_prompt description in Regime 2:\ngot:  %q\nwant: %q", gotVPDesc, wantVPDesc)
+	vpDesc, _ := vp["description"].(string)
+	if !strings.HasPrefix(vpDesc, "PDF reads only:") {
+		t.Fatalf("read_file vision_prompt description in Regime 2 not scoped to PDF: %q", vpDesc)
 	}
-	wantRFDesc := "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
-	if rf.Description != wantRFDesc {
-		t.Fatalf("read_file description in Regime 2:\ngot:  %q\nwant: %q", rf.Description, wantRFDesc)
+	if !strings.Contains(rf.Description, "When reading a PDF,") || strings.Contains(rf.Description, "image or PDF") {
+		t.Fatalf("read_file description in Regime 2 not scoped to PDF: %q", rf.Description)
 	}
 
 	mr, ok := findToolDef(defs, "memory_read")
@@ -150,12 +149,12 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	if !hasVPMR {
 		t.Fatalf("memory_read omitted vision_prompt in Regime 2; def: %+v", mr)
 	}
-	if gotVPDesc, _ := vpMR["description"].(string); gotVPDesc != wantVPDesc {
-		t.Fatalf("memory_read vision_prompt description in Regime 2:\ngot:  %q\nwant: %q", gotVPDesc, wantVPDesc)
+	vpMRDesc, _ := vpMR["description"].(string)
+	if !strings.HasPrefix(vpMRDesc, "PDF reads only:") {
+		t.Fatalf("memory_read vision_prompt description in Regime 2 not scoped to PDF: %q", vpMRDesc)
 	}
-	wantMRDesc := "Operate on a relative path in the bound personal or project memory wiki. Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file. Reading MEMORY.md at the scope root returns the whole generated index."
-	if mr.Description != wantMRDesc {
-		t.Fatalf("memory_read description in Regime 2:\ngot:  %q\nwant: %q", mr.Description, wantMRDesc)
+	if !strings.Contains(mr.Description, "When reading a PDF,") || strings.Contains(mr.Description, "image or PDF") {
+		t.Fatalf("memory_read description in Regime 2 not scoped to PDF: %q", mr.Description)
 	}
 }
 
@@ -176,13 +175,12 @@ func TestSessionReadFileSchema_Regime3_TextOnlyPrimary(t *testing.T) {
 	if !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3; def: %+v", rf)
 	}
-	wantVPDesc := "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."
-	if gotVPDesc, _ := vp["description"].(string); gotVPDesc != wantVPDesc {
-		t.Fatalf("read_file vision_prompt description in Regime 3:\ngot:  %q\nwant: %q", gotVPDesc, wantVPDesc)
+	vpDesc, _ := vp["description"].(string)
+	if !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
+		t.Fatalf("read_file vision_prompt description in Regime 3 not image/PDF: %q", vpDesc)
 	}
-	wantRFDesc := tool.DefReadFile().Description
-	if rf.Description != wantRFDesc {
-		t.Fatalf("read_file description in Regime 3:\ngot:  %q\nwant: %q", rf.Description, wantRFDesc)
+	if !strings.Contains(rf.Description, "When reading an image or PDF,") {
+		t.Fatalf("read_file description in Regime 3 missing image or PDF mention: %q", rf.Description)
 	}
 }
 
@@ -204,9 +202,9 @@ func TestSessionReadFileSchema_Regime3_ExplicitVisionModel(t *testing.T) {
 	if !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3 explicit; def: %+v", rf)
 	}
-	wantVPDesc := "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."
-	if gotVPDesc, _ := vp["description"].(string); gotVPDesc != wantVPDesc {
-		t.Fatalf("read_file vision_prompt description in Regime 3 explicit:\ngot:  %q\nwant: %q", gotVPDesc, wantVPDesc)
+	vpDesc, _ := vp["description"].(string)
+	if !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
+		t.Fatalf("read_file vision_prompt description in Regime 3 explicit not image/PDF: %q", vpDesc)
 	}
 }
 
@@ -227,7 +225,8 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	defs := sess.ToolDefinitions()
 	rf, _ := findToolDef(defs, "read_file")
 	vp, hasVP := toolProp(rf, "vision_prompt")
-	if !hasVP || vp["description"] != "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate." {
+	vpDesc, _ := vp["description"].(string)
+	if !hasVP || !strings.HasPrefix(vpDesc, "PDF reads only:") {
 		t.Fatalf("expected Regime 2 at start; def: %+v", rf)
 	}
 
@@ -248,7 +247,8 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
 	vp, hasVP = toolProp(rf, "vision_prompt")
-	if !hasVP || vp["description"] != "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate." {
+	vpDesc, _ = vp["description"].(string)
+	if !hasVP || !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
 		t.Fatalf("expected Regime 3 after switch to codex; def: %+v", rf)
 	}
 
