@@ -160,8 +160,11 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   if (at === -1) return undefined;
   const reply = findAnswerReply(items.slice(at + 1), item);
   if (!reply) return undefined;
-  const answers = reply.text.startsWith("[answers]") ? parseAskAnswerLines(reply.text) : undefined;
-  if (answers !== undefined && answers.size > 0) {
+  if (reply.text.startsWith("[answers]")) {
+    // The composed form always resolves here, even when it parses to nothing
+    // or nothing matches this call's headers (the user edited the draft,
+    // spec §6.1): an attempted composed reply is not free prose to echo.
+    const answers = parseAskAnswerLines(reply.text);
     const multiple = questions.length > 1;
     const parts = questions
       .map((q) => {
@@ -200,31 +203,38 @@ export function isUserAuthoredSteer(item: ItemModel): boolean {
 // One user-role item that can carry a round's answer: a recorded user
 // message, or the user-authored steering a fenced answer records (the ask
 // fence's steering append publishes the same answer evidence - agent's
-// session_client_mutation). Daemon-sourced steering is machinery, and a
-// human-note steer is the whiteboard speaking, not an answer.
+// session_client_mutation). Daemon-sourced steering is machinery, a
+// human-note steer is the whiteboard speaking, and an interrupted steer is
+// a cancelled round's boundary marker (session_lifecycle.go) - the ask it
+// resolved was never answered, so its marker text must not recap as one.
 function isAnswerCarrier(item: ItemModel): boolean {
-  return item.type === "userMessage" || (item.type === "steering" && isUserAuthoredSteer(item));
+  return (
+    item.type === "userMessage" ||
+    (item.type === "steering" && item.steeringKind !== "interrupted" && isUserAuthoredSteer(item))
+  );
 }
 
 // findAnswerReply locates the reply that answered this call among the items
 // after it, in one pass. The durable rule decides first: a reply carrying
 // the wire's answer link (ThreadItem.observation.answerToTurnIds, onto the
 // model as answerToTurnIds) is server-stamped evidence naming the round it
-// answers. The FIRST linked reply after the call is that round's answer: the
-// ask fence lets only one round rest pending at a time (a session asking
-// yields the floor until answered), so no reply linked to another round can
-// sit between this call and its own answer - and one that names another
-// round refutes this call even when its text shape looks like this round's
-// composed reply, since the stamp says what it actually answered. Without
-// any link (an older daemon, or a reply the observation never reached) the
-// composed "[answers]" text shape is the only evidence, exactly as before
-// the link existed.
+// answers. Among carriers, the first linked reply naming THIS turn is the
+// answer, and the first linked reply naming ANOTHER round ends the search:
+// the fence holds the floor until this round is answered, so this round's
+// own reply can only sit before any foreign link - everything after that
+// link answered a later round. The composed "[answers]" shape matched
+// before the foreign link still stands, though: in a mixed thread (a reply
+// recorded by an older daemon that stamped no link), erasing it would lose
+// this round's answer to an unrelated later link. With no link anywhere
+// (an older daemon, or a reply the observation never reached) the shape is
+// the only evidence, exactly as before the link existed.
 function findAnswerReply(later: readonly ItemModel[], item: ItemModel): ItemModel | undefined {
   let shapeMatch: ItemModel | undefined;
   for (const candidate of later) {
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
-      return candidate.answerToTurnIds.includes(item.turnId) ? candidate : undefined;
+      if (candidate.answerToTurnIds.includes(item.turnId)) return candidate;
+      return shapeMatch;
     }
     if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
       shapeMatch = candidate;

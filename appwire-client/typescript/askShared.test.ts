@@ -365,3 +365,44 @@ test("a linked human-note steer is never the answer carrier", () => {
   };
   expect(answeredAskUserSuffix(turnsModel([ask], [note]), ask)).toBeUndefined();
 });
+
+test("a linked interrupted steer is not the answer carrier: a cancelled round never recaps as answered", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  // The daemon appends an interrupted steer as the marker of a cancelled
+  // round (session_lifecycle.go), and the fence can stamp it with the link
+  // of the ask it resolved. Resolving an ask is not answering it.
+  const interrupted: ItemModel = {
+    id: "reply_1",
+    turnId: "turn_2",
+    type: "steering",
+    source: "user",
+    steeringKind: "interrupted",
+    text: "user cancelled the round",
+    answerToTurnIds: ["turn_1"],
+  };
+  expect(answeredAskUserSuffix(turnsModel([ask], [interrupted]), ask)).toBeUndefined();
+});
+
+test("a composed reply from before a later round's linked reply still answers its own call", () => {
+  // Mixed thread: this round's reply predates the link-stamping daemon, so
+  // only the composed shape identifies it; a LATER round carries links. The
+  // foreign link must not erase the earlier reply this call already found.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2" });
+  const laterAsk = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_3" });
+  const laterReply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "No"',
+    turnId: "turn_4",
+    answerToTurnIds: ["turn_3"],
+  });
+  expect(answeredAskUserSuffix(turnsModel([ask], [reply], [laterAsk], [laterReply]), ask)).toBe(' — answered: "Yes"');
+});
+
+test("a linked reply whose composed text parses to nothing recaps nothing, not the raw framing", () => {
+  // The composed form with its numbering stripped (the user edited the draft
+  // in the composer, spec §6.1) parses to an empty map: an attempted composed
+  // reply that says nothing is not free prose to echo back as the answer.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({ text: "[answers]\nDeploy? Yes", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  expect(answeredAskUserSuffix(turnsModel([ask], [reply]), ask)).toBeUndefined();
+});
