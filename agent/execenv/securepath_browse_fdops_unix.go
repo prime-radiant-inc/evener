@@ -259,8 +259,9 @@ func (s *sandboxFS) grepNativeInternal(ctx context.Context, pattern, base, globF
 // grepNamedFile searches the one file a grep's path names, given its
 // nonblocking fd (which it takes ownership of), under the rules the walk
 // applies to each file it reaches: dotfiles, files grepFileSelected leaves
-// out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
-// output path is ".", the unsandboxed walk's name for a named file.
+// out, non-regular files, and binary files (grepAccum.feed) are skipped. In
+// files_with_matches mode, its output path is the file's workspace-relative
+// or outside-root absolute path (#6176).
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
 	f, err := admitReadFD(fd, path, false, isPseudoFsPath(path))
 	if err != nil {

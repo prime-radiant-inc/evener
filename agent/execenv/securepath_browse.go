@@ -74,9 +74,6 @@ type grepAccum struct {
 	namedFile bool
 	// namedFilePath is the displayed path for a single named file.
 	namedFilePath string
-	// namedFilePrefix, when true (used by GrepConfinedFiles for memory search),
-	// includes the filename prefix on single-file content and count output.
-	namedFilePrefix bool
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
@@ -155,7 +152,7 @@ func (a *grepAccum) resultName(relPath string) (name string, singleFile bool) {
 		if disp == "" {
 			disp = "."
 		}
-		return GrepPath(disp), !a.namedFilePrefix
+		return GrepPath(disp), true
 	}
 	if a.baseDir != "" {
 		fullPath := filepath.Join(a.baseDir, relPath)

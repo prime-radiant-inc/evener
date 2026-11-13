@@ -48,7 +48,7 @@ func writeGrepShapeTree(t *testing.T) string {
 
 // TestGrepEmitsOneShapeWithOrWithoutRipgrep runs the ripgrep arm and the
 // native fallback against the same tree and asks for the same text: paths
-// relative to the searched directory, and no trailing newline (#3259); context
+// relative to the workspace root when searching under it (#6176 supersedes #3259), and no trailing newline; context
 // windows that overlap or touch joined into one group, and a "--" only between
 // groups apart; and in content mode a cap on output lines, separators and
 // context included (#3284); and files in the same order. Without ripgrep
