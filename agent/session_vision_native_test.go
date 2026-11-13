@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -473,11 +472,7 @@ func TestDescribeImage_UnresolvableFallbackDoesNotPreventNativeSkip(t *testing.T
 		withConfig(SessionConfig{
 			ModelFallbacks: []string{"ghostprov/ghost-model"},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
-				// The init validation's one call answers; the chain
-				// check's call is the one that must not vouch.
-				if resolves.Add(1) > 1 {
-					return nil, fmt.Errorf("resolver temporarily broken for %s", ref)
-				}
+				resolves.Add(1)
 				return NewOpenAIProfile("gpt-5.2"), nil
 			},
 		}))
@@ -489,14 +484,14 @@ func TestDescribeImage_UnresolvableFallbackDoesNotPreventNativeSkip(t *testing.T
 	if len(openai.Requests()) != 0 {
 		t.Fatalf("side-channel calls = %d, want 0", len(openai.Requests()))
 	}
+	if got := resolves.Load(); got != 1 {
+		t.Fatalf("resolver calls after describe = %d, want init validation's 1 only", got)
+	}
 }
 
-// The native-vision capability question is metadata about a model that may
-// never serve, so answering it must not resolve the entry the way the round
-// runner serves it: full resolution materializes credentials, and a
-// command-bearing api_key would spend a mint and prompt the user's password
-// manager just to read an image. Facts depth answers with no resolver call
-// and no command executed.
+// The native-vision check runs without resolving fallbacks: when the primary
+// model sees media inline, fallbacks are not resolved and command credentials
+// are never executed.
 func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "minted")
@@ -715,8 +710,8 @@ func TestDescribeImage_VisionSettingOffNoneDisabled(t *testing.T) {
 
 // A session whose profile was resolved on a different registry than its
 // client's cannot vouch for native vision at all: the profile's facts say
-// nothing about what this client dispatches or how the runner classifies a
-// fallback. The chain check keeps descriptions flowing for such a session.
+// nothing about what this client dispatches. Side-channel descriptions keep
+// flowing for such a session.
 func TestDescribeImage_MismatchedRegistriesKeepTheSideChannel(t *testing.T) {
 	t.Parallel()
 	gwAdapter := newFakeErrAdapter("gw", []func(req llm.Request) (llm.Response, error){

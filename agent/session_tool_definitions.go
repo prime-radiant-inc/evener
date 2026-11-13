@@ -132,6 +132,9 @@ func (s *Session) sessionShellDefinition() llm.ToolDefinition {
 //
 // Callers hold s.mu or run at single-threaded init.
 func (s *Session) sessionReadFileDefinition() llm.ToolDefinition {
+	if s == nil {
+		return tool.DefReadFile()
+	}
 	if s.cfg.AgentName == "explorer" {
 		return tool.DefReadFileNativeVision()
 	}

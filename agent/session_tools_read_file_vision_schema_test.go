@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -32,6 +34,65 @@ func toolProp(td llm.ToolDefinition, prop string) (map[string]any, bool) {
 	return p, ok
 }
 
+// renderVisionToolProse serializes a tool definition's description and vision_prompt
+// parameter description for golden snapshot verification (#6190).
+func renderVisionToolProse(td llm.ToolDefinition) []byte {
+	var sb strings.Builder
+	sb.WriteString("# Description\n")
+	sb.WriteString(td.Description)
+	sb.WriteString("\n\n# vision_prompt\n")
+	if props, ok := td.Parameters["properties"].(map[string]any); ok {
+		if vp, ok := props["vision_prompt"].(map[string]any); ok {
+			if desc, ok := vp["description"].(string); ok {
+				sb.WriteString(desc)
+				sb.WriteByte('\n')
+				return []byte(sb.String())
+			}
+		}
+	}
+	sb.WriteString("(omitted)\n")
+	return []byte(sb.String())
+}
+
+// TestReadFileVisionProseGoldens pins the model-facing descriptions and vision_prompt
+// parameter descriptions for read_file and memory_read across all three vision regimes
+// (#6190), per the prose rule in docs/developing-evener/testing.md. Regenerate with:
+//
+//	go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt
+//
+// and read the diff.
+func TestReadFileVisionProseGoldens(t *testing.T) {
+	t.Parallel()
+	const hint = "Regenerate with `go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt` and read the diff."
+
+	regime1RF := tool.DefReadFileNativeVision()
+	regime1MR := tool.MemoryDefinition(regime1RF, "memory_read")
+	regime2RF := tool.DefReadFilePDFVisionOnly()
+	regime2MR := tool.MemoryDefinition(regime2RF, "memory_read")
+	regime3RF := tool.DefReadFile()
+	regime3MR := tool.DefMemoryRead()
+
+	// Structural distinctness across all three regimes
+	if regime1RF.Description == regime2RF.Description || regime2RF.Description == regime3RF.Description || regime1RF.Description == regime3RF.Description {
+		t.Fatal("read_file descriptions must be distinct across all three vision regimes")
+	}
+	if regime1MR.Description == regime2MR.Description || regime2MR.Description == regime3MR.Description || regime1MR.Description == regime3MR.Description {
+		t.Fatal("memory_read descriptions must be distinct across all three vision regimes")
+	}
+
+	// Regime 1 goldens
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-read-file.md"), renderVisionToolProse(regime1RF), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-memory-read.md"), renderVisionToolProse(regime1MR), *updatePromptGoldens, hint)
+
+	// Regime 2 goldens
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-read-file.md"), renderVisionToolProse(regime2RF), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-memory-read.md"), renderVisionToolProse(regime2MR), *updatePromptGoldens, hint)
+
+	// Regime 3 goldens
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-read-file.md"), renderVisionToolProse(regime3RF), *updatePromptGoldens, hint)
+	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-memory-read.md"), renderVisionToolProse(regime3MR), *updatePromptGoldens, hint)
+}
+
 // Regime 1: Anthropic Claude sees both image/png and application/pdf natively inline.
 // vision_prompt is omitted from advertised properties and description.
 func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
@@ -53,8 +114,9 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("read_file advertised vision_prompt in Regime 1; def: %+v", rf)
 	}
-	if strings.Contains(rf.Description, "vision_prompt") {
-		t.Fatalf("read_file description in Regime 1 mentions vision_prompt: %q", rf.Description)
+	wantRF := tool.DefReadFileNativeVision()
+	if rf.Description != wantRF.Description {
+		t.Fatalf("read_file description mismatch in Regime 1; got %q, want %q", rf.Description, wantRF.Description)
 	}
 
 	mr, ok := findToolDef(defs, "memory_read")
@@ -64,8 +126,9 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(mr, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("memory_read advertised vision_prompt in Regime 1; def: %+v", mr)
 	}
-	if strings.Contains(mr.Description, "vision_prompt") {
-		t.Fatalf("memory_read description in Regime 1 mentions vision_prompt: %q", mr.Description)
+	wantMR := tool.MemoryDefinition(wantRF, "memory_read")
+	if mr.Description != wantMR.Description {
+		t.Fatalf("memory_read description mismatch in Regime 1; got %q, want %q", mr.Description, wantMR.Description)
 	}
 }
 
@@ -85,14 +148,16 @@ func TestSessionReadFileSchema_Regime1_Explorer(t *testing.T) {
 	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("explorer read_file advertised vision_prompt; def: %+v", rf)
 	}
-	if strings.Contains(rf.Description, "vision_prompt") {
-		t.Fatalf("explorer read_file description mentions vision_prompt: %q", rf.Description)
+	wantRF := tool.DefReadFileNativeVision()
+	if rf.Description != wantRF.Description {
+		t.Fatalf("explorer read_file description mismatch; got %q, want %q", rf.Description, wantRF.Description)
 	}
 }
 
 // Regime 1: VisionModel set to off, none, or disabled disables the side-channel.
 func TestSessionReadFileSchema_Regime1_VisionOff(t *testing.T) {
 	t.Parallel()
+	wantRF := tool.DefReadFileNativeVision()
 	for _, setting := range []string{"off", "none", "disabled"} {
 		t.Run(setting, func(t *testing.T) {
 			client := llm.NewClient()
@@ -108,8 +173,8 @@ func TestSessionReadFileSchema_Regime1_VisionOff(t *testing.T) {
 			if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); hasVisionPrompt {
 				t.Fatalf("read_file advertised vision_prompt when VisionModel=%q", setting)
 			}
-			if strings.Contains(rf.Description, "vision_prompt") {
-				t.Fatalf("read_file description mentions vision_prompt when VisionModel=%q", setting)
+			if rf.Description != wantRF.Description {
+				t.Fatalf("read_file description mismatch when VisionModel=%q", setting)
 			}
 		})
 	}
@@ -129,32 +194,24 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 	if !ok {
 		t.Fatal("read_file not advertised")
 	}
-	vp, hasVisionPrompt := toolProp(rf, "vision_prompt")
-	if !hasVisionPrompt {
+	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 2; def: %+v", rf)
 	}
-	vpDesc, _ := vp["description"].(string)
-	if !strings.HasPrefix(vpDesc, "PDF reads only:") {
-		t.Fatalf("read_file vision_prompt description in Regime 2 not scoped to PDF: %q", vpDesc)
-	}
-	if !strings.Contains(rf.Description, "When reading a PDF,") || strings.Contains(rf.Description, "image or PDF") {
-		t.Fatalf("read_file description in Regime 2 not scoped to PDF: %q", rf.Description)
+	wantRF := tool.DefReadFilePDFVisionOnly()
+	if rf.Description != wantRF.Description {
+		t.Fatalf("read_file description mismatch in Regime 2")
 	}
 
 	mr, ok := findToolDef(defs, "memory_read")
 	if !ok {
 		t.Fatal("memory_read not advertised")
 	}
-	vpMR, hasVPMR := toolProp(mr, "vision_prompt")
-	if !hasVPMR {
+	if _, hasVPMR := toolProp(mr, "vision_prompt"); !hasVPMR {
 		t.Fatalf("memory_read omitted vision_prompt in Regime 2; def: %+v", mr)
 	}
-	vpMRDesc, _ := vpMR["description"].(string)
-	if !strings.HasPrefix(vpMRDesc, "PDF reads only:") {
-		t.Fatalf("memory_read vision_prompt description in Regime 2 not scoped to PDF: %q", vpMRDesc)
-	}
-	if !strings.Contains(mr.Description, "When reading a PDF,") || strings.Contains(mr.Description, "image or PDF") {
-		t.Fatalf("memory_read description in Regime 2 not scoped to PDF: %q", mr.Description)
+	wantMR := tool.MemoryDefinition(wantRF, "memory_read")
+	if mr.Description != wantMR.Description {
+		t.Fatalf("memory_read description mismatch in Regime 2")
 	}
 }
 
@@ -171,16 +228,12 @@ func TestSessionReadFileSchema_Regime3_TextOnlyPrimary(t *testing.T) {
 	if !ok {
 		t.Fatal("read_file not advertised")
 	}
-	vp, hasVisionPrompt := toolProp(rf, "vision_prompt")
-	if !hasVisionPrompt {
+	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3; def: %+v", rf)
 	}
-	vpDesc, _ := vp["description"].(string)
-	if !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
-		t.Fatalf("read_file vision_prompt description in Regime 3 not image/PDF: %q", vpDesc)
-	}
-	if !strings.Contains(rf.Description, "When reading an image or PDF,") {
-		t.Fatalf("read_file description in Regime 3 missing image or PDF mention: %q", rf.Description)
+	wantRF := tool.DefReadFile()
+	if rf.Description != wantRF.Description {
+		t.Fatalf("read_file description mismatch in Regime 3")
 	}
 }
 
@@ -198,13 +251,12 @@ func TestSessionReadFileSchema_Regime3_ExplicitVisionModel(t *testing.T) {
 	if !ok {
 		t.Fatal("read_file not advertised")
 	}
-	vp, hasVisionPrompt := toolProp(rf, "vision_prompt")
-	if !hasVisionPrompt {
+	if _, hasVisionPrompt := toolProp(rf, "vision_prompt"); !hasVisionPrompt {
 		t.Fatalf("read_file omitted vision_prompt in Regime 3 explicit; def: %+v", rf)
 	}
-	vpDesc, _ := vp["description"].(string)
-	if !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
-		t.Fatalf("read_file vision_prompt description in Regime 3 explicit not image/PDF: %q", vpDesc)
+	wantRF := tool.DefReadFile()
+	if rf.Description != wantRF.Description {
+		t.Fatalf("read_file description mismatch in Regime 3 explicit")
 	}
 }
 
@@ -221,12 +273,14 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 			},
 		}))
 
+	regime1Desc := tool.DefReadFileNativeVision().Description
+	regime2Desc := tool.DefReadFilePDFVisionOnly().Description
+	regime3Desc := tool.DefReadFile().Description
+
 	// Starts in Regime 2
 	defs := sess.ToolDefinitions()
 	rf, _ := findToolDef(defs, "read_file")
-	vp, hasVP := toolProp(rf, "vision_prompt")
-	vpDesc, _ := vp["description"].(string)
-	if !hasVP || !strings.HasPrefix(vpDesc, "PDF reads only:") {
+	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP || rf.Description != regime2Desc {
 		t.Fatalf("expected Regime 2 at start; def: %+v", rf)
 	}
 
@@ -236,7 +290,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP {
+	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP || rf.Description != regime1Desc {
 		t.Fatalf("expected Regime 1 after switch to claude; def: %+v", rf)
 	}
 
@@ -246,9 +300,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	vp, hasVP = toolProp(rf, "vision_prompt")
-	vpDesc, _ = vp["description"].(string)
-	if !hasVP || !strings.HasPrefix(vpDesc, "Image/PDF reads only:") {
+	if _, hasVP := toolProp(rf, "vision_prompt"); !hasVP || rf.Description != regime3Desc {
 		t.Fatalf("expected Regime 3 after switch to codex; def: %+v", rf)
 	}
 
@@ -258,7 +310,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 	defs = sess.ToolDefinitions()
 	rf, _ = findToolDef(defs, "read_file")
-	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP {
+	if _, hasVP := toolProp(rf, "vision_prompt"); hasVP || rf.Description != regime1Desc {
 		t.Fatalf("expected Regime 1 after SetVisionModel off; def: %+v", rf)
 	}
 }
