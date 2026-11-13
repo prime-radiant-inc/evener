@@ -104,3 +104,14 @@ test("words already inside the fold leave the output as it was", () => {
   expect(view.container.querySelector("[data-find-excerpt]")).toBeNull();
   act(() => revealForFind(null, ""));
 });
+
+test("an excerpt of many short lines keeps the landed-on words on screen", () => {
+  // Thousands of lines fit the character budget; a line fold on top of the
+  // excerpt would hide the match again.
+  const output = `${"filler\n".repeat(3000)}the quokka line\n${"x\n".repeat(1500)}${"tail\n".repeat(3000)}`;
+  const view = render(<TailFoldedOutputBody item={item({ id: "lines", output })} live={false} />);
+  expect(view.container.textContent).not.toContain("quokka");
+  act(() => revealForFind("lines", "quokka"));
+  expect(view.container.textContent).toContain("the quokka line");
+  act(() => revealForFind(null, ""));
+});

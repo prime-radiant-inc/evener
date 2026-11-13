@@ -380,6 +380,10 @@ function LiveConversationBody({
     () => holdsKeyboard(workspaceStore.getState(), keyboardPaneId, ref),
     [keyboardPaneId, ref],
   );
+  const itemLoaded = useCallback(
+    (itemId: string) => model?.turns.some((turn) => turn.items.some((item) => item.id === itemId)) ?? false,
+    [model],
+  );
   const find = useFindInSession({
     ref,
     paneId: seat.viewFallbackId,
@@ -396,6 +400,7 @@ function LiveConversationBody({
     findOlder,
     cancelFindOlder,
     ownsKeyboard,
+    itemLoaded,
   });
   // Going to the live end also ends Find's search into older history, so a
   // match arriving later cannot pull the reader back up.

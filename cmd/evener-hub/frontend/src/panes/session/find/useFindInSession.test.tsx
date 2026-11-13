@@ -11,7 +11,7 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
@@ -28,7 +28,7 @@ import { requestFindInSession, resetFindRequestsForTests } from "./findRequest";
 import { useFindInSession } from "./useFindInSession";
 
 const REF = "ref_a";
-const CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const preset = (level: "intent" | "tools") => makeTranscriptDisplayConfig({ kind: "preset", level });
 
 function turn(id: string, text: string): Turn {
   return {
@@ -75,7 +75,11 @@ let ownsKeyboard = true;
 function Harness() {
   const transcript = useTranscript(REF, "pane_a");
   const { model } = transcript;
-  const rows = useMemo(() => (model ? transcriptRowsForProjection(projectThread(model, CONFIG)) : []), [model]);
+  const [level, setLevel] = useState<"intent" | "tools">("tools");
+  const rows = useMemo(
+    () => (model ? transcriptRowsForProjection(projectThread(model, preset(level))) : []),
+    [model, level],
+  );
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
     scrollToIndex: () => {},
@@ -101,6 +105,7 @@ function Harness() {
     findOlder: transcript.findOlder,
     cancelFindOlder: transcript.cancelFindOlder,
     ownsKeyboard: () => ownsKeyboard,
+    itemLoaded: (itemId) => model?.turns.some((each) => each.items.some((item) => item.id === itemId)) ?? false,
   });
   return (
     <>
@@ -110,23 +115,24 @@ function Harness() {
       <button type="button" data-testid="reader-older" onClick={() => void transcript.loadOlder().catch(() => {})}>
         reader older
       </button>
+      <button type="button" data-testid="intent-verbosity" onClick={() => setLevel("intent")}>
+        intent
+      </button>
       <button type="button" data-testid="jump-latest" onClick={() => find.leaveHistory()}>
         latest
       </button>
       {find.view && <FindBar view={find.view} />}
       <div ref={port} data-testid="port">
         {rows.map((row, index) =>
-          row.kind === "turn"
-            ? row.turn.entries.map((entry) => (
-                <div
-                  key={entryDisplayKey(entry)}
-                  data-view-anchor-id={entryDisplayKey(entry)}
-                  data-view-anchor-index={index}
-                >
-                  {entry.kind === "intent" ? entry.rationale : entry.item.text}
-                </div>
-              ))
-            : null,
+          (row.kind === "turn" ? row.turn.entries : row.entries).map((entry) => (
+            <div
+              key={entryDisplayKey(entry)}
+              data-view-anchor-id={entryDisplayKey(entry)}
+              data-view-anchor-index={index}
+            >
+              {entry.kind === "intent" ? entry.rationale : entry.item.text}
+            </div>
+          )),
         )}
       </div>
     </>
@@ -612,4 +618,85 @@ test("a match dropped from a turn that is itself still loaded is read back to", 
   await waitFor(() => expect(currentAnchor()).toBe("early"));
   expect(requests).toBeGreaterThan(pagesRead);
   expect(state()).toMatchObject({ status: "matches", position: 1, count: 1 });
+});
+
+test("jumping to latest while Find is reading back to a dropped match gives that match up", async () => {
+  vi.useFakeTimers();
+  const client = connectReadyFakeClient();
+  let failing = false;
+  let requests = 0;
+  client.on("thread/read", (params) => ({
+    thread: thread([turn("t1", "hello")]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    requestGeneration: params.requestGeneration,
+    olderCursor: "page-0",
+  }));
+  client.on("thread/turns/list", () => {
+    requests += 1;
+    if (failing) throw new Error("temporary");
+    return { data: [turn("old-0", "an old needle")], nextCursor: undefined };
+  });
+  await mount(client);
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+  openFind();
+  type("needle");
+  older();
+  await settle();
+  expect(currentAnchor()).toBe("old-0-item");
+
+  // The refresh drops the page; reading it back cannot finish.
+  failing = true;
+  await act(async () => {
+    await threadsStore.getState().refreshThread(REF);
+  });
+  await settle();
+  expect(state().status).toBe("searching");
+
+  fireEvent.click(screen.getByTestId("jump-latest"));
+  await settle();
+  expect(state().status).toBe("unsearched");
+  const after = requests;
+  await settle();
+  expect(requests).toBe(after);
+});
+
+test("a verbosity change that renames the current entry keeps the match and reads no history", async () => {
+  const client = connectReadyFakeClient();
+  const calling: Turn = {
+    id: "t1",
+    status: "completed",
+    itemsView: "full",
+    items: [
+      {
+        id: "c1",
+        turnId: "t1",
+        type: "commandExecution",
+        text: "",
+        toolName: "read_file",
+        description: "Read the quokka notes",
+        callId: "c1",
+        output: "plain",
+        status: "completed",
+      },
+    ],
+  };
+  const script = scriptHistory(client, [calling], ["older"]);
+  await mount(client);
+  openFind();
+  type("quokka");
+  expect(currentAnchor()).toBe("c1");
+
+  // At Intent verbosity the same call is an action row under another key.
+  fireEvent.click(screen.getByTestId("intent-verbosity"));
+  await waitFor(() => expect(currentAnchor()).toBe("intent:c1"));
+  expect(state()).toMatchObject({ status: "matches", position: 1, count: 1 });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(script.requests).toBe(0);
 });

@@ -165,3 +165,13 @@ test("only what the current verbosity shows can be found in a thread", () => {
   // Chat verbosity leaves settled thoughts out, so the thought is not a destination.
   expect(shown("chat")).toEqual(["a", "u"]);
 });
+
+test("a call whose row the transcript never renders is not a match", () => {
+  const view = tool("v", {
+    toolName: "task_list",
+    argumentsJSON: JSON.stringify({ action: "view" }),
+    output: "1. find the quokka",
+  });
+  const rows = [turnRow("t1", [message("u", "quokka?", "userMessage"), view])];
+  expect(findHits(rows, "quokka").map((found) => found.key)).toEqual(["u"]);
+});

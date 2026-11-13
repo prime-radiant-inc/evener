@@ -14,6 +14,7 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
+import { toolRendererFor } from "../transcript/toolRenderers";
 import { foldTurnEntries, intentGroupId } from "../transcript/toolRuns";
 
 export interface FindHit {
@@ -51,6 +52,10 @@ function itemHaystack(item: ItemModel): readonly string[] {
 }
 
 function entryMatches(entry: ProjectedEntry, needle: string): boolean {
+  // A call whose descriptor suppresses its row has nothing to land on.
+  if (entry.item.type === "commandExecution" && toolRendererFor(entry.item.toolName ?? "").suppress?.(entry.item)) {
+    return false;
+  }
   if (entry.kind === "intent" && haystack(entry.rationale).includes(needle)) return true;
   if (entry.kind === "critical") {
     if (haystack(entry.summary).includes(needle)) return true;
@@ -111,15 +116,6 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string): Fin
     }
   });
   return hits;
-}
-
-/** Whether the loaded rows still hold the entry `key` names, matching or
- * not: the difference between a match that stopped matching and one whose
- * page left the window. */
-export function rowsHoldEntry(rows: readonly TranscriptBodyRow[], key: string): boolean {
-  return rows.some((row) =>
-    (row.kind === "intentGroup" ? row.entries : row.turn.entries).some((entry) => entryDisplayKey(entry) === key),
-  );
 }
 
 /** The source items of `model` that hold `query` in an entry `config` shows:

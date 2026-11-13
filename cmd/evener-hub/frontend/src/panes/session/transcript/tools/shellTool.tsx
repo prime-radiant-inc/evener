@@ -35,7 +35,7 @@ import { useOptionalTranscriptRenderContext } from "../../../../transcriptDispla
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { TOOL_BODY_MAX_CHARS } from "./bodies";
+import { FindExcerpt, TOOL_BODY_MAX_CHARS } from "./bodies";
 
 // shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
 // toolSummaries.
@@ -92,6 +92,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
+      <FindExcerpt itemId={item.id} output={output} shown={tail.renderedText} ansi />
       {renderedOutput !== undefined && (
         <CodeBlock
           text={live || !tail.truncated ? renderedOutput : `${tailFoldNote(TOOL_BODY_MAX_CHARS)}\n${renderedOutput}`}

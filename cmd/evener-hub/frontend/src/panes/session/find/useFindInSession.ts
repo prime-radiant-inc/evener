@@ -18,7 +18,7 @@ import type { VirtualListHandle } from "../../../widgets";
 import { setDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
-import { type FindHit, findHits, rowsHoldEntry } from "./findHits";
+import { type FindHit, findHits } from "./findHits";
 import { markTranscript, scrollTopRevealing } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
 import { revealForFind } from "./findReveal";
@@ -70,6 +70,8 @@ interface FindInSessionOptions {
   cancelFindOlder(): void;
   /** Whether this conversation is the one the keyboard is in. */
   ownsKeyboard(): boolean;
+  /** Whether the loaded window holds this source item, shown or not. */
+  itemLoaded(itemId: string): boolean;
 }
 
 interface FindState {
@@ -105,6 +107,7 @@ export function useFindInSession({
   findOlder,
   cancelFindOlder,
   ownsKeyboard,
+  itemLoaded,
 }: FindInSessionOptions): {
   view: FindView | null;
   open(): void;
@@ -212,13 +215,25 @@ export function useFindInSession({
   // Find then reads back to it rather than losing the reader's place. A match
   // whose row is still loaded but no longer holds it (the words changed, the
   // verbosity hides it) is simply no longer current.
+  // The source item is the match's identity across projections: a verbosity
+  // change can rename the entry (a tool call becomes an action row) without
+  // the item going anywhere.
+  const currentItem = useRef<string | null>(null);
+  if (current !== null) currentItem.current = current.itemId;
+  else if (find === null || find.key === null) currentItem.current = null;
+  const sameItem = current === null ? hits.find((hit) => hit.itemId === currentItem.current) : undefined;
   const lost = find !== null && find.key !== null && current === null;
   useEffect(() => {
-    if (find === null || find.key === null || !lost || find.seek === "restore") return;
-    const entryGone = !rowsHoldEntry(rows, find.key);
-    if (entryGone && !historyEnded) setState({ ...find, seek: "restore" });
+    if (find === null || !lost) return;
+    if (sameItem) {
+      setState({ ...find, key: sameItem.key, seek: find.seek === "restore" ? null : find.seek });
+      return;
+    }
+    if (find.seek === "restore") return;
+    const evicted = currentItem.current !== null && !itemLoaded(currentItem.current);
+    if (evicted && !historyEnded) setState({ ...find, seek: "restore" });
     else setState({ ...find, key: null, seek: null });
-  }, [find, lost, rows, historyEnded]);
+  }, [find, lost, sameItem, historyEnded, itemLoaded]);
 
   // While seeking, take the newest match older than the current one as soon
   // as a page brings one, and otherwise keep Find's demand standing. Asking
@@ -395,7 +410,12 @@ export function useFindInSession({
 
   const leaveHistory = useCallback(() => {
     settle.current = null;
-    setState((previous) => (previous?.ref === ref && previous.seek !== null ? { ...previous, seek: null } : previous));
+    setState((previous) => {
+      if (previous?.ref !== ref || previous.seek === null) return previous;
+      // A match being read back to is not loaded; keeping it would start the
+      // read again.
+      return previous.seek === "restore" ? { ...previous, key: null, seek: null } : { ...previous, seek: null };
+    });
   }, [ref]);
 
   if (find === null) return { view: null, open, leaveHistory };

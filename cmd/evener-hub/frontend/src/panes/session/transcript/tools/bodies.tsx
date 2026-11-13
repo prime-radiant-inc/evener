@@ -62,9 +62,34 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
 function FoldedOutput({ output, shown, needle }: { output: string; shown: string; needle: string }) {
   const excerpt = needle === "" ? null : excerptHolding(output, shown, needle);
   if (excerpt === null) return <CodeBlock text={shown} copyLabel="Copy output" />;
+  return <Excerpt text={excerpt} />;
+}
+
+/** The stretch of `output` holding the words Find is landed on in this call,
+ * when `shown` (what the body renders anyway) does not hold them; nothing
+ * otherwise. For a body that keeps its own rendering of the tail. */
+export function FindExcerpt({
+  itemId,
+  output,
+  shown,
+  ansi,
+}: {
+  itemId: string;
+  output: string;
+  shown: string;
+  ansi?: boolean;
+}) {
+  const needle = useFindReveal(itemId);
+  const excerpt = needle === "" ? null : excerptHolding(output, shown, needle);
+  return excerpt === null ? null : <Excerpt text={excerpt} ansi={ansi} />;
+}
+
+// The excerpt is already bounded, so the block's own line fold stays off:
+// folding it to its last lines could hide the match again.
+function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
   return (
     <div data-find-excerpt="">
-      <CodeBlock text={excerpt} copyLabel="Copy output" />
+      <CodeBlock text={text} copyLabel="Copy output" fold={false} ansi={ansi} />
     </div>
   );
 }
