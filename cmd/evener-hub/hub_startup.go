@@ -523,7 +523,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// the default and an opt-out are visible rather than inferred.
 	deploy := r.opts.deployWiring()
 	if line := r.opts.deployPathLogLine(); line != "" {
-		_, _ = fmt.Fprintln(r.stderr, line)
+		r.logf("%s", line)
 	}
 	newSSHManager := r.deps.newSSHManager
 	if newSSHManager == nil {

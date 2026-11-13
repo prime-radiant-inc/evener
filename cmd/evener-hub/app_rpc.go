@@ -103,7 +103,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			for _, host := range cfg.RemoteHosts {
 				names = append(names, host.Name)
 			}
-			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
+			hubLogFor(cfg).Info("remote hosts skipped (no SSH client wired): " + strings.Join(names, ", "))
 		} else {
 			for _, host := range cfg.RemoteHosts {
 				registerRemoteHubSource(registry, cfg.RemoteThreadCache, host, remoteHostSourceSeams{
@@ -979,7 +979,7 @@ func hubAuthStateRoot(cfg hubcore.WebConfig) string {
 }
 
 // hubLogFor is where the hub's operational log lines go: cfg.Log, or
-// stderr with the "[hub] " prefix.
+// stderr with the hub component's prefix.
 func hubLogFor(cfg hubcore.WebConfig) *slog.Logger {
 	if cfg.Log != nil {
 		return cfg.Log
@@ -1224,7 +1224,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		wirePluginStoreBroadcast(mgr, server)
 	}
 	cfg.PluginManager = mgr
-	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
+	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg), log: hubLog}
 	relay := newHubRelay(server, cfg, sources)
 	if observeHubRelay != nil {
 		observeHubRelay(relay)

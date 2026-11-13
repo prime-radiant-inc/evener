@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -124,7 +125,8 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 			// Spawning already established this daemon's identity. An unrelated
 			// discovery failure must not hide its identity or discard initial input.
-			_, _ = fmt.Fprintf(hubDiagnosticOutput(), "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
+			componentlog.NewWriter("hub", hubDiagnosticOutput()).Info(fmt.Sprintf(
+				"spawned session %s; roster refresh failed: %v", entry.ThreadID, err))
 		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
