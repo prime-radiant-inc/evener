@@ -132,6 +132,7 @@ const ITEM_MODEL_KEYS = new Set([
   "transcriptEntryIndex",
   "clientMutationId",
   "conversationInputIds",
+  "answerToTurnIds",
   "actor",
   "type",
   "text",
@@ -204,6 +205,11 @@ export function validItem(value: unknown): value is CachedSessionItem {
   if (
     value.conversationInputIds !== undefined &&
     (!Array.isArray(value.conversationInputIds) || value.conversationInputIds.some((id) => typeof id !== "string"))
+  )
+    return false;
+  if (
+    value.answerToTurnIds !== undefined &&
+    (!Array.isArray(value.answerToTurnIds) || value.answerToTurnIds.some((id) => typeof id !== "string"))
   )
     return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
