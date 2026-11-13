@@ -1,7 +1,9 @@
 # Every non-fuzz Go module in the workspace. Under go.work, `./...` resolves
-# per-module, so gates and lint must loop modules explicitly. Fuzz targets and
-# the fuzz toolkit module run through the explicit fuzz targets below, not the
-# regular test gate.
+# per-module, so gates and lint must name every module explicitly — through
+# the ws-patterns function below, which turns this list into cross-module
+# package patterns for one invocation per gate. Fuzz targets and
+# the fuzz toolkit module run through the explicit fuzz targets below, not
+# the regular test gate.
 GO_MODULES := . agent llm auth envvars invariant identifier execsupport
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 

@@ -171,7 +171,7 @@ install-system: install
 ## trigger: Required CI build job; local compile diagnostic.
 ## requires: Deterministic Go compilation; no provider calls or
 ##   frontend/browser requirements.
-## fails-when: Any module or package compilation failure is nonzero; the loop
-##   stops at the first failing module.
+## fails-when: Any package compilation failure is nonzero; go build reports
+##   every failing package in one pass.
 build-go:
 	@go build $(WORKSPACE_TEST_PATTERNS)

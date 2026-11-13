@@ -39,11 +39,10 @@ lint-naming: build-dev
 ## WORKSPACE_LINT_PATTERNS, because go.work resolves cross-module patterns
 ## and the old per-module loops paid process startup and package loading
 ## nine times over per regime. Off Linux, both the vet and the tagliatelle
-## pass repeat with GOOS=linux: two sources are tagged evenerfuzz && linux
-## (agent/execenv/runtime_edges_fuzz_test.go, securepath_edge_program_
-## fuzz_test.go) and are otherwise invisible to a macOS checkout. See "Why
-## two tagged lint passes exist" in docs/developing-evener/linting.md for
-## the full rationale.
+## pass repeat with GOOS=linux: agent/execenv's runtime_edges and
+## securepath_edge_program fuzz tests are tagged evenerfuzz && linux and are
+## otherwise invisible to a macOS checkout. See "Why two tagged lint passes
+## exist" in docs/developing-evener/linting.md for the full rationale.
 ## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
 ##   compiles for the host, Linux, and Windows and passes its struct-tag
 ##   casing floor, catching a production signature change that strands a
@@ -73,15 +72,15 @@ lint-evenerfuzz:
 ## tagliatelle-only golangci-lint pass, each as one invocation over
 ## WORKSPACE_LINT_PATTERNS.
 ## proves: The eval-tagged live-provider suites (context-compaction quality,
-##   forced notes) still compile for the host and pass their struct-tag
-##   casing floor.
+##   forced notes) still compile for the host and Linux and pass their
+##   struct-tag casing floor.
 ## trigger: Required CI (via make lint); local pre-merge. ~95s cold (the
 ##   eval tag compiles nowhere else, so most runs measure it near-cold),
 ##   seconds warm on Linux; the extra cross-GOOS pass runs only off Linux.
 ## requires: golangci-lint. Covers all of FUZZ_GO_MODULES, since eval
 ##   sources could land in any module.
-## fails-when: host go vet -tags eval fails, or the host tagliatelle pass
-##   reports a casing violation.
+## fails-when: host or GOOS=linux go vet -tags eval fails, or host or
+##   GOOS=linux tagliatelle reports a casing violation.
 lint-eval:
 	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; go vet -tags eval $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux go vet -tags eval $(WORKSPACE_LINT_PATTERNS); fi; golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); fi)
 

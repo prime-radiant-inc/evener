@@ -287,11 +287,14 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 	}
 }
 
-// mergedSweepModules is every go.work module as a package pattern from the
-// repository root: the root module as ./... and each sibling module directory
-// as ./<dir>/... . A sweep that names all of them in ONE invocation covers
-// exactly what the old per-module loops covered — FUZZ_GO_MODULES under
-// go.work, where a bare ./... resolves per-module.
+// mergedSweepModules is the hand-maintained module list as package patterns
+// from the repository root: the root module as ./... and each sibling module
+// directory as ./<dir>/... . It is deliberately written out rather than read
+// from go.work, for the reason lintGateCommands gives about LINT_TARGETS: a
+// derived oracle could not see a module dropped from the Makefile's
+// FUZZ_GO_MODULES. Its guarantee is therefore about that list, not about
+// go.work — a module added to go.work's use list but not to GO_MODULES stays
+// invisible to this test.
 var mergedSweepModules = []string{
 	"./...", "./agent/...", "./llm/...", "./auth/...", "./envvars/...",
 	"./invariant/...", "./identifier/...", "./execsupport/...", "./fuzz/...",
@@ -323,16 +326,70 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 		t.Skipf("make is not on PATH (%v), so nothing can ask make what the lint lanes expand to", err)
 	}
 
-	// lint-evenerfuzz and lint-eval are .PHONY with no prerequisites, and
-	// lint-golangci's build-dev prerequisite is also .PHONY, so -n prints
-	// every recipe line without executing anything.
+	// The three lanes are .PHONY with no prerequisites at HEAD, so -n
+	// prints every recipe line without executing anything; a prerequisite
+	// added later must stay .PHONY or -n would run its recipe.
 	dryRunOf := func(target string) string {
 		t.Helper()
 		return makeTargetsDryRun(t, makePath, target)
 	}
 
+	// Each lane's cross-GOOS regimes are what the linux-drop regression of
+	// the first merge commit proved nobody else pins: every gate stayed green
+	// while lint-evenerfuzz lost the GOOS=linux passes that two evenerfuzz
+	// && linux sources depend on. CI runs on Linux only, where those
+	// branches never execute, so a repeat deletion ships silently without
+	// this table. The invocation counts pin one-invocation-per-regime: a
+	// revert to per-module loops multiplies the counts, and a dropped
+	// regime subtracts from them.
+	laneRegimes := map[string]struct {
+		vetInvocations   []string
+		golangciRuns     []string
+		golangciRunCount int
+	}{
+		"lint-evenerfuzz": {
+			vetInvocations: []string{
+				"go vet -tags evenerfuzz",
+				"GOOS=windows go vet -tags evenerfuzz",
+				"GOOS=linux go vet -tags evenerfuzz",
+			},
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle",
+			},
+			golangciRunCount: 2, // host + GOOS=linux
+		},
+		"lint-eval": {
+			vetInvocations: []string{
+				"go vet -tags eval",
+				"GOOS=linux go vet -tags eval",
+			},
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle",
+			},
+			golangciRunCount: 2, // host + GOOS=linux
+		},
+		"lint-golangci": {
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners",
+				"GOOS=darwin golangci-lint run --allow-parallel-runners",
+				"golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml",
+			},
+			golangciRunCount: 3, // host + darwin + appwire
+		},
+	}
+
 	for _, lane := range []string{"lint-evenerfuzz", "lint-eval", "lint-golangci"} {
 		dryRun := dryRunOf(lane)
+		regimes := laneRegimes[lane]
+
+		for _, invocation := range append(regimes.vetInvocations, regimes.golangciRuns...) {
+			if !strings.Contains(dryRun, invocation) {
+				t.Errorf("%s lost the invocation %q; the merged lane must run every build regime it covers", lane, invocation)
+			}
+		}
+		if got := strings.Count(dryRun, "golangci-lint run"); got != regimes.golangciRunCount {
+			t.Errorf("%s runs %d golangci-lint invocations, want %d: one per build regime. A higher count means a per-module loop returned; a lower one means a regime was dropped.", lane, got, regimes.golangciRunCount)
+		}
 
 		// (a) every workspace module appears in the lane's sweep patterns.
 		for _, pattern := range mergedSweepModules {
