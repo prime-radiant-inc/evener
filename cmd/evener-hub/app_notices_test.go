@@ -157,11 +157,13 @@ func TestNoticeWatcherAnnouncesEachChangeOnce(t *testing.T) {
 	}
 	read := func(context.Context) []appwire.HubNotice { return <-derived }
 	broadcaster := newRecordingBroadcaster()
+	notices := &hubNotices{}
+	notices.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
 	ticks := make(chan time.Time)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runNoticeWatcher(ctx, ticks, read, broadcaster)
+		notices.runNoticeWatcher(ctx, ticks, read)
 		close(done)
 	}()
 	for range steps[1:] {

@@ -90,6 +90,48 @@ type hubAuthController struct {
 	mu          sync.Mutex
 	flows       map[string]hubAuthFlow
 	deviceFlows map[string]deviceFlow
+
+	commitMu    sync.Mutex
+	onCommitted func(authCommitted)
+}
+
+// authCommitted is one credential or OAuth write that landed. Err is the error
+// the write answered with, so the sink can keep notifyAuthWrite's rule: a clean
+// read broadcasts the provider/active source, while an applied write whose
+// status read failed broadcasts the no-data form.
+type authCommitted struct {
+	Status         appwire.AuthStatusResponse
+	Err            error
+	OriginClientID string
+}
+
+// OnCommitted registers the controller's one post-commit sink. It runs after a
+// credential or OAuth write actually landed - including one whose post-write
+// status read failed - so the RPC layer cannot pair a write with its own
+// broadcast, and a new handler cannot forget to.
+func (c *hubAuthController) OnCommitted(fn func(authCommitted)) {
+	if c == nil {
+		return
+	}
+	c.commitMu.Lock()
+	defer c.commitMu.Unlock()
+	c.onCommitted = fn
+}
+
+// commitAuthWrite emits the owner's post-commit event. applied reports whether
+// a write landed; an applied write that later failed carries
+// hubcore.ErrWriteApplied on err. A call that wrote nothing and did not report
+// an applied failure is silent, which is the same shape the handlers used.
+func (c *hubAuthController) commitAuthWrite(applied bool, status appwire.AuthStatusResponse, err error, originClientID string) {
+	if !applied && !errors.Is(err, hubcore.ErrWriteApplied) {
+		return
+	}
+	c.commitMu.Lock()
+	onCommitted := c.onCommitted
+	c.commitMu.Unlock()
+	if onCommitted != nil {
+		onCommitted(authCommitted{Status: status, Err: err, OriginClientID: originClientID})
+	}
 }
 
 // hubAuthControllerSetup, when non-nil, is invoked on every hub auth controller
@@ -460,7 +502,7 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	return appwire.AuthLoginStartResponse{Provider: provider, FlowID: state, URL: rawURL}, nil
 }
 
-func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.AuthLoginCompleteParams) (resp appwire.AuthLoginCompleteResponse, err error) {
 	provider := normalizeAuthProvider(params.Provider)
 	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
@@ -534,6 +576,9 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		}
 		return c.saveAuth(c.stateDir, provider, record)
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp.Status, err, params.OriginClientId)
+	}()
 	if flowEndpointUncheckable(err) {
 		c.mu.Lock()
 		delete(c.flows, flowID)
@@ -552,7 +597,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	return appwire.AuthLoginCompleteResponse{Status: status}, err
 }
 
-func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (resp appwire.AuthLogoutResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 
 	// The scheme names which layer a logout clears, so it is read inside the
@@ -608,6 +653,9 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		}
 		return nil
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp.Status, err, params.OriginClientId)
+	}()
 	if err != nil {
 		return appwire.AuthLogoutResponse{}, err
 	}
@@ -818,7 +866,7 @@ var (
 	errAPIKeyForKeylessInstance = errors.New("authenticates without a credential")
 )
 
-func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (resp appwire.AuthStatusResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
@@ -876,6 +924,9 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		}
 		return c.setCredential(name, params.Value)
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp, err, params.OriginClientId)
+	}()
 	if err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
@@ -924,7 +975,7 @@ func skipConditionalSet(resp *appwire.ApiKeyConditionalSetResponse, reason strin
 // Only a source of "store" (updated) or "none" on a key-capable scheme (added)
 // reaches c.setCredential; the response's Status is the post-write status read
 // the same way every other credential write reports one.
-func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
+func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditionalSetParams) (resp appwire.ApiKeyConditionalSetResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.ApiKeyConditionalSetResponse{}, appwire.InvalidParams("value is required")
@@ -936,7 +987,7 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 	if err := storedCommandExpressionError(params.Value); err != nil {
 		return appwire.ApiKeyConditionalSetResponse{}, err
 	}
-	resp := appwire.ApiKeyConditionalSetResponse{}
+	resp = appwire.ApiKeyConditionalSetResponse{}
 	// The revision fence is keyed with the same hub-held key the endpoint
 	// fingerprints use, resolved once here before the credential lock is taken:
 	// resolving can repair the key file (an inter-process lock and a write), and
@@ -1018,6 +1069,9 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		}
 		return true, nil
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp.Status, err, params.OriginClientId)
+	}()
 	if err != nil {
 		return appwire.ApiKeyConditionalSetResponse{}, err
 	}
@@ -1039,7 +1093,7 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 // keep the login." ApiKeyClear always targets the store entry alone,
 // leaving any OAuth record, ADC resolution, or environment credential
 // exactly as it was.
-func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
+func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (resp appwire.AuthStatusResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 	// The fingerprint key is resolved once, before the credential lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -1057,6 +1111,9 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 		}
 		return c.clearCredential(name)
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp, err, params.OriginClientId)
+	}()
 	if err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
@@ -1167,7 +1224,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	}, nil
 }
 
-func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
 	provider := normalizeAuthProvider(params.Provider)
 	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
@@ -1227,6 +1284,13 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		}
 		return c.saveAuth(c.stateDir, provider, record)
 	})
+	defer func() {
+		var status appwire.AuthStatusResponse
+		if resp.Status != nil {
+			status = *resp.Status
+		}
+		c.commitAuthWrite(applied, status, err, params.OriginClientId)
+	}()
 	if flowEndpointUncheckable(err) {
 		c.mu.Lock()
 		delete(c.deviceFlows, flowID)
@@ -1603,7 +1667,7 @@ func (c *hubAuthController) instanceUsesGCPADC(name string) bool {
 // authenticator will parse it, written to the credentials store under the
 // instance name, then the registry reloads so the instance resolves with
 // source store.
-func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
+func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonSetParams) (resp appwire.AuthStatusResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 	value := strings.TrimSpace(params.Value)
 	if value == "" {
@@ -1636,6 +1700,9 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		}
 		return c.setCredential(name, value)
 	})
+	defer func() {
+		c.commitAuthWrite(applied, resp, err, params.OriginClientId)
+	}()
 	if err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
