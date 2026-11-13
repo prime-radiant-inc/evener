@@ -342,7 +342,7 @@ loading them, since each opens a socket the moment its body runs.
   red check on the PR head, a stale review, or a failure the diff can reach.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
-  keeps its requested changes. That case alone is an admin merge: merge
+  keeps its requested changes. That case is an admin merge: merge
   `origin/main` if behind, wait for every check to be green on that head, then
   `gh pr merge <N> --repo prime-radiant-inc/evener --squash --admin`.
 
