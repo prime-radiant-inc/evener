@@ -945,6 +945,7 @@ export interface EvenerThread {
   contextWindow?: number;
   contextRemaining?: number;
   contextAssumed?: boolean;
+  compactionThreshold?: number;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
   /**
@@ -1967,9 +1968,109 @@ export interface InstanceListResponse {
   writesRefused?: boolean;
 }
 
+export interface InstanceModelAuthored {
+  compactionThreshold?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
+export interface InstanceModelDetailResponse {
+  name: string;
+  model: string;
+  disabled: boolean;
+  disabledLockstepTarget?: string;
+  authoredOnly: boolean;
+  effective: InstanceModelEffective;
+  provenance: Record<string, string>;
+  authored: InstanceModelAuthored;
+  thinkingFormats: string[];
+  thinkingShapes: string[];
+  warnings?: string[];
+}
+
+export interface InstanceModelEditParams {
+  name: string;
+  model: string;
+  create?: boolean;
+  removeCustom?: boolean;
+  resetAll?: boolean;
+  compactionThreshold?: number;
+  clearCompactionThreshold?: boolean;
+  contextWindow?: number;
+  clearContextWindow?: boolean;
+  maxOutputTokens?: number;
+  clearMaxOutputTokens?: boolean;
+  reasoning?: boolean;
+  clearReasoning?: boolean;
+  defaultEffort?: string;
+  clearDefaultEffort?: boolean;
+  effortValues?: string[];
+  clearEffortValues?: boolean;
+  inputModalities?: string[];
+  clearInputModalities?: boolean;
+  tools?: boolean;
+  clearTools?: boolean;
+  protocol?: string;
+  clearProtocol?: boolean;
+  surface?: string;
+  clearSurface?: boolean;
+  thinkingFormat?: string;
+  clearThinkingFormat?: boolean;
+  thinkingShape?: string;
+  clearThinkingShape?: boolean;
+  wireId?: string;
+  clearWireId?: boolean;
+  aliasOf?: string;
+  clearAliasOf?: boolean;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
+}
+
+export interface InstanceModelEditResponse {
+  list: InstanceListResponse;
+  detail?: InstanceModelDetailResponse;
+}
+
+export interface InstanceModelEffective {
+  contextWindow?: number;
+  maxInputTokens?: number;
+  compactionThreshold?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
 export interface InstanceModelEntry {
   id: string;
   disabled?: boolean;
+  customized?: boolean;
+  contextWindow?: number;
+  compactionThreshold?: number;
+}
+
+export interface InstanceModelGetParams {
+  name: string;
+  model: string;
 }
 
 export interface InstanceRefreshModelsParams {
@@ -2437,6 +2538,7 @@ export interface ModelDescriptor {
   displayName?: string;
   contextWindow?: number;
   maxInputTokens?: number;
+  compactionThreshold?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
   maxOutputTokens?: number;
@@ -4888,6 +4990,11 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  contextUsed?: number;
+  contextWindow?: number;
+  contextPressure?: number;
+  contextAssumed?: boolean;
+  compactionThreshold?: number;
 }
 
 export interface ThreadModelRetryParams {
@@ -5809,6 +5916,8 @@ export const METHOD_NAMES = [
   "evener/instance/setDefault",
   "evener/instance/setModelDisabled",
   "evener/instance/refreshModels",
+  "evener/instance/modelGet",
+  "evener/instance/modelEdit",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -6489,6 +6598,8 @@ export interface MethodTypes {
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
   "evener/instance/refreshModels": { params: InstanceRefreshModelsParams; result: InstanceListResponse };
+  "evener/instance/modelGet": { params: InstanceModelGetParams; result: InstanceModelDetailResponse };
+  "evener/instance/modelEdit": { params: InstanceModelEditParams; result: InstanceModelEditResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };

@@ -381,7 +381,7 @@ func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*t
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
 	if percent := s.cfg.CompactAtPercent; percent > 0 {
-		s.contextMgr.SetCompactAt(float64(percent) / 100)
+		s.contextMgr.SetExplicitCompactAt(float64(percent) / 100)
 	}
 	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn

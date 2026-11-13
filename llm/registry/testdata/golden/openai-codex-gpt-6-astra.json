@@ -110,6 +110,7 @@
     "InputModalities": "overlay/glob:gpt-6*",
     "MaxOutputTokens": "overlay/row",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "snapshot/provider",
     "Reasoning": "overlay/glob:gpt-6*",
     "ReasoningControls": "derived",
     "ReasoningSummary": "overlay/glob:gpt-6*",

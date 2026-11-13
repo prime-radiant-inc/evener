@@ -82,6 +82,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "Sampling": "snapshot/row",
@@ -92,6 +93,7 @@
     "ThinkingShape": "derived",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/glob:*anthropic.*",
+    "WireID": "snapshot/row",
     "model": "row:global.anthropic.claude-opus-5"
   },
   "warnings": [

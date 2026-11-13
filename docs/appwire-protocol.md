@@ -302,6 +302,8 @@ no router (reserved).
 | `evener/instance/setDefault` | hub | [InstanceSetDefaultParams](#instancesetdefaultparams) | [InstanceListResponse](#instancelistresponse) | Sets the default provider instance; returns the updated list. |
 | `evener/instance/setModelDisabled` | hub | [InstanceSetModelDisabledParams](#instancesetmodeldisabledparams) | [InstanceListResponse](#instancelistresponse) | Enables or disables one model row on an instance; returns the updated list. |
 | `evener/instance/refreshModels` | hub | [InstanceRefreshModelsParams](#instancerefreshmodelsparams) | [InstanceListResponse](#instancelistresponse) | Fetches the instance's live model listing, then returns the updated list. |
+| `evener/instance/modelGet` | hub | [InstanceModelGetParams](#instancemodelgetparams) | [InstanceModelDetailResponse](#instancemodeldetailresponse) | Reads one model row's effective capabilities, provenance, and authored overrides on an instance. |
+| `evener/instance/modelEdit` | hub | [InstanceModelEditParams](#instancemodeleditparams) | [InstanceModelEditResponse](#instancemodeleditresponse) | Creates, edits, resets, or removes per-model capability and routing overrides on an instance; returns the updated list and model detail. |
 | `evener/plugin/checkNow` | hub | [EmptyParams](#emptyparams) | [PluginCheckNowResponse](#pluginchecknowresponse) | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
 | `evener/plugin/preview` | hub | [PluginPreviewParams](#pluginpreviewparams) | [PluginPreviewResponse](#pluginpreviewresponse) | Previews the plugins selected for a launch without starting a session or executing plugin commands. |
 | `evener/marketplace/list` | hub | [EmptyParams](#emptyparams) | [MarketplaceListResponse](#marketplacelistresponse) | Lists registered plugin marketplaces. |
@@ -1305,6 +1307,7 @@ Underlying Go kind: `string` (no struct fields).
 | `contextWindow` | int | yes |  |
 | `contextRemaining` | int | yes |  |
 | `contextAssumed` | bool | yes |  |
+| `compactionThreshold` | int | yes |  |
 | `capabilities` | [appwire.ThreadCapabilities](#threadcapabilities) |  |  |
 | `diagnostics` | \*[appwire.EvenerDiagnostics](#evenerdiagnostics) | yes |  |
 | `contextWindowSource` | string | yes |  |
@@ -2170,12 +2173,130 @@ Underlying Go kind: `struct` (no struct fields).
 | `writesRefused` | bool | yes |  |
 
 
+### `InstanceModelAuthored`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `compactionThreshold` | \*int | yes |  |
+| `contextWindow` | \*int | yes |  |
+| `maxOutputTokens` | \*int | yes |  |
+| `reasoning` | \*bool | yes |  |
+| `defaultEffort` | string | yes |  |
+| `effortValues` | []string | yes |  |
+| `inputModalities` | []string | yes |  |
+| `tools` | \*bool | yes |  |
+| `protocol` | string | yes |  |
+| `surface` | string | yes |  |
+| `thinkingFormat` | string | yes |  |
+| `thinkingShape` | string | yes |  |
+| `wireId` | string | yes |  |
+| `aliasOf` | string | yes |  |
+
+
+### `InstanceModelDetailResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | string |  |  |
+| `model` | string |  |  |
+| `disabled` | bool |  |  |
+| `disabledLockstepTarget` | string | yes |  |
+| `authoredOnly` | bool |  |  |
+| `effective` | [appwire.InstanceModelEffective](#instancemodeleffective) |  |  |
+| `provenance` | map[string]string |  |  |
+| `authored` | [appwire.InstanceModelAuthored](#instancemodelauthored) |  |  |
+| `thinkingFormats` | []string |  |  |
+| `thinkingShapes` | []string |  |  |
+| `warnings` | []string | yes |  |
+
+
+### `InstanceModelEditParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | string |  |  |
+| `model` | string |  |  |
+| `create` | bool | yes |  |
+| `removeCustom` | bool | yes |  |
+| `resetAll` | bool | yes |  |
+| `compactionThreshold` | \*int | yes |  |
+| `clearCompactionThreshold` | bool | yes |  |
+| `contextWindow` | \*int | yes |  |
+| `clearContextWindow` | bool | yes |  |
+| `maxOutputTokens` | \*int | yes |  |
+| `clearMaxOutputTokens` | bool | yes |  |
+| `reasoning` | \*bool | yes |  |
+| `clearReasoning` | bool | yes |  |
+| `defaultEffort` | string | yes |  |
+| `clearDefaultEffort` | bool | yes |  |
+| `effortValues` | []string | yes |  |
+| `clearEffortValues` | bool | yes |  |
+| `inputModalities` | []string | yes |  |
+| `clearInputModalities` | bool | yes |  |
+| `tools` | \*bool | yes |  |
+| `clearTools` | bool | yes |  |
+| `protocol` | string | yes |  |
+| `clearProtocol` | bool | yes |  |
+| `surface` | string | yes |  |
+| `clearSurface` | bool | yes |  |
+| `thinkingFormat` | string | yes |  |
+| `clearThinkingFormat` | bool | yes |  |
+| `thinkingShape` | string | yes |  |
+| `clearThinkingShape` | bool | yes |  |
+| `wireId` | string | yes |  |
+| `clearWireId` | bool | yes |  |
+| `aliasOf` | string | yes |  |
+| `clearAliasOf` | bool | yes |  |
+| `expectedEndpointFingerprint` | string | yes |  |
+| `originClientId` | string | yes |  |
+
+
+### `InstanceModelEditResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `list` | [appwire.InstanceListResponse](#instancelistresponse) |  |  |
+| `detail` | \*[appwire.InstanceModelDetailResponse](#instancemodeldetailresponse) | yes |  |
+
+
+### `InstanceModelEffective`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `contextWindow` | \*int | yes |  |
+| `maxInputTokens` | \*int | yes |  |
+| `compactionThreshold` | \*int | yes |  |
+| `maxOutputTokens` | \*int | yes |  |
+| `reasoning` | \*bool | yes |  |
+| `defaultEffort` | string | yes |  |
+| `effortValues` | []string | yes |  |
+| `inputModalities` | []string | yes |  |
+| `tools` | \*bool | yes |  |
+| `protocol` | string | yes |  |
+| `surface` | string | yes |  |
+| `thinkingFormat` | string | yes |  |
+| `thinkingShape` | string | yes |  |
+| `wireId` | string | yes |  |
+| `aliasOf` | string | yes |  |
+
+
 ### `InstanceModelEntry`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `id` | string |  |  |
 | `disabled` | bool | yes |  |
+| `customized` | bool | yes |  |
+| `contextWindow` | \*int | yes |  |
+| `compactionThreshold` | \*int | yes |  |
+
+
+### `InstanceModelGetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | string |  |  |
+| `model` | string |  |  |
 
 
 ### `InstanceRefreshModelsParams`
@@ -2736,6 +2857,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `displayName` | string | yes |  |
 | `contextWindow` | \*int | yes |  |
 | `maxInputTokens` | \*int | yes |  |
+| `compactionThreshold` | \*int | yes |  |
 | `supportsTools` | \*bool | yes |  |
 | `supportsVision` | \*bool | yes |  |
 | `maxOutputTokens` | \*int | yes |  |
@@ -4743,6 +4865,11 @@ Underlying Go kind: `string` (no struct fields).
 | `model` | string |  |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `supportsReasoning` | bool | yes |  |
+| `contextUsed` | int | yes |  |
+| `contextWindow` | int | yes |  |
+| `contextPressure` | float64 | yes |  |
+| `contextAssumed` | bool | yes |  |
+| `compactionThreshold` | int | yes |  |
 
 
 ### `ThreadModelRetryParams`

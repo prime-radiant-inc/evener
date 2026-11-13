@@ -49,6 +49,7 @@
     "web_search": false
   },
   "provenance": {
+    "Protocol": "overlay/provider",
     "ReasoningControls": "derived",
     "Surface": "derived",
     "model": "synthesized"

@@ -42,7 +42,8 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	if s.pendingSkillCompactionSnapshot() != nil {
 		return // an operation already owns this compaction cycle — its response is recorded
 	}
-	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(history, sysPromptChars)
+	if pressure < s.contextMgr.CheckpointThresholdFor(prof) {
 		return // no compaction imminent — nothing to capture yet
 	}
 	// Elicit only over the prefix the compaction will fold into a lossy summary;
@@ -206,7 +207,8 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
-	if s.contextMgr.Pressure(hist, sysPromptChars) < s.contextMgr.WarnThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(hist, sysPromptChars)
+	if pressure < s.contextMgr.WarnThresholdFor(prof) {
 		return false
 	}
 	s.mu.Lock()

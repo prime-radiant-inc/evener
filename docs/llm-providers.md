@@ -564,6 +564,7 @@ default_effort    = "high"               # what it runs at with nothing configur
 thinking_format   = "zai"
 [providers.work.models."deepseek-4.1-flash"]
 protocol          = "openai-chat"        # pin this one row to /chat/completions when the gateway's /responses rejects it
+compaction_threshold = 250000            # auto-compact history at 250K tokens while keeping the physical context_window intact
 
 [providers.local]
 base     = "openai-compatible"           # protocol-only pseudo-provider
@@ -583,8 +584,9 @@ GOOGLE_VERTEX_LOCATION = "global"
 ```
 
 `[providers.work]` above is also the pattern for a gateway that needs
-per-model overrides (a custom `context_window`/`effort_values`/`default_effort`/
-`thinking_format` on one model ID).
+per-model overrides (a custom `compaction_threshold`/`context_window`/`effort_values`/
+`default_effort`/`thinking_format` on one model ID). In the web UI, `Settings -> Providers & credentials`
+exposes these per-model overrides and custom model creation inside each connection's `InstanceSheet` (`Models -> Configure`).
 
 Key mapping: `base`, `inherit_models`, `inherit_models_matching`, `api_key`,
 `api_key_env`, `headers`, `credential_headers`, `surface`, `family`,
@@ -630,6 +632,11 @@ Load rules, enforced with errors that name the instance and key:
   non-empty, and `"off"` is rejected. `default_effort` must be one of the six
   tiers or `none` — the clamp passes an unrankable level straight through, so
   a typo that parsed would ride the request to the provider.
+- `compaction_threshold` must be in `[4096, 2147483647]`, and `context_window`,
+  `max_input_tokens`, and `max_output_tokens` must not exceed `2147483647`.
+  When a resolved `compaction_threshold` is greater than or equal to the model's
+  positive input ceiling (`min(context_window, max_input_tokens)`), resolution clears
+  it and records a warning rather than failing configuration load.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
   blocks another. An unset variable in `api_key` yields an empty
@@ -829,7 +836,7 @@ layer.
 
 - `evener models list [--provider X] [--all]` — resolved rows with protocol,
   surface, context, where the context figure came from and whether it is
-  verified, output cap, cost, effort ladder, and warnings. `--provider` naming
+  verified, output cap, cost, effort ladder, compaction threshold (`compact=<tokens>` in `NOTES`), and warnings. `--provider` naming
   an instance applies that instance's live listing first; the unscoped list is
   registry-only and marks every unlisted window unverified. Hidden
   providers, hidden rows, and rows without `tool_call` need `--all`.

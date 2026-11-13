@@ -561,6 +561,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     contextWindow: thread.evener.contextWindow ?? 0,
     contextPressure: thread.evener.contextPressure ?? 0,
     contextAssumed: thread.evener.contextAssumed ?? false,
+    compactionThreshold: thread.evener.compactionThreshold ?? 0,
     usage: thread.evener.usage ?? null,
     cost: thread.evener.cost ?? null,
     // Passed straight through, undefined and all: absent is "nobody counted"

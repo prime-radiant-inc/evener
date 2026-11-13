@@ -68,6 +68,7 @@ function model(turns: TurnModel[]): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],

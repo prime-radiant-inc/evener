@@ -1173,6 +1173,11 @@ type ThreadModelChangedParams struct {
 	Model                 string   `json:"model"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+	ContextUsed           int      `json:"contextUsed,omitempty"`
+	ContextWindow         int      `json:"contextWindow,omitempty"`
+	ContextPressure       float64  `json:"contextPressure,omitempty"`
+	ContextAssumed        bool     `json:"contextAssumed,omitempty"`
+	CompactionThreshold   int      `json:"compactionThreshold,omitempty"`
 }
 
 // ThreadReasoningEffortChangedParams reports a mid-session reasoning-effort

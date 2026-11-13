@@ -133,6 +133,7 @@ type Registry struct {
 	userNote       string
 	userConfigPath string
 	userConfig     []byte
+	userLayer      *Layer
 	env            func(string) (string, bool)
 	creds          CredentialSource
 	stateRoot      string
@@ -176,6 +177,7 @@ type capLayer struct {
 	tag         string
 	owner       string
 	own         bool
+	protocol    string
 	provider    Caps
 	rows        map[string]Model
 	resetFields bool
@@ -379,7 +381,7 @@ func (r *Registry) loadUserLayer(o *options) (*Layer, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
-	r.userConfigPath, r.userConfig = path, data
+	r.userConfigPath, r.userConfig, r.userLayer = path, data, cloneLayerView(l)
 	return l, "user layer: " + path, nil
 }
 
@@ -567,6 +569,60 @@ func cloneModelView(m Model) Model {
 	return out
 }
 
+func cloneLayerView(l *Layer) *Layer {
+	if l == nil {
+		return nil
+	}
+	out := &Layer{
+		Tag:          l.Tag,
+		Default:      l.Default,
+		DefaultOrder: slices.Clone(l.DefaultOrder),
+		Transports:   make(map[string]Transport, len(l.Transports)),
+		TopGlobs:     make(map[string]Model, len(l.TopGlobs)),
+		Providers:    make(map[string]Provider, len(l.Providers)),
+	}
+	for k, t := range l.Transports {
+		out.Transports[k] = cloneTransportView(t)
+	}
+	for k, m := range l.TopGlobs {
+		out.TopGlobs[k] = cloneModelView(m)
+	}
+	for k, p := range l.Providers {
+		out.Providers[k] = cloneProviderView(p)
+	}
+	return out
+}
+
+// AuthoredProvider returns an independently owned copy of the [providers.<name>]
+// entry authored in providers.toml, if present.
+func (r *Registry) AuthoredProvider(name string) (Provider, bool) {
+	if r == nil || r.userLayer == nil {
+		return Provider{}, false
+	}
+	p, ok := r.userLayer.Providers[name]
+	if !ok {
+		return Provider{}, false
+	}
+	return cloneProviderView(p), true
+}
+
+// AuthoredModel returns an independently owned copy of the exact
+// [providers.<name>.models.<model>] row authored in providers.toml, if present.
+func (r *Registry) AuthoredModel(name, model string) (Model, bool) {
+	if r == nil || r.userLayer == nil || isGlob(model) {
+		return Model{}, false
+	}
+	p, ok := r.userLayer.Providers[name]
+	if !ok {
+		return Model{}, false
+	}
+	m, ok := p.Models[model]
+	if !ok {
+		return Model{}, false
+	}
+	return cloneModelView(m), true
+}
+
 func cloneTransportView(t Transport) Transport {
 	out := t
 	out.Vars = mergeStringMap(nil, t.Vars)
@@ -579,6 +635,7 @@ func cloneCaps(c Caps) Caps {
 	out := c
 	out.ContextWindow = clonePointer(c.ContextWindow)
 	out.MaxInputTokens = clonePointer(c.MaxInputTokens)
+	out.CompactionThreshold = clonePointer(c.CompactionThreshold)
 	out.MaxOutputTokens = clonePointer(c.MaxOutputTokens)
 	out.Tools = clonePointer(c.Tools)
 	out.StructuredOutput = clonePointer(c.StructuredOutput)
@@ -705,7 +762,7 @@ func setIfNonEmpty(dst *string, src string) {
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
-	layer := capLayer{tag: tag, owner: src.ID, own: true, provider: src.Caps, rows: src.Models}
+	layer := capLayer{tag: tag, owner: src.ID, own: true, protocol: src.Protocol, provider: src.Caps, rows: src.Models}
 	if src.Protocol != "" && h.Protocol != "" && src.Protocol != h.Protocol {
 		clearProtocolTransport(&h.Transport)
 		layer.resetFields = true

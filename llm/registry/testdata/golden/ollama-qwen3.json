@@ -54,6 +54,7 @@
   },
   "provenance": {
     "ContextWindow": "config/glob:qwen3*",
+    "Protocol": "overlay/provider",
     "ReasoningControls": "derived",
     "Surface": "derived",
     "model": "live"

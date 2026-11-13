@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -539,6 +540,228 @@ func TestUnknownWindowCompactsUnderAssumedDefault(t *testing.T) {
 	cm.MaybeCompact(context.Background(), &history, 0, spy2.fn)
 	if n := spy2.disclosures(); n != 0 {
 		t.Fatalf("second pass disclosed the assumption %d times, want 0", n)
+	}
+}
+
+func withCompactionThreshold(p *provider.Profile, threshold int) *provider.Profile {
+	res := p.Resolved()
+	if threshold > 0 {
+		res.Caps.CompactionThreshold = &threshold
+	} else {
+		res.Caps.CompactionThreshold = nil
+	}
+	return p.WithResolved(res)
+}
+
+func TestMaybeCompact_CompactionThresholdLayersAndStrategies(t *testing.T) {
+	t.Parallel()
+	prof := withCompactionThreshold(testProfile("openai", "test", 1_000_000), 250_000)
+	cm := NewManager(prof, nil, cheapmodel.New(nil))
+	cm.PreserveRecentTurns = 2
+
+	th := cm.thresholdsFor(prof)
+	if got := cm.WarnThresholdFor(prof); got != 0.20 || th.warn != 0.20 {
+		t.Fatalf("WarnThresholdFor = %v (th.warn=%v), want 0.20", got, th.warn)
+	}
+	if got := cm.CheckpointThresholdFor(prof); got != 0.25 || th.checkpoint != 0.25 {
+		t.Fatalf("CheckpointThresholdFor = %v (th.checkpoint=%v), want 0.25", got, th.checkpoint)
+	}
+	wantSummarize := 0.25 * (summarizeBackstopAt / DefaultCompactAt)
+	if th.summarize != wantSummarize {
+		t.Fatalf("th.summarize = %v, want %v", th.summarize, wantSummarize)
+	}
+	if 263_888.0/1_000_000.0 >= th.summarize || 263_889.0/1_000_000.0 < th.summarize {
+		t.Fatalf("summarize threshold %v should sit between 263888 and 263889 tokens on 1M window", th.summarize)
+	}
+
+	for _, tc := range []struct {
+		name           string
+		wantCheckpoint string
+		run            func(t *testing.T, cm *Manager, history *[]schema.Turn, emitFn func(events.EventKind, events.EventData))
+	}{
+		{
+			name:           "MaybeCompact",
+			wantCheckpoint: "checkpoint",
+			run: func(_ *testing.T, cm *Manager, history *[]schema.Turn, emitFn func(events.EventKind, events.EventData)) {
+				cm.MaybeCompact(context.Background(), history, 0, emitFn)
+			},
+		},
+		{
+			name:           "SessionLogStrategy",
+			wantCheckpoint: "session_log_checkpoint",
+			run: func(t *testing.T, cm *Manager, history *[]schema.Turn, emitFn func(events.EventKind, events.EventData)) {
+				s, _ := newTestSessionLogStrategy(t, cm)
+				if err := s.ManageContext(context.Background(), history, 0, emitFn); err != nil {
+					t.Fatalf("SessionLogStrategy.ManageContext: %v", err)
+				}
+			},
+		},
+		{
+			name:           "OODAStrategy",
+			wantCheckpoint: "session_log_checkpoint",
+			run: func(t *testing.T, cm *Manager, history *[]schema.Turn, emitFn func(events.EventKind, events.EventData)) {
+				sls, _ := newTestSessionLogStrategy(t, cm)
+				s := &OODAStrategy{SessionLogStrategy: sls}
+				if err := s.ManageContext(context.Background(), history, 0, emitFn); err != nil {
+					t.Fatalf("OODAStrategy.ManageContext: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := llm.NewClient()
+			client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] condensed")}, nil
+			}})
+			mgr := NewManager(prof, client, cheapmodel.New(client))
+			mgr.PreserveRecentTurns = 1
+
+			// At 240,000 tokens (below 250,000), no fold occurs.
+			hist240 := bulkHistory(6, 100)
+			mgr.RecordInputTokens(240_000, len(hist240))
+			spy240 := &emitSpy{}
+			tc.run(t, mgr, &hist240, spy240.fn)
+			if len(spy240.compaction) != 0 || len(hist240) != 6 {
+				t.Fatalf("at 240000 tokens: got %d compactions and %d turns, want 0 and 6", len(spy240.compaction), len(hist240))
+			}
+
+			// At 250,000 tokens with a small preserved tail, Layer 1 checkpoint fires without Layer 2 summarize.
+			hist250 := bulkHistory(6, 100)
+			mgr.RecordInputTokens(250_000, len(hist250))
+			spy250 := &emitSpy{}
+			tc.run(t, mgr, &hist250, spy250.fn)
+			if len(spy250.compaction) != 1 || spy250.compaction[0].Layer != tc.wantCheckpoint {
+				t.Fatalf("at 250000 tokens: compactions = %+v, want [%s]", spy250.compaction, tc.wantCheckpoint)
+			}
+
+			// When post-checkpoint pressure remains >= 263,889 tokens, Layer 2 summarize fires.
+			bigTail := strings.Repeat("x", 264_000*4)
+			histSummarize := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("initial task")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("step one")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant(bigTail)),
+			}
+			spySum := &emitSpy{}
+			tc.run(t, mgr, &histSummarize, spySum.fn)
+			if len(spySum.compaction) != 2 || spySum.compaction[0].Layer != tc.wantCheckpoint || spySum.compaction[1].Layer != "summarize" {
+				t.Fatalf("above summarize backstop: compactions = %+v, want [%s summarize]", spySum.compaction, tc.wantCheckpoint)
+			}
+		})
+	}
+}
+
+func TestMaybeCompact_CompactionThresholdSmallAndAboveDefault(t *testing.T) {
+	t.Parallel()
+	// Small threshold edge case: 4096 on 1,048,576.
+	smallProf := withCompactionThreshold(testProfile("openai", "test", 1_048_576), 4096)
+	smallCM := NewManager(smallProf, nil, cheapmodel.New(nil))
+	smallTh := smallCM.thresholdsFor(smallProf)
+	if !(0 < smallTh.warn && smallTh.warn < smallTh.checkpoint && smallTh.checkpoint <= smallTh.summarize && smallTh.summarize < 1.0) {
+		t.Fatalf("small threshold ordering broken: %+v", smallTh)
+	}
+	if p0 := smallCM.Pressure(nil, 0); p0 >= smallCM.WarnThresholdFor(smallProf) {
+		t.Fatalf("zero-token pressure %v >= WarnThresholdFor %v", p0, smallCM.WarnThresholdFor(smallProf))
+	}
+
+	// Threshold above DefaultCompactAt: 920,000 on 1,000,000 with no explicitCompactAt.
+	highProf := withCompactionThreshold(testProfile("openai", "test", 1_000_000), 920_000)
+	highCM := NewManager(highProf, nil, cheapmodel.New(nil))
+	highCM.PreserveRecentTurns = 2
+	highTh := highCM.thresholdsFor(highProf)
+	if highTh.checkpoint != 0.92 || highTh.summarize != 0.95 {
+		t.Fatalf("920k threshold gates = %+v, want checkpoint=0.92 summarize=0.95", highTh)
+	}
+	if usage := highCM.EstimateUsage(nil, 0); usage.CompactionThreshold != 920_000 {
+		t.Fatalf("EstimateUsage.CompactionThreshold = %d, want 920000", usage.CompactionThreshold)
+	}
+
+	hist910 := bulkHistory(6, 100)
+	highCM.RecordInputTokens(910_000, len(hist910))
+	spy910 := &emitSpy{}
+	highCM.MaybeCompact(context.Background(), &hist910, 0, spy910.fn)
+	if len(spy910.compaction) != 0 {
+		t.Fatalf("at 910000 tokens (below 920000): got %d compactions, want 0", len(spy910.compaction))
+	}
+
+	hist920 := bulkHistory(6, 100)
+	highCM.RecordInputTokens(920_000, len(hist920))
+	spy920 := &emitSpy{}
+	highCM.MaybeCompact(context.Background(), &hist920, 0, spy920.fn)
+	if len(spy920.compaction) != 1 || spy920.compaction[0].Layer != "checkpoint" {
+		t.Fatalf("at 920000 tokens: compactions = %+v, want [checkpoint]", spy920.compaction)
+	}
+
+	// Explicit session CompactAtPercent = 20 (0.20 = 200,000) is tighter than 920,000 and wins.
+	highCM.SetExplicitCompactAt(0.20)
+	if got := highCM.CheckpointThresholdFor(highProf); got != 0.20 {
+		t.Fatalf("with SetExplicitCompactAt(0.20), CheckpointThresholdFor = %v, want 0.20", got)
+	}
+	if usage := highCM.EstimateUsage(nil, 0); usage.CompactionThreshold != 200_000 {
+		t.Fatalf("with SetExplicitCompactAt(0.20), EstimateUsage.CompactionThreshold = %d, want 200000", usage.CompactionThreshold)
+	}
+
+	// ApplyThresholdScale scales thresholdsFor(prof) with floor 0.20.
+	scaledCM := NewManager(highProf, nil, cheapmodel.New(nil))
+	ApplyThresholdScale(scaledCM, 0.5)
+	if got := scaledCM.CheckpointThresholdFor(highProf); !approxFloat(got, 0.46) {
+		t.Fatalf("scaled CheckpointThresholdFor = %v, want 0.46", got)
+	}
+}
+
+func approxFloat(a, b float64) bool {
+	return a-b < 1e-9 && b-a < 1e-9
+}
+
+func TestMaybeCompact_CompactionThresholdUnknownWindow(t *testing.T) {
+	t.Parallel()
+	prof := withCompactionThreshold(unknownGatewayProfile(), 250_000)
+	window, assumed := EffectiveWindow(prof)
+	if window != 277_778 || !assumed {
+		t.Fatalf("EffectiveWindow = (%d, %v), want (277778, true)", window, assumed)
+	}
+
+	cm := NewManager(prof, nil, cheapmodel.New(nil))
+	cm.PreserveRecentTurns = 2
+
+	if usage := cm.EstimateUsage(nil, 0); usage.Window != 277_778 || !usage.Assumed || usage.CompactionThreshold != 250_000 {
+		t.Fatalf("EstimateUsage = %+v, want Window=277778 Assumed=true CompactionThreshold=250000", usage)
+	}
+
+	// At 210,000 tokens (above UnknownWindowInputTripwire=200,000, below 250,000):
+	// neither the tripwire nor the assumed-window disclosure fires.
+	hist210 := bulkHistory(6, 100)
+	cm.RecordInputTokens(210_000, len(hist210))
+	spy210 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &hist210, 0, spy210.fn)
+	if len(spy210.compaction) != 0 {
+		t.Fatalf("at 210000 tokens: got %d compactions, want 0", len(spy210.compaction))
+	}
+	if n := spy210.disclosures(); n != 0 {
+		t.Fatalf("at 210000 tokens: assumed-window disclosures = %d, want 0", n)
+	}
+
+	// At 250,000 tokens: checkpoint fires, still without WarningCodeContextWindowAssumed.
+	hist250 := bulkHistory(6, 100)
+	cm.RecordInputTokens(250_000, len(hist250))
+	spy250 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &hist250, 0, spy250.fn)
+	if len(spy250.compaction) != 1 || spy250.compaction[0].Layer != "checkpoint" {
+		t.Fatalf("at 250000 tokens: compactions = %+v, want [checkpoint]", spy250.compaction)
+	}
+	if n := spy250.disclosures(); n != 0 {
+		t.Fatalf("at 250000 tokens: assumed-window disclosures = %d, want 0", n)
+	}
+
+	// Toggling CompactionThreshold on the same unknown-window target resets assumedWindowDisclosed.
+	cm.mu.Lock()
+	cm.assumedWindowDisclosed = true
+	cm.mu.Unlock()
+	cm.SetProfile(unknownGatewayProfile())
+	histUnthresh := bulkHistory(10, 10_000)
+	spyUnthresh := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &histUnthresh, 0, spyUnthresh.fn)
+	if n := spyUnthresh.disclosures(); n != 1 {
+		t.Fatalf("after clearing CompactionThreshold on same unknown-window target, disclosures = %d, want 1", n)
 	}
 }
 

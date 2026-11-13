@@ -339,64 +339,84 @@
         "credentialRequired": true,
         "models": [
           {
-            "id": "claude-fable-5"
+            "id": "claude-fable-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-fable-5-1"
+            "id": "claude-fable-5-1",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-haiku-4-5"
+            "id": "claude-haiku-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-haiku-4-5-20251001"
+            "id": "claude-haiku-4-5-20251001",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-mythos-5"
+            "id": "claude-mythos-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-mythos-preview"
+            "id": "claude-mythos-preview",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5"
+            "id": "claude-opus-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101"
+            "id": "claude-opus-4-5-20251101",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101[1m]"
+            "id": "claude-opus-4-5-20251101[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5[1m]"
+            "id": "claude-opus-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-6"
+            "id": "claude-opus-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-7"
+            "id": "claude-opus-4-7",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-8"
+            "id": "claude-opus-4-8",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-5"
+            "id": "claude-opus-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5"
+            "id": "claude-sonnet-4-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929"
+            "id": "claude-sonnet-4-5-20250929",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929[1m]"
+            "id": "claude-sonnet-4-5-20250929[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5[1m]"
+            "id": "claude-sonnet-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-6"
+            "id": "claude-sonnet-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-5"
+            "id": "claude-sonnet-5",
+            "contextWindow": 1000000
           }
         ]
       },
@@ -420,28 +440,36 @@
         "credentialRequired": true,
         "models": [
           {
-            "id": "gpt-5.6"
+            "id": "gpt-5.6",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-5.6-luna"
+            "id": "gpt-5.6-luna",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-5.6-sol"
+            "id": "gpt-5.6-sol",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-5.6-terra"
+            "id": "gpt-5.6-terra",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-6-astra"
+            "id": "gpt-6-astra",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-6-luna"
+            "id": "gpt-6-luna",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-6.1-sol"
+            "id": "gpt-6.1-sol",
+            "contextWindow": 272000
           },
           {
-            "id": "gpt-6.1-sol-1m"
+            "id": "gpt-6.1-sol-1m",
+            "contextWindow": 872000
           }
         ]
       },
@@ -469,103 +497,136 @@
             "id": "chatgpt-image-latest"
           },
           {
-            "id": "gpt-3.5-turbo"
+            "id": "gpt-3.5-turbo",
+            "contextWindow": 16385
           },
           {
-            "id": "gpt-4"
+            "id": "gpt-4",
+            "contextWindow": 8192
           },
           {
-            "id": "gpt-4-turbo"
+            "id": "gpt-4-turbo",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-4.1"
+            "id": "gpt-4.1",
+            "contextWindow": 1047576
           },
           {
-            "id": "gpt-4.1-mini"
+            "id": "gpt-4.1-mini",
+            "contextWindow": 1047576
           },
           {
-            "id": "gpt-4.1-nano"
+            "id": "gpt-4.1-nano",
+            "contextWindow": 1047576
           },
           {
-            "id": "gpt-4o"
+            "id": "gpt-4o",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-4o-2024-05-13"
+            "id": "gpt-4o-2024-05-13",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-4o-2024-08-06"
+            "id": "gpt-4o-2024-08-06",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-4o-2024-11-20"
+            "id": "gpt-4o-2024-11-20",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-4o-mini"
+            "id": "gpt-4o-mini",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-5"
+            "id": "gpt-5",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5-mini"
+            "id": "gpt-5-mini",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5-nano"
+            "id": "gpt-5-nano",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5-pro"
+            "id": "gpt-5-pro",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.1"
+            "id": "gpt-5.1",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.2"
+            "id": "gpt-5.2",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.2-chat-latest"
+            "id": "gpt-5.2-chat-latest",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-5.2-pro"
+            "id": "gpt-5.2-pro",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.3-chat-latest"
+            "id": "gpt-5.3-chat-latest",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-5.3-codex"
+            "id": "gpt-5.3-codex",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.3-codex-spark"
+            "id": "gpt-5.3-codex-spark",
+            "contextWindow": 128000
           },
           {
-            "id": "gpt-5.4"
+            "id": "gpt-5.4",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.4-mini"
+            "id": "gpt-5.4-mini",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.4-nano"
+            "id": "gpt-5.4-nano",
+            "contextWindow": 400000
           },
           {
-            "id": "gpt-5.4-pro"
+            "id": "gpt-5.4-pro",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.5"
+            "id": "gpt-5.5",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.5-pro"
+            "id": "gpt-5.5-pro",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.6"
+            "id": "gpt-5.6",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.6-luna"
+            "id": "gpt-5.6-luna",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.6-sol"
+            "id": "gpt-5.6-sol",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-5.6-terra"
+            "id": "gpt-5.6-terra",
+            "contextWindow": 1050000
           },
           {
-            "id": "gpt-6-astra"
+            "id": "gpt-6-astra",
+            "contextWindow": 1050000
           },
           {
             "id": "gpt-image-1-mini"
@@ -574,34 +635,44 @@
             "id": "gpt-image-1.5"
           },
           {
-            "id": "gpt-realtime-2.1"
+            "id": "gpt-realtime-2.1",
+            "contextWindow": 128000
           },
           {
-            "id": "o1"
+            "id": "o1",
+            "contextWindow": 200000
           },
           {
-            "id": "o1-pro"
+            "id": "o1-pro",
+            "contextWindow": 200000
           },
           {
-            "id": "o3"
+            "id": "o3",
+            "contextWindow": 200000
           },
           {
-            "id": "o3-mini"
+            "id": "o3-mini",
+            "contextWindow": 200000
           },
           {
-            "id": "o3-pro"
+            "id": "o3-pro",
+            "contextWindow": 200000
           },
           {
-            "id": "o4-mini"
+            "id": "o4-mini",
+            "contextWindow": 200000
           },
           {
-            "id": "text-embedding-3-large"
+            "id": "text-embedding-3-large",
+            "contextWindow": 8191
           },
           {
-            "id": "text-embedding-3-small"
+            "id": "text-embedding-3-small",
+            "contextWindow": 8191
           },
           {
-            "id": "text-embedding-ada-002"
+            "id": "text-embedding-ada-002",
+            "contextWindow": 8192
           }
         ]
       },
@@ -645,64 +716,84 @@
         "credentialRequired": true,
         "models": [
           {
-            "id": "claude-fable-5"
+            "id": "claude-fable-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-fable-5-1"
+            "id": "claude-fable-5-1",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-haiku-4-5"
+            "id": "claude-haiku-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-haiku-4-5-20251001"
+            "id": "claude-haiku-4-5-20251001",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-mythos-5"
+            "id": "claude-mythos-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-mythos-preview"
+            "id": "claude-mythos-preview",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5"
+            "id": "claude-opus-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101"
+            "id": "claude-opus-4-5-20251101",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101[1m]"
+            "id": "claude-opus-4-5-20251101[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5[1m]"
+            "id": "claude-opus-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-6"
+            "id": "claude-opus-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-7"
+            "id": "claude-opus-4-7",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-8"
+            "id": "claude-opus-4-8",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-5"
+            "id": "claude-opus-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5"
+            "id": "claude-sonnet-4-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929"
+            "id": "claude-sonnet-4-5-20250929",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929[1m]"
+            "id": "claude-sonnet-4-5-20250929[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5[1m]"
+            "id": "claude-sonnet-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-6"
+            "id": "claude-sonnet-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-5"
+            "id": "claude-sonnet-5",
+            "contextWindow": 1000000
           }
         ]
       },
@@ -770,64 +861,84 @@
         ],
         "models": [
           {
-            "id": "claude-fable-5"
+            "id": "claude-fable-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-fable-5-1"
+            "id": "claude-fable-5-1",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-haiku-4-5"
+            "id": "claude-haiku-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-haiku-4-5-20251001"
+            "id": "claude-haiku-4-5-20251001",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-mythos-5"
+            "id": "claude-mythos-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-mythos-preview"
+            "id": "claude-mythos-preview",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5"
+            "id": "claude-opus-4-5",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101"
+            "id": "claude-opus-4-5-20251101",
+            "contextWindow": 200000
           },
           {
-            "id": "claude-opus-4-5-20251101[1m]"
+            "id": "claude-opus-4-5-20251101[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-5[1m]"
+            "id": "claude-opus-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-6"
+            "id": "claude-opus-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-7"
+            "id": "claude-opus-4-7",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-4-8"
+            "id": "claude-opus-4-8",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-opus-5"
+            "id": "claude-opus-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5"
+            "id": "claude-sonnet-4-5",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929"
+            "id": "claude-sonnet-4-5-20250929",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5-20250929[1m]"
+            "id": "claude-sonnet-4-5-20250929[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-5[1m]"
+            "id": "claude-sonnet-4-5[1m]",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-4-6"
+            "id": "claude-sonnet-4-6",
+            "contextWindow": 1000000
           },
           {
-            "id": "claude-sonnet-5"
+            "id": "claude-sonnet-5",
+            "contextWindow": 1000000
           }
         ]
       },

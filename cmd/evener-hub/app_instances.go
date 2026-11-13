@@ -182,22 +182,19 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 	userLayer := ""
 	r := c.reg.Get()
 	if r != nil {
-		// The authored layer is what the sheet's form edits, so the entry
-		// carries the authored credential fields alongside the registry's
-		// resolved view. A file that cannot be read right now simply
-		// prefills nothing; the refusal itself is already in Diagnostics.
-		var layer *registry.Layer
-		if l, exists, err := c.read(); err == nil && exists {
-			layer = l
-		}
+		// The authored layer comes from the same registry snapshot r, so
+		// every entry pairs the authored credential fields and model
+		// overrides of one generation of providers.toml with its resolved
+		// view with zero disk I/O.
+		builtEntries := make(map[string]appwire.InstanceEntry, len(r.Instances()))
 		for _, inst := range r.Instances() {
 			var authored *registry.Provider
-			if layer != nil {
-				if p, ok := layer.Providers[inst.Name]; ok {
-					authored = &p
-				}
+			if p, ok := r.AuthoredProvider(inst.Name); ok {
+				authored = &p
 			}
-			entries = append(entries, c.entryFor(r, inst, authored, key))
+			entry := c.entryFor(r, inst, authored, key)
+			entries = append(entries, entry)
+			builtEntries[inst.Name] = entry
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -209,19 +206,22 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 			// instance-level meaning the add form could give it.
 			vars := r.TemplateVarsEnv(id)
 			var setup *appwire.InstanceEntry
-			inst, addressable := r.Instance(id)
-			if !addressable {
-				inst, addressable = resolvedInstanceFor(r, id, p.Hidden)
-			}
-			if addressable {
-				var authored *registry.Provider
-				if layer != nil {
-					if p, ok := layer.Providers[id]; ok {
-						authored = &p
-					}
-				}
-				entry := c.entryFor(r, inst, authored, key)
+			if existing, ok := builtEntries[id]; ok {
+				entry := existing
 				setup = &entry
+			} else {
+				inst, addressable := r.Instance(id)
+				if !addressable {
+					inst, addressable = resolvedInstanceFor(r, id, p.Hidden)
+				}
+				if addressable {
+					var authored *registry.Provider
+					if ap, ok := r.AuthoredProvider(id); ok {
+						authored = &ap
+					}
+					entry := c.entryFor(r, inst, authored, key)
+					setup = &entry
+				}
 			}
 			providers = append(providers, appwire.ProviderDescriptor{
 				ID:        id,
@@ -2641,7 +2641,13 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 	}
 	out := make([]appwire.InstanceModelEntry, 0, len(models))
 	for _, m := range models {
-		out = append(out, appwire.InstanceModelEntry{ID: m.ID, Disabled: m.Disabled})
+		out = append(out, appwire.InstanceModelEntry{
+			ID:                  m.ID,
+			Disabled:            m.Disabled,
+			Customized:          m.Customized,
+			ContextWindow:       m.ContextWindow,
+			CompactionThreshold: m.CompactionThreshold,
+		})
 	}
 	return out
 }
@@ -2675,11 +2681,15 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 // Restore the file this call just overwrote instead of leaving every
 // instance operation refused by a config only this write produced. verb
 // names the write in the refusal ("edit", "toggle").
-func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string) error {
+func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string, validate ...func(*registry.Registry) error) error {
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	if err := c.reg.Reload(); err != nil {
+	err := c.reg.Reload()
+	if err == nil && len(validate) > 0 && validate[0] != nil {
+		err = validate[0](c.reg.Get())
+	}
+	if err != nil {
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The layer this call wrote is still in the file, like Create's
 			// failed rollback: the write primitive set the applied mark, so

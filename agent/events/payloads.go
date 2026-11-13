@@ -553,7 +553,12 @@ type ModelChangedData struct {
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it
 	// verbatim as a systemMessage item so live and replay stay byte-identical.
-	MarkerText string `json:"marker_text,omitempty"`
+	MarkerText          string  `json:"marker_text,omitempty"`
+	ContextUsed         int     `json:"context_used,omitempty"`
+	ContextWindow       int     `json:"context_window,omitempty"`
+	ContextPressure     float64 `json:"context_pressure,omitempty"`
+	ContextAssumed      bool    `json:"context_assumed,omitempty"`
+	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
 }
 
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged

@@ -4,6 +4,7 @@
 import {
 	basename,
 	compactDuration,
+	effectiveContextStatus,
 	formatTokenCount,
 	sessionEffortLevels,
 	type ModelDescriptor,
@@ -95,8 +96,8 @@ export interface UsageFacts {
 	split?: string;
 	cost?: string;
 	workTime?: string;
-	/** Used of the window. The hub reports no compaction threshold, so the
-	 * gauge draws no marker (ruling 36). */
+	/** Used of the active context ceiling (custom compactionThreshold when
+	 * configured, otherwise contextWindow). */
 	context?: { text: string; fraction: number };
 	failedToolCalls?: string;
 }
@@ -105,7 +106,7 @@ export function usageFacts(
 	session: Pick<
 		ThreadModel,
 		"usage" | "cost" | "workMillis" | "contextUsed" | "contextWindow" | "contextAssumed" | "failedToolCalls"
-	>,
+	> & { compactionThreshold?: number },
 ): UsageFacts {
 	const facts: UsageFacts = {};
 	const usage = session.usage;
@@ -118,14 +119,17 @@ export function usageFacts(
 	if (split.length > 0) facts.split = split.join(" · ");
 	if (session.cost) facts.cost = session.cost;
 	if (session.workMillis > 0) facts.workTime = compactDuration(session.workMillis);
-	if (session.contextWindow > 0)
+	const status = effectiveContextStatus(session);
+	if (status.ceiling > 0)
 		facts.context = {
 			// The "~" marks an ASSUMED window the way the cost row marks its
 			// derived estimate ("~$…"): the used count stays plain because it
-			// is measured; only the capacity is assumed. ContextGauge speaks
-			// this same text, so the accessible label carries the estimate too.
-			text: `${formatTokenCount(session.contextUsed)} of ${session.contextAssumed ? "~" : ""}${formatTokenCount(session.contextWindow)}`,
-			fraction: Math.min(1, Math.max(0, session.contextUsed / session.contextWindow)),
+			// is measured; only the capacity is assumed. An explicit
+			// compactionThreshold is never marked with "~".
+			text: status.hasCustomThreshold
+				? `${formatTokenCount(session.contextUsed)} of ${formatTokenCount(status.ceiling)}`
+				: `${formatTokenCount(session.contextUsed)} of ${session.contextAssumed ? "~" : ""}${formatTokenCount(status.ceiling)}`,
+			fraction: Math.min(1, Math.max(0, status.pressure)),
 		};
 	const failed = session.failedToolCalls ?? 0;
 	if (failed > 0) facts.failedToolCalls = `${failed} failed tool ${failed === 1 ? "call" : "calls"}`;

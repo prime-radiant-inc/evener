@@ -483,6 +483,11 @@ export interface ThreadModel {
   // vouches for - the meters mark the capacity as an estimate ("~") when it
   // is set. Absent means the window is real.
   contextAssumed: boolean;
+  // CompactionThreshold is the active token threshold at which automatic
+  // context compaction triggers for this session's model (wire:
+  // EvenerThread.CompactionThreshold, omitempty), or 0 when the default
+  // window-percentage threshold governs.
+  compactionThreshold: number;
   // Usage is null (not a zero-valued object) when the daemon has no token
   // data at all (an old daemon or a source-backed thread that omits the field) -
   // EvenerThread.Usage uses nil to signal "no token data" rather than rendering

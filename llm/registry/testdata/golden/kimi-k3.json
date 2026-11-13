@@ -71,6 +71,7 @@
     "Family": "snapshot/row",
     "InputModalities": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "Sampling": "snapshot/row",
@@ -78,6 +79,7 @@
     "Surface": "overlay/glob:*",
     "ThinkingShape": "overlay/glob:k3*",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:k3"
   },
   "default_model": "k3",

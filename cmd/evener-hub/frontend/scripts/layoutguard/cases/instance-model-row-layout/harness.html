@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>instance-model-row-layout harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .sheetBody { box-sizing: border-box; width: 480px; padding: var(--space-4); background: var(--surface-1); }
+  .sideTag { flex: none; padding: 0 var(--space-2); border: 1px solid var(--edge); border-radius: var(--radius-control); font-size: var(--font-size-caption); color: var(--ink-mid); }
+</style>
+</head>
+<body>
+<main class="sheetBody" data-sheet>
+  <div class="actionRows">
+    <div class="modelRow" data-model-row>
+      <div class="modelNameSlot" data-model-name-slot>
+        <span class="wrapper">
+          <button type="button" role="switch" aria-checked="true" class="control">
+            <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+          </button>
+          <span class="label" data-model-label>custom_provider_extremely_long_unbroken_model_identifier_v20261112</span>
+        </span>
+      </div>
+      <div class="modelMeta" data-model-meta>
+        <span class="sideTag">customized</span>
+        <span class="modelSummary">1M ctx · compact 250K</span>
+        <button type="button" class="button quiet sm">Configure ›</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+window.measure = () => {
+  const modelRow = document.querySelector("[data-model-row]").getBoundingClientRect();
+  const modelNameSlot = document.querySelector("[data-model-name-slot]").getBoundingClientRect();
+  const modelLabel = document.querySelector("[data-model-label]").getBoundingClientRect();
+  const modelMeta = document.querySelector("[data-model-meta]").getBoundingClientRect();
+
+  return {
+    viewport: window.innerWidth,
+    modelRowWidth: modelRow.width,
+    overflow: modelMeta.right - modelRow.right,
+    slotToMetaGap: modelMeta.left - modelNameSlot.right,
+    labelOverlap: modelLabel.right - modelMeta.left,
+  };
+};
+</script>
+</body>
+</html>

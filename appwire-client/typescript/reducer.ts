@@ -402,6 +402,11 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         model: n.params.model,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
+        contextUsed: n.params.contextUsed ?? (n.params.contextWindow !== undefined ? 0 : model.contextUsed),
+        contextWindow: n.params.contextWindow ?? model.contextWindow,
+        contextPressure: n.params.contextPressure ?? (n.params.contextWindow !== undefined ? 0 : model.contextPressure),
+        contextAssumed: n.params.contextAssumed ?? false,
+        compactionThreshold: n.params.compactionThreshold ?? 0,
         lastFrameAt: now,
       };
     }

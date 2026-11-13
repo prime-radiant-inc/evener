@@ -81,11 +81,13 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/row",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "Surface": "snapshot/row",
     "ThinkingShape": "overlay/glob:*claude-opus-4-5*",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:claude-opus-4-5"
   },
   "credential_source": "env:AZURE_API_KEY",
