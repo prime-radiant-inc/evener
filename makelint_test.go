@@ -358,7 +358,7 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 				"GOOS=windows go vet -tags evenerfuzz",
 				"GOOS=linux go vet -tags evenerfuzz",
 			},
-			// host + GOOS=linux + GOOS=windows
+			// the host pass, the GOOS=linux pass, and the GOOS=windows pass
 			vetRunCount: 3,
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle",
@@ -371,7 +371,7 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 				"go vet -tags eval",
 				"GOOS=linux go vet -tags eval",
 			},
-			// host + GOOS=linux
+			// the host pass plus the GOOS=linux pass
 			vetRunCount: 2,
 			golangciRuns: []string{
 				"golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle",
@@ -385,7 +385,7 @@ func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
 				"GOOS=darwin golangci-lint run --allow-parallel-runners",
 				"golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml",
 			},
-			golangciRunCount: 3, // host + darwin + appwire
+			golangciRunCount: 3, // the host, darwin, and appwire passes
 		},
 	}
 
