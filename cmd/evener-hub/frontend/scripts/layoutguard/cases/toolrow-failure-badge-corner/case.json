@@ -8,11 +8,16 @@
     "panes/session/transcript/toolcallitem.module.css",
     "widgets/failureglyph/failureglyph.module.css"
   ],
-  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
   "mutation": {
     "declaration": "toolcallitem.module.css: .failureBadge { position: absolute; ... } - the position: absolute declaration reverted to static (so the badge becomes a flex column beside the icon again)",
     "verified": "2026-10-20",
     "expect": "fail",
-    "note": "Reverting position: absolute to static fails at both widths on every axis: the badge reports static, the cross lands 17px right of and 5.1px above the icon's corner and does not overlap the icon glyph at all, the failed row's rationale starts at 56.0 instead of the clean row's 46.0, and the rationale no longer sits on the row's content edge. Restored before the passing run. Two earlier defects in this case are worth recording: the first version asserted only on the badge WRAPPER's box and passed while the cross was drawn at mid-height beside the icon (roborev), and its 420px leg rendered inside one 1200px document, so it measured the desktop cascade at 'phone' width (adversarial review). The assertions now measure the cross svg and the icon svg, and each width is a separate iframe document whose realized viewport the case checks."
+    "note": "Reverting position: absolute to static fails at both widths on every axis: the badge reports static, the cross lands 17px right of and 5.1px above the icon's corner and does not overlap the icon glyph at all, the failed row's rationale starts at 56.0 instead of the clean row's 46.0, and the rationale no longer sits on the row's content edge. Restored before the passing run. Two earlier defects in this case are worth recording: the first version asserted only on the badge WRAPPER's box and passed while the cross was drawn at mid-height beside the icon (roborev), and its 420px leg rendered inside one 1200px document, so it measured the desktop cascade at 'phone' width (adversarial review). The assertions now measure the cross svg and the icon svg, and each width is a separate iframe document whose realized viewport the case checks. 2026-11-13: the case also holds the seat column. Mutation-tested by changing toolcallitem.module.css .call padding-left to var(--tool-card-inset) alone: both legs fail with the icon slot starting 22px left of its tool row's box. Restored before the passing run."
   }
 }

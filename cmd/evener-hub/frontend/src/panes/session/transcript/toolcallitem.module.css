@@ -375,9 +375,19 @@
  * off the icon's corner. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
-  /* Full strength: the seat's own --field ground (see .rowIconSlot::before)
-   * is what sets the kind glyph back from the text, so the rail's ambient
-   * half-opacity would only fade it into that ground. */
+}
+
+/* The seat's two local rules, scoped through the slot so they outrank the
+ * composed seat whatever order the two stylesheets load in.
+ *
+ * Full strength: the slot's own --field ground (see .rowIconSlot::before) is
+ * what sets the kind glyph back from the text, so the rail's ambient
+ * half-opacity would only fade it into that ground.
+ *
+ * Positioned, so the glyph paints after that ground (a positioned
+ * pseudo-element that precedes it in tree order) rather than under it. */
+.rowIconSlot > .rowIcon {
+  position: relative;
   opacity: 1;
 }
 

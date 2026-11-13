@@ -108,9 +108,11 @@
 /* The group's actions share one tool card, the same surface a run of tool
  * rows takes inside a turn (turnblock.module.css's [data-tool-card]): rounded,
  * hairline dividers between rows, the card's corners clipping the last row's
- * evidence band. A member whose descriptor suppresses its row renders an
- * empty wrapper, which must not draw a divider of its own. */
-.intentGroupCard {
+ * evidence band. This is the transcript's own tool-card grammar, not the Card
+ * widget: it holds divided rows edge to edge and has to match the card a turn
+ * draws across sibling rows. A member whose descriptor suppresses its row
+ * renders an empty wrapper, which must not draw a divider of its own. */
+.intentGroupRows {
   display: flex;
   flex-direction: column;
   margin-block: var(--rhythm-item);
@@ -121,7 +123,7 @@
   overflow: clip;
 }
 
-.intentGroupCard > :not(:empty) ~ :not(:empty) {
+.intentGroupRows > :not(:empty) ~ :not(:empty) {
   border-top: 1px solid var(--edge);
 }
 

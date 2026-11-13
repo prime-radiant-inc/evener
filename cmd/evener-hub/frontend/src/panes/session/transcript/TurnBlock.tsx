@@ -177,7 +177,7 @@ export function ProjectedIntentGroup({
           summary={`${entries.length} action${entries.length === 1 ? "" : "s"}`}
         >
           <div className={transcriptStyles.intentGroupItems}>
-            <div className={transcriptStyles.intentGroupCard}>
+            <div className={transcriptStyles.intentGroupRows}>
               {entries.map((entry) => (
                 <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
                   <ToolCallItem

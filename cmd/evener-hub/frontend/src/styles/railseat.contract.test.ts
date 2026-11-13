@@ -83,10 +83,15 @@ test("ToolRow's kind icon composes the shared seat; its slot pulls into the row'
   expect(toolcallitem).toMatch(
     /\.rowIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  // No restated geometry: the seat's box belongs to the shared module. The one
-  // override is its strength - a tool row's glyph sits on its own --field
-  // ground inside a card, which does the receding the rail's half opacity does.
-  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("opacity: 1;");
+  // No restated geometry: the seat's declarations belong to the shared module.
+  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("");
+  // The seat's local rules are its strength - a tool row's glyph sits on its
+  // own --field ground inside a card, which does the receding the rail's half
+  // opacity does - and the positioning that keeps the glyph painted above that
+  // ground. They are scoped through the slot: a bare .rowIcon rule ties the
+  // composed .seat on specificity, and stylesheet order would then decide.
+  expect(toolcallitem).toMatch(/\.rowIconSlot > \.rowIcon\s*\{[^}]*opacity:\s*1;/);
+  expect(toolcallitem).toMatch(/\.rowIconSlot > \.rowIcon\s*\{[^}]*position:\s*relative;/);
   // The pull rides the row's own flex item (the icon's slot, which is also the
   // failure badge's positioning context). It is one --speaker-gutter, the
   // column the seat's geometry sums to, and it is NOT the breakpoint-gated
