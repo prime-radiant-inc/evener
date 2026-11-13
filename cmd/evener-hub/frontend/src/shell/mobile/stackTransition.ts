@@ -33,7 +33,9 @@ export type ScrollOffsets = Map<Element, readonly [top: number, left: number]>;
 const classList = (names: string) => names.split(/\s+/).filter(Boolean);
 
 /**
- * Runs one transition and returns a function that ends it at once. `outgoing`
+ * Runs one transition and returns a function that ends it at once, or null
+ * when the transition was already over on return (nothing animated), so a
+ * caller never holds a cancel function for a finished transition. `outgoing`
  * is the old pane's slot, already detached by React; `incoming` is the new
  * pane's live slot. `onEnd` runs once when the transition is over, however it
  * ends. The stack body carries data-stack-transition while one runs, the
@@ -47,7 +49,7 @@ export function startStackTransition(
   offsets: ScrollOffsets,
   classes: StackTransitionClasses,
   onEnd: () => void,
-): () => void {
+): (() => void) | null {
   const enter = classList(classes.enter);
   // A pane interrupted mid-entrance leaves from where it rests, not from a
   // restarted entrance.
@@ -94,5 +96,5 @@ export function startStackTransition(
     kind === "pop"
       ? afterMotion(layer, "--motion-duration-spatial-exit", end)
       : afterMotion(incoming, "--motion-duration-spatial", end);
-  return end;
+  return ended ? null : end;
 }
