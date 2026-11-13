@@ -13,10 +13,13 @@
 
 import { clip, editDiffText, parseArgs, str, tailFold, tailSlice } from "@evener/appwire-client";
 import { CodeBlock, DiffBlock } from "../../../../widgets";
+import { useFindReveal } from "../../find/findReveal";
 import type { ToolRenderProps } from "../toolRenderers";
 
 interface OutputBodyProps {
-  item: { output?: string };
+  // The id is how Find names the call it is landed on; a caller rendering
+  // loose output (no item) has none and is never a landing.
+  item: { id?: string; output?: string };
   live: boolean;
 }
 
@@ -33,8 +36,9 @@ export const TOOL_BODY_MAX_CHARS = 8000;
 // the way it does for a long-running read/shell stream.
 export function HeadClippedOutputBody({ item }: OutputBodyProps) {
   const output = item.output ?? "";
+  const needle = useFindReveal(item.id ?? "");
   if (output === "") return null;
-  return <CodeBlock text={clip(output, TOOL_BODY_MAX_CHARS)} copyLabel="Copy output" />;
+  return <FoldedOutput output={output} shown={clip(output, TOOL_BODY_MAX_CHARS)} needle={needle} />;
 }
 
 // TailFoldedOutputBody mirrors renderer-tools.js's read_file/shell-specific
@@ -46,9 +50,37 @@ export function HeadClippedOutputBody({ item }: OutputBodyProps) {
 // item.output on the tail-fold path regardless of outcome.
 export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   const output = item.output ?? "";
+  const needle = useFindReveal(item.id ?? "");
   if (output === "") return null;
   const text = live ? tailSlice(output, TOOL_BODY_MAX_CHARS) : tailFold(output, TOOL_BODY_MAX_CHARS);
-  return <CodeBlock text={text} copyLabel="Copy output" />;
+  return <FoldedOutput output={output} shown={text} needle={needle} />;
+}
+
+// A folded body normally shows `shown`. While Find is landed on words the
+// fold dropped, it shows the same budget of text around them instead, under a
+// line saying so, so the reader always sees why the call matched.
+function FoldedOutput({ output, shown, needle }: { output: string; shown: string; needle: string }) {
+  const excerpt = needle === "" ? null : excerptHolding(output, shown, needle);
+  if (excerpt === null) return <CodeBlock text={shown} copyLabel="Copy output" />;
+  return (
+    <div data-find-excerpt="">
+      <CodeBlock text={excerpt} copyLabel="Copy output" />
+    </div>
+  );
+}
+
+// The needle is whitespace-collapsed and lowercased (findNeedle); in the
+// output its words may be separated by any run of whitespace.
+function excerptHolding(output: string, shown: string, needle: string): string | null {
+  const words = needle.split(" ").map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(words.join("\\s+"), "i");
+  if (pattern.test(shown)) return null;
+  const match = pattern.exec(output);
+  if (match === null) return null;
+  const start = Math.max(0, Math.min(match.index - TOOL_BODY_MAX_CHARS / 2, output.length - TOOL_BODY_MAX_CHARS));
+  const end = Math.min(output.length, start + TOOL_BODY_MAX_CHARS);
+  const note = `showing ${(end - start).toLocaleString("en-US")} chars around the match — the rest of the output is not shown`;
+  return `${note}\n${output.slice(start, end)}`;
 }
 
 // EditFileBody synthesizes an edit's diff from its old_string/new_string

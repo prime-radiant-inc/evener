@@ -18,9 +18,10 @@ import type { VirtualListHandle } from "../../../widgets";
 import { setDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
-import { type FindHit, findHits } from "./findHits";
+import { type FindHit, findHits, rowsHoldEntry } from "./findHits";
 import { markTranscript, scrollTopRevealing } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
+import { revealForFind } from "./findReveal";
 
 /** How the search stands, for the bar to say:
  *  - idle: no words yet.
@@ -211,13 +212,11 @@ export function useFindInSession({
   // Find then reads back to it rather than losing the reader's place. A match
   // whose row is still loaded but no longer holds it (the words changed, the
   // verbosity hides it) is simply no longer current.
-  const currentRowId = useRef<string | null>(null);
-  if (current !== null) currentRowId.current = rows[current.rowIndex]?.id ?? null;
   const lost = find !== null && find.key !== null && current === null;
   useEffect(() => {
-    if (find === null || !lost || find.seek === "restore") return;
-    const rowGone = currentRowId.current !== null && !rows.some((row) => row.id === currentRowId.current);
-    if (rowGone && !historyEnded) setState({ ...find, seek: "restore" });
+    if (find === null || find.key === null || !lost || find.seek === "restore") return;
+    const entryGone = !rowsHoldEntry(rows, find.key);
+    if (entryGone && !historyEnded) setState({ ...find, seek: "restore" });
     else setState({ ...find, key: null, seek: null });
   }, [find, lost, rows, historyEnded]);
 
@@ -368,6 +367,15 @@ export function useFindInSession({
     if (!isOpen) return;
     markTranscript(listRef.current?.getScrollElement() ?? null, hits, currentKey, needle);
   }, [isOpen, listRef, hits, currentKey, needle]);
+
+  // A body that folds its text shows the stretch holding the landed-on words
+  // (findReveal.ts) for as long as this is the landing.
+  const currentItemId = current?.itemId ?? null;
+  useEffect(() => {
+    if (currentItemId === null) return;
+    revealForFind(currentItemId, needle);
+    return () => revealForFind(null, "");
+  }, [currentItemId, needle]);
 
   // The app's find chord. Declining leaves the keydown to the browser, which
   // is how its own find stays available outside a transcript, and inside the

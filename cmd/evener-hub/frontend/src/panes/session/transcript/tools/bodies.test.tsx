@@ -1,6 +1,7 @@
 import type { ItemModel } from "@evener/appwire-client";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { revealForFind } from "../../find/findReveal";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -56,4 +57,50 @@ test("TailFoldedOutputBody: once settled, folds with an honest elision note", ()
 test("TailFoldedOutputBody: renders nothing for blank output", () => {
   const { container } = render(<TailFoldedOutputBody item={item({ output: "" })} live={false} />);
   expect(container.textContent).toBe("");
+});
+
+// --- Find reveals words the fold would otherwise drop ----------------------
+
+test("a folded output shows the stretch holding the words Find landed on, and says what it left out", () => {
+  const output = `${"a".repeat(3000)} the early\nquokka line ${"b".repeat(20000)} the tail`;
+  const call = item({ id: "found", output });
+  const view = render(
+    <>
+      <TailFoldedOutputBody item={call} live={false} />
+      <HeadClippedOutputBody item={item({ id: "other", output: "another call" })} live={false} />
+    </>,
+  );
+  // Folded to its tail, the early words are not on screen.
+  expect(view.container.textContent).not.toContain("quokka");
+
+  act(() => revealForFind("found", "early quokka"));
+  const text = view.container.textContent ?? "";
+  expect(text).toContain("quokka line");
+  // Still bounded: the excerpt replaces the tail rather than unfolding it all.
+  expect(text.length).toBeLessThan(output.length);
+  expect(view.container.querySelectorAll("[data-find-excerpt]")).toHaveLength(1);
+
+  expect(text).toContain("another call");
+  // Another call is untouched, and leaving the match restores the fold.
+  act(() => revealForFind(null, ""));
+  expect(view.container.textContent).not.toContain("quokka");
+});
+
+test("a head-clipped output shows words Find landed on past the clip", () => {
+  const output = `${"y".repeat(9000)} late quokka ${"z".repeat(9000)}`;
+  const view = render(<HeadClippedOutputBody item={item({ id: "clipped", output })} live={false} />);
+  expect(view.container.textContent).not.toContain("quokka");
+  act(() => revealForFind("clipped", "quokka"));
+  expect(view.container.textContent).toContain("late quokka");
+  act(() => revealForFind(null, ""));
+});
+
+test("words already inside the fold leave the output as it was", () => {
+  const output = `${"a".repeat(9000)} tail quokka`;
+  const view = render(<TailFoldedOutputBody item={item({ id: "tail", output })} live={false} />);
+  const before = view.container.textContent;
+  act(() => revealForFind("tail", "quokka"));
+  expect(view.container.textContent).toBe(before);
+  expect(view.container.querySelector("[data-find-excerpt]")).toBeNull();
+  act(() => revealForFind(null, ""));
 });

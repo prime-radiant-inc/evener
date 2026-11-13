@@ -54,8 +54,11 @@ function entryMatches(entry: ProjectedEntry, needle: string): boolean {
   if (entry.kind === "intent" && haystack(entry.rationale).includes(needle)) return true;
   if (entry.kind === "critical") {
     if (haystack(entry.summary).includes(needle)) return true;
-    // A redacted thought never renders its text, so it cannot be found by it.
-    if (entry.redacted) return false;
+    // A redacted thought never renders its raw text; what it can unfold is
+    // its summaries.
+    if (entry.redacted) {
+      return (entry.item.reasoningSummaries ?? []).some((summary) => haystack(summary.join("")).includes(needle));
+    }
   }
   return itemHaystack(entry.item).some((text) => text.includes(needle));
 }
@@ -108,6 +111,15 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string): Fin
     }
   });
   return hits;
+}
+
+/** Whether the loaded rows still hold the entry `key` names, matching or
+ * not: the difference between a match that stopped matching and one whose
+ * page left the window. */
+export function rowsHoldEntry(rows: readonly TranscriptBodyRow[], key: string): boolean {
+  return rows.some((row) =>
+    (row.kind === "intentGroup" ? row.entries : row.turn.entries).some((entry) => entryDisplayKey(entry) === key),
+  );
 }
 
 /** The source items of `model` that hold `query` in an entry `config` shows:

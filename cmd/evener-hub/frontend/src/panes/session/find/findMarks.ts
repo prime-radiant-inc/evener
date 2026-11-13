@@ -74,39 +74,84 @@ function highlightRegistry(): { set(name: string, highlight: unknown): void; del
   return (CSS as unknown as { highlights?: ReturnType<typeof highlightRegistry> }).highlights ?? null;
 }
 
-// Lowercased text with, for each of its code units, the offset in the
-// original it came from. Lowercasing can change length ("İ" becomes two
-// units), so an offset found in the lowercased text is not an offset on screen.
-function lowered(text: string): { text: string; origin: (offset: number) => number } {
-  const whole = text.toLowerCase();
-  if (whole.length === text.length) return { text: whole, origin: (offset) => offset };
-  const origins: number[] = [];
-  let out = "";
-  for (let index = 0; index < text.length; index += 1) {
-    const piece = text.charAt(index).toLowerCase();
-    out += piece;
-    for (let unit = 0; unit < piece.length; unit += 1) origins.push(index);
+// An entry's text as Find matches it - lowercased, whitespace collapsed, what
+// is hidden from readers left out - with, for each code unit, the text node
+// and offset it came from. Lowercasing can change length ("İ" becomes two
+// units) and a phrase can span elements (a code block renders a line per
+// element), so only this mapping says where a match sits on screen.
+interface ReadText {
+  text: string;
+  nodes: Text[];
+  nodeOf: number[];
+  offsetOf: number[];
+}
+
+function readText(element: HTMLElement): ReadText {
+  const read: ReadText = { text: "", nodes: [], nodeOf: [], offsetOf: [] };
+  const put = (unit: string, node: number, offset: number) => {
+    read.text += unit;
+    read.nodeOf.push(node);
+    read.offsetOf.push(offset);
+  };
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) =>
+      node.parentElement?.closest('[aria-hidden="true"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const value = node.nodeValue ?? "";
+    const previous = read.nodes.at(-1);
+    const index = read.nodes.push(node as Text) - 1;
+    // Separate elements read as separate words unless they are run together
+    // inside one parent (formatting within a sentence).
+    if (previous !== undefined && previous.parentNode !== node.parentNode && !read.text.endsWith(" ")) {
+      put(" ", index, 0);
+    }
+    for (let offset = 0; offset < value.length; offset += 1) {
+      const char = value.charAt(offset);
+      if (/\s/.test(char)) {
+        if (!read.text.endsWith(" ")) put(" ", index, offset);
+        continue;
+      }
+      for (const unit of char.toLowerCase()) put(unit, index, offset);
+    }
   }
-  return { text: out, origin: (offset) => origins[offset] ?? text.length };
+  return read;
 }
 
 function rangesIn(element: HTMLElement, needle: string, budget: number): Range[] {
   const ranges: Range[] = [];
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null && ranges.length < budget; node = walker.nextNode()) {
-    const { text, origin } = lowered(node.nodeValue ?? "");
-    for (
-      let at = text.indexOf(needle);
-      at >= 0 && ranges.length < budget;
-      at = text.indexOf(needle, at + needle.length)
-    ) {
-      const range = document.createRange();
-      range.setStart(node, origin(at));
-      range.setEnd(node, origin(at + needle.length - 1) + 1);
-      ranges.push(range);
-    }
+  const read = readText(element);
+  for (
+    let at = read.text.indexOf(needle);
+    at >= 0 && ranges.length < budget;
+    at = read.text.indexOf(needle, at + needle.length)
+  ) {
+    const last = at + needle.length - 1;
+    const startNode = read.nodes[read.nodeOf[at] ?? -1];
+    const endNode = read.nodes[read.nodeOf[last] ?? -1];
+    if (startNode === undefined || endNode === undefined) continue;
+    const range = document.createRange();
+    range.setStart(startNode, read.offsetOf[at] ?? 0);
+    range.setEnd(endNode, (read.offsetOf[last] ?? 0) + 1);
+    ranges.push(range);
   }
   return ranges;
+}
+
+// Highlight names are document-wide, so each transcript's ranges are kept
+// apart here and the registrations hold their union: marking or clearing one
+// transcript leaves another's words painted.
+const painted = new Map<HTMLElement, { all: Range[]; current: Range[] }>();
+
+function register(registry: NonNullable<ReturnType<typeof highlightRegistry>>): void {
+  // A transcript that left the document takes its ranges with it.
+  for (const port of painted.keys()) if (!port.isConnected) painted.delete(port);
+  const all = [...painted.values()].flatMap((ranges) => ranges.all);
+  const current = [...painted.values()].flatMap((ranges) => ranges.current);
+  if (all.length > 0) registry.set(HIGHLIGHT_ALL, new Highlight(...all));
+  else registry.delete(HIGHLIGHT_ALL);
+  if (current.length > 0) registry.set(HIGHLIGHT_CURRENT, new Highlight(...current));
+  else registry.delete(HIGHLIGHT_CURRENT);
 }
 
 interface MarkedTranscript {
@@ -147,11 +192,10 @@ export function markTranscript(
     if (marked !== current?.element) marked.removeAttribute(FIND_CURRENT_ATTRIBUTE);
   }
   current?.element.setAttribute(FIND_CURRENT_ATTRIBUTE, current.exact ? "entry" : "fold");
-  if (registry) {
-    if (all.length > 0) registry.set(HIGHLIGHT_ALL, new Highlight(...all));
-    else registry.delete(HIGHLIGHT_ALL);
-    if (mine.length > 0) registry.set(HIGHLIGHT_CURRENT, new Highlight(...mine));
-    else registry.delete(HIGHLIGHT_CURRENT);
+  if (registry && port) {
+    if (all.length > 0 || mine.length > 0) painted.set(port, { all, current: mine });
+    else painted.delete(port);
+    register(registry);
   }
   return { current, focus: mine[0] ?? null };
 }

@@ -118,8 +118,15 @@ test("an action inside a group opens the group, whether the group is a row or si
   for (const hit of hits) expect(hit.opens[0]).toBe("intent-group:intent:p");
 });
 
-test("a redacted thought is found by what it shows, never by its hidden text", () => {
-  const thought = { id: "r", turnId: "t", type: "reasoning", text: "secret needle", status: "completed" } as ItemModel;
+test("a redacted thought is found by what it can show: its label and its summaries, never its raw text", () => {
+  const thought = {
+    id: "r",
+    turnId: "t",
+    type: "reasoning",
+    text: "secret needle",
+    reasoningSummaries: [["Weighing the ", "haystack"]],
+    status: "completed",
+  } as ItemModel;
   const critical = (redacted: boolean): ProjectedEntry => ({
     kind: "critical",
     id: "r",
@@ -129,9 +136,12 @@ test("a redacted thought is found by what it shows, never by its hidden text", (
     summary: "Thinking failed",
     redacted,
   });
-  expect(findHits([turnRow("t1", [critical(true)])], "needle")).toEqual([]);
-  expect(findHits([turnRow("t1", [critical(true)])], "thinking failed")).toHaveLength(1);
-  expect(findHits([turnRow("t1", [critical(false)])], "needle")).toHaveLength(1);
+  const found = (redacted: boolean, query: string) => findHits([turnRow("t1", [critical(redacted)])], query).length;
+  expect(found(true, "needle")).toBe(0);
+  expect(found(true, "thinking failed")).toBe(1);
+  // The summaries unfold inside the redacted thought, so they are findable.
+  expect(found(true, "weighing the haystack")).toBe(1);
+  expect(found(false, "needle")).toBe(1);
 });
 
 test("only what the current verbosity shows can be found in a thread", () => {

@@ -575,3 +575,41 @@ test("refining the words inside the same entry lands on the new place", async ()
   type("needle thread");
   await waitFor(() => expect(el.scrollTop).toBeGreaterThan(0));
 });
+
+test("a match dropped from a turn that is itself still loaded is read back to", async () => {
+  // One long turn, read in fragments: the newest fragment is loaded, an older
+  // page of the same turn holds the match.
+  const fragment = (itemId: string, text: string): Turn => ({
+    id: "long",
+    status: "completed",
+    itemsView: "fragment",
+    items: [{ id: itemId, turnId: "long", type: "agentMessage", text, status: "completed" }],
+  });
+  const client = connectReadyFakeClient();
+  let requests = 0;
+  client.on("thread/read", (params) => ({
+    thread: thread([fragment("late", "the end of the turn")]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    requestGeneration: params.requestGeneration,
+    olderCursor: "page-0",
+  }));
+  client.on("thread/turns/list", () => {
+    requests += 1;
+    return { data: [fragment("early", "an early needle")], nextCursor: undefined };
+  });
+  await mount(client);
+  openFind();
+  type("needle");
+  older();
+  await waitFor(() => expect(currentAnchor()).toBe("early"));
+  const pagesRead = requests;
+
+  await act(async () => {
+    await threadsStore.getState().refreshThread(REF);
+  });
+  await waitFor(() => expect(currentAnchor()).toBe("early"));
+  expect(requests).toBeGreaterThan(pagesRead);
+  expect(state()).toMatchObject({ status: "matches", position: 1, count: 1 });
+});
