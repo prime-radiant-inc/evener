@@ -124,8 +124,17 @@ drawer, the Overview sidebar, and a phone's pane-to-pane navigation.
   `--motion-easing-exit`.
 - The distance is the surface's own size (`100%`), never a pixel constant.
 - Phone navigation: going deeper, the new pane slides in from the right over the old one.
-  Going back, the top pane slides out to the right and reveals the pane beneath. Switching
-  session from the drawer is not a push and does not slide.
+  Going back, the top pane slides out to the right and reveals the pane beneath. Going back
+  is a pane change the top bar's Back caused. Going deeper is any other change the user
+  made from inside the shown pane to a pane past the landing screen. Everything else
+  replaces the pane without sliding: the first pane, a choice made in the Sessions drawer
+  or the Overview, browser history (a phone's own back gesture already animates), an
+  attention entry being restored, the shown pane closing under the user, and a deep link
+  still resolving. A settings section is not a pane change and does not slide.
+- The leaving pane is its last frame, not a live pane: the stack unmounts it as it always
+  did, so its subscriptions and title end at once and no session is read twice, and keeps
+  the detached frame on screen, inert and transparent to the pointer, with its scroll
+  positions, only while the slide runs. The arriving pane is live and takes input at once.
 - A sheet's scrim follows recipe 3's scrim rule on the sheet's durations.
 
 ### 5. Spatial
@@ -205,19 +214,23 @@ invents progress stay banned.
   removes it when its exit animations finish. A recipe plays its entrance by default and
   its exit under `data-motion="closing"`. When no exit animation is running, as under
   reduced motion, the layer is removed in the same commit, before paint, and a timeout
-  bounded by the exit token removes it if the animation's end never arrives. Reopening
+  bounded by the exit token removes it if the animation's end never arrives (given the
+  animation's remaining time once more when a heavy commit held the main thread before
+  its first frame). Reopening
   during the exit cancels the removal. A closing layer is `inert`, ignores the pointer,
   drops its dialog role and `aria-modal`, and has already returned focus, exactly as an
   unmount would; focus recovery (`useFocusRehome`, `tabbable`) treats an inert subtree as
   gone. Everything that answers the user (dismissal, focus, `aria-expanded`)
   keys off the open state, never off the layer still being mounted. A layer its caller
   mounts and unmounts outright, such as the directory picker, has no exit and so no
-  entrance either.
+  entrance either. `afterMotion`, beside it, is that wait on its own; the phone stack
+  uses it to keep a leaving pane's last frame only as long as its slide.
 - **Reduced motion.** Each stylesheet that declares a transform or opacity animation gates
   it. The contract test fails a stylesheet that animates without a gate.
 - **TypeScript.** Code that needs a duration reads it from the token through `src/motion`:
-  `spatialTransition()` for the motion library, `motionDurationMs()` (in
-  `src/motion/tokens.ts`, which does not load the library) for a timeout.
+  `spatialTransition()` and `spatialExitTransition()` (a surface's way in and out) for the
+  motion library, `motionDurationMs()` (in `src/motion/tokens.ts`, which does not load the
+  library) for a timeout.
   `useReducedMotion` from that wrapper is the one way to ask about the preference in code;
   the overlays need not ask, because their recipes declare no animation under reduce.
 - **Third-party chrome.** Dockview ships its own transitions for sashes and drop targets.
