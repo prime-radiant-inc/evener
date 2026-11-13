@@ -2,8 +2,9 @@ import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import { navigate, paneToURL } from "../../shell/routing";
 import { selectLiveRows, selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { type NavigationStoreState, useNavigationStore } from "../../stores/navigation/store";
-import { Button, KeyHint, ShortcutList } from "../../widgets";
+import { Button, KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { ChordHints } from "./ChordHints";
 import styles from "./welcome.module.css";
 
 const CLASS = {
@@ -72,7 +73,7 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
       )}
       {showHints && (
         <div className={CLASS.hints}>
-          <ShortcutList items={CHORD_HINTS} />
+          <ChordHints items={CHORD_HINTS} />
           <p className={CLASS.hintFooter}>
             <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
           </p>

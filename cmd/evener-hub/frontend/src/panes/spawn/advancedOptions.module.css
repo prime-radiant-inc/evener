@@ -6,31 +6,69 @@
   gap: var(--space-2);
 }
 
+/* The open panel keeps clear of the row's closing hairline. */
+.root:has(> .toggle[aria-expanded="true"]) {
+  padding-bottom: var(--space-2);
+}
+
+/* A full-width disclosure row in the same language as the Disclosure widget
+ * rows it sits beside: label leading, chevron trailing, a hover wash, and a
+ * heavier wash while open. */
 .toggle {
-  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
   /* Touch target (UX fix, real-phone measurement): measured 127x24,
-   * low-contrast next to the 48px rows around it. space-2/space-3 (was
-   * space-1/space-2) gives it a comfortable click area at every pointer
-   * type; the (any-pointer: coarse) block below grows it the rest of the way
-   * to --tap-min on touch. */
-  padding: var(--space-2) var(--space-3);
+   * low-contrast next to the 48px rows around it. The block padding gives it
+   * a comfortable click area at every pointer type; the (any-pointer: coarse)
+   * block below grows it the rest of the way to --tap-min on touch. */
+  padding: var(--space-2);
   border: none;
   border-radius: var(--radius-control);
   background: transparent;
-  color: var(--ink-mid);
+  color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .toggle:hover {
-  color: var(--ink-hi);
+  background: var(--hover-1);
+}
+
+.toggle[aria-expanded="true"] {
+  background: var(--hover-2);
 }
 
 .toggle:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
+}
+
+.toggleLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.toggleChevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--ink-low);
+}
+
+.toggleChevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toggleChevron {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
 }
 
 @media (any-pointer: coarse) {

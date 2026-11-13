@@ -2,9 +2,16 @@
   display: none;
 }
 
+/* The settings rows read as one grouped list: a rounded --surface-1 surface
+ * with a hairline between rows and none under the last. */
 .row {
   border-bottom: 1px solid var(--edge);
 }
+
+.row:last-child {
+  border-bottom: 0;
+}
+
 
 .rowButton,
 .readOnly {
@@ -13,7 +20,8 @@
   min-height: 48px;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) 0;
+  box-sizing: border-box;
+  padding: var(--space-3) var(--space-4);
   border: 0;
   background: transparent;
   color: var(--ink-hi);
@@ -24,6 +32,11 @@
 
 .rowButton {
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.rowButton:active:not(:disabled) {
+  background: var(--hover-1);
 }
 
 .rowButton:focus-visible {
@@ -34,6 +47,18 @@
 .rowButton:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+/* The end rows follow the group's corners, so a row's inset focus ring and
+ * pressed wash curve with the surface instead of being cut by it. */
+.row:first-child .rowButton {
+  border-top-left-radius: var(--radius-pane);
+  border-top-right-radius: var(--radius-pane);
+}
+
+.row:last-child .rowButton {
+  border-bottom-left-radius: var(--radius-pane);
+  border-bottom-right-radius: var(--radius-pane);
 }
 
 .rowLabel {
@@ -74,9 +99,11 @@
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3) 0;
+  box-sizing: border-box;
+  padding: var(--space-3);
   border: 0;
   border-bottom: 1px solid var(--edge);
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
@@ -108,7 +135,12 @@
 @media (max-width: 899px) {
   .config {
     display: block;
+    box-sizing: border-box;
     width: 100%;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-pane);
+    background: var(--surface-1);
+    box-shadow: var(--shadow-card);
   }
 }
 

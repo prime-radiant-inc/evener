@@ -24,6 +24,7 @@ import {
   Popover,
   RadioGroup,
   Skeleton,
+  StatusDot,
   Tooltip,
   Tree,
   type TreeProps,
@@ -99,7 +100,10 @@ const CLASS = {
   header: requireClass(styles.header, "Rail.module.css", "header"),
   identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
+  actions: requireClass(styles.actions, "Rail.module.css", "actions"),
+  tree: requireClass(styles.tree, "Rail.module.css", "tree"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -271,7 +275,36 @@ function projectsTierFor(
 // history navigation, so the tree keeps them tree-owned.
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
-  return <Tree {...props} releaseModifierKeys={!isMobile} />;
+  // The wrapper insets the rows from the rail's edges, so each row reads as a
+  // rounded pill instead of an edge-to-edge band; Tree's own box stays the
+  // widget's.
+  return (
+    <div className={CLASS.tree}>
+      <Tree {...props} releaseModifierKeys={!isMobile} />
+    </div>
+  );
+}
+
+// The evener mark: two level bars (an equals sign) on the accent tile. Drawn on
+// the same 16-grid, stroke and bar geometry as the transcript's agent avatar
+// (widgets/speakeravatar), so the two read as one mark.
+function EvenerMark() {
+  return (
+    <span className={CLASS.mark} aria-hidden="true" data-testid="rail-mark">
+      <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        focusable="false"
+      >
+        <path d="M3.5 5.75h9M3.5 10.25h9" />
+      </svg>
+    </span>
+  );
 }
 
 function RailSection({
@@ -1003,41 +1036,45 @@ function NavigationRail({
       <div className={CLASS.header}>
         <div className={CLASS.identity}>
           <div data-testid="rail-brand" className={CLASS.brand}>
+            <EvenerMark />
             <span data-testid="rail-wordmark" className={CLASS.wordmark}>
               evener
             </span>
-            <IconButton
-              data-testid="rail-settings"
-              label="Settings"
-              icon={<GearIcon />}
-              variant="quiet"
-              size="md"
-              onClick={() => navigate("/settings")}
-            />
-            <Tooltip label="Search sessions and commands">
+            <div className={CLASS.actions}>
               <IconButton
-                data-testid="rail-search"
-                data-search-trigger="true"
-                label="Search"
-                icon={<SearchIcon />}
+                data-testid="rail-settings"
+                label="Settings"
+                icon={<GearIcon />}
                 variant="quiet"
                 size="md"
+                onClick={() => navigate("/settings")}
               />
-            </Tooltip>
-            {onHide && (
-              <IconButton
-                data-rail-toggle=""
-                label="Hide sidebar"
-                icon={<SidebarIcon />}
-                variant="quiet"
-                size="md"
-                onClick={onHide}
-              />
-            )}
+              <Tooltip label="Search sessions and commands">
+                <IconButton
+                  data-testid="rail-search"
+                  data-search-trigger="true"
+                  label="Search"
+                  icon={<SearchIcon />}
+                  variant="quiet"
+                  size="md"
+                />
+              </Tooltip>
+              {onHide && (
+                <IconButton
+                  data-rail-toggle=""
+                  label="Hide sidebar"
+                  icon={<SidebarIcon />}
+                  variant="quiet"
+                  size="md"
+                  onClick={onHide}
+                />
+              )}
+            </div>
           </div>
           {needsYou > 0 && (
             <span className={CLASS.needsYou} data-testid="rail-needs-you">
               <Chip tone="attention" kind="needs-you">
+                <StatusDot state="needs-you" decorative />
                 {needsYou} needs you
               </Chip>
             </span>

@@ -112,14 +112,14 @@
   opacity: 1;
 }
 
-/* The user's own words sit on a paper slip: the inset surface plus one
- * hairline, hugging the content rather than spanning the column (width:
- * fit-content + max-width, so a one-word message gets a one-word bubble).
- * Accent is reserved for focus, links and selection; the bubble reads as a
- * manuscript annotation rather than a second primary action. The corners are
- * uniformly --radius-control/--radius-pane, which both resolve to 4px under
- * the editorial scale, so the pre-editorial chat "tail" toward the avatar
- * does not render as a distinct shape. Serif prose stays. */
+/* The user's own words sit on a paper slip: the structural surface, one
+ * hairline and the quiet card lift, hugging the content rather than spanning
+ * the column (width: fit-content + max-width, so a one-word message gets a
+ * one-word slip). Accent is reserved for focus, links and the primary action;
+ * the slip reads as the reader's own note rather than a second call to act.
+ * The top-left corner is the tight one: it points at the speaker's avatar,
+ * which sits up and to the left of the slip at every width, so the slip
+ * reads as that speaker's. Serif prose stays. */
 .body {
   display: flex;
   flex-direction: column;
@@ -129,9 +129,14 @@
    * the pane - see agentmessageitem.module.css's .bubble. */
   max-width: 100%;
   padding: var(--space-2) var(--space-3);
-  background: var(--surface-inset);
+  background: var(--surface-1);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  /* Half a control corner toward the avatar; the other three sit one step
+   * past the card corner so a one-line slip still reads as a rounded note. */
+  --slip-tail: calc(var(--radius-control) / 2);
+  --slip-round: calc(var(--radius-pane) + var(--radius-chip) / 3);
+  border-radius: var(--slip-tail) var(--slip-round) var(--slip-round) var(--slip-round);
+  box-shadow: var(--shadow-card);
 }
 
 .text {
@@ -202,5 +207,5 @@
   width: 2px;
   background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 8px);
   opacity: 0.55;
-  border-radius: 1px;
+  border-radius: var(--radius-pill);
 }

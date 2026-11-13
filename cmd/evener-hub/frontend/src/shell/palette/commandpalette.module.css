@@ -20,7 +20,7 @@
   gap: var(--space-2);
   align-self: flex-start;
   padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   background: var(--accent-bg);
   color: var(--ink-hi);
   font-family: var(--font-sans);
@@ -66,9 +66,9 @@
   border-color: var(--edge-strong);
 }
 
-.input:focus {
-  outline: 2px solid var(--accent-edge);
-  outline-offset: 1px;
+.input:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* The inline error strip carries no color of its own: the danger hue is the
@@ -90,7 +90,7 @@
 }
 
 .sectionHeader {
-  padding: var(--space-2) var(--space-2) var(--space-1);
+  padding: var(--space-2) var(--space-3) var(--space-1);
 }
 
 .row {
@@ -99,7 +99,7 @@
   gap: var(--space-2);
   width: 100%;
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--ink-hi);
@@ -120,6 +120,19 @@
   background: var(--hover-2);
 }
 
+/* The press, as ListRow's: transform only, gentle because the row is wide. */
+@media (prefers-reduced-motion: no-preference) {
+  .row {
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+
+  .row:active {
+    transform: scale(0.985);
+  }
+}
+
 /* A command the hub says it will not carry out right now. It recedes to the
  * same --ink-low the Menu widget's disabled item uses, but keeps pointer and
  * keyboard reach: choosing it prints its reason in the error strip, which is
@@ -132,7 +145,7 @@
  * row reads as the family's head (the tree's one-level --space-2 indent, one
  * step wider so the glyph lands clear of the anchor's dot column). */
 .rowNested {
-  padding-left: calc(var(--space-2) + var(--space-4));
+  padding-left: calc(var(--space-3) + var(--space-4));
 }
 
 /* An indirect anchor: the session itself did not match — its subagents did —
@@ -199,9 +212,9 @@
 .mark {
   background: var(--accent-bg);
   color: var(--ink-hi);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-chip);
 }
 
 .help {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-3);
 }

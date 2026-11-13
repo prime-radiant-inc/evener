@@ -1,6 +1,8 @@
 /* The status bar: a session pane's glance strip at its bottom edge.
  * Tokens only; neutral inks throughout (the counters are information, not
- * attention - the attention hues belong to states, not counts). */
+ * attention - the attention hues belong to states, not counts). The strip
+ * sits on the pane's own surface and each counter is a --surface-canvas pill
+ * on it, so the counters read as objects and the strip as part of the page. */
 
 .bar {
   container: statusbar / inline-size;
@@ -10,7 +12,7 @@
   padding: 0 var(--space-3);
   min-height: 30px;
   border-top: 1px solid var(--edge);
-  background: var(--surface-canvas);
+  background: var(--surface-0);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
@@ -27,26 +29,47 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-1);
   flex: none;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   border: none;
-  background: none;
-  padding: 2px var(--space-1);
+  background: var(--surface-canvas);
+  padding: 2px var(--space-2);
   font: inherit;
   color: var(--ink-mid);
   cursor: pointer;
-  border-radius: var(--radius-pane);
+  border-radius: var(--radius-pill);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .chip:hover {
-  background: var(--hover-1);
+  background: var(--hover-2);
   color: var(--ink-hi);
+}
+
+.chip:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chip {
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+
+  .chip:active {
+    transform: scale(0.97);
+  }
 }
 
 .chipGlyph {
@@ -115,8 +138,8 @@
   }
 
   .chip {
-    gap: 4px;
-    padding: 0 var(--space-1);
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
   }
 
   /* The phone's line never shows the category names: four named chips (~387px)

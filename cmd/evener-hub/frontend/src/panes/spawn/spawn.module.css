@@ -30,8 +30,6 @@
 /* First-run chord hints: the Welcome pane's vocabulary, carried onto the
  * spawn pane the no-provider redirect opens. Quiet, below the form. */
 .chordHints {
-  display: flex;
-  justify-content: center;
   margin-top: var(--space-4);
 }
 
@@ -235,23 +233,31 @@
   margin: 0;
   font-family: var(--font-prose);
   color: var(--ink-hi);
-  font-size: var(--font-size-page-title);
+  font-size: var(--font-size-display);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
 }
 
 .promptSubtitle {
-  margin: var(--space-1) 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--ink-mid);
   font-size: var(--font-size-body);
 }
 
+/* The pair of summary tiles under the task: working directory and effective
+ * access. Two columns while each keeps a readable width, one column below
+ * that - by pane width, since auto-fit resolves against this row, not the
+ * viewport. */
+.summaryRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-3);
+}
+
 .cfgDir {
   display: flex;
-  flex-direction: column;
   min-width: 0;
-  gap: var(--space-2);
 }
 
 /* Positions SlashCompletionMenu (an absolutely-positioned child) above the
@@ -263,59 +269,120 @@
 .promptAnchor {
   position: relative;
 }
-.directoryButton {
+/* One tile recipe for both summaries: a rounded --surface-1 surface with a
+ * hairline and the card shadow, a --field seat holding the glyph, a text
+ * column that takes the slack, and the action at the trailing edge. The
+ * directory tile is itself the button; the access tile is a status region
+ * holding its own Change button. */
+.directoryButton,
+.summary {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  box-sizing: border-box;
   width: 100%;
-  padding: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
-  font: inherit;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
   text-align: left;
+}
+.directoryButton {
   cursor: pointer;
+  transition:
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 .directoryButton:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
 .directoryButton:hover {
+  border-color: var(--edge-strong);
+}
+.directoryButton:active {
   background: var(--hover-1);
 }
-.directoryButton > svg {
-  flex: none;
+@media (prefers-reduced-motion: no-preference) {
+  .directoryButton {
+    transition:
+      border-color var(--motion-duration-hover) var(--motion-easing-standard),
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+  .directoryButton:active {
+    transform: scale(0.985);
+  }
 }
-.directoryButton > span:last-child {
+.summarySeat {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-control);
+  background: var(--field);
   color: var(--ink-mid);
 }
-.directoryText {
-  flex: 1;
-  min-width: 0;
+.directoryText,
+.summaryText {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
 }
-.directoryText strong {
+.directoryText strong,
+.summaryText strong {
   font-weight: var(--font-weight-medium);
   overflow-wrap: anywhere;
 }
-.directoryPath {
+.directoryPath,
+.summaryLabel,
+.summaryDetail {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
 }
+/* The unresolved states have no value to label yet: one sentence in the
+ * tile's own text size. */
+.summaryPending {
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+}
+.directoryAction {
+  flex: none;
+  color: var(--ink-mid);
+}
 
-/* Git info gets its own line under the directory button: it is a property of
- * that directory (HEAD there), not a peer field, and a full line leaves room
- * for dirty/ahead-behind detail later without squeezing a control. */
+/* Git info is a property of the directory (HEAD there), so it is the last
+ * line of the directory tile's own text column, in machine type. */
 .branch {
-  padding-left: var(--space-3);
   color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
+}
+
+/* The secondary settings under the tiles: quiet disclosure rows separated by
+ * hairlines, closed by one more under the last. Each row keeps a little
+ * block padding so a row's hover wash floats between its hairlines. */
+.quietRows {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--edge);
+}
+.quietRow {
+  min-width: 0;
+  padding-block: var(--space-1);
+  border-top: 1px solid var(--edge);
 }
 
 /* The staged-attachment row. Holds AttachmentTiles, which carry their own
@@ -342,6 +409,12 @@
   .form {
     width: 100%;
     max-width: none;
+  }
+
+  /* One step down the ramp on phones, where the display size would break
+   * the question over three lines. */
+  .promptHeading {
+    font-size: var(--font-size-page-title);
   }
 
   .cfgDir {
