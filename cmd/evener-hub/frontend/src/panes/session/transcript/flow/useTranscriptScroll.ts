@@ -1268,6 +1268,18 @@ export function useTranscriptScroll({
     restoreViewAnchorAfterMeasurement();
   }, [viewKey, restoreViewAnchorAfterMeasurement]);
 
+  // The unseen reply keeps its turn but not its row: rows above it coalesce
+  // when a restore lands and shift when older history loads. A landing still
+  // in flight follows the turn to its new row, or its divider would never
+  // enter the window the first request brought in. A landing that has settled
+  // is the reader's place, and a row change no longer moves it.
+  useLayoutEffect(() => {
+    const pending = pendingViewAnchorRef.current;
+    if (pending?.openingRow === undefined || openAtRow === undefined || pending.openingRow === openAtRow) return;
+    pending.openingRow = openAtRow;
+    listRef.current?.scrollToIndex(openAtRow, { align: "start" });
+  }, [openAtRow, listRef]);
+
   // The ask dock's activation edge (see the options' own doc comments): new
   // answerable content appeared below without any transcript shape change.
   // Keyed on the activation EPOCH, not the pending boolean, so an atomic

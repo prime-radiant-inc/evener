@@ -3969,6 +3969,27 @@ describe("opening at the unseen reply", () => {
     expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
   });
 
+  test("a pending landing follows the unseen reply to a new row when the rows above it change", () => {
+    // Rows above the reply can coalesce or be prepended before its row has
+    // rendered: the same turn is then a different row, outside the window
+    // the first request brought in.
+    let offset: number | undefined;
+    const { el, result, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset, openAtRow: 2 });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "start" });
+
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: 1 });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(1, { align: "start" });
+
+    offset = 60;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(60);
+
+    // Once landed, a later change of row is not a reason to move the reader.
+    scrollToIndex.mockClear();
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: 0 });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
   test("a landing measured above the port's top never lands before the start", () => {
     let offset: number | undefined;
     const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
