@@ -273,6 +273,10 @@ function toolCardPositions(laidOut: readonly (ProjectedEntry | ToolRun)[]): (Too
   return positions;
 }
 
+function isUserMessageEntry(entry: ProjectedEntry | ToolRun): boolean {
+  return entry.kind === "item" && entry.item.type === "userMessage";
+}
+
 export function TurnBlock({
   turn,
   sessionRef,
@@ -313,9 +317,16 @@ export function TurnBlock({
   const laidOut = foldTurnEntries(projectedTurn);
   const cardPositions = toolCardPositions(laidOut);
   const renderedEntries: ReactNode[] = [];
+  // The seen divider marks where the unseen reply starts, so it follows the
+  // messages that opened the turn: what the reader sent is not new to them.
+  let seenDividerPending = showSeenDivider;
   for (let index = 0; index < laidOut.length; index += 1) {
     const entry = laidOut[index];
     if (!entry) continue;
+    if (seenDividerPending && !isUserMessageEntry(entry)) {
+      seenDividerPending = false;
+      renderedEntries.push(<SeenDivider key="seen-divider" />);
+    }
     if (entry.kind === "run") {
       renderedEntries.push(
         <div
@@ -407,24 +418,17 @@ export function TurnBlock({
       );
     }
   }
+  if (seenDividerPending) renderedEntries.push(<SeenDivider key="seen-divider" />);
   return (
-    <>
-      {showSeenDivider && <SeenDivider />}
-      <div
-        className={CLASS.turn}
-        data-testid="turn-block"
-        data-turn-id={sourceTurn.id}
-        data-turn-status={displayStatus}
-      >
-        {renderedEntries}
-        {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
-        {!failure && displayStatus === "completed" && showTurnSeparator && (
-          <div className={CLASS.runContent} data-testid="turn-done-row">
-            <TurnDoneEndCap turn={sourceTurn} />
-          </div>
-        )}
-        {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
-      </div>
-    </>
+    <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id} data-turn-status={displayStatus}>
+      {renderedEntries}
+      {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
+      {!failure && displayStatus === "completed" && showTurnSeparator && (
+        <div className={CLASS.runContent} data-testid="turn-done-row">
+          <TurnDoneEndCap turn={sourceTurn} />
+        </div>
+      )}
+      {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
+    </div>
   );
 }

@@ -16,7 +16,7 @@ const CLASS = {
 
 export function SeenDivider() {
   return (
-    <div className={CLASS.row} data-testid="seen-divider">
+    <div className={CLASS.row} data-testid="seen-divider" data-seen-divider="">
       <Chip tone="neutral">New since your last visit</Chip>
     </div>
   );

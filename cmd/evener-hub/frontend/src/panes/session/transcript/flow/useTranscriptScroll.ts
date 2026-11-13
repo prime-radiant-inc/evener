@@ -60,6 +60,7 @@ import {
   restoreTopAnchor,
   retainedPlacements,
   topVisiblePosition,
+  unseenReplyLandingOffset,
   type ViewAnchorPosition,
 } from "./viewAnchor";
 
@@ -78,6 +79,16 @@ export interface UseTranscriptScrollOptions {
   viewKey?: string;
   /** A retained reader restores its measured view instead of landing fresh at the end. */
   initialViewCapture?: CapturedTranscriptView;
+  /**
+   * The row holding the seen divider, when this open should land there
+   * instead of at the end: the session has a finished reply the reader has
+   * not seen. Read once per opened session; a reader with a retained place of
+   * their own keeps it.
+   */
+  openAtRow?: number;
+  /** Injectable seam for where the unseen reply's landing sits relative to
+   * the viewport top; undefined while its row is not rendered. */
+  measureUnseenLanding?: (el: HTMLElement) => number | undefined;
   onReaderIntent?: () => void;
   onReaderMovement?: (beforeOffset: number) => void;
   /** Injectable stable-entry geometry seam; production reads data-view-anchor elements. */
@@ -124,6 +135,10 @@ export interface UseTranscriptScrollOptions {
    */
   heldEpoch?: number;
 }
+
+// How close to its target an unseen-reply landing counts as placed: scroll
+// offsets round to the device pixel.
+const LANDING_TOLERANCE_PX = 1.5;
 
 // The end-anchored VirtualList owns the transcript's position; this is the one
 // call that tells it "the end". The mount landing, an append's follow, and a
@@ -194,6 +209,8 @@ export function useTranscriptScroll({
   measure = readScrollMetrics,
   viewKey = "everything",
   initialViewCapture,
+  openAtRow,
+  measureUnseenLanding = unseenReplyLandingOffset,
   measureAnchors = readAnchorPositions,
   anchorEntries,
   renderedRowCount: renderedRowCountInput,
@@ -257,6 +274,10 @@ export function useTranscriptScroll({
     wheelAwayOffsetRef.current = beforeOffset;
   }, []);
   const pendingInitialEndRef = useRef<string | null>(null);
+  // The session whose opening placement has been chosen. A transcript that
+  // remounts under the same session is not a second open, so it never sends a
+  // reader back to the unseen reply they have since read past.
+  const openedRef = useRef<string | null>(null);
   const pendingViewAnchorRef = useRef<PendingViewAnchor | null>(null);
   // Reader-gesture state for the bottom-hold correction (see the scroll
   // listener). Hook-level rather than effect-local so markGesture can be handed
@@ -648,6 +669,42 @@ export function useTranscriptScroll({
       const el = listRef.current?.getScrollElement();
       if (!el) return;
 
+      if (pending.openingRow !== undefined) {
+        // The row's own scroll request is still bringing it into the window;
+        // every row that holds the boundary turn renders the divider, so the
+        // measurement that commits the row finds it.
+        const landingOffset = measureUnseenLanding(el);
+        if (landingOffset === undefined) return;
+        const bounds = measure(el);
+        const landing = Math.max(0, Math.min(el.scrollTop + landingOffset, bounds.scrollHeight - bounds.clientHeight));
+        const list = listRef.current;
+        // A handle that reports no committed geometry places once; a real
+        // list keeps the landing pending until a committed layout finds it
+        // already in place, because the rows the first placement brings into
+        // the window measure far from their estimates and move it.
+        const placesOnce = list?.isMeasurementReady === undefined;
+        const inPlace = Math.abs(landing - el.scrollTop) <= LANDING_TOLERANCE_PX;
+        if (!inPlace) {
+          el.scrollTop = landing;
+          // An absolute placement replaces the row target the virtualizer is
+          // still reconciling, which would otherwise pull back to the row's top.
+          list?.scrollToOffset?.(landing);
+        }
+        if (!placesOnce && (!inPlace || layout?.isCurrent() !== true)) return;
+        pendingViewAnchorRef.current = null;
+        // Retire whatever target the virtualizer still holds from the
+        // placements on the way here, or its next reconcile would return to it.
+        layout?.cancelPendingScroll();
+        // A reply short enough to fit leaves the reader at the true end with
+        // no scroll event to say so; the geometry in hand does.
+        if (isAtBottom(measure(el))) {
+          wasAtBottomRef.current = true;
+          endFollowIntentRef.current = true;
+          queueMicrotask(() => setAwayFromBottom(false));
+        }
+        return;
+      }
+
       const measured = measureAnchors(el);
       const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
       const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
@@ -674,7 +731,7 @@ export function useTranscriptScroll({
         listRef.current?.scrollToIndex(restored.index, { align: "start" });
       }
     },
-    [ref, listRef, measure, measureAnchors, anchorEntries],
+    [ref, listRef, measure, measureAnchors, measureUnseenLanding, anchorEntries],
   );
 
   const restoreViewAnchorAfterMeasurement = useCallback(
@@ -746,9 +803,28 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
+      //
+      // The one exception is a finished reply the reader has not seen
+      // (openAtRow): that open lands on the seen divider at the reply's
+      // start, so the reader reads it from the top instead of scrolling back
+      // from its end to find where it began.
       const retained = retainedPlacements.get(el);
       const captured = retained?.logicalRef === ref ? retained.captured : undefined;
-      if (!captured && (!initialViewCapture || initialViewCapture.followingBottom)) {
+      const freshOpen = !captured && (!initialViewCapture || initialViewCapture.followingBottom);
+      const opensAtUnseen = freshOpen && openAtRow !== undefined && openedRef.current !== ref;
+      openedRef.current = ref;
+      if (opensAtUnseen) {
+        // The divider's exact place is only known once its row renders:
+        // the pending anchor finishes the landing from the measurement
+        // callback, and a reader's own movement cancels it like any other.
+        pendingViewAnchorRef.current = {
+          anchor: undefined,
+          proportion: 0,
+          openingRow: openAtRow,
+          scrollRequested: true,
+        };
+        listRef.current?.scrollToIndex(openAtRow, { align: "start" });
+      } else if (freshOpen) {
         pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
         pendingInitialEndRef.current = listRef.current?.isMeasurementReady?.() === false ? ref : null;
@@ -757,7 +833,12 @@ export function useTranscriptScroll({
       lastScrollGeometryRef.current = m;
       // A retained placement lands after its rows measure, so this geometry
       // can still be estimates that fit the port; its capture says where the reader is.
-      wasAtBottomRef.current = (captured ?? initialViewCapture)?.followingBottom ?? isAtBottom(m);
+      // An open at the unseen reply is away from the end until its landing
+      // measures otherwise: unmeasured geometry that happens to fit the port
+      // must not start following the end and undo the landing.
+      wasAtBottomRef.current = opensAtUnseen
+        ? false
+        : ((captured ?? initialViewCapture)?.followingBottom ?? isAtBottom(m));
       endFollowIntentRef.current = wasAtBottomRef.current;
       setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
@@ -907,10 +988,15 @@ export function useTranscriptScroll({
         m.clientHeight === previous.clientHeight &&
         !layoutCurrent;
       const wasFollowingBefore = wasAtBottomRef.current;
-      wasAtBottomRef.current = preserveEndFollow || (atBottom && (wasFollowingBefore || jumpLanded || layoutCurrent));
+      // An unseen-reply landing still in flight scrolls toward a row whose
+      // offset is an estimate, and a sizer shorter than that estimate clamps
+      // it to its own end for a frame. That is not the reader arriving at the
+      // end: the landing says where they are once it settles.
+      const arrived = atBottom && pendingViewAnchorRef.current?.openingRow === undefined;
+      wasAtBottomRef.current = preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || layoutCurrent));
       // Only a real arrival (not a one-frame clamp) establishes the intent; a
       // stable-geometry backward move clears it.
-      if (atBottom && (wasFollowingBefore || jumpLanded || gestured)) {
+      if (arrived && (wasFollowingBefore || jumpLanded || gestured)) {
         endFollowIntentRef.current = true;
       } else if (!atBottom && pendingInitialEndRef.current !== ref) {
         if (gestured || pointerDraggingRef.current) {

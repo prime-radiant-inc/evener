@@ -18,7 +18,7 @@ changes; keep implementation history in Git and pull requests.
   navigation boundaries, pagination and shared recovery ownership.
 - [Attention navigation](attention-navigation.md): the Needs-you tier's
   membership rule, the web's floating Next-needs-you control and its history
-  retention, composer Stop and failed-turn Retry.
+  retention, composer Stop, failed-turn Retry and where a session opens.
 - [Manager workflow](../automation.md#manager-sessions): an immutable session
   start parameter for anyone authorized to start a session. Managers discover,
   observe and act on sessions reachable through their own hub, with local and
