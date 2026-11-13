@@ -954,3 +954,80 @@ func TestListSessions_BoundedJobsScan(t *testing.T) {
 		t.Fatalf("Failures = %+v, want the head-window legacy delegate activation reported", res.Sessions[0].Failures)
 	}
 }
+
+// TestListSessions_OverBoundTranscriptCorruptInWindowStaysUnreadable pins the
+// window's unreadable-session contract: a transcript past the tail bound
+// with a corrupt complete line inside the window fails the row exactly as the
+// full scan would.
+// Not parallel: overrides sessionRowTranscriptTailBytes.
+func TestListSessions_OverBoundTranscriptCorruptInWindowStaysUnreadable(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	padding := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText(strings.Repeat("p", 4096))}})
+	turns := make([]schema.Turn, 8)
+	for i := range turns {
+		turns[i] = padding
+	}
+	writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC()}, turns, schema.SessionMeta{}, nil, time.Unix(2, 0).UTC())
+	transcriptFile, err := os.OpenFile(filepath.Join(bucket, "sessions", sid+".transcript.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transcriptFile.WriteString("{not json}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriptFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 0 || len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sid {
+		t.Fatalf("sessions = %d, unreadable = %+v; the corrupt line inside the window must fail the row", len(res.Sessions), res.Unreadable)
+	}
+}
+
+// TestListSessions_OutcomeBeyondFirstTailWindow proves the tail window grows
+// until it holds the last assistant record: a session whose final assistant
+// turn sits outside the first window still reports its true outcome instead
+// of degrading to "none".
+// Not parallel: overrides sessionRowTranscriptTailBytes.
+func TestListSessions_OutcomeBeyondFirstTailWindow(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	// The last assistant turn sits ~12 KiB before the end — outside the
+	// first 8 KiB window, inside the second — with only user padding after
+	// it, which the outcome hint's backward walk skips.
+	turns := make([]schema.Turn, 8)
+	for i := range turns {
+		turns[i] = schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText(strings.Repeat("p", 4096))}})
+	}
+	turns = append(turns, schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{communicateCall(true, "approve")}}))
+	for range 3 {
+		turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText(strings.Repeat("p", 4096))}}))
+	}
+	writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC(), Model: "m"}, turns, schema.SessionMeta{Model: "m", TurnCount: len(turns)}, nil, time.Unix(2, 0).UTC())
+
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 1 || len(res.Unreadable) != 0 {
+		t.Fatalf("sessions = %d, unreadable = %+v", len(res.Sessions), res.Unreadable)
+	}
+	if got := res.Sessions[0].Outcome; got != "end_turn=true decision=approve" {
+		t.Errorf("Outcome = %q, want the assistant turn beyond the first window's end_turn=true decision=approve", got)
+	}
+}

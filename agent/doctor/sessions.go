@@ -18,10 +18,13 @@ import (
 
 // sessionRowJobsMaxBytes bounds how deep into a jobs journal a sessions row
 // scans. The failures the row folds for are retired delegate activation
-// records, which are always among a journal's oldest events, so a head
-// window keeps everything the report exists to find while capping the
-// scan; a journal at or under the bound is read whole. Production never
-// assigns it; a test shrinks it to prove the bound.
+// records, written at activation time and so usually among a journal's oldest
+// events — the head window is where that legacy state lives — and a journal
+// at or under the bound is read whole. On a larger journal, records beyond
+// the window are not reported: the row's failures stay a bounded summary of
+// retired state, and the per-session jobs report remains the unbounded,
+// authoritative view. Production never assigns it; a test shrinks it to
+// prove the bound.
 var sessionRowJobsMaxBytes int64 = 1 << 20
 
 // SessionRow is one session's forensic summary, as ListSessions enumerates for
