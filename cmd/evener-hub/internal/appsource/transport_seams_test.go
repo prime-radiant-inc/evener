@@ -19,12 +19,13 @@ import (
 )
 
 type scriptedAppwireTransport struct {
-	recv      chan appwire.Message
-	closed    chan struct{}
-	closeOnce sync.Once
-	recvDone  chan struct{}
-	recvOnce  sync.Once
-	send      func(context.Context, appwire.Message) error
+	recv       chan appwire.Message
+	closed     chan struct{}
+	closeOnce  sync.Once
+	recvDone   chan struct{}
+	recvOnce   sync.Once
+	send       func(context.Context, appwire.Message) error
+	jsonErrors bool
 }
 
 func newScriptedAppwireTransport(send func(context.Context, appwire.Message) error) *scriptedAppwireTransport {
@@ -58,21 +59,89 @@ func (t *scriptedAppwireTransport) Close() error {
 	return nil
 }
 
-func respondingTransport(result func(string) (any, error)) *scriptedAppwireTransport {
-	var transport *scriptedAppwireTransport
-	transport = newScriptedAppwireTransport(func(_ context.Context, msg appwire.Message) error {
+// newScriptedItemTransport builds one fresh scripted transport for a dial. It
+// owns the dispatch both item-mode fixtures share: decoded read and turns-list
+// params, wire-error framing, and the initialize response for any other
+// method. Handlers return a response value or an error; the transport frames
+// it. jsonErrors makes the transport round-trip its error frames through JSON.
+func newScriptedItemTransport(
+	read func(appwire.ThreadReadParams) (any, error),
+	page func(appwire.ThreadTurnsListParams) (any, error),
+	jsonErrors bool,
+) *scriptedAppwireTransport {
+	return newScriptedReplyTransport(jsonErrors, func(request *appwire.Request) (any, error) {
+		switch request.Method {
+		case appwire.MethodThreadRead:
+			var params appwire.ThreadReadParams
+			if err := json.Unmarshal(request.Params, &params); err != nil {
+				return nil, err
+			}
+			return read(params)
+		case appwire.MethodThreadTurnsList:
+			var params appwire.ThreadTurnsListParams
+			if err := json.Unmarshal(request.Params, &params); err != nil {
+				return nil, err
+			}
+			return page(params)
+		default:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+		}
+	})
+}
+
+// newScriptedReplyTransport builds one fresh scripted transport from a
+// method-agnostic dispatch. It shares the send scaffolding and reply framing;
+// the dispatch decides the response for each method.
+func newScriptedReplyTransport(jsonErrors bool, dispatch func(*appwire.Request) (any, error)) *scriptedAppwireTransport {
+	transport := newScriptedAppwireTransport(nil)
+	transport.jsonErrors = jsonErrors
+	transport.send = func(_ context.Context, msg appwire.Message) error {
 		if msg.Request == nil {
 			return nil
 		}
-		value, err := result(msg.Request.Method)
-		if err != nil {
-			transport.recv <- appwire.ErrorMessage(msg.Request.ID, appwire.InternalError(err.Error()))
-		} else {
-			transport.recv <- appwire.ResponseMessage(msg.Request.ID, value)
-		}
-		return nil
-	})
+		response, err := dispatch(msg.Request)
+		return transport.reply(msg.Request, response, err)
+	}
 	return transport
+}
+
+// reply frames one scripted response: a wire error becomes an application error
+// message, any other error fails the send, and a successful value becomes the
+// response message. jsonErrors round-trips the error message through JSON so a
+// fixture can assert the decoded wire shape.
+func (t *scriptedAppwireTransport) reply(request *appwire.Request, response any, err error) error {
+	if err != nil {
+		wire, ok := errors.AsType[appwire.WireError](err)
+		if !ok {
+			return err
+		}
+		message := appwire.ErrorMessage(request.ID, wire)
+		if t.jsonErrors {
+			encoded, err := json.Marshal(message)
+			if err != nil {
+				return err
+			}
+			var decoded appwire.Message
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				return err
+			}
+			message = decoded
+		}
+		t.recv <- message
+		return nil
+	}
+	t.recv <- appwire.ResponseMessage(request.ID, response)
+	return nil
+}
+
+func respondingTransport(result func(string) (any, error)) *scriptedAppwireTransport {
+	return newScriptedReplyTransport(false, func(request *appwire.Request) (any, error) {
+		value, err := result(request.Method)
+		if err != nil {
+			return nil, appwire.InternalError(err.Error())
+		}
+		return value, nil
+	})
 }
 
 func dialTransport(transport appwire.Transport) appwireDialFunc {
