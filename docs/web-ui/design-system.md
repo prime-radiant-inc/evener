@@ -521,7 +521,8 @@ retain their token radii. Existing widget dimensions and touch targets are uncha
 The radius ladder is a contract, not a starting point: 8px is reserved for
 `--radius-panel` alone — a floating disclosure card inside a pane body's padding — and is
 not a general softening. Do not raise `--radius-pane` or `--radius-control` toward it;
-panes, cards and dialogs stay at 4px.
+surfaces that draw from the radius tokens stay at their token values, while structural
+surfaces (Card, PaneScaffold, tables) stay square as above.
 `--dock-clearance` is the home-indicator band a bottom dock keeps its content
 clear of, `max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))`:
 0 off a phone, and it yields as the on-screen keyboard rises so a dock spends
@@ -1104,8 +1105,10 @@ The side-effecting `upgrade` and `search` commands stay out of plain search:
 `pushCommandMatches` filters them from every plain listing, while a `/`-prefixed
 command-filter listing (`filterCommands` direct) still shows them for explicit invocation.
 Enter acts on the highlighted row only after the
-reader has picked one — arrowed, clicked, or typed a name; a bare `/` with the highlight
-untouched falls through rather than firing row 0 (`activateResult`'s `picked` gate).
+reader has picked one — arrowed, clicked, or typed a name — and only in the
+`/`-prefixed command-filter mode; a bare `/` with the highlight untouched falls
+through rather than firing row 0 (`enterPressed`'s `picked` gate). In plain
+search mode Enter activates the automatically highlighted first result.
 
 ## 10. Collection pages: segmented workspaces and detail sheets
 

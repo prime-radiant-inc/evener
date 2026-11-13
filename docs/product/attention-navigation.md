@@ -181,8 +181,13 @@ window is invalidated are all vetoes
 ([`isLatestRetryTurn`](../../appwire-client/typescript/turnContinuation.ts)).
 At activation the decision is re-read synchronously against live state, so a
 button captured before the model advanced submits nothing. Not-latest and
-not-failed hide the action; the pending answers and a missing live service
-keep it visible but disabled.
+not-failed hide the action; the pending answers keep it visible but disabled.
+Service availability is a client-specific gate, not a shared one: the native
+client derives its Retry availability from whether the service can send
+(`serviceReady: canSend` in
+[`errorAction.ts`](../../mobile-native/src/session/errorAction.ts)), so a
+session with no service offers no Retry, while the browser reports the
+service as ready and lets submission surface any connection failure itself.
 
 At most one pending continuation exists per presser: the shared submission
 guard (`beginSharedSubmission` in the browser's
