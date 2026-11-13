@@ -519,6 +519,13 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 					}
 				}
 			}
+			if strings.Contains(payload, "## Turn ") {
+				structure = strings.ReplaceAll(structure, payload, "")
+			}
+			bulkPayload := trenderUTF8Prefix(trender_boundedPayload(payload), 48)
+			if strings.Contains(bulkPayload, "## Turn ") {
+				structure = strings.ReplaceAll(structure, bulkPayload, "")
+			}
 			shown := transcriptHeadingTurns(t, structure)
 			if !slices.Equal(shown, meta.SelectedTurns) || len(shown) != meta.TurnsRendered {
 				t.Fatalf("actual selected addresses=%v, metadata=%v count=%d", shown, meta.SelectedTurns, meta.TurnsRendered)

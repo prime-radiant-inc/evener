@@ -42,6 +42,7 @@ type renderOpts struct {
 	evidence            *transcriptEvidence
 	callNames           map[string]string
 	proseBudget         map[int]int
+	entryBudget         map[int]int
 	anyTruncated        *bool
 	singleTurn          bool
 }
@@ -255,6 +256,61 @@ func boundTurnEvidenceIntervals(content string, maxChars int, exactReadHint stri
 	tail := available - head
 	headText, tailText := string(runes[:head]), string(runes[len(runes)-tail:])
 	return headText + marker + tailText, len(headText), len(content) - len(tailText)
+}
+
+// boundTurnEvidenceBytes bounds content to at most maxBytes in length, ensuring
+// truncation cuts only at valid UTF-8 rune boundaries and placing the exact elision
+// notice with exactReadHint between the retained head and tail excerpts.
+func boundTurnEvidenceBytes(content string, maxBytes int, exactReadHint string) (string, int, int) {
+	if len(content) <= maxBytes {
+		return content, len(content), len(content)
+	}
+	runes := []rune(content)
+	totalRunes := len(runes)
+	marker := fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; %s …_\n\n", totalRunes, exactReadHint)
+	if len(marker) >= maxBytes {
+		return marker, 0, len(content)
+	}
+
+	availBytes := maxBytes - len(marker)
+	headBytes := availBytes / 2
+	tailBytes := availBytes - headBytes
+
+	headEnd := 0
+	for headEnd < len(content) {
+		_, size := utf8.DecodeRuneInString(content[headEnd:])
+		if headEnd+size > headBytes {
+			break
+		}
+		headEnd += size
+	}
+
+	tailStart := len(content)
+	for tailStart > headEnd {
+		_, size := utf8.DecodeLastRuneInString(content[:tailStart])
+		if (len(content) - (tailStart - size)) > tailBytes {
+			break
+		}
+		tailStart -= size
+	}
+
+	removedRunes := utf8.RuneCountInString(content[headEnd:tailStart])
+	marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; %s …_\n\n", removedRunes, exactReadHint)
+	for len(content[:headEnd])+len(marker)+len(content[tailStart:]) > maxBytes {
+		if headEnd > 0 {
+			_, size := utf8.DecodeLastRuneInString(content[:headEnd])
+			headEnd -= size
+		} else if tailStart < len(content) {
+			_, size := utf8.DecodeRuneInString(content[tailStart:])
+			tailStart += size
+		} else {
+			break
+		}
+		removedRunes = utf8.RuneCountInString(content[headEnd:tailStart])
+		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; %s …_\n\n", removedRunes, exactReadHint)
+	}
+
+	return content[:headEnd] + marker + content[tailStart:], headEnd, tailStart
 }
 
 type transcriptEvidenceSpan struct {
@@ -556,6 +612,8 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 	total := len(entries)
 	start, end := parseRange(rangeSpec, total)
 	opt.evidence = nil // Budget probes do not contribute retained evidence.
+	var anyTruncated bool
+	opt.anyTruncated = &anyTruncated
 
 	renderedStart, renderedEnd := start, end
 	frontAnchored := isFrontAnchored(rangeSpec)
@@ -597,7 +655,7 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 		TurnsRendered: rendered,
 		Range:         normalizeRange(rangeSpec),
 		ElidedTurns:   elided,
-		Truncated:     truncated || rendered < total || strings.Contains(content, "characters elided from this oversized turn"),
+		Truncated:     truncated || rendered < total || anyTruncated,
 		FirstRendered: firstShown,
 		LastRendered:  lastShown,
 		Evidence:      evidence,
@@ -634,6 +692,13 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 					}
 				}
 			}
+			if entries[seq].Turn.Kind == schema.TurnToolResults {
+				for _, id := range toolResultCallIDs(entries[seq].Turn) {
+					if as, found := callOwnerSeq(entries, id); found && as >= start && as <= end && as >= renderedStart && as <= renderedEnd {
+						return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
+					}
+				}
+			}
 		}
 	}
 	return content, meta
@@ -649,8 +714,9 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 	if opt.proseBudget == nil {
 		opt.proseBudget = make(map[int]int)
 	}
-	truncatedAny := false
-	opt.anyTruncated = &truncatedAny
+	if opt.entryBudget == nil {
+		opt.entryBudget = make(map[int]int)
+	}
 
 	content, evidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 	priority := rangePriority(start, end, rangeSpec)
@@ -688,24 +754,51 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 			}
 			// Orphan tool result: evaluate on its own.
 			selected[seq] = true
+			delete(opt.entryBudget, seq)
 			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 			if len(candidate) <= convBudgetChars {
 				content, evidence = candidate, candidateEvidence
-			} else {
-				selected[seq] = false
+				continue
 			}
+			avail := convBudgetChars - len(content)
+			if avail > 300 {
+				opt.entryBudget[seq] = avail
+				candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+				for opt.entryBudget[seq] > 100 && len(candidate) > convBudgetChars {
+					overshoot := len(candidate) - convBudgetChars
+					opt.entryBudget[seq] -= max(1, overshoot)
+					candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+				}
+				if len(candidate) <= convBudgetChars {
+					content, evidence = candidate, candidateEvidence
+					continue
+				}
+			}
+			selected[seq] = false
+			delete(opt.entryBudget, seq)
 			continue
 		}
 
 		if entries[seq].Turn.Kind == schema.TurnAssistant {
-			hasToolCalls := len(toolCallIDs(entries[seq].Turn)) > 0
-			canTruncateInline := hasToolCalls || start == end
-			pairedResults := inRangePairedResults(entries, seq, start, end)
-			selected[seq] = true
-			for _, rs := range pairedResults {
-				selected[rs] = true
+			var turnBody strings.Builder
+			writeTextContent(&turnBody, entries[seq].Turn)
+			if turnBody.Len() > hardCapChars {
+				selected[seq] = false
+				delete(opt.proseBudget, seq)
+				delete(opt.entryBudget, seq)
+				continue
 			}
+			pairedResults := inRangePairedResults(entries, seq, start, end)
+			var newlySelected []int
+			for _, rs := range pairedResults {
+				if !selected[rs] {
+					selected[rs] = true
+					newlySelected = append(newlySelected, rs)
+				}
+			}
+			selected[seq] = true
 			delete(opt.proseBudget, seq)
+			delete(opt.entryBudget, seq)
 
 			// Try whole (untruncated) first.
 			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
@@ -714,53 +807,55 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 				continue
 			}
 
-			if !canTruncateInline {
-				selected[seq] = false
-				for _, rs := range pairedResults {
-					selected[rs] = false
-				}
-				delete(opt.proseBudget, seq)
-				continue
-			}
-
-			// Try inline truncation.
+			// Try inline truncation of prose.
 			opt.proseBudget[seq] = 0
 			candMin, _ := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
-			if len(candMin) > convBudgetChars {
-				selected[seq] = false
-				for _, rs := range pairedResults {
-					selected[rs] = false
-				}
-				delete(opt.proseBudget, seq)
-				continue
-			}
+			if len(candMin) <= convBudgetChars {
+				extraBytes := convBudgetChars - len(candMin)
+				hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+				markerLen := len(fmt.Sprintf("\n\n_… 0 characters elided from this oversized turn; %s …_\n\n", hint))
+				opt.proseBudget[seq] = markerLen + extraBytes
 
-			extraBytes := convBudgetChars - len(candMin)
-			extraRunes := extraBytes / utf8.UTFMax
-			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
-			markerRunes := len([]rune(fmt.Sprintf("\n\n_… 0 characters elided from this oversized turn; %s …_\n\n", hint)))
-			opt.proseBudget[seq] = markerRunes + extraRunes
-
-			candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
-			for opt.proseBudget[seq] > 0 && len(candidate) > convBudgetChars {
-				overshoot := len(candidate) - convBudgetChars
-				step := max(1, (overshoot+utf8.UTFMax-1)/utf8.UTFMax)
-				opt.proseBudget[seq] -= step
-				if opt.proseBudget[seq] < 0 {
-					opt.proseBudget[seq] = 0
-				}
 				candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+				for opt.proseBudget[seq] > 0 && len(candidate) > convBudgetChars {
+					overshoot := len(candidate) - convBudgetChars
+					opt.proseBudget[seq] -= max(1, overshoot)
+					if opt.proseBudget[seq] < 0 {
+						opt.proseBudget[seq] = 0
+					}
+					candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+				}
+
+				if len(candidate) <= convBudgetChars {
+					content, evidence = candidate, candidateEvidence
+					continue
+				}
 			}
 
-			if len(candidate) <= convBudgetChars {
-				content, evidence = candidate, candidateEvidence
-			} else {
-				selected[seq] = false
-				for _, rs := range pairedResults {
-					selected[rs] = false
+			// If proseBudget == 0 still exceeds convBudgetChars (Probe 1: tool cards/results exceed budget):
+			avail := convBudgetChars - len(content)
+			if avail > 300 {
+				opt.proseBudget[seq] = 0
+				opt.entryBudget[seq] = avail
+				candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+				for opt.entryBudget[seq] > 100 && len(candidate) > convBudgetChars {
+					overshoot := len(candidate) - convBudgetChars
+					opt.entryBudget[seq] -= max(1, overshoot)
+					candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 				}
-				delete(opt.proseBudget, seq)
+				if len(candidate) <= convBudgetChars {
+					content, evidence = candidate, candidateEvidence
+					continue
+				}
 			}
+
+			// Could not fit: rollback seq and ONLY newlySelected!
+			selected[seq] = false
+			for _, rs := range newlySelected {
+				selected[rs] = false
+			}
+			delete(opt.proseBudget, seq)
+			delete(opt.entryBudget, seq)
 			continue
 		}
 
@@ -795,6 +890,39 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 			content += label + preview
 		}
 	}
+
+	hasSelected := false
+	for seq := start; seq <= end; seq++ {
+		if selected[seq] {
+			hasSelected = true
+			break
+		}
+	}
+
+	// Guarantee at least the anchor non-user turn is rendered (never return 0 turns rendered).
+	if !hasSelected && end >= start {
+		anchor := end
+		if isFrontAnchored(rangeSpec) {
+			anchor = start
+		}
+		if entries[anchor].Turn.Kind != schema.TurnUserInput {
+			selected[anchor] = true
+			pairedResults := inRangePairedResults(entries, anchor, start, end)
+			for _, rs := range pairedResults {
+				selected[rs] = true
+			}
+			opt.entryBudget[anchor] = convBudgetChars - 400
+			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			for opt.entryBudget[anchor] > 100 && len(candidate) > convBudgetChars {
+				overshoot := len(candidate) - convBudgetChars
+				opt.entryBudget[anchor] -= max(1, overshoot)
+				candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			}
+			content = candidate
+			meta.Evidence = candidateEvidence
+		}
+	}
+
 	for seq := start; seq <= end; seq++ {
 		if selected[seq] {
 			meta.SelectedTurns = append(meta.SelectedTurns, seq)
@@ -821,7 +949,7 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 		}
 	}
 	truncated, content := applyHardCap(content)
-	meta.Truncated = truncated || meta.ElidedTurns > 0 || truncatedAny || strings.Contains(content, "characters elided from this oversized turn")
+	meta.Truncated = truncated || meta.ElidedTurns > 0 || (opt.anyTruncated != nil && *opt.anyTruncated)
 	return content, meta
 }
 
@@ -883,6 +1011,16 @@ func renderSelectedRange(header transcript.Header, entries []transcript.Entry, s
 			protected.spans = append(protected.spans, transcriptEvidenceSpan{seq, b.Len(), b.Len() + len(body), true})
 		} else if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == seq {
 			body = boundOversizedTurnEvidence(body)
+			if opt.anyTruncated != nil {
+				*opt.anyTruncated = true
+			}
+		} else if opt.entryBudget != nil && opt.entryBudget[seq] > 0 && len(body) > opt.entryBudget[seq] {
+			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+			bounded, _, _ := boundTurnEvidenceBytes(body, opt.entryBudget[seq], hint)
+			body = bounded
+			if opt.anyTruncated != nil {
+				*opt.anyTruncated = true
+			}
 		}
 		b.WriteString(body)
 	}
@@ -1320,7 +1458,6 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 	prose := formatAssistantProse(t, resultTool, idx)
 	tools := formatAssistantTools(seq, t, resultTool, idx, opt)
 
-	hasToolCalls := len(toolCallIDs(t)) > 0
 	if !wantFullTurn(opt, seq) {
 		proseLimit := -1
 		if opt.proseBudget != nil {
@@ -1330,17 +1467,7 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 		}
 		if proseLimit >= 0 {
 			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
-			bounded := boundOversizedTurnEvidenceWithHint(prose, proseLimit, hint)
-			if bounded != prose {
-				prose = bounded
-				if opt.anyTruncated != nil {
-					*opt.anyTruncated = true
-				}
-			}
-		} else if len(prose) > convBudgetChars && (hasToolCalls || opt.singleTurn) {
-			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
-			maxRunes := max(0, (convBudgetChars-1000)/utf8.UTFMax)
-			bounded := boundOversizedTurnEvidenceWithHint(prose, maxRunes, hint)
+			bounded, _, _ := boundTurnEvidenceBytes(prose, proseLimit, hint)
 			if bounded != prose {
 				prose = bounded
 				if opt.anyTruncated != nil {
@@ -1514,6 +1641,16 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 		writeToolResultBody(&result, wirenames.Canonical(displayName), pr.result, full)
 		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == pr.ownerSeq {
 			b.WriteString(boundOversizedTurnEvidence(result.String()))
+			if opt.anyTruncated != nil {
+				*opt.anyTruncated = true
+			}
+		} else if opt.entryBudget != nil && opt.entryBudget[pr.ownerSeq] > 0 && result.Len() > opt.entryBudget[pr.ownerSeq] {
+			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", pr.ownerSeq)
+			bounded, _, _ := boundTurnEvidenceBytes(result.String(), opt.entryBudget[pr.ownerSeq], hint)
+			b.WriteString(bounded)
+			if opt.anyTruncated != nil {
+				*opt.anyTruncated = true
+			}
 		} else {
 			b.WriteString(result.String())
 		}
