@@ -60,6 +60,12 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 			acceptedBefore: number,
 			authoritativeIds: ReadonlySet<string>,
 		): Promise<string[]>;
+		/** Durably retains a direct drain's consumed ids until their settle
+		 * succeeds (#4674): written on every settle trigger, reloaded at start,
+		 * cleared once settled. */
+		retainConsumed(clientMutationIds: readonly string[]): Promise<void>;
+		listRetainedConsumed(): Promise<string[]>;
+		clearRetainedConsumed(clientMutationIds: readonly string[]): Promise<void>;
 	};
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
@@ -251,6 +257,10 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		this.#started = true;
 		try {
 			await this.#outbox.start();
+			// A restart reconciles rather than re-delivers (#4674): a previous
+			// process's durable retained ids are loaded and settled here,
+			// because no authoritative read can ever name them again.
+			await this.#recoverRetainedConsumed();
 		} catch (error) {
 			if (this.#startGeneration === generation) this.#started = false;
 			throw error;
@@ -264,6 +274,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		this.#startGeneration += 1;
 		this.#started = false;
 		this.#startup = undefined;
+		// The quit boundary is the last durable chance for ids still held only
+		// in memory (#4674): their record must exist before the process goes
+		// away, because the reload can recover them from nowhere else and a
+		// read can never name them. The state updates above stay synchronous,
+		// so a start racing this stop still sees a stopped runtime.
+		await this.#retainConsumedDurable([...this.#unsettledConsumed]);
 		await this.#outbox.stop();
 		// A stopped runtime serves nothing, so the registrations it made for its
 		// own work end here. A later start that needs the identity registers it
@@ -880,25 +896,68 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	}
 
 	// The queued messages a direct drain consumed settle as the dispatcher
-	// settles them. Storage just failed, so the ids are retained until a
-	// write succeeds: a later authoritative read cannot name them, because a
-	// drain removes the queue ids it consumed.
+	// settles them. Storage just failed, so the ids are retained until a write
+	// succeeds: durably first, because a direct drain has no outbox row to
+	// replay its receipt from - the retained record is the only thing a
+	// restart can reconcile the consumed rows from, and a later authoritative
+	// read cannot name them, because a drain removes the queue ids it
+	// consumed.
 	async #settleConsumedByDrain(result: unknown): Promise<void> {
 		const receipt = (result as { receipt?: { consumedClientMutationIds?: unknown } } | null)?.receipt;
-		for (const id of validConsumedClientMutationIds(receipt?.consumedClientMutationIds))
-			this.#unsettledConsumed.add(id);
+		const consumed = validConsumedClientMutationIds(receipt?.consumedClientMutationIds);
+		for (const id of consumed) this.#unsettledConsumed.add(id);
+		if (consumed.length > 0) await this.#retainConsumedDurable(consumed);
 		await this.#settleRetainedConsumed();
 	}
 
 	async #settleRetainedConsumed(): Promise<void> {
 		if (this.#unsettledConsumed.size === 0) return;
 		const ids = [...this.#unsettledConsumed];
+		// A drain-time retain can have failed with the same storage failure
+		// that forced the direct path, so every later trigger re-attempts it:
+		// the first write storage accepts makes the ids outlive the process.
+		await this.#retainConsumedDurable(ids);
 		try {
 			await this.#dispatcher.reconcileIdentities(ids);
-			for (const id of ids) this.#unsettledConsumed.delete(id);
 		} catch {
 			// Storage is still failing; the next authoritative read retries.
+			return;
 		}
+		for (const id of ids) this.#unsettledConsumed.delete(id);
+		try {
+			await this.storage.clearRetainedConsumed(ids);
+		} catch {
+			// The rows are settled, so a record left behind names nothing: the
+			// next load settles it again as a no-op and clears it.
+		}
+	}
+
+	// The durable half of the retained set. The write is attempted on every
+	// trigger and tolerated when storage keeps refusing - the in-memory set
+	// still carries the retry while this process lives.
+	async #retainConsumedDurable(ids: readonly string[]): Promise<void> {
+		if (ids.length === 0) return;
+		try {
+			await this.storage.retainConsumed(ids);
+		} catch {
+			// Storage is still failing; the in-memory set carries them.
+		}
+	}
+
+	// A restart's reconciliation (#4674): the durable records a previous
+	// process left behind are reloaded and settled, and their own settle
+	// clears them again.
+	async #recoverRetainedConsumed(): Promise<void> {
+		let retained: string[];
+		try {
+			retained = await this.storage.listRetainedConsumed();
+		} catch {
+			// Storage is still failing; the records stay and the next start
+			// loads them.
+			return;
+		}
+		for (const id of retained) this.#unsettledConsumed.add(id);
+		await this.#settleRetainedConsumed();
 	}
 
 	/** The mutations this phone submitted to a target this launch, by id,

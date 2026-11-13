@@ -1759,6 +1759,45 @@ test("a drain's consumed messages left unsettled by a refused write settle on th
 	await runtime.stop();
 });
 
+test("a drain's consumed ids a quit caught before a read survive it and settle on the reload", async () => {
+	let nextId = 0;
+	const sharedDatabase = openDatabase();
+	const runtime = new NativeMutationRuntime(sharedDatabase, {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+
+	// Storage answers again, but no authoritative read runs before the quit -
+	// and a read could not name the ids anyway, because the drain consumed
+	// them - so only what the quit wrote durably can settle the row.
+	database!.exec("PRAGMA query_only = OFF");
+	await runtime.stop();
+
+	const reloaded = new NativeMutationRuntime(sharedDatabase, {
+		createMutationId: () => `reload-${++nextId}`,
+	});
+	await reloaded.start();
+	expect(await reloaded.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await reloaded.stop();
+});
+
 // SQLITE_FULL rolls the transaction back itself, so the savepoint's own
 // rollback fails too; the send must still see the full-disk error.
 test("a send on a full disk goes out as a plain request", async () => {

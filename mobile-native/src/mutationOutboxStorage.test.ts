@@ -251,6 +251,21 @@ test("instanceId round-trips through a reload and the recovery handoff", async (
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
 });
 
+test("retained consumed ids dedupe, survive a reload, and retire when cleared", async () => {
+	await storage.retainConsumed(["consumed-1", "consumed-2", "consumed-1"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-1", "consumed-2"]);
+
+	// A fresh adapter over the same database - what an app restart is - reads
+	// the ids back: the record, not the process, is the memory (#4674).
+	openStorage();
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-1", "consumed-2"]);
+
+	await storage.clearRetainedConsumed(["consumed-1"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-2"]);
+	await storage.clearRetainedConsumed(["consumed-2"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual([]);
+});
+
 test("enqueueIntent persists an absent optimistic display as JSON null and reads it as undefined", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("without an optimistic display"),
