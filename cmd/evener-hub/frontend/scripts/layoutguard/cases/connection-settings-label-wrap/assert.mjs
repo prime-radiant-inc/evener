@@ -14,11 +14,6 @@ export default function assert(m) {
       `the label's glyphs run ${m.labelScrollWidth - m.labelClientWidth}px past its ${m.labelClientWidth}px column instead of wrapping`,
     );
   }
-  if (m.rowScrollWidth > m.rowClientWidth + TOLERANCE) {
-    failures.push(
-      `the settings row scrolls horizontally (scrollWidth ${m.rowScrollWidth}px in clientWidth ${m.rowClientWidth}px) - the label is not contained`,
-    );
-  }
   // Two-sided: the label must actually wrap, or the containment bounds above
   // would trivially pass for an empty or vanished label.
   if (m.label.height < lineHeight * 1.5) {

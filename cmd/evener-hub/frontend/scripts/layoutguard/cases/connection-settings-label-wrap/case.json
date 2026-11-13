@@ -11,6 +11,6 @@
     "declaration": "panes/settings/sections/credentials/ConnectionFacts.module.css .rowLabel overflow-wrap: anywhere deleted, leaving the single-token label to run into the input",
     "verified": "2026-11-13",
     "expect": "fail",
-    "note": "Red run without the declaration: the label's glyphs stay on one line and run past the label column (label scrollWidth exceeds its client box, the row scrolls horizontally, and the label never grows past one line). With the declaration the label wraps inside the 104px column and the input keeps its width."
+    "note": "Observed red run without the declaration (transcribed from the FAIL output): the label's glyphs run 29px past its 104px column instead of wrapping, and the label stays one line at 23.2px against a 19.2px line height. With the declaration the label wraps to two lines inside the column and the input keeps its track (right edges aligned to the row)."
   }
 }
