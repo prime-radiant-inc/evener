@@ -79,6 +79,7 @@
     "sendQueueAvailability.ts",
     "sendQueueGate.ts",
     "sessionErrors.ts",
+    "sessionFacts.ts",
     "stableDelegate.ts",
     "delegateDetails.ts",
     "docContent.ts",

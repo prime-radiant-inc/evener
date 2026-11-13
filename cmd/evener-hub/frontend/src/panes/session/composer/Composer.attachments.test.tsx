@@ -675,3 +675,82 @@ test("clicking the attach button triggers the hidden file input", async () => {
   await user.click(screen.getByTestId("composer-attach"));
   expect(clickSpy).toHaveBeenCalledTimes(1);
 });
+
+// Android Chrome's picker for an image-only input browses existing pictures
+// and has no camera; the attach control is the only way to one there.
+function installAndroidBrowser(): void {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+    "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36",
+  );
+}
+
+// Opens the attach control's menu and presses each choice in turn, recording
+// what the hidden input was asked for at the moment it opened.
+async function captureRequestedByEachChoice(): Promise<(string | null)[]> {
+  const user = userEvent.setup();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const captures: (string | null)[] = [];
+  vi.spyOn(input, "click").mockImplementation(() => {
+    captures.push(input.getAttribute("capture"));
+  });
+  const trigger = within(screen.getByTestId("composer-attach")).getByRole("button");
+  await user.click(trigger);
+  const count = screen.getAllByRole("menuitem").length;
+  for (let index = 0; index < count; index += 1) {
+    if (index > 0) await user.click(trigger);
+    await user.click(screen.getAllByRole("menuitem")[index] as HTMLElement);
+  }
+  return captures;
+}
+
+test("where the browser's picker already has a camera, attach opens it directly with no menu", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+  act(() => textarea().focus());
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const clickSpy = vi.spyOn(input, "click").mockImplementation(() => {});
+
+  await user.click(screen.getByTestId("composer-attach"));
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(clickSpy).toHaveBeenCalledTimes(1);
+  expect(input.hasAttribute("capture")).toBe(false);
+});
+
+test("on Android, attach offers the picker and the camera, and only the camera choice asks for it", async () => {
+  installAndroidBrowser();
+  await mountComposer("ref_a");
+  act(() => textarea().focus());
+
+  const captures = await captureRequestedByEachChoice();
+  expect(captures).toHaveLength(2);
+  expect(captures.filter((capture) => capture !== null)).toHaveLength(1);
+});
+
+// The two choices share one input, so the camera request must not outlive the
+// open that made it: choosing images after taking a photo has to reach the
+// picker again. Running the choices camera-last then picker-again covers the
+// order the first pass does not.
+test("on Android, a camera request does not stick to the next picker open", async () => {
+  installAndroidBrowser();
+  await mountComposer("ref_a");
+  act(() => textarea().focus());
+
+  const first = await captureRequestedByEachChoice();
+  const second = await captureRequestedByEachChoice();
+  expect(second).toEqual(first);
+});
+
+test("a photo taken on Android is staged like any picked image", async () => {
+  installAndroidBrowser();
+  installCanvasStubs();
+  await mountComposer("ref_a");
+  act(() => textarea().focus());
+
+  const captures = await captureRequestedByEachChoice();
+  expect(captures.some((capture) => capture !== null)).toBe(true);
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const photo = new File([new Uint8Array([1, 2, 3])], "image.jpg", { type: "image/jpeg" });
+  fireEvent.change(input, { target: { files: [photo] } });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
+});

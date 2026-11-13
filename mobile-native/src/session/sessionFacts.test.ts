@@ -1,28 +1,19 @@
 import type { ModelDescriptor, ThreadCapabilities } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import {
-	accessFacts,
 	canDeleteSavedSession,
 	canOpenModelSheet,
 	effortName,
-	hostIdOf,
 	latestForkPoint,
 	modelChipLabel,
 	notesSummary,
 	pluginsLine,
-	sessionHosts,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,
 } from "./sessionFacts";
 
 describe("where a session runs (spec 8.6)", () => {
-	it("reads the host from the ref", () => {
-		expect(hostIdOf("local:abc")).toBe("local");
-		expect(hostIdOf("paradise-park:abc")).toBe("paradise-park");
-		expect(hostIdOf("abc")).toBe("local");
-	});
-
 	it("names the host, project, directory and branch it knows", () => {
 		const label = (id: string) => (id === "local" ? "magic-kingdom" : id);
 		expect(
@@ -43,38 +34,6 @@ describe("where a session runs (spec 8.6)", () => {
 	});
 });
 
-// Spec 8.6: the host with its connection dot. The hub calls its own machine
-// "this host" in the manifest; the phone names it for the hub, as Hub > Hosts
-// does (audit N6).
-describe("the host a session runs on", () => {
-	const sources = [
-		{ id: "local", label: "this host", kind: "local", online: true },
-		{ id: "paradise-park", label: "paradise-park", kind: "appwire", online: false },
-	];
-
-	it("names the hub's own machine for the hub, and any other host by its manifest label", () => {
-		const host = sessionHosts(sources, "Work hub", true);
-		expect(host("local")).toEqual({ label: "Work hub", online: true });
-		expect(host("paradise-park")).toEqual({ label: "paradise-park", online: false });
-	});
-
-	it("reads every host as offline while the hub is away, whatever the manifest last said", () => {
-		const host = sessionHosts(
-			sources.map((source) => ({ ...source, online: true })),
-			"Work hub",
-			false,
-		);
-		expect(host("local")).toEqual({ label: "Work hub", online: false });
-		expect(host("paradise-park")).toEqual({ label: "paradise-park", online: false });
-	});
-
-	it("reads the hub's own machine as online while the hub is, and a host the manifest doesn't list by its id", () => {
-		const host = sessionHosts(undefined, null, false);
-		expect(host("local")).toEqual({ label: "local", online: false });
-		expect(host("studio")).toEqual({ label: "studio", online: null });
-	});
-});
-
 describe("plugins, chosen at start", () => {
 	it("counts and lists them, and says nothing when the inventory is unknown", () => {
 		expect(pluginsLine({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } })).toEqual({
@@ -85,31 +44,6 @@ describe("plugins, chosen at start", () => {
 		expect(pluginsLine({ diagnostics: { plugins: [] } })?.line).toBe("0 plugins · chosen at start");
 		expect(pluginsLine({ diagnostics: undefined })).toBeNull();
 		expect(pluginsLine({ diagnostics: {} })).toBeNull();
-	});
-});
-
-describe("access (S15)", () => {
-	it.each([
-		["off", "Full access"],
-		["workspace-write", "Workspace write"],
-		["read-only", "Read-only"],
-		["restricted", "Restricted"],
-		["container", "container"],
-	])("sandbox %s reads %s", (sandbox, mode) => {
-		expect(accessFacts({ access: { sandbox, network: true } })?.mode).toBe(mode);
-	});
-
-	it("says whether the network is allowed", () => {
-		expect(accessFacts({ access: { sandbox: "read-only", network: true } })).toEqual({
-			mode: "Read-only",
-			network: "On",
-		});
-		const on = accessFacts({ access: { sandbox: "read-only", network: true } })?.network;
-		expect(accessFacts({ access: { sandbox: "read-only", network: false } })?.network).not.toBe(on);
-	});
-
-	it("says nothing when the hub doesn't report access", () => {
-		expect(accessFacts({ access: undefined })).toBeNull();
 	});
 });
 

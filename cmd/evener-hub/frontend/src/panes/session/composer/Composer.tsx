@@ -61,7 +61,6 @@ import {
   Button,
   ConfirmDialog,
   Dropzone,
-  IconButton,
   PromptCard,
   SendIcon,
   Tooltip,
@@ -73,7 +72,7 @@ import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome"
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
-import { AttachIcon } from "./attachments/AttachIcon";
+import { AttachImageControl } from "./attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { CurrentWork } from "./CurrentWork";
@@ -1020,19 +1019,7 @@ function ComposerWithSubmission({
         <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
         <>
-          {!folded && (
-            <Tooltip label="Attach an image">
-              <IconButton
-                label="Attach image"
-                icon={<AttachIcon />}
-                variant="quiet"
-                size="xs"
-                type="button"
-                data-testid="composer-attach"
-                onClick={() => fileInputRef.current?.click()}
-              />
-            </Tooltip>
-          )}
+          {!folded && <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />}
           {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
         </>
       )}

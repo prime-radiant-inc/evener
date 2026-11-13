@@ -66,6 +66,17 @@ const fixtureThread: Thread = {
     reasoningEffortLevels: ["low", "medium", "high"],
     supportsReasoning: true,
     workMillis: 45_000,
+    failedToolCalls: 3,
+    access: { sandbox: "workspace-write", network: false },
+    diagnostics: {
+      plugins: ["superpowers", "go", "frontend-design"].map((name) => ({
+        name,
+        skillCount: 0,
+        agentCount: 0,
+        hookCount: 0,
+        mcpCount: 0,
+      })),
+    },
   },
 };
 
