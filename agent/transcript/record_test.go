@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func newRecordWriter(t *testing.T) (*Writer, string) {
@@ -157,6 +160,32 @@ func TestRetractToBoundaryTakesBackTheLinesWrittenSinceIt(t *testing.T) {
 	}
 	if len(seen) != 2 || seen[1].Ordinal != next.Ordinal {
 		t.Fatalf("recorded hook after the boundary ended = %+v, want the settled entry", seen)
+	}
+}
+
+// A fresh execution's first recorded entry can be a fold's compaction
+// marker, written while the execution has recorded nothing of its own — an
+// attention-only wake folds before the model call records anything. That
+// write is what turns running.fresh false, so a retract taken after it must
+// still restore the placement the boundary captured: the execution itself is
+// unchanged, and its first surviving entry must carry the span kind the
+// retracted entry stamped and took with it.
+func TestRetractRestoresAFreshExecutionsFirstRecord(t *testing.T) {
+	t.Parallel()
+	w := newPlacementWriter(t)
+	w.BeginExecution("turn_m9", false)
+	boundary := w.CaptureCommitBoundary()
+	marker := schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser})
+	if got := recordPlaced(t, w, marker, PlaceSession); got.TurnID != "turn_m9" || got.TurnKind != schema.TurnSpanExecution {
+		t.Fatalf("the execution's first record = %+v, want it stamped into turn_m9", got)
+	}
+	removed, retractErr := w.RetractToBoundary(boundary)
+	if !removed || retractErr != nil {
+		t.Fatalf("retract = %v, %v", removed, retractErr)
+	}
+	first := recordPlaced(t, w, steeringTurn("first surviving entry"), PlaceSession)
+	if first.TurnID != "turn_m9" || first.TurnKind != schema.TurnSpanExecution {
+		t.Fatalf("the execution's first surviving entry = %+v, want turn_m9 carrying the span kind the retracted record stamped", first)
 	}
 }
 

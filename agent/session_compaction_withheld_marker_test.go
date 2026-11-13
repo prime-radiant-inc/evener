@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -131,6 +133,14 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 		default:
 		}
 	})
+	// SetTranscriptPublishedFunc seeds the handoff at install time with one
+	// publication of the current length: discard it, so every length the
+	// assertions below judge is one the fold itself published.
+	select {
+	case <-publishedLengths:
+	default:
+		t.Fatal("the installation published no length before the fold ran")
+	}
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.beforeFoldTranscriptCommit = func() {
 			fs.arm(2) // the first staged copy lands, the second fails
@@ -185,13 +195,28 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 	if len(delivered) != 0 {
 		t.Fatalf("the withheld fold delivered %d recorded entr(ies) to the consumer hook, want none: the first is %+v", len(delivered), delivered[0])
 	}
-	select {
-	case length := <-publishedLengths:
-		if length != boundaryLength {
-			t.Fatalf("published length %d after the withheld fold, want the pre-fold boundary %d", length, boundaryLength)
+	// Collect every publication the fold itself made: the hold must have
+	// suppressed each transient per-record length, and the settled publication
+	// must land exactly on the pre-fold boundary.
+	var published []int64
+	for done := false; !done; {
+		select {
+		case length := <-publishedLengths:
+			published = append(published, length)
+		default:
+			done = true
 		}
-	default:
-		t.Fatal("no published length reached the consumer after the fold settled")
+	}
+	if len(published) == 0 {
+		t.Fatal("the withheld fold published no settled length to the consumer")
+	}
+	for _, length := range published {
+		if length > boundaryLength {
+			t.Fatalf("the withheld fold published transient length %d past the pre-fold boundary %d to a consumer: a held record's length must never reach one", length, boundaryLength)
+		}
+	}
+	if !slices.Contains(published, boundaryLength) {
+		t.Fatalf("the withheld fold's publications = %v, want the settled pre-fold boundary %d among them", published, boundaryLength)
 	}
 
 	// The fold still published in memory: the live history is compacted and
@@ -203,5 +228,101 @@ func TestCompactionWithholdsMarkerWhenRetainedTailWriteFails(t *testing.T) {
 	}
 	if at := indexOfTurnText(live, "opaque-withhold-input-19"); at < 0 {
 		t.Fatal("live history lost its retained tail: the in-memory fold must stand")
+	}
+}
+
+// TestWithheldFoldKeepsTheConversationCovered pins the conversation side of a
+// withheld fold: the fold's live marker references the conversation frontier
+// its transaction minted — the marker's record was that node's durable
+// carrier, and the retract took it back out. The next model request must
+// still resolve the marker's coverage, so the folded inputs stay carried and
+// the conversation stays authoritative, and a reply recorded after the
+// withheld fold must remain eligible for voice output instead of failing
+// ConversationOutputEligible until a restart.
+func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "withhold-coverage-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-withhold-coverage-summary\n[END SUMMARY]")}
+	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	response := func(llm.Request) llm.Response {
+		call := communicateCall("withheld-fold-result", "result")
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+	}
+	steps := make([]func(llm.Request) llm.Response, 0, 12)
+	for range 12 {
+		steps = append(steps, response)
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	const rounds = 8
+	for i := range rounds {
+		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-withhold-coverage-input-%d", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := s.ConversationProvenance().AdmittedInputs
+	if len(original) != rounds {
+		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
+	}
+
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &foldTailFaultFS{Fs: afero.NewOsFs()}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	s.attachTranscript(writer, nil)
+	var faultArmed bool
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			if faultArmed {
+				return // a later request's empty publication must not re-arm the fault
+			}
+			faultArmed = true
+			fs.arm(2) // the first staged copy lands, the second fails
+		}
+	})
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("only %d sync(s) since arming, want the first staged copy to land before the second failed: the fault hit the wrong write", n)
+	}
+	for _, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatal("the withheld fold published a compaction marker whose staged retained-tail copy write failed")
+		}
+	}
+
+	// A full round after the withheld fold: its model request stages the
+	// folded conversation, and its reply is the output voice eligibility
+	// judges.
+	if _, err := s.ProcessInput(context.Background(), "opaque-withhold-coverage-after", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	prepared := slices.Clone(s.conversation.preparedInputs)
+	s.mu.Unlock()
+	for _, id := range original {
+		if !slices.Contains(prepared, id) {
+			t.Fatalf("the request after the withheld fold lost the folded input %s: prepared=%v", id, prepared)
+		}
+	}
+	state := s.ConversationProvenance()
+	if !state.Authoritative {
+		t.Fatalf("the withheld fold left the conversation non-authoritative: state=%+v", state)
+	}
+	var output *appwire.ConversationOutputProvenance
+	for index, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if item, ok := apptranscript.CommunicateItem(entry.Turn.TurnID, index, entry.Turn); ok {
+			output = item.ConversationProvenance
+		}
+	}
+	if !appwire.ConversationOutputEligible(state, output) {
+		t.Fatalf("the reply after the withheld fold is not eligible for voice output: state=%+v output=%+v", state, output)
 	}
 }

@@ -199,10 +199,15 @@ func (w *Writer) ReleaseCommitBoundary() {
 // finds, so their consumers must see them, exactly as if no boundary had been
 // captured, and no exit may leave the hold stuck swallowing later entries'
 // notifications. The placement restore replays only what the transaction's
-// own writes could have changed and is skipped when the running execution
-// moved since the capture: a BeginExecution that began while the boundary
+// own writes could have changed and is skipped when a different execution
+// began since the capture: a BeginExecution that ran while the boundary
 // was held owns the placement state now, and restoring over it would send
-// the new execution's entries to the wrong span. The state restore happens
+// the new execution's entries to the wrong span. That comparison is the
+// running execution's identity, not its whole state: the transaction's own
+// writes can flip a fresh execution's freshness — its first recorded entry
+// stamps the span kind and turns the running turn stale — and that flip is
+// exactly what the restore must take back, so the first surviving entry of
+// the same execution still carries its TurnKind. The state restore happens
 // only when the lines are gone: a truncate that failed leaves the file, the
 // counters and the placement as they were. The retracted lines'
 // failure-counter observations stand (the count is monotone by contract),
@@ -254,7 +259,7 @@ func (w *Writer) RetractToBoundary(b CommitBoundary) (removed bool, err error) {
 	}
 	w.tail.recordedLength = b.length
 	w.tail.nextOrdinal = b.ordinal
-	if w.tail.turns.running == b.turns.running {
+	if w.tail.turns.running.id == b.turns.running.id {
 		w.tail.turns = b.turns
 	}
 	w.dirty = err != nil // the truncate's own sync settled the shorter file

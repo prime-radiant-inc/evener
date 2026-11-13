@@ -382,13 +382,12 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	published = append([]schema.Turn(nil), published...)
 	// What the transaction's own records will advance in memory: the pair
 	// log's last-write slot, the latest USER_INPUT entry index, and the
-	// conversation frontier the marker's record adopts (its node, the
-	// frontier id and the covered inputs — the durable carrier of the
-	// frontier is the marker line itself, so a withheld marker must leave no
-	// live reference to it for later records to build on).
+	// conversation frontier the marker's record adopts — the frontier id and
+	// the covered inputs, whose durable carrier is the marker line itself, so
+	// a withheld marker rolls them back for later records to build on (the
+	// node's own fate is the withhold branch's, below).
 	lastRecordedBeforeCommit := s.lastRecorded
 	userInputEntryBeforeCommit := s.userInputEntry
-	frontiersBeforeCommit := len(s.conversation.frontiers)
 	frontierIDBeforeCommit := s.conversation.frontierID
 	inputsBeforeCommit := slices.Clone(s.conversation.inputs)
 	s.mu.Unlock()
@@ -468,17 +467,26 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 			s.mu.Lock()
 			// The transaction's records are gone, so the bookkeeping they
 			// advanced must not remember appends no reader can find: the pair
-			// log's last write, the USER_INPUT entry index, the conversation
-			// frontier the marker's record adopted (its node is the durable
-			// carrier a retracted line no longer provides), and the note the
+			// log's last write, the USER_INPUT entry index, and the note the
 			// handoff turn was spending — its steering never landed, so the
 			// note must stay durably pending for the next cycle, behind the
 			// generation guard against a newer note.
 			s.lastRecorded = lastRecordedBeforeCommit
 			s.userInputEntry = userInputEntryBeforeCommit
-			s.conversation.frontiers = s.conversation.frontiers[:frontiersBeforeCommit]
+			// The conversation frontier the marker's record adopted is the one
+			// piece that must partly stay. The frontier ID and the covered
+			// inputs go back to their pre-commit values, so no later record
+			// chains onto a node whose durable carrier — the marker line — is
+			// gone: a reply or fold that named it would go unknown on resume,
+			// which replays the pre-compaction transcript where the node never
+			// existed. The node itself stays in the chain, marked retracted:
+			// the in-memory fold still stands, and its live marker references
+			// the node for the folded inputs' coverage. The next node a record
+			// actually carries replaces it there and inherits those
+			// references (replaceRetractedFrontierLocked).
 			s.conversation.frontierID = frontierIDBeforeCommit
 			s.conversation.inputs = inputsBeforeCommit
+			s.conversation.retractedFrontierID = commit.retractedFrontierID
 			if commit.restoreNoteLocked != nil {
 				commit.restoreNoteLocked()
 			}
@@ -826,6 +834,17 @@ type foldCommit struct {
 	// next resume replays to. Generation-guarded, like the claim it reverses;
 	// runs under s.mu inside the withhold branch. See restorePinnedNoteLocked.
 	restoreNoteLocked func()
+	// retractedFrontierID names the conversation frontier node this fold
+	// minted when the transcript commit is withheld: the marker line was
+	// that node's durable carrier, so the node stays in the chain as a
+	// live-only head (the in-memory fold's marker still references it for
+	// coverage) while the frontier ID and covered inputs go back to their
+	// pre-commit values. The next node a record actually carries replaces it
+	// (see replaceRetractedFrontierLocked). Empty when the fold minted no
+	// node, which is also when the withhold changes no conversation state.
+	// Written by prepareConversationLocked before the commit, read under s.mu
+	// inside the withhold branch.
+	retractedFrontierID string
 }
 
 // foldPublicationID renders the winning publication's identity from the
@@ -1053,6 +1072,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		conversationRef = s.conversation.frontierID
 		if conversationNode != nil {
 			conversationRef = conversationNode.ID
+			commit.retractedFrontierID = conversationNode.ID
 		}
 		last := len(pendingCompactionTurns) - 1
 		pendingCompactionTurns[last].ConversationFrontier = conversationNode
