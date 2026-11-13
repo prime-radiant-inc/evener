@@ -22,15 +22,23 @@ Controls follow that ownership, not the preview text or connection status.
   daemon's reason.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
-  "Delivery uncertain" as a subtitle. Editing it carries the row's inherited wire
-  identity into the recovery: an unchanged resend replays the existing mutation
-  under that identity - the daemon's journal deduplicates it, so work that
-  already delivered cannot apply twice - while changed content sends as a new
-  message under a fresh identity. The row still closes its ref's FIFO - the
-  daemon may already hold it, so nothing behind it may go - and when the hub
-  cannot answer, Remove is the exit that lets later messages move: it ends the
-  wire, retiring the row's remaining durable siblings in the same write, though
-  an attempt already in flight may still land and appear in the conversation.
+  "Delivery uncertain" as a subtitle. That row is the browser's own
+  `blockedUnknown` record in its IndexedDB mutation outbox — the browser's
+  durable recovery copy of the composition. The daemon never acknowledged the
+  send on a connection the browser could see, but a send that was accepted
+  durably by the daemon can lose its response and land here too, so the row
+  means acceptance is unknown, not that the daemon never received it;
+  reconciliation with authority is what settles the question, and until then no
+  server-side state the browser can read describes the message. Editing it
+  carries the row's inherited wire identity into the recovery: an unchanged
+  resend replays the existing mutation under that identity - the daemon's
+  journal deduplicates it, so work that already delivered cannot apply twice -
+  while changed content sends as a new message under a fresh identity. The row
+  still closes its ref's FIFO - the daemon may already hold it, so nothing
+  behind it may go - and when the hub cannot answer, Remove is the exit that
+  lets later messages move: it ends the wire, retiring the row's remaining
+  durable siblings in the same write, though an attempt already in flight may
+  still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Every undelivered message appears once, in the pending stack at the bottom of
@@ -50,6 +58,20 @@ late receipt or refusal still reconciles through it, whichever generation the
 authoritative feed names; repeated requeues bound retention to that one
 evidence row beside the live successor, and the wire's settlement or removal
 retires it with the rest.
+
+QueueStrip offers that **Retry** only when the press could act:
+`retryBlockedForTarget` (`cmd/evener-hub/frontend/src/stores/threads.ts`)
+reads the row's own target — the snapshot flags a press consults, plus the
+target's storage-blocked fence — so a fenced target keeps Retry disabled
+exactly as its press would refuse.
+
+Every resume trigger — a composer, palette or ask-dock send on a fenced
+session, a recovery resend, the session notice's own Resume button — runs the
+store's one resume sequence (`resumeSession`, whose `runResumeFencedForSend`
+in `cmd/evener-hub/frontend/src/stores/threads.ts` is the only production
+`resumeThread` caller), with one in-flight drive per ref: a press that
+arrives while a drive is running parks its row and joins the drive instead of
+issuing a second resume.
 
 ```mermaid
 flowchart LR

@@ -197,7 +197,11 @@ interruption notice for it: the notice belongs to observation loss, not to the
 re-read that follows it. The re-read rebuilds recorded evidence only. Status
 events are stream signals, not recorded history, so a watch waiting on status
 events can miss the ones that fired during the relay gap, and the re-read
-carries no separate sign of them. Each Manager and human client keeps
+carries no separate sign of them. That is the chosen rule, not a defect to
+repair with replay: status-event delivery converges on the latest frame, and
+Evener has no per-event at-least-once mode for status events, because
+duplicates and out-of-order replays read worse than a skipped intermediate
+state. Each Manager and human client keeps
 its own subscription lifetime. Remote question/answer/completion is qualified;
 sandbox approval caused by a live remote prompt remains unexercised end to end.
 Manager schemas come from session configuration and remain present during a
@@ -819,6 +823,17 @@ including shell `job_id` handles, return the bare tool error
   `running_in_background: false`, `output`, and `structured_result`. If the wait
   expires first, the result keeps `action: "started"` and adds `timed_out: true`
   without reply content. Only the wait has ended; the delegate is still running.
+- A reply collected by a positive wait is delivered whole while its complete
+  formatted text — the report plus any `earlier_results` — fits 50,000
+  characters (`delegateReportWholeMaxChars`). Past that budget the delivered
+  text is the registry's tail cut, keeping the last 50,000 characters, and the
+  complete reply is retained as an `artifact:<id>` capability the result names
+  with its `read_transcript(transcript_ref=...)` recovery line; the earlier
+  results lost to the cut are searchable there too. When retention is
+  unavailable the result keeps the tail with a `retention_failed` marker
+  instead, and the delegate's own session `transcript_ref` remains the recovery
+  route. This bounds only the synchronous waited reply; asynchronous
+  notifications keep their own bounds.
 - `max_wait_ms` is silently capped at 60000 ms. Delegate creation accepts no
   wait argument and rejects it with
   `invalid_request: delegate creation does not accept max_wait_ms`.
@@ -1663,6 +1678,10 @@ decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
 `&lt;`; job output excerpts use the same body contract. Accepted breakage:
 pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
 JSON-envelope extraction fails. No migration or legacy fallback is applied.
+Attribute values are a separate codec — `escapeNotificationText` paired with
+the client's `decodeNotificationAttributeEntities` — and keep the full entity
+set; only bodies use the two-entity pair. A notification producer escapes body
+text with `escapeNotificationBody`, never the attribute encoder.
 The `name` attribute appears
 only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
@@ -1725,6 +1744,20 @@ Rules:
 - Attention renders only in its owner's turns. A parent drives an idle child so
   that child processes its own shell/watch attention; the parent renders only
   its own shells and direct delegates. There is no forwarded delegate JobRecord.
+- Every delegate, observer, watch and job notification is a message delivered
+  into the session it notifies, over one delivery path, and the target wakes on
+  it like any other notification. The frame's `kind` (report, update, watch
+  event) describes the payload; it never decides whether the target wakes.
+  There is no report-specific wake predicate and no drain-only delivery path.
+- A terminal report never creates a human-attention entry. Only a pending
+  `ask_user` question or a `needs_response` rest puts a session in the
+  awaiting state; a delegate's report reaches its parent as owner attention so
+  the parent continues autonomously.
+- A delegate's terminal packet becomes durable before it is visible: the
+  generation writes its prepared-terminal event to the root `delegates.jsonl`
+  journal first, and acceptance, dedupe and integrity diagnostics key off that
+  durable record, not an in-memory packet. A crash loses at most an unaccepted
+  report and never shows a phantom one.
 - A delegate whose turn has ended while its generation waits on its own
   delegates is idle, and an update from one of them wakes it: the wait runs a
   turn that presents the update and consumes it, so no further generation
@@ -1748,7 +1781,30 @@ Rules:
   This holds whether the attention was armed before the turn began or during
   it. Attention appended after the turn's last request was built keeps its own
   wake.
+- Delivery distinguishes same-run finalization from a post-idle successor
+  wake: a child report already pending while the receiving run is still
+  finalizing is processed within that run, while one arriving after the
+  receiver rests idle gets its own successor-run wake. An accepted terminal
+  communicate is not the completed-run boundary. A draining delegate
+  coordinator is the exception: its pending terminal reports wait for an
+  update that triggers a turn, as they do for any other wake source — a drain
+  with no update leaves them for the next attention generation.
+- A completion whose reminder a settled request already carried counts as
+  observed even when writing its resolution later fails: the retry re-reads
+  the transcript, finds the reminder already injected, and repairs the delivery
+  record without writing the reminder again or presenting the completion to
+  the model a second time — a wake that finds nothing else pending stands down
+  with no model request. A presentation that failed before any settled request
+  still owes its full retry.
+- The code producing a completion owns the exact messages it produced through
+  its delivery attempt: an in-flight delivery keeps its claim until it
+  finishes, competing senders stand down for those messages, and the existing
+  recovery paths take over after delivery failure. Unrelated messages and
+  receivers stay independent; there is no global transport lock.
 - Duplicate terminal attention is suppressed by its durable source identity.
+- An attention-resolution wake with nothing to deliver — no new input, no
+  pending steering, no deliverable notification, no pending attention — stands
+  down without a model request; an empty notification turn is a true no-op.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
@@ -1771,6 +1827,32 @@ Shell terminal delivery keeps its existing durable pending/delivered/consumed
 state and dedupe key. Stable delegate packet delivery is ordered in the
 delegate aggregate, while the exact receiver-transcript ID prevents duplicate
 model input if a crash lands between receiver commit and source acknowledgement.
+
+All of these producers — shell completions, delegate packets, updates, watch
+frames — share one delivery path. When the common path replaces a delivery,
+wake, polling-wait or purge route, the displaced route is deleted rather than
+kept in parallel; storage readers and execution/resource safety boundaries
+survive as such, never as parallel notification policy.
+
+A stable delegate stop persists its accepted notification with the stop
+generation in the root journal, so a hub restart preserves it once: the stop is
+neither re-armed as a new notification nor dropped. One stop event produces one
+notification.
+
+Sessions deliberately configured without persistence (an empty StateDir)
+remain supported. Their job and notification state lives under the
+Evener-owned temp base (`SessionWorkDir`), so notifications use the same
+delivery path with session-local state. Persistence disabled by configuration
+is distinct from a persistence failure: a session configured to persist must
+never silently switch its failed disk writer for memory.
+
+Healthy recovered delivery settles at restore rather than staying
+transport-pending: a restore replays prepared delegate deliveries into the
+receiver transcript before the session is returned to its caller, and a
+watch's pending sends rehydrate from the journal and deliver on the next
+drain. Restored delivery keeps exactly-once settlement — no duplicate model
+input, no lost retired history — and an empty pending inventory alone is not
+evidence of it.
 
 ```mermaid
 stateDiagram-v2
