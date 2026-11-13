@@ -452,6 +452,29 @@ test("a linked composed reply answering a header a sibling also asks recaps neit
   expect(answeredAskUserSuffix(model, beta)).toBeUndefined();
 });
 
+test("a linked composed reply answering both distinct-header sibling calls recaps both", () => {
+  // The dock composes ONE [answers] reply for the whole pending set: with
+  // distinct headers, each answer names its own call and both recaps stand.
+  // An answered header belonging to the OTHER sibling must not read as a
+  // collision for this call.
+  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
+  const beta = item({
+    argumentsJSON: askUserArgs([
+      { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_beta",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Beta] → "Postgres"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+  });
+  const model = turnsModel([alpha, beta], [reply]);
+  expect(answeredAskUserSuffix(model, alpha)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserSuffix(model, beta)).toBe(' — answered: "Postgres"');
+});
+
 test("a free-prose recap carries only the reply's first line, with an ellipsis for the rest", () => {
   // The recap's home is a single collapsed row; spec §4.3 lets the reply be
   // any free prose, so a multi-paragraph answer must not be pasted whole

@@ -201,9 +201,12 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
 
 // Whether a linked reply could belong to a sibling ask call of the same
 // execution turn: true when the reply is free prose (it names no header to
-// identify its call), or when it answers a header a sibling also asks (a
-// shared header cannot say which call it belongs to). A composed reply whose
-// answered headers no sibling asks identifies this call exactly.
+// identify its call), or when it answers a header this call asks that a
+// sibling also asks (a shared header cannot say which call it belongs to).
+// An answered header belonging only to the OTHER sibling identifies that
+// sibling exactly and is no collision for this call - the dock composes one
+// reply for the whole pending set, so a reply may answer several sibling
+// calls' distinct headers at once.
 function linkedReplyNamesTheWrongSibling(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
   const siblings = items.filter(
     (i) => i.id !== item.id && i.turnId === item.turnId && parseAskUserQuestions(i) !== undefined,
@@ -213,7 +216,10 @@ function linkedReplyNamesTheWrongSibling(items: readonly ItemModel[], item: Item
   const siblingHeaders = new Set(
     siblings.flatMap((sibling) => (parseAskUserQuestions(sibling) ?? []).map((question) => question.header)),
   );
-  return [...parseAskAnswerLines(reply.text).keys()].some((header) => siblingHeaders.has(header));
+  const ownHeaders = new Set((parseAskUserQuestions(item) ?? []).map((question) => question.header));
+  return [...parseAskAnswerLines(reply.text).keys()].some(
+    (header) => ownHeaders.has(header) && siblingHeaders.has(header),
+  );
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item
