@@ -36,9 +36,9 @@ import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useS
 import {
   Button,
   Card,
-  Chevron,
   CodeBlock,
   CollectionEditor,
+  Disclosure,
   FormRow,
   InlineNotice,
   Input,
@@ -55,10 +55,8 @@ import styles from "./advancedOptions.module.css";
 const BOOLEAN_DEFAULT = "(default)";
 
 const CLASS = {
-  root: requireClass(styles.root, "advancedOptions.module.css", "root"),
-  toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
-  disclosureLabel: requireClass(styles.disclosureLabel, "advancedOptions.module.css", "disclosureLabel"),
-  disclosureChevron: requireClass(styles.disclosureChevron, "advancedOptions.module.css", "disclosureChevron"),
+  label: requireClass(styles.label, "advancedOptions.module.css", "label"),
+  reveal: requireClass(styles.reveal, "advancedOptions.module.css", "reveal"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
 };
 
@@ -98,6 +96,11 @@ export interface AdvancedOptionsProps {
   /** Rendered first inside the expanded panel, ahead of the schema controls
    * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
   children?: ReactNode;
+  /** Controls the panel's disclosure from outside, for a caller that must
+   * reveal a field inside it (the access tile's Change). Omitted, the panel
+   * keeps its own open state, closed at mount. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /** The effective layer of the pane's own launch/resolve for the current
    * cwd (undefined until it lands or after it fails): a control whose unset
    * state reads "(default)" prepends its entry here - "On (default)",
@@ -121,9 +124,13 @@ export function AdvancedOptions({
   loadCatalog,
   complete,
   children,
+  open: controlledOpen,
+  onOpenChange,
   resolvedDefaults,
 }: AdvancedOptionsProps) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = onOpenChange ?? setLocalOpen;
   const [localValues, setLocalValues] = useState<AdvancedValues>({});
   const values = draftValues ?? localValues;
   const setValues = onValuesChange ?? setLocalValues;
@@ -160,7 +167,6 @@ export function AdvancedOptions({
     setResolved(null);
     setResolveError(null);
   }
-  const panelId = useId();
 
   function currentValues(): AdvancedValues {
     return readValues ? readValues() : valuesRef.current;
@@ -215,53 +221,50 @@ export function AdvancedOptions({
     }
   }
 
-  function toggle(): void {
-    setOpen((prev) => !prev);
-  }
-
   return (
-    <section className={CLASS.root}>
-      <button type="button" className={CLASS.toggle} aria-expanded={open} aria-controls={panelId} onClick={toggle}>
-        <span className={CLASS.disclosureLabel}>Advanced options</span>
-        <span className={CLASS.disclosureChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          <Chevron />
-        </span>
-      </button>
-      {open && (
-        <Card variant="outlined">
-          <div id={panelId} className={CLASS.panel}>
-            {children}
-            {options.map((opt) => (
-              <div key={opt.wireField} data-launch-field={opt.wireField}>
-                <Control
-                  option={opt}
-                  value={values[opt.wireField]}
-                  error={errors[opt.wireField]}
-                  loadCatalog={loadCatalog}
-                  complete={complete}
-                  validatePath={validatePath}
-                  createDirectory={createDirectory}
-                  resolvedDefaults={resolvedDefaults}
-                  onScalar={(v) => updateScalar(opt, v)}
-                  onValue={(field) => update(opt.wireField, field)}
-                />
+    <section>
+      <Disclosure
+        open={open}
+        onOpenChange={setOpen}
+        data-testid="spawn-advanced-options"
+        summary={<span className={CLASS.label}>Advanced options</span>}
+      >
+        <div className={CLASS.reveal}>
+          <Card variant="outlined">
+            <div className={CLASS.panel}>
+              {children}
+              {options.map((opt) => (
+                <div key={opt.wireField} data-launch-field={opt.wireField}>
+                  <Control
+                    option={opt}
+                    value={values[opt.wireField]}
+                    error={errors[opt.wireField]}
+                    loadCatalog={loadCatalog}
+                    complete={complete}
+                    validatePath={validatePath}
+                    createDirectory={createDirectory}
+                    resolvedDefaults={resolvedDefaults}
+                    onScalar={(v) => updateScalar(opt, v)}
+                    onValue={(field) => update(opt.wireField, field)}
+                  />
+                </div>
+              ))}
+              <div>
+                <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
+                  Show resolved config
+                </Button>
               </div>
-            ))}
-            <div>
-              <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
-                Show resolved config
-              </Button>
+              {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
+              {resolved !== null && (
+                // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
+                <div role="group" aria-label="Resolved config">
+                  <CodeBlock text={resolved} language="json" fold={false} />
+                </div>
+              )}
             </div>
-            {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
-            {resolved !== null && (
-              // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
-              <div role="group" aria-label="Resolved config">
-                <CodeBlock text={resolved} language="json" fold={false} />
-              </div>
-            )}
-          </div>
-        </Card>
-      )}
+          </Card>
+        </div>
+      </Disclosure>
     </section>
   );
 }

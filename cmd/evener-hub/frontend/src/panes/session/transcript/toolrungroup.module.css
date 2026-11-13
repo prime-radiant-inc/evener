@@ -1,6 +1,6 @@
 /* A folded run of settled tool calls (critique R9, toolRuns.ts): one row of
- * the tool card it sits in (turnblock.module.css's [data-tool-card] draws the
- * card on this element). The collapsed row is deliberately quieter than the
+ * the tool card it sits in (styles/surface.module.css draws the card on this
+ * element). The collapsed row is deliberately quieter than the
  * tool rows it stands in for: a count and one name, at the UI step, with the
  * same inset a tool row takes so its edge lines up with their seats. Open, it
  * is the header of the rows it stands for, which follow inside the same card
@@ -12,10 +12,11 @@
 }
 
 .summary {
+  composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--tool-card-row-pad) var(--tool-card-inset);
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -76,13 +77,9 @@
   text-overflow: ellipsis;
 }
 
+/* The rows of an open run: divided from each other by the card's rows rule,
+ * and from the header above by the body's own top edge. */
 .body {
-  display: flex;
-  flex-direction: column;
-}
-
-/* Every row of an open run, the first included, sits under a hairline: the
- * first divides it from the header above. */
-.body > * {
+  composes: groupedRows from "../../../styles/surface.module.css";
   border-top: 1px solid var(--edge);
 }

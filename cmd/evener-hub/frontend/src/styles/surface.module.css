@@ -1,0 +1,114 @@
+/* The shared surface recipes: boxes that more than one widget or pane draws
+ * and that are not a Card (a passive block is `Card variant="outlined"`).
+ * Consumers `composes:` these classes, one per composes line, and add only
+ * their own layout. surface.contract.test.ts pins the recipes and each
+ * consumer's wiring.
+ *
+ * The grouped surface: a rounded --surface-1 box with a hairline edge and the
+ * card lift, for a control that is itself the surface (a tile that is a
+ * button) or a list whose rows share one box. */
+.grouped {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+}
+
+/* Rows inside one surface: a column with a hairline between rows and none
+ * around them. A row that renders nothing draws no divider, so an empty
+ * wrapper neither opens nor doubles one. */
+.groupedRows {
+  display: flex;
+  flex-direction: column;
+}
+
+.groupedRows > :not(:empty) ~ :not(:empty) {
+  border-top: 1px solid var(--edge);
+}
+
+/* --- the tool card --------------------------------------------------
+ * A run of tool rows reads as ONE grouped surface with hairline dividers.
+ * Where one element holds the rows it composes .grouped and .groupedRows.
+ * Inside a turn the rows are siblings of the turn's other items, so the card
+ * is drawn across them instead: TurnBlock marks each row's wrapper with its
+ * place in the run (data-tool-card: only, first, middle, last) and the
+ * wrapper's child - the row's own root - carries its slice of the same
+ * surface. The position is an attribute, not adjacency, because a suppressed
+ * call leaves an empty wrapper between two rows of one card.
+ *
+ * Every row of a card reads its insets from here: the inline inset its
+ * content keeps from the card's edge, and the block padding above and below
+ * its lines, one item step so a row stays on the rhythm scale. */
+.toolRowInsets {
+  --tool-card-inset: var(--space-3);
+  --tool-card-row-pad: var(--rhythm-item);
+}
+
+.toolRunSegment > * {
+  border-inline: 1px solid var(--edge);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-1);
+}
+
+.toolRunSegment[data-tool-card="first"] > *,
+.toolRunSegment[data-tool-card="only"] > * {
+  border-top-left-radius: var(--radius-pane);
+  border-top-right-radius: var(--radius-pane);
+}
+
+.toolRunSegment[data-tool-card="last"] > *,
+.toolRunSegment[data-tool-card="only"] > * {
+  border-bottom: 1px solid var(--edge);
+  border-bottom-left-radius: var(--radius-pane);
+  border-bottom-right-radius: var(--radius-pane);
+  box-shadow: var(--shadow-card);
+}
+
+/* The card keeps one item step clear of the prose around it; rows inside it
+ * are separated by their dividers alone. */
+.toolRunSegment[data-tool-card="first"],
+.toolRunSegment[data-tool-card="only"] {
+  padding-top: var(--rhythm-item);
+}
+
+.toolRunSegment[data-tool-card="last"],
+.toolRunSegment[data-tool-card="only"] {
+  padding-bottom: var(--rhythm-item);
+}
+
+/* --- the field seat --------------------------------------------------
+ * The rounded --field square a glyph sits on. .fieldSeat is the seat as an
+ * element: a tile's leading box, --field-seat-size square, centring its
+ * glyph. .fieldSeatBehind paints the same square BEHIND a glyph slot that
+ * must keep its own one-line layout box: the slot is the positioning
+ * context, and the ground is centred on its avatar column at the row size,
+ * placed with insets rather than a transform so the slot creates no stacking
+ * context. Painted, not laid out, and transparent to the pointer. */
+.fieldSeat {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--field-seat-size);
+  height: var(--field-seat-size);
+}
+
+.fieldSeatBehind {
+  position: relative;
+}
+
+.fieldSeatBehind::before {
+  content: "";
+  position: absolute;
+  top: calc(50% - var(--field-seat-size-row) / 2);
+  left: calc((var(--speaker-avatar-size) - var(--field-seat-size-row)) / 2);
+  width: var(--field-seat-size-row);
+  height: var(--field-seat-size-row);
+  pointer-events: none;
+}
+
+.fieldSeat,
+.fieldSeatBehind::before {
+  border-radius: var(--radius-control);
+  background: var(--field);
+}

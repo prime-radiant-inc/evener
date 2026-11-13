@@ -16,11 +16,13 @@
 // DEFAULT_DESCRIPTOR's generic `wrench`. A kind therefore names a shape of
 // work (a terminal, a document, a search), never a brand.
 
-// The last four kinds name STATUS shapes, not families of work: the
-// notification card maps its parsed tone onto them (NotificationCard.tsx's
-// STATUS_ICON_KIND). They ride the same 16-grid grammar so the status glyph
-// reads as one of the family at the same stroke weight - same precedent as
-// `person` and `thought`, which are also not tools.
+// Four kinds name STATUS shapes, not families of work (check, cross, alert,
+// info): the notification card maps its parsed tone onto them
+// (NotificationCard.tsx's STATUS_ICON_KIND). They ride the same 16-grid
+// grammar so the status glyph reads as one of the family at the same stroke
+// weight - same precedent as `person` and `thought`, which are also not
+// tools. `mark` is the product's own sign and `shield` is access: chrome
+// glyphs drawn here so they share the family's grid and stroke weight.
 //
 // Single-colour line art by construction: strokes only, no fills, no
 // hardcoded colours. The squareness guarantee is the same one chevron makes
@@ -52,7 +54,9 @@ export type ToolIconKind =
   | "check"
   | "cross"
   | "alert"
-  | "info";
+  | "info"
+  | "mark"
+  | "shield";
 
 // One path string per kind, all on the 16x16 grid. Subpaths within a kind are
 // space-separated M-commands in the same string, so the record stays one
@@ -125,6 +129,12 @@ export const PATHS: Record<ToolIconKind, string> = {
   // An information mark (neutral): the globe's circle with an i - dot above,
   // stem below.
   info: "M13.5 8 A5.5 5.5 0 1 1 2.5 8 A5.5 5.5 0 1 1 13.5 8 M8 4.9 L8.01 4.9 M8 7.4 L8 11.1",
+  // The evener mark: two level bars (an equals sign). The rail's brand tile
+  // and the transcript's agent avatar both draw it from here, so the two are
+  // one mark.
+  mark: "M3.5 5.75 H12.5 M3.5 10.25 H12.5",
+  // A shield (what a session may touch): flat shoulders narrowing to a point.
+  shield: "M8 2 L13 3.9 V7.6 C13 10.6 11 12.9 8 14.2 C5 12.9 3 10.6 3 7.6 V3.9 Z",
 };
 
 export interface ToolIconProps {

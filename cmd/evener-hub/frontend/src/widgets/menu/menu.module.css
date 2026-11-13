@@ -19,7 +19,9 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
 .trigger:hover {
@@ -28,14 +30,8 @@
 
 /* The press, as Button's. */
 @media (prefers-reduced-motion: no-preference) {
-  .trigger {
-    transition:
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-
-  .trigger:active {
-    transform: scale(0.97);
+  .trigger:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(var(--press-scale-control));
   }
 }
 

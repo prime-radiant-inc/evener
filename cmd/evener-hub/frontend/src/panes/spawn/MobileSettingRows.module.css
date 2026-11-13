@@ -1,15 +1,11 @@
+/* The phone's settings rows read as one grouped list: the shared grouped
+ * surface with its hairline between rows (styles/surface.module.css). Hidden
+ * above the phone breakpoint, where the desktop controls stand in. */
 .config {
+  composes: grouped from "../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: groupedRows from "../../styles/surface.module.css";
   display: none;
-}
-
-/* The settings rows read as one grouped list: a rounded --surface-1 surface
- * with a hairline between rows and none under the last. */
-.row {
-  border-bottom: 1px solid var(--edge);
-}
-
-.row:last-child {
-  border-bottom: 0;
 }
 
 .rowButton,
@@ -29,7 +25,7 @@
 }
 
 /* The border reset is the button's alone: a read-only row is the row element
- * itself, and keeps the hairline that separates it from the next row. */
+ * itself, and keeps the hairline the group draws above it. */
 .rowButton {
   border: 0;
   cursor: pointer;
@@ -135,13 +131,9 @@
 
 @media (max-width: 899px) {
   .config {
-    display: block;
+    display: flex;
     box-sizing: border-box;
     width: 100%;
-    border: 1px solid var(--edge);
-    border-radius: var(--radius-pane);
-    background: var(--surface-1);
-    box-shadow: var(--shadow-card);
   }
 }
 

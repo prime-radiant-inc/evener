@@ -40,28 +40,3 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
 }
-
-/* ChordHints: one centred row of chord-and-description pairs that wraps
- * between pairs, never inside one. */
-.chordHints {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2) var(--space-5);
-  margin: 0;
-}
-
-.chordHint {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.chordHintLabel {
-  margin: 0;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-ui);
-}

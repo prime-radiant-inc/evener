@@ -1,5 +1,5 @@
-/* One tool call: a row of a tool card (turnblock.module.css's
- * [data-tool-card], the intent group's and the folded run's own cards). The
+/* One tool call: a row of a tool card (styles/surface.module.css owns the
+ * card and the insets every row of one reads). The
  * row owns its whole inset, including the seat column its kind icon sits in,
  * so it lays out the same wherever a card holds it and at every width: the
  * icon's slot pulls one --speaker-gutter left into the padding reserved here
@@ -7,8 +7,7 @@
  * inset. A call's own lines sit TIGHT (the row's row-gap below); separate
  * calls are separated by the card's hairline divider plus this padding. */
 .call {
-  --tool-card-inset: var(--space-3);
-  --tool-card-row-pad: var(--space-2);
+  composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
   padding: var(--tool-card-row-pad) var(--tool-card-inset);
@@ -363,73 +362,43 @@
 }
 
 /* The tool-KIND glyph, in the row's seat column beside the rationale line:
- * the kind is ambient context, not content, so it stays out of the text. The
- * glyph box is the shared icon-rail seat (styles/railseat.module.css) - the
+ * the kind is context for the call, so it stays out of the text. The glyph
+ * box is the shared icon-rail seat (styles/railseat.module.css): the
  * avatar-column slot geometry is composed, not restated here, so the seat's
  * arithmetic (slot + margin + column gap = one --speaker-gutter) is the same
- * one the notification head's status glyph uses. The line-height override
- * below and the strength are this row's own seat rules.
- *
- * The PULL into the seat column belongs to .rowIconSlot: it has to ride the
- * row's flex item, and that is the slot, since a failed call hangs its cross
- * off the icon's corner. */
-.rowIcon {
-  composes: seat from "../../../styles/railseat.module.css";
-}
-
-/* The seat's two local rules, scoped through the slot so they outrank the
- * composed seat whatever order the two stylesheets load in.
- *
- * Full strength: the slot's own --field ground (see .rowIconSlot::before) is
- * what sets the kind glyph back from the text, so the rail's ambient
- * half-opacity would only fade it into that ground.
+ * one the notification head's status glyph uses. The seat alone, without the
+ * rail's ambient strength: the slot's --field ground is what sets the glyph
+ * back from the text, and half opacity would only fade it into that ground.
  *
  * Positioned, so the glyph paints after that ground (a positioned
  * pseudo-element that precedes it in tree order) rather than under it. */
-.rowIconSlot > .rowIcon {
+.rowIcon {
+  composes: seat from "../../../styles/railseat.module.css";
   position: relative;
-  opacity: 1;
 }
 
-/* The kind icon's positioning context: the row's first flex item, carrying
- * the pull into the seat column, with the failure cross (Jesse, 2026-10-20)
- * absolutely pinned to its bottom-right corner. A clean row renders the slot
- * with only the seat inside it, so success costs no extra column. */
+/* The kind icon's slot: the row's first flex item. It carries the pull into
+ * the seat column .call reserves (the column is the row's own, so the pull
+ * holds at every width), paints the field seat behind the glyph, and is the
+ * positioning context the failure cross (Jesse, 2026-10-20) pins to. The
+ * slot's layout box stays one line tall, so the icon pins to the row's first
+ * line and a second line sits tight beneath the first; the seat's overhang
+ * above and below a one-line row fits inside .call's padding. A clean row
+ * renders the slot with only the seat inside it, so success costs no extra
+ * column. */
 .rowIconSlot {
+  composes: columnPull from "../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: fieldSeatBehind from "../../../styles/surface.module.css";
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
    * to the GLYPH's corner rather than the seat's. Two spellings of one number
    * (this stylesheet and the component constant) are unavoidable across the
    * CSS/TS boundary; toolRowGrammar.test.ts pins them equal. */
   --tool-row-icon-size: 14px;
-  /* The painted seat: a rounded square a little larger than the avatar
-   * column the slot's layout box keeps. */
-  --tool-seat-size: 26px;
-  position: relative;
   display: inline-flex;
   flex: none;
   align-self: flex-start;
-  /* The pull into the seat column .call reserves. Unconditional, unlike the
-   * rail's breakpoint-gated gutterPull: the column belongs to the row itself,
-   * not to the turn's gutter, so it exists at every width. */
-  margin-left: calc(-1 * var(--speaker-gutter));
-}
-
-/* The seat's ground: a --field rounded square centred on the glyph. Painted,
- * not laid out - the slot's layout box stays one line tall so the icon pins
- * to the row's first line and a second line sits tight beneath the first.
- * The overhang above and below a one-line row fits inside .call's padding. */
-.rowIconSlot::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: calc((var(--speaker-avatar-size) - var(--tool-seat-size)) / 2);
-  width: var(--tool-seat-size);
-  height: var(--tool-seat-size);
-  border-radius: var(--radius-control);
-  background: var(--field);
-  transform: translateY(-50%);
-  pointer-events: none;
 }
 
 /* The failure cross's overlay seat on the icon: pinned to the ICON's

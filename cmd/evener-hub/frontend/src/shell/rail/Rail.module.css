@@ -186,15 +186,6 @@
   padding: var(--space-2) 0;
 }
 
-/* The rows' inset: RailTree's wrapper keeps every row one --space-2 clear of
- * both rail edges, so the hover wash and the selected row's raised fill that
- * Tree draws (tree.module.css) are rounded pills rather than edge-to-edge
- * bands. The section headings stay full-bleed above it, their label on the
- * header's own left edge. */
-.railTree {
-  padding: 0 var(--space-2);
-}
-
 /* The organize-by switcher row: sits between the Live section and the
  * Hosts/Projects section it controls. Icon-only and hard right, with the
  * same right inset the pinned-section heading menus use
@@ -212,22 +203,4 @@
  * .popoverPanel is the precedent). */
 .organizePanel {
   padding: var(--space-3);
-}
-
-/* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
- * its own on its nested-children container (only aria-level on each
- * treeitem), so this reaches into its role=group element by attribute,
- * scoped to `.section` the same way `.actions`'s own [role="treeitem"]
- * selector (RailRow.module.css) already reaches into Tree's DOM. It lives
- * here, not with the row content, because `.section` is this stylesheet's
- * class: a CSS Modules selector only resolves to the same scoped name
- * inside the module that declares it. tree.module.css's own
- * `.group` is a flex column with `padding-left: var(--space-4)`, so a
- * border-left on the group box itself sits just inside a level's own
- * indentation and compounds naturally as groups nest (same padding
- * comment tree.module.css makes) - one hairline per level, applying
- * equally to a project's own session nesting and a session's subagent
- * nesting, since Tree's role=group mechanism is the same for both. */
-.section [role="group"] {
-  border-left: 1px solid var(--edge);
 }

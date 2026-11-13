@@ -269,24 +269,19 @@
 .promptAnchor {
   position: relative;
 }
-/* One tile recipe for both summaries: a rounded --surface-1 surface with a
- * hairline and the card shadow, a --field seat holding the glyph, a text
- * column that takes the slack, and the action at the trailing edge. The
- * directory tile is itself the button; the access tile is a status region
- * holding its own Change button. */
+/* The two summary tiles share one layout: a field seat holding the glyph, a
+ * text column that takes the slack, and the action at the trailing edge. The
+ * directory tile is itself the button, so it composes the grouped surface;
+ * the access tile is a status region, an outlined Card holding this layout
+ * and its own Change button. */
 .directoryButton,
-.summary {
+.accessTile {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
-  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -294,10 +289,19 @@
   text-align: left;
 }
 .directoryButton {
+  composes: grouped from "../../styles/surface.module.css";
+  padding: var(--space-3) var(--space-4);
   cursor: pointer;
   transition:
     border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    background-color var(--motion-duration-hover) var(--motion-easing-standard);
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
+}
+/* Fills the Card's content box, so the tile's content centres against the
+ * taller of the pair, and keeps the inline inset the directory tile has. */
+.accessTile {
+  height: 100%;
+  padding-inline: var(--space-1);
 }
 .directoryButton:focus-visible {
   outline: var(--focus-ring);
@@ -310,43 +314,26 @@
   background: var(--hover-1);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .directoryButton {
-    transition:
-      border-color var(--motion-duration-hover) var(--motion-easing-standard),
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-  .directoryButton:active {
-    transform: scale(0.985);
+  .directoryButton:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(var(--press-scale-row));
   }
 }
-.summarySeat {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: var(--space-6);
-  height: var(--space-6);
-  border-radius: var(--radius-control);
-  background: var(--field);
+.tileSeat {
+  composes: fieldSeat from "../../styles/surface.module.css";
   color: var(--ink-mid);
 }
-.directoryText,
-.summaryText {
+.tileText {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   gap: var(--space-1);
 }
-.directoryText strong,
-.summaryText strong {
+.tileText strong {
   font-weight: var(--font-weight-medium);
   overflow-wrap: anywhere;
 }
-.directoryPath,
-.summaryLabel,
-.summaryDetail {
+.tileCaption {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   overflow-wrap: anywhere;

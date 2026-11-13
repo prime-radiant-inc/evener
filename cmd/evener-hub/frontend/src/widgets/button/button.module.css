@@ -18,7 +18,8 @@
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
     border-color var(--motion-duration-hover) var(--motion-easing-standard),
     box-shadow var(--motion-duration-hover) var(--motion-easing-standard),
-    color var(--motion-duration-hover) var(--motion-easing-standard);
+    color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
 /* The press: a held button gives a touch, then springs back on release.
@@ -26,17 +27,8 @@
  * not asked for less motion. A refused button does not respond, and the link
  * variant is text, not a key to press. */
 @media (prefers-reduced-motion: no-preference) {
-  .button {
-    transition:
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      border-color var(--motion-duration-hover) var(--motion-easing-standard),
-      box-shadow var(--motion-duration-hover) var(--motion-easing-standard),
-      color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-
   .button:not(.link):active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(0.97);
+    transform: scale(var(--press-scale-control));
   }
 }
 

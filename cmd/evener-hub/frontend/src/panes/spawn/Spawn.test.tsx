@@ -55,7 +55,7 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
   );
   await settled();
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByLabelText("Prompt reasoning effort")).toBe(effortControl());
   expect(screen.getAllByLabelText(/reasoning effort/i)).toHaveLength(2);
@@ -224,7 +224,7 @@ test("harness moved into Advanced options, and still works there", async () => {
   await settled();
 
   expect(screen.queryByLabelText("Harness")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   await user.selectOptions(harness, "external");
   expect(harness.value).toBe("external");
@@ -362,7 +362,7 @@ test("Access mode moved from the top-level bar into Advanced options (9ct0)", as
   await settled();
 
   expect(screen.queryByLabelText("Access mode")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect(screen.getByLabelText("Access mode")).toBeTruthy();
 });
 
@@ -374,7 +374,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
 
   await fillPrompt(user, "do the thing");
   await setWorkingDir(user, "/tmp/project");
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.click(screen.getByTestId("spawn-submit"));
 
@@ -435,7 +435,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   await settled();
 
   await waitFor(() => expectWorkingDir("/saved/project"));
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
 

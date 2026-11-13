@@ -399,7 +399,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   renderSpawn(fake);
   await settled();
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   // From this commit on, no slashCatalog timer can be pending: the harness

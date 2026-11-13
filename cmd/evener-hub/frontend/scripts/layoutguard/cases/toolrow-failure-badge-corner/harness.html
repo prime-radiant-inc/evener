@@ -18,7 +18,7 @@
      (class names unhashed):
 
        <div class="row" data-intent="true">
-         <span class="rowIconSlot">
+         <span class="rowIconSlot fieldSeatBehind">
            <span class="rowIcon" aria-hidden="true"><svg/></span>
            <span class="failureBadge">
              <span role="img" aria-label="Failed"><svg/></span>
@@ -53,7 +53,7 @@ const INTENT = "Checking whether the hub already serves session artifacts over H
 function rowHtml(id, failed) {
   return `
     <div class="call" id="call-${id}"><div class="row" id="row-${id}" data-intent="true">
-      <span class="rowIconSlot" id="slot-${id}">
+      <span class="rowIconSlot fieldSeatBehind" id="slot-${id}">
         <span class="rowIcon" id="seat-${id}" aria-hidden="true">${ICON_SVG}</span>
         ${failed ? `<span class="failureBadge" id="badge-${id}">${FAILURE_SVG}</span>` : ""}
       </span>

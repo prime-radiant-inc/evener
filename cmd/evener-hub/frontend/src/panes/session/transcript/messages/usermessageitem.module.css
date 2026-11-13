@@ -131,11 +131,9 @@
   padding: var(--space-2) var(--space-3);
   background: var(--surface-1);
   border: 1px solid var(--edge);
-  /* Half a control corner toward the avatar; the other three sit one step
-   * past the card corner so a one-line slip still reads as a rounded note. */
-  --slip-tail: calc(var(--radius-control) / 2);
-  --slip-round: calc(var(--radius-pane) + var(--radius-chip) / 3);
-  border-radius: var(--slip-tail) var(--slip-round) var(--slip-round) var(--slip-round);
+  /* The tight chip corner toward the avatar; the other three take the card
+   * corner, so a one-line slip still reads as a rounded note. */
+  border-radius: var(--radius-chip) var(--radius-pane) var(--radius-pane) var(--radius-pane);
   box-shadow: var(--shadow-card);
 }
 

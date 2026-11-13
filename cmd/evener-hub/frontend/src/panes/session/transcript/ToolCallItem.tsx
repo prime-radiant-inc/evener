@@ -323,21 +323,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const summaryFallback = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
-  // The intent-only density hook (toolcallitem.module.css's
-  // [data-intent-only] override): true exactly while the row presents its
-  // stated intent line and nothing else - no summary line, no status line
-  // below the row, no expanded body. That shape is one line of ink in a
-  // two-line slot, so the stylesheet halves the item rhythm for it and a
-  // run of collapsed intent rows reads as a dense list; every open state
-  // drops the hook, and the full rhythm returns with the reader's own
-  // expansion (Jesse's Tufte call: whitespace groups, it does not pad).
-  // A body-less row always renders its summary line (the branch below
-  // never gates it on summaryOpen), so it counts as showing that line -
-  // and statusLine is a live delegate's second line even while collapsed.
   const bodyless = (!Body || descriptor.hasBody?.(item) === false) && !hasOutputImages && !failed;
-  const summaryLineShown = hasSummaryText && (bodyless || summaryOpen);
-  const intentOnly =
-    statedIntentOf({ description: intent }) !== undefined && !summaryLineShown && !expanded && statusLine === null;
   // The open affordances ride the tool-call summary line (ToolRow's grammar).
   // Withhold them when that line is hidden and no body is open - the row then
   // shows its stated intent alone, and the control must not trail the
@@ -359,12 +345,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // disclosure that would open to nothing.
   if (bodyless) {
     return (
-      <div
-        className={CLASS.call}
-        data-testid="tool-call-item"
-        data-tool-name={item.toolName ?? ""}
-        data-intent-only={intentOnly ? "true" : undefined}
-      >
+      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
           summary={rowSummaryText}
           summaryLink={summaryLink}
@@ -403,7 +384,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
       // recedes (success is glyph-less).
       data-failed={failed ? "true" : undefined}
       data-attention={failed ? "error" : undefined}
-      data-intent-only={intentOnly ? "true" : undefined}
     >
       <ToolRow
         // The summary text is the descriptor's own - or its expanded

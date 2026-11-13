@@ -33,6 +33,7 @@ import {
   withPluginSelection,
 } from "@evener/appwire-client";
 import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
@@ -48,6 +49,7 @@ import { selectDisplaySources, selectSources } from "../../stores/navigation/sel
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
+  Card,
   Chevron,
   CloseIcon,
   ConfirmDialog,
@@ -67,7 +69,9 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  ShortcutList,
   Switch,
+  ToolIcon,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -88,7 +92,6 @@ import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
-import { ChordHints } from "../welcome/ChordHints";
 import { AdvancedOptions } from "./AdvancedOptions";
 import {
   ACCESS_MODE_OPTIONS,
@@ -197,15 +200,12 @@ const CLASS = {
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
-  directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
-  directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
+  tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
+  tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
+  tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
   directoryAction: requireClass(styles.directoryAction, "spawn.module.css", "directoryAction"),
   summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
-  summary: requireClass(styles.summary, "spawn.module.css", "summary"),
-  summarySeat: requireClass(styles.summarySeat, "spawn.module.css", "summarySeat"),
-  summaryText: requireClass(styles.summaryText, "spawn.module.css", "summaryText"),
-  summaryLabel: requireClass(styles.summaryLabel, "spawn.module.css", "summaryLabel"),
-  summaryDetail: requireClass(styles.summaryDetail, "spawn.module.css", "summaryDetail"),
+  accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
   summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
@@ -242,21 +242,6 @@ const CLASS = {
 // like Effort's own working default and invites a submit the daemon refuses
 // ("model is required", app_threadlifecycle.go).
 const MODEL_CHOOSE_LABEL = "Choose a model";
-
-/** The access tile's glyph: a shield, drawn to the same 16px box and 1.2
- * stroke as DirectoryIcon beside it. Decorative - the tile's text names it. */
-function AccessIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M8 1.75l5 1.9v3.9c0 3.05-2 5.35-5 6.7-3-1.35-5-3.65-5-6.7v-3.9l5-1.9Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 // StartingLoader owns the busy elapsed clock: it ticks its own `now` once a
 // second while mounted and renders the SAME Loader the pane rendered inline
@@ -2034,11 +2019,13 @@ function SpawnForm({
   const advancedSandboxOverride =
     typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   function focusAccessOwner(): void {
     const owner = advancedOwnerRef.current;
     if (owner === null) return;
-    const toggle = owner.querySelector<HTMLButtonElement>("button[aria-controls][aria-expanded]");
-    if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
+    // Committed before the focus below looks for a field inside the panel.
+    flushSync(() => setAdvancedOpen(true));
     queueMicrotask(() => {
       if (!advancedSandboxOverride) {
         owner.querySelector<HTMLElement>("#spawn-access")?.focus();
@@ -2953,12 +2940,12 @@ function SpawnForm({
               aria-expanded={directoryOpen}
               onClick={() => setDirectoryOpen(true)}
             >
-              <span className={CLASS.summarySeat} aria-hidden="true">
+              <span className={CLASS.tileSeat} aria-hidden="true">
                 <DirectoryIcon />
               </span>
-              <span className={CLASS.directoryText}>
+              <span className={CLASS.tileText}>
                 <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-                <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
+                <span className={CLASS.tileCaption}>{cwd || "Choose a folder"}</span>
                 {/* Git info is a property of that directory (HEAD there), so
                     it rides inside the directory's own tile. */}
                 {branch !== "" && (
@@ -2970,10 +2957,10 @@ function SpawnForm({
               <span className={CLASS.directoryAction}>Change…</span>
             </button>
           </div>
-          {/* A live region like the notice it replaces: a changed access
-              mode re-announces what the session will be allowed to do. */}
-          <div
-            className={CLASS.summary}
+          {/* A live region: a changed access mode re-announces what the
+              session will be allowed to do. */}
+          <Card
+            variant="outlined"
             role="status"
             data-testid="spawn-effective-access"
             data-state={resolveStatus}
@@ -2981,31 +2968,33 @@ function SpawnForm({
             data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
             data-source={advancedSandboxOverride ? "advanced" : "access"}
           >
-            <span className={CLASS.summarySeat} aria-hidden="true">
-              <AccessIcon />
-            </span>
-            <span className={CLASS.summaryText}>
-              {resolveStatus === "ready" ? (
-                <>
-                  <span className={CLASS.summaryLabel}>Effective access</span>
-                  <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
-                  <span className={CLASS.summaryDetail}>
-                    {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
-                    {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
+            <div className={CLASS.accessTile}>
+              <span className={CLASS.tileSeat} aria-hidden="true">
+                <ToolIcon kind="shield" size={16} />
+              </span>
+              <span className={CLASS.tileText}>
+                {resolveStatus === "ready" ? (
+                  <>
+                    <span className={CLASS.tileCaption}>Effective access</span>
+                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
+                    <span className={CLASS.tileCaption}>
+                      {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
+                      {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
+                    </span>
+                  </>
+                ) : (
+                  <span className={CLASS.summaryPending}>
+                    {resolveStatus === "error"
+                      ? "Effective access is unresolved because launch settings could not be resolved."
+                      : "Effective access is being resolved."}
                   </span>
-                </>
-              ) : (
-                <span className={CLASS.summaryPending}>
-                  {resolveStatus === "error"
-                    ? "Effective access is unresolved because launch settings could not be resolved."
-                    : "Effective access is being resolved."}
-                </span>
-              )}
-            </span>
-            <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
-              Change
-            </Button>
-          </div>
+                )}
+              </span>
+              <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
+                Change
+              </Button>
+            </div>
+          </Card>
         </div>
         {directoryOpen && (
           <DirectoryPicker
@@ -3140,6 +3129,8 @@ function SpawnForm({
               onErrorsChange={setAdvancedErrors}
               readValues={readAdvancedValues}
               draftId={draft}
+              open={advancedOpen}
+              onOpenChange={setAdvancedOpen}
               validatePath={validatePath}
               resolveConfig={resolveConfig}
               loadCatalog={loadCatalog}
@@ -3175,7 +3166,7 @@ function SpawnForm({
         </div>
         {!hasSession && (
           <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
-            <ChordHints items={CHORD_HINTS} />
+            <ShortcutList layout="inline" items={CHORD_HINTS} />
           </div>
         )}
       </div>

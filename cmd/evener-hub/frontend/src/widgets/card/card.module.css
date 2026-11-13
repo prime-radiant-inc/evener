@@ -4,9 +4,7 @@
   padding: var(--space-4);
   background: var(--surface-1);
   border-radius: var(--radius-pane);
-  box-shadow:
-    0 0 0 1px var(--edge),
-    var(--shadow-card);
+  box-shadow: var(--shadow-card-ringed);
 }
 
 /* The bordered box shared by outlined and attention: a real 1px edge in
@@ -16,12 +14,12 @@
 .attention {
   padding: var(--space-3);
   border: 1px solid;
-  box-shadow: var(--shadow-card);
 }
 
 .outlined {
   border-color: var(--edge);
   background: var(--surface-1);
+  box-shadow: var(--shadow-card);
 }
 
 /* Stronger than the --attention-bg/-edge token defaults (15%/40%): against
@@ -30,6 +28,7 @@
  * /dev/surfaces gallery: dark gains a legible amber wash and edge, light stays
  * close to the token reading. Card is on token-contract.test.ts's
  * SEMANTIC_USE_ALLOWLIST for this tone. */
+/* No lift: the attention envelope's edge and wash carry it. */
 .attention {
   box-shadow: none;
   border-color: color-mix(in oklab, var(--attention) 55%, var(--edge));

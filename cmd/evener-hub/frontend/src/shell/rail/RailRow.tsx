@@ -645,7 +645,13 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
     // into view - the ref is stable and unique per session, unlike the label.
-    <span ref={rowRef} className={CLASS.railRow} data-session-ref={session.ref}>
+    <span
+      ref={rowRef}
+      className={CLASS.railRow}
+      data-session-ref={session.ref}
+      // The treeitem's own focus, from Tree: it reveals the row's actions.
+      data-row-focused={info.focused ? "true" : undefined}
+    >
       {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
       <span className={CLASS.textCol} onClick={info.activate}>
@@ -719,7 +725,7 @@ function ProjectRow({
   // back to this hub (with the remote working_dir).
   const canSpawn = useHostLaunchable(node.spawnHost);
   return (
-    <span className={CLASS.railRow}>
+    <span className={CLASS.railRow} data-row-focused={info.focused ? "true" : undefined}>
       {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>

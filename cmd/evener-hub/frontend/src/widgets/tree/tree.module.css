@@ -1,6 +1,10 @@
+/* The tree keeps its rows one --space-2 clear of both edges of whatever holds
+ * it, so the hover wash and the selected row's raised fill are rounded pills
+ * rather than edge-to-edge bands. */
 .tree {
   display: flex;
   flex-direction: column;
+  padding: 0 var(--space-2);
 }
 
 .row {
@@ -10,31 +14,32 @@
   padding: 0 var(--space-2);
   border-radius: var(--radius-control);
   cursor: default;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
-.row:hover {
+/* The selected row ("you are here") is the shared selectable-row recipe
+ * (widgets/internal/selectableRow.module.css), keyed on aria-selected. The
+ * hover and pressed washes stay off it, so the selected state holds under
+ * the pointer instead of flicking back to the hover tone. */
+.row:hover:not([aria-selected="true"]) {
   background: var(--hover-1);
 }
 
 /* A pressed row takes the stronger wash, which is the only feedback a touch
- * gets. Declared before the selected rule so a pressed selected row keeps its
- * own fill. */
-.row:active {
+ * gets. */
+.row:active:not([aria-selected="true"]) {
   background: var(--hover-2);
 }
 
-/* The selected row (a tree that supplies isSelected) is "you are here": it
- * lifts onto the content surface with the card shadow and semibold ink, so it
- * reads as an object rather than a darker wash. Declared after :hover - and
- * repeated with :hover - so the selected state holds under the pointer instead
- * of flicking back to the hover tone (disclosure.module.css's [open] rule
- * draws the same precedence line). */
-.row[aria-selected="true"],
-.row[aria-selected="true"]:hover {
-  background: var(--surface-1);
-  box-shadow: var(--shadow-card);
-  font-weight: var(--font-weight-semibold);
+/* The press: the row gives a little under the pointer, as ListRow does.
+ * Transform only, gentle because a row is wide, and not while the press is
+ * on a control inside the row (that control has its own). */
+@media (prefers-reduced-motion: no-preference) {
+  .row:active:not(:has(:is(button, a, input, select, textarea):active)) {
+    transform: scale(var(--press-scale-row));
+  }
 }
 
 .row:focus-visible {
@@ -47,9 +52,10 @@
   flex-direction: column;
   /* indentation compounds naturally as groups nest, so a row never needs
    * an inline `paddingLeft: depth * n` style of its own. One level costs
-   * exactly the chevron glyph's width (8px, --space-2) - the 2026-07-31
-   * sidebar-density pass cut this from --space-4 so nesting stops charging
-   * a full 16px toggle slot per level (sessions read "way too far" in,
-   * subagents further still). */
+   * exactly the chevron glyph's width (8px, --space-2), so nesting never
+   * charges a full toggle slot per level. */
   padding-left: var(--space-2);
+  /* The nested-level guide rail: one hairline per level, just inside the
+   * level's own indentation, compounding as groups nest. */
+  border-left: 1px solid var(--edge);
 }

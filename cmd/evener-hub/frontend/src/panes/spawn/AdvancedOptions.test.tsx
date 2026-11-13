@@ -3,7 +3,6 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
 import { enterText } from "../../textEntryTestUtils";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
@@ -117,7 +116,7 @@ test("is collapsed by default and reveals the panel on toggle", async () => {
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);
 
   expect(screen.queryByLabelText("Max rounds")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect(screen.getByLabelText("Max rounds")).toBeTruthy();
 });
 
@@ -127,7 +126,7 @@ test("a boolean control collects true/false and drops the (default)", async () =
     option({ wireField: "apiLog", kind: "boolean", label: "Log API requests" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Log API requests"), "On");
 
   expect(onOverridesChange).toHaveBeenLastCalledWith({ apiLog: true });
@@ -151,7 +150,7 @@ test("a boolean control's (default) option names the resolved default (On/Off)",
     { resolvedDefaults: { apiLog: true, verbose: false } },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   // Each boolean select is [unset, On, Off]; the unset option names the
   // resolved value by carrying that choice's own label.
@@ -196,7 +195,7 @@ test("a select control renders exactly one empty option, carrying the resolved d
     { resolvedDefaults: { reasoningEffort: "high" } },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
   expect(select.options[0]?.textContent).toContain("high");
@@ -217,7 +216,7 @@ test("a select control without a resolved default dedupes the schema's own empty
     }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "high"]);
@@ -231,7 +230,7 @@ test("a modelPicker control names the resolved default model", async () => {
     resolvedDefaults: { fastCheapModel: "openai/gpt-5" },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5");
 });
@@ -246,7 +245,7 @@ test("an integer control's placeholder names the resolved default", async () => 
     { resolvedDefaults: { maxRounds: 250, maxSubagentDepth: 2 } },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toContain("250");
   // A resolved builtin fills the empty control too - the label names it.
@@ -262,7 +261,7 @@ test.each([-1, 0])("max_rounds %i renders as unlimited in the placeholder, not a
     resolvedDefaults: { maxRounds },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const placeholder = (screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder;
   expect(placeholder).not.toBe("");
@@ -279,7 +278,7 @@ test("a text control's placeholder names the resolved default, clipped when long
     { resolvedDefaults: { agent: "evener-canary", systemPromptText: "x".repeat(120) } },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toContain("evener-canary");
   // A long free-text default (a system prompt) is clipped, not dumped whole.
@@ -298,7 +297,7 @@ test("a browsable path control's trigger names the resolved default path", async
     { resolvedDefaults: { traceFile: "/tmp/demo-trace.log" } },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByRole("button", { name: /Trace file/i }).textContent).toContain("/tmp/demo-trace.log");
   // No layer sets this one: the trigger names no path.
@@ -330,7 +329,7 @@ test("a pathList control ghosts inherited entries, and a local add replaces its 
     resolvedDefaults: { skillsDirs: ["/opt/skills"] },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const list = screen.getByRole("list", { name: "Skill directories" });
   expect(emptyRow(list)).toBeNull();
@@ -354,7 +353,7 @@ test("a modelList control ghosts inherited fallbacks", async () => {
     resolvedDefaults: { modelFallbacks: ["openai/gpt-5"] },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const list = screen.getByRole("list", { name: "Model fallbacks" });
   const ghost = within(list).getByText("openai/gpt-5").closest("li") as HTMLElement;
@@ -368,7 +367,7 @@ test("an envMap control ghosts inherited entries, and a local override of the sa
     resolvedDefaults: { env: { EDITOR: "vim", PAGER: "less" } },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const list = screen.getByRole("list", { name: "Env vars" });
   expect(emptyRow(list)).toBeNull();
@@ -393,7 +392,7 @@ test("an mcpServerList control ghosts inherited servers", async () => {
     resolvedDefaults: { mcps: [{ name: "docs", command: "npx", args: ["docs-mcp"] }] },
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const list = screen.getByRole("list", { name: "MCP servers" });
   const ghost = within(list).getByText("docs: npx docs-mcp").closest("li") as HTMLElement;
@@ -405,7 +404,7 @@ test("an integer control collects a parsed number", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ maxRounds: 7 }));
@@ -419,7 +418,7 @@ test("a failing path validation flags the field invalid so it is dropped from th
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(/^System prompt file:/), "/etc");
 
   expect(await screen.findByText("path is a directory")).toBeTruthy();
@@ -442,7 +441,7 @@ test.each([
     option({ wireField: "traceFile", kind: "path", label: "Trace file", pathKind }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(/^Trace file:/), "/opt/new.log");
 
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/new.log", wireKind));
@@ -452,7 +451,7 @@ test("show resolved config previews the effective launch config", async () => {
   const user = userEvent.setup();
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   const pre = await screen.findByLabelText("Resolved config");
@@ -470,16 +469,17 @@ test("renders children inside the expanded panel, before any schema control (9ct
   );
 
   expect(screen.queryByTestId("child-slot")).toBeNull(); // panel is collapsed by default
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
-  const toggleButton = screen.getByRole("button", { name: "Advanced options" });
-  const panelId = toggleButton.getAttribute("aria-controls");
-  if (!panelId) throw new Error("expected aria-controls on the toggle");
-  const panel = document.getElementById(panelId);
-  if (!panel) throw new Error("expected the expanded panel to be in the document");
-
-  // The child slot is the panel's first child, ahead of the schema controls.
-  expect(panel.firstElementChild).toBe(screen.getByTestId("child-slot"));
+  // The child slot opens inside the disclosure, as the panel's first child,
+  // ahead of the schema controls.
+  const disclosure = screen.getByTestId("spawn-advanced-options") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(true);
+  const slot = within(disclosure).getByTestId("child-slot");
+  expect(slot.parentElement?.firstElementChild).toBe(slot);
+  expect(
+    slot.compareDocumentPosition(within(disclosure).getByLabelText("Max rounds")) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 });
 
 // --- model-valued fields all use the shared searchable picker ---------------
@@ -490,7 +490,7 @@ test("a modelPicker field renders the shared model picker, not a free-text box",
     option({ wireField: "fastCheapModel", kind: "modelPicker", label: "Fast cheap model" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByText("Fast cheap model")).toBeTruthy();
   expect(screen.queryByRole("textbox")).toBeNull();
@@ -506,7 +506,7 @@ test("a modelList field adds from the picker instead of a hand-typed provider/mo
     option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: /change model/i }));
   await user.click(await screen.findByText("Claude Sonnet 4.5"));
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -525,7 +525,7 @@ test.each([
   const user = userEvent.setup();
   renderPanel([option({ wireField: kind, kind, label, description })]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   const section = screen.getByRole("group", { name: label });
   const labelId = section.getAttribute("aria-labelledby");
@@ -549,7 +549,7 @@ test("a modelList field rejects a model already in the list", async () => {
     option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   async function addSonnet() {
     await user.click(screen.getByRole("button", { name: /change model/i }));
     await user.click(await screen.findByText("Claude Sonnet 4.5"));
@@ -572,7 +572,7 @@ test("a path field renders the browse widget and collects the picked path", asyn
     option({ wireField: "systemPromptFile", kind: "path", label: "System prompt file", pathKind: "file" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   // The field is the browse trigger, not a text box to type a path into blind.
   expect(screen.queryByRole("textbox")).toBeNull();
@@ -594,7 +594,7 @@ test.each([
   const user = userEvent.setup();
   const { complete } = renderPanel([option({ wireField: "somePath", kind: "path", label: "Some path", pathKind })]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(pathTrigger(/^Some path:/));
 
   await waitFor(() => expect(complete).toHaveBeenCalledWith(expect.any(String), includeFiles));
@@ -606,7 +606,7 @@ test("a command-kind path option stays a plain text input, since a command is no
     option({ wireField: "agent", kind: "path", label: "Agent", pathKind: "command" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByLabelText("Agent").tagName).toBe("INPUT");
   await user.type(screen.getByLabelText("Agent"), "evener");
@@ -628,7 +628,7 @@ test("a pathList field adds from the browse widget instead of a hand-typed path"
     option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await browseAndAdd(user, "skills");
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
@@ -640,7 +640,7 @@ test("a pathList field also accepts a path typed into the browse panel", async (
     option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(), "/elsewhere/skills");
   await user.click(screen.getByRole("button", { name: "Add" }));
 
@@ -659,7 +659,7 @@ test("each pathList add picker is named by its own option", async () => {
     option({ wireField: "mcpConfigs", kind: "pathList", label: "MCP config files", pathKind: "file" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   for (const label of ["Skill directories", "Plugin directories", "MCP config files"]) {
     expect(screen.getByRole("button", { name: new RegExp(`^${label}:`) })).toBeTruthy();
@@ -677,7 +677,7 @@ test("a pathList add is validated server-side with the option's own kind", async
     option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await browseAndAdd(user, "skills");
 
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/skills", "dir"));
@@ -695,7 +695,7 @@ test.each([
     option({ wireField: "mcpConfigs", kind: "pathList", label: "MCP config files", pathKind }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(), "/tmp/mcp.json");
   await user.click(screen.getByRole("button", { name: "Add" }));
 
@@ -712,7 +712,7 @@ test("a pathList add the server rejects shows an inline error and is not collect
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(), "/nope");
   validatePath.mockResolvedValue({ valid: false, path: "/nope", error: "path does not exist" });
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -729,7 +729,7 @@ test("a pathList add stores the server-canonicalized path", async () => {
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(), "/opt/../opt/skills");
   await user.click(screen.getByRole("button", { name: "Add" }));
 
@@ -744,7 +744,7 @@ test("a pathList add is not blocked when the validate RPC itself fails", async (
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await typePath(user, pathTrigger(), "/opt/skills");
   validatePath.mockRejectedValue(new Error("socket closed"));
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -758,7 +758,7 @@ test("a pathList field rejects a path already in the list", async () => {
     option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await browseAndAdd(user, "skills");
   await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
   vi.mocked(onOverridesChange as (o: unknown) => void).mockClear();
@@ -766,25 +766,6 @@ test("a pathList field rejects a path already in the list", async () => {
 
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(onOverridesChange).not.toHaveBeenCalled();
-});
-
-// Touch target (UX fix, real-phone measurement): the hand-rolled toggle
-// (not a widgets/disclosure consumer - it renders its own <button>, see
-// this file's own header comment) measured 127x24, low-contrast next to the
-// 48px rows around it. Comfortable desktop padding plus a (any-pointer: coarse)
-// tap floor, same pattern as askdock.module.css's own .tab rule and
-// askquestioncard.module.css's own .optionRow rule.
-test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
-  const css = readModuleCss(import.meta.url, "advancedOptions.module.css");
-  const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);
-  expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
-  expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\)/);
-
-  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "advancedOptions.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
-  const rule = coarse![1]!.match(/\.toggle\s*\{([^}]*)\}/);
-  expect(rule, "the coarse-pointer block must override .toggle").not.toBeNull();
-  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
 // RoboRev PR1131 finding 6: showResolved resolved collectAdvancedOverrides from
@@ -801,7 +782,7 @@ test("show resolved config resolves from the live draft values, not the render s
     resolveConfig,
   });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   await waitFor(() => expect(resolveConfig).toHaveBeenCalled());

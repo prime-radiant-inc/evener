@@ -199,7 +199,7 @@ test("the user reading surface is a paper slip hugging its content column", () =
   expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
   expect(body![1]).toMatch(/box-shadow:\s*var\(--shadow-card\)/);
   expect(body![1]).toMatch(
-    /border-radius:\s*var\(--slip-tail\)\s*var\(--slip-round\)\s*var\(--slip-round\)\s*var\(--slip-round\)/,
+    /border-radius:\s*var\(--radius-chip\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
   );
   expect(body![1]).toMatch(/width:\s*fit-content/);
   expect(body![1]).toMatch(/max-width:\s*100%/);

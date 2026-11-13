@@ -11,7 +11,7 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: calc(var(--space-1) / 2);
+  gap: var(--space-half);
 }
 
 .source,

@@ -349,16 +349,54 @@ test("a node outside the selectable set omits aria-selected entirely", () => {
   expect(row("a").hasAttribute("aria-selected")).toBe(false);
 });
 
-test("declares the selected-row lift on aria-selected, using tokens", () => {
+test("the selected lift is the shared selectable-row recipe, and the row's own washes stay off a selected row", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "tree.module.css"), "utf8");
-  const selected =
-    /\.row\[aria-selected="true"\],\s*\.row\[aria-selected="true"\]:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(selected).toContain("background: var(--surface-1)");
-  expect(selected).toContain("box-shadow: var(--shadow-card)");
-  // The pressed wash must come first, or it would repaint a selected row.
-  expect(css.indexOf(".row:active")).toBeGreaterThan(-1);
-  expect(css.indexOf(".row:active")).toBeLessThan(css.indexOf('.row[aria-selected="true"]'));
+  const css = readFileSync(join(here, "tree.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const shared = readFileSync(join(here, "../internal/selectableRow.module.css"), "utf8");
+  const lift = /\.selectableRow:is\(\[aria-selected="true"\][^{]*\{([^}]*)\}/.exec(shared)?.[1] ?? "";
+  expect(lift).toContain("background: var(--surface-1)");
+  expect(lift).toContain("box-shadow: var(--shadow-card-ringed)");
+  // The tree restates none of it, and neither wash repaints a selected row.
+  expect(css).not.toContain("--shadow-card");
+  expect(css).toContain('.row:hover:not([aria-selected="true"])');
+  expect(css).toContain('.row:active:not([aria-selected="true"])');
+  renderTree({ isSelected: (node) => node.id === "b" });
+  expect(row("b").className).toBe(row("a").className);
+});
+
+test("the tree owns its rows' inset, press and guide rails", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "tree.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.tree\s*\{[^}]*padding:\s*0 var\(--space-2\)/);
+  expect(css).toMatch(/\.group\s*\{[^}]*border-left:\s*1px solid var\(--edge\)/);
+  // The press rides the row, only for a reader who has not asked for less
+  // motion, and yields to a control pressed inside the row.
+  const motion = /@media \(prefers-reduced-motion: no-preference\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  expect(motion).toMatch(
+    /\.row:active:not\(:has\([^{]*button[^{]*:active\)\)\s*\{[^}]*transform:\s*scale\(var\(--press-scale-row\)\)/,
+  );
+});
+
+test("a row's info reports focus on the treeitem itself, not on a control inside it", () => {
+  renderTree({
+    renderRow: (node, info) => (
+      <span data-focused={info.focused ? "true" : "false"} data-testid={`content-${node.id}`}>
+        {node.id}
+        <button type="button">act {node.id}</button>
+      </span>
+    ),
+  });
+  const content = (id: string) => screen.getByTestId(`content-${id}`).dataset.focused;
+  expect(content("a")).toBe("false");
+  act(() => screen.getAllByRole("treeitem")[0]?.focus());
+  expect(content("a")).toBe("true");
+  expect(content("b")).toBe("false");
+  // Focus moving to a control inside the row leaves the treeitem itself.
+  act(() => screen.getByRole("button", { name: "act a" }).focus());
+  expect(content("a")).toBe("false");
+  act(() => screen.getAllByRole("treeitem")[1]?.focus());
+  expect(content("b")).toBe("true");
+  expect(content("a")).toBe("false");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {

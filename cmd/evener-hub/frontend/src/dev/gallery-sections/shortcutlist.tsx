@@ -13,6 +13,15 @@ export default function ShortcutListGallerySection() {
             { keys: ["Esc"], label: "close the palette (or back out of args mode)" },
           ]}
         />
+        {/* layout="inline": the aside under a cold pane's one action. */}
+        <ShortcutList
+          layout="inline"
+          items={[
+            { keys: ["Mod", "K"], label: "command palette" },
+            { keys: ["Mod", "N"], label: "new session" },
+            { keys: ["?"], label: "all shortcuts" },
+          ]}
+        />
       </ThemeFlip>
     </section>
   );

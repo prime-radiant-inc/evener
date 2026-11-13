@@ -148,6 +148,7 @@
 
   /* --- space + shape ------------------------------------------------- */
   /* 4px grid. */
+  --space-half: 2px; /* the half step: hairline insets inside a pill or a tight stack */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -182,13 +183,21 @@
   --speaker-gap: 10px; /* deliberately off the 4px grid: measured rhythm */
   --speaker-gutter: 34px;
 
+  /* The field seat: the rounded --field square a glyph sits on
+   * (styles/surface.module.css). A tile's seat is a full step; a transcript
+   * row's seat is the avatar column plus a half step of overhang each side,
+   * so it stays inside a one-line row's padding. */
+  --field-seat-size: var(--space-6);
+  --field-seat-size-row: calc(var(--speaker-avatar-size) + var(--space-half));
+
   /* The radius ladder: soft, not bubbly. Each step is the corner of one kind
    * of object, so a nested box takes the step below its container. The page
-   * frame (PaneScaffold), tables and edge-docked sheets stay square. */
+   * frame (PaneScaffold), tables and side sheets stay square; the bottom
+   * sheet rounds its top corners on the panel step. */
   --radius-chip: 6px; /* keycaps, small inline tags, tight inner corners */
   --radius-control: 8px; /* buttons, fields, rows, tooltips */
   --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers, toasts */
-  --radius-panel: 16px; /* the largest surfaces: prompt card, docks */
+  --radius-panel: 16px; /* the largest surfaces: prompt card, notes panel, the bottom sheet's top corners */
   --radius-pill: 999px; /* pill geometry: chips, badges, tracks, counters */
 
   /* --- focus ring ------------------------------------------------------
@@ -232,7 +241,10 @@
   /* --- elevation -------------------------------------------------------
    * Structure is mostly flat; what the user acts on lifts slightly.
    * --shadow-card is a hairline-soft lift for a surface that carries its own
-   * edge (cards, secondary buttons, selected rows). --shadow-raised adds a
+   * edge (cards, secondary buttons). --shadow-card-ringed is the same lift
+   * with a 1px --edge ring drawn in the shadow, for a raised surface that
+   * has no border of its own (the flat card, the selected row); the ring
+   * costs no box size. --shadow-raised adds a
    * wide ambient under the one surface a view is built around (the prompt
    * card). --shadow-overlay is a floating layer's whole boundary: an --edge
    * ring plus a soft drop, so an overlay declares no second border.
@@ -242,6 +254,7 @@
    * Every shadow that carries a color is declared in both theme blocks.
    */
   --shadow-card: 0 1px 2px #00000059;
+  --shadow-card-ringed: 0 0 0 1px var(--edge), var(--shadow-card);
   --shadow-raised: 0 1px 2px #00000059, 0 8px 24px #00000066;
   --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #00000073;
   --shadow-inset-field: inset 0 1px 1px #00000033;
@@ -268,6 +281,10 @@
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
   --motion-duration-press: 90ms;
+  /* How far a held control gives. A row is wide, so the same ratio would
+   * move its ends much further than a button's: rows take the gentler step. */
+  --press-scale-control: 0.97;
+  --press-scale-row: 0.985;
   --motion-duration-spatial: 240ms;
   /* one turn of StatusDot's continuous working spinner (agent liveness) */
   --motion-duration-activity: 800ms;
@@ -364,6 +381,7 @@
   --ansi-bright-white: #17181A;
 
   --shadow-card: 0 1px 2px #1A1D230F;
+  --shadow-card-ringed: 0 0 0 1px var(--edge), var(--shadow-card);
   --shadow-raised: 0 1px 2px #1A1D230F, 0 8px 24px #1A1D230F;
   --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #1A1D2324;
   --shadow-inset-field: inset 0 1px 1px #1A1D230A;

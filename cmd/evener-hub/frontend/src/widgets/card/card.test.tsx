@@ -45,7 +45,7 @@ test("wraps children in a single container carrying the card class", () => {
 // card lift, not a separate border - so the ring costs no box size.
 test("carries its ring via box-shadow rather than a border", () => {
   const rule = /\.card\s*\{([^}]*)\}/.exec(cardCss())?.[1] ?? "";
-  expect(rule).toMatch(/box-shadow:\s*0 0 0 1px var\(--edge\),\s*var\(--shadow-card\)/);
+  expect(rule).toMatch(/box-shadow:\s*var\(--shadow-card-ringed\)/);
   expect(rule).toContain("border-radius: var(--radius-pane)");
   expect(rule).not.toContain("border:");
 });

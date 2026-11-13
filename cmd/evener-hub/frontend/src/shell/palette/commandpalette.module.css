@@ -109,7 +109,9 @@
   border: none;
   cursor: pointer;
   min-width: 0;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
 .row:hover {
@@ -120,16 +122,11 @@
   background: var(--hover-2);
 }
 
-/* The press, as ListRow's: transform only, gentle because the row is wide. */
+/* The press, as ListRow's: transform only, gentle because the row is wide.
+ * A row the hub refuses does not give under the pointer. */
 @media (prefers-reduced-motion: no-preference) {
-  .row {
-    transition:
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-
-  .row:active {
-    transform: scale(0.985);
+  .row:active:not([aria-disabled="true"]) {
+    transform: scale(var(--press-scale-row));
   }
 }
 

@@ -452,10 +452,10 @@ test("the failure badge is an absolute overlay anchored to the icon glyph's box,
   expect(badgeRule).not.toMatch(/height:\s*\d/);
   expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
   expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
-  // The slot is the badge's positioning context and carries the icon size the
-  // insets read, next to the gutter pull it composes.
+  // The slot is the badge's positioning context - the field seat it composes
+  // positions it - and carries the icon size the insets read.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(slotRule).toContain("position: relative");
+  expect(slotRule).toContain('composes: fieldSeatBehind from "../../../styles/surface.module.css"');
   expect(slotRule).toContain("--tool-row-icon-size:");
 });
 
@@ -674,7 +674,7 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   const css = rowCss();
   const iconRule = css.match(/\.rowIcon\s*\{([^}]*)\}/);
   expect(iconRule).not.toBe(null);
-  // The avatar-column slot geometry (50% opacity, --speaker-avatar-size wide,
+  // The avatar-column slot geometry (--speaker-avatar-size wide,
   // margin-right net of the row's own column-gap so the rationale lands on the
   // content edge) lives in the shared icon-rail seat
   // (styles/railseat.module.css), pinned there by
@@ -687,7 +687,7 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   // the slot and the seat together still place the icon: one pull, one owner.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
   expect(slotRule).not.toBe(null);
-  expect(slotRule?.[1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  expect(slotRule?.[1]).toContain('composes: columnPull from "../../../styles/railseat.module.css"');
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
@@ -1120,7 +1120,7 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
-  expect(call![1]).toContain("--tool-card-row-pad: var(--space-2)");
+  expect(call![1]).toContain('composes: toolRowInsets from "../../../styles/surface.module.css"');
   expect(call![1]).toContain("padding: var(--tool-card-row-pad) var(--tool-card-inset)");
 });
 

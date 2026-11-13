@@ -25,6 +25,7 @@ import {
   RadioGroup,
   Skeleton,
   StatusDot,
+  ToolIcon,
   Tooltip,
   Tree,
   type TreeProps,
@@ -103,7 +104,6 @@ const CLASS = {
   mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
-  railTree: requireClass(styles.railTree, "Rail.module.css", "railTree"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -275,35 +275,15 @@ function projectsTierFor(
 // history navigation, so the tree keeps them tree-owned.
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
-  // The wrapper insets the rows from the rail's edges, so each row reads as a
-  // rounded pill instead of an edge-to-edge band; Tree's own box stays the
-  // widget's.
-  return (
-    <div className={CLASS.railTree}>
-      <Tree {...props} releaseModifierKeys={!isMobile} />
-    </div>
-  );
+  return <Tree {...props} releaseModifierKeys={!isMobile} />;
 }
 
-// The evener mark: two level bars (an equals sign) on the accent tile. Drawn on
-// the same 16-grid, stroke and bar geometry as the transcript's agent avatar
-// (widgets/speakeravatar), so the two read as one mark.
+// The evener mark on the rail's accent tile: the same ToolIcon glyph the
+// transcript's agent avatar wears, so the two are one mark.
 function EvenerMark() {
   return (
     <span className={CLASS.mark} aria-hidden="true" data-testid="rail-mark">
-      <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.75}
-        strokeLinecap="round"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <path d="M3.5 5.75h9M3.5 10.25h9" />
-      </svg>
+      <ToolIcon kind="mark" />
     </span>
   );
 }

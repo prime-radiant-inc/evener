@@ -16,10 +16,9 @@
 // one theme and decorative in the other, and it is present in both so the
 // tile is one drawing.
 //
-// Both glyphs follow widgets/toolicon's grammar (16-grid, stroke
-// currentColor, 1.75 width), so the avatars read as the same family as the
-// tool-row icons they sit among. The user wears toolicon's "person". The
-// agent wears the evener mark, two level bars (an equals sign), on an
+// Both glyphs are ToolIcon kinds, so the avatars read as the same family as
+// the tool-row icons they sit among. The user wears "person". The agent
+// wears "mark", the evener mark the rail's brand tile also draws, on an
 // accent tile: the product's own sign rather than a second person. Each
 // glyph is currentColor inside a tile that sets its own ink, so no colour
 // literal appears here.
@@ -59,25 +58,6 @@ function glyphSizeFor(tileSize: number): number {
   return Math.round(tileSize * 0.583);
 }
 
-// The evener mark on toolicon's 16-grid: two level bars, round-capped.
-function EvenerMark({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.75}
-      strokeLinecap="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path d="M3.5 5.75h9M3.5 10.25h9" />
-    </svg>
-  );
-}
-
 export function SpeakerAvatar({ speaker, size = DEFAULT_SIZE }: SpeakerAvatarProps) {
   return (
     // Decorative: the header row beside it already names the speaker in words
@@ -89,11 +69,7 @@ export function SpeakerAvatar({ speaker, size = DEFAULT_SIZE }: SpeakerAvatarPro
       aria-hidden="true"
       data-testid="speaker-avatar"
     >
-      {speaker === "user" ? (
-        <ToolIcon kind="person" size={glyphSizeFor(size)} />
-      ) : (
-        <EvenerMark size={glyphSizeFor(size)} />
-      )}
+      <ToolIcon kind={speaker === "user" ? "person" : "mark"} size={glyphSizeFor(size)} />
     </span>
   );
 }

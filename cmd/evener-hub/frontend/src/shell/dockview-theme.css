@@ -107,7 +107,7 @@
 }
 
 .dockview-theme-evener .dv-active-group .dv-tab.dv-active-tab {
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-card-ringed);
 }
 
 /* dockview's focus outline is a square ::after over the tab; it follows the

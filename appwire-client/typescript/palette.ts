@@ -292,16 +292,21 @@ export const webPalettes: Record<Scheme, WebPalette> = {
   }),
 };
 
+// The phone's primary fill holds one value in both themes: the web's light
+// accent and the ink that rides it.
+const NATIVE_ACCENT_FILL = webPalettes.light.accent;
+const NATIVE_ON_FILL = webPalettes.light["on-accent"];
+
 const NATIVE_EXTRAS: Record<Scheme, NativeExtras> = {
   light: {
     "prose-ink": "#1C1C1E",
-    "accent-fill": "#4F5BF5",
-    "on-fill": "#FFFFFF",
+    "accent-fill": NATIVE_ACCENT_FILL,
+    "on-fill": NATIVE_ON_FILL,
   },
   dark: {
     "prose-ink": "#E3E3E8",
-    "accent-fill": "#4F5BF5",
-    "on-fill": "#FFFFFF",
+    "accent-fill": NATIVE_ACCENT_FILL,
+    "on-fill": NATIVE_ON_FILL,
   },
 };
 

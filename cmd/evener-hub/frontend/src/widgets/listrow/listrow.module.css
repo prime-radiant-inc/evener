@@ -45,24 +45,23 @@
 
 .interactive {
   cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
-.interactive:hover:not(:disabled):not([aria-disabled="true"]) {
+/* The current row (aria-current) is the shared selectable-row lift
+ * (widgets/internal/selectableRow.module.css); the hover wash stays off it so
+ * the selected state holds under the pointer. */
+.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]) {
   background: var(--hover-1);
 }
 
 /* The press, as Button's: transform only, and gentler than a button's
  * because a row is wide and the same ratio would move its ends much further. */
 @media (prefers-reduced-motion: no-preference) {
-  .interactive {
-    transition:
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-
   .interactive:active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(0.985);
+    transform: scale(var(--press-scale-row));
   }
 }
 

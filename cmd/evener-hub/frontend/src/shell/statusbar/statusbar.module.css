@@ -39,14 +39,15 @@
   gap: var(--space-1);
   border: none;
   background: var(--surface-canvas);
-  padding: 2px var(--space-2);
+  padding: var(--space-half) var(--space-2);
   font: inherit;
   color: var(--ink-mid);
   cursor: pointer;
   border-radius: var(--radius-pill);
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    color var(--motion-duration-hover) var(--motion-easing-standard);
+    color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
 }
 
 .chip:hover {
@@ -59,16 +60,10 @@
   outline-offset: 1px;
 }
 
+/* The press, as Button's. */
 @media (prefers-reduced-motion: no-preference) {
-  .chip {
-    transition:
-      background-color var(--motion-duration-hover) var(--motion-easing-standard),
-      color var(--motion-duration-hover) var(--motion-easing-standard),
-      transform var(--motion-duration-press) var(--motion-easing-standard);
-  }
-
-  .chip:active {
-    transform: scale(0.97);
+  .chip:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(var(--press-scale-control));
   }
 }
 

@@ -1,80 +1,22 @@
-/* Advanced launch-config panel. Tokens only; a neutral disclosure section that
- * never signals attention with color. */
-.root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
+/* Advanced launch-config panel. Tokens only; the row is a Disclosure, so its
+ * washes, ring, chevron and tap floor are the widget's. */
 
-/* The open panel keeps clear of the row's closing hairline. */
-.root:has(> .toggle[aria-expanded="true"]) {
-  padding-bottom: var(--space-2);
-}
-
-/* A full-width disclosure row in the same language as the Disclosure widget
- * rows it sits beside: label leading, chevron trailing, a hover wash, and a
- * heavier wash while open. */
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  /* Touch target (UX fix, real-phone measurement): measured 127x24,
-   * low-contrast next to the 48px rows around it. The block padding gives it
-   * a comfortable click area at every pointer type; the (any-pointer: coarse)
-   * block below grows it the rest of the way to --tap-min on touch. */
-  padding: var(--space-2);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
+/* The summary's label: the row's name in the same ink and weight as the
+ * disclosure rows beside it, taking the slack so the chevron trails. */
+.label {
+  flex: 1;
+  min-width: 0;
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.toggle:hover {
-  background: var(--hover-1);
-}
-
-.toggle[aria-expanded="true"] {
-  background: var(--hover-2);
-}
-
-.toggle:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.disclosureLabel {
-  flex: 1;
-  min-width: 0;
-}
-
-.disclosureChevron {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  color: var(--ink-low);
-}
-
-.disclosureChevron[data-open="true"] {
-  transform: rotate(90deg);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .disclosureChevron {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
-}
-
-@media (any-pointer: coarse) {
-  .toggle {
-    min-height: var(--tap-min);
-  }
+/* The open panel's place under its row: one item step below the summary
+ * (the disclosure body supplies the first half) and clear of the row's
+ * closing hairline. */
+.reveal {
+  padding: var(--space-1) 0 var(--space-2);
 }
 
 .panel {
