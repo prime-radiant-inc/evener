@@ -1,5 +1,5 @@
 {
-  "description": "A single-token env-var label (DEEPSEEK_BASE_URL) must wrap inside the settings row's fixed 104px label column instead of running into the control beside it (#6271). .rowValue already carries overflow-wrap: anywhere for the value cell; this pins the label cell to the same contract.",
+  "description": "A single-token env-var label (DEEPSEEK_BASE_URL) must wrap inside the settings row's fixed 104px label column instead of running into the control beside it (#6271). .rowValue already carries overflow-wrap: anywhere for the value cell; this pins the label cell to the same contract. The declaration lives on the shared .rowLabel, so the read-only facts grid (.row) is covered by class-sharing: re-scoping the rule to .settingsRow .rowLabel would re-break it unguarded.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

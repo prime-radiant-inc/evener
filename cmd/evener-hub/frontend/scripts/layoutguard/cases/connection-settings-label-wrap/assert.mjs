@@ -26,7 +26,8 @@ export default function assert(m) {
       `the label is ${m.label.height.toFixed(1)}px tall (line height ${lineHeight}px) - it did not wrap inside the column`,
     );
   }
-  if (!m.rowColumns.startsWith("104px")) {
+  const firstTrack = Number.parseFloat(m.rowColumns);
+  if (!Number.isFinite(firstTrack) || Math.abs(firstTrack - 104) > TOLERANCE) {
     failures.push(`the row's first column is not the real 104px label column: ${m.rowColumns}`);
   }
   if (m.input.left < m.label.right - TOLERANCE) {
@@ -34,8 +35,10 @@ export default function assert(m) {
       `the input starts ${(m.label.right - m.input.left).toFixed(1)}px before the label column ends instead of beside it`,
     );
   }
-  if (m.input.width < 200) {
-    failures.push(`the control lost its 1fr column: only ${m.input.width.toFixed(1)}px wide`);
+  if (Math.abs(m.input.right - m.row.right) > TOLERANCE) {
+    failures.push(
+      `the control does not fill its track to the row's right edge (input right ${m.input.right.toFixed(1)}px, row right ${m.row.right.toFixed(1)}px)`,
+    );
   }
 
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
