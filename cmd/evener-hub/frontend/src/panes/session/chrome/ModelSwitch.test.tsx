@@ -215,6 +215,82 @@ test("a mid-turn pick sends thread/model/set rather than being refused client-si
   await screen.findByText(/nope\/m-404/i);
 });
 
+test("a successful mid-turn pick immediately shows the accepted next model", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+
+  const view = render(
+    <ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />,
+  );
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  view.rerender(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({ modelProvider: "anthropic", model: "claude-opus-5", status: { type: "idle" } })}
+    />,
+  );
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
+test("a later accepted mid-turn pick replaces the accepted next model", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await user.click(trigger());
+  let combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  await user.click(trigger());
+  combobox = await screen.findByRole("combobox");
+  await user.clear(combobox);
+  await user.keyboard("opus");
+  await user.click(screen.getByRole("option", { name: /claude-opus-5/i }));
+
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+});
+
+test("a deferred model-switch rejection restores the authoritative model label", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  act(() => {
+    fake.emitNotification({
+      method: "warning",
+      params: { threadId: "thr_a", ref: "ref_a", source: "model_switch" },
+    });
+  });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
 // A cold exited session takes the SAME wire call as a live one: the hub resumes
 // the session behind thread/model/set and retries (cmd/evener-hub/app_model.go's
 // setThreadModelWithResume), so the choice is recorded server-side and there is
@@ -483,6 +559,7 @@ test("a failed setModel surfaces an error toast - the picker is already closed (
 
   await screen.findByText(/switch boom/i);
   expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 // thread/model/set resumes a cold session first (cmd/evener-hub/app_model.go's

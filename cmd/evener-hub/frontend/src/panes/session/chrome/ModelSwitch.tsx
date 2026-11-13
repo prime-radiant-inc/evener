@@ -41,14 +41,34 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // so a user never has to know whether their session is "running" to pick its
   // next model. A pick made while a turn runs is accepted and queued by the
   // session for the turn boundary (agent/session.go's SetModel queue path), so
-  // the next turn - typically the message being typed - runs on it; the label
-  // keeps showing the running turn's model until thread/model/changed lands
-  // from the boundary. A genuinely refused pick (unknown model, unresolvable
-  // ref) still surfaces as a toast from handlePick. Gating on a client-side
-  // turn predicate here made the client guess at an answer only the daemon has,
-  // and it took the switch away from every cold session too.
+  // the next turn - typically the message being typed - runs on it. A genuinely
+  // refused pick (unknown model, unresolvable ref) still surfaces as a toast
+  // from handlePick. Gating on a client-side turn predicate here made the client
+  // guess at an answer only the daemon has, and it took the switch away from
+  // every cold session too.
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
+  const [acceptedModel, setAcceptedModel] = useState<{
+    sessionRef: string;
+    label: string;
+    previousLabel: string;
+  } | null>(null);
+  const displayedModelLabel =
+    acceptedModel?.sessionRef === sessionRef && acceptedModel.previousLabel === currentModelLabel
+      ? acceptedModel.label
+      : currentModelLabel;
+
+  // The accepted label bridges the successful RPC and the authoritative
+  // thread/model/changed notification. Any authoritative change settles it,
+  // including a switch made from another client.
+  useEffect(() => {
+    if (
+      acceptedModel !== null &&
+      (acceptedModel.sessionRef !== sessionRef || acceptedModel.previousLabel !== currentModelLabel)
+    ) {
+      setAcceptedModel(null);
+    }
+  }, [acceptedModel, currentModelLabel, sessionRef]);
 
   const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
     return modelListToCatalog(await threadsStore.getState().listModels(refresh));
@@ -57,19 +77,28 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // The hub announces a refreshed model list on evener/auth/updated (it serves
   // a stale list at once and refreshes it behind the request), so an open
   // picker re-reads it in place rather than showing the old list until it is
-  // reopened.
+  // reopened. A queued switch can still fail history validation at the turn
+  // boundary; its sourced warning restores the authoritative label.
   const [modelsRevision, setModelsRevision] = useState(0);
   useEffect(
     () =>
       onConnectionNotification((n) => {
         if (n.method === "evener/auth/updated") setModelsRevision((revision) => revision + 1);
+        if (n.method === "warning" && n.params.ref === sessionRef && n.params.source === "model_switch") {
+          setAcceptedModel(null);
+        }
       }),
-    [],
+    [sessionRef],
   );
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {
     try {
       await threadsStore.getState().setModel(sessionRef, entry.provider, entry.model);
+      setAcceptedModel({
+        sessionRef,
+        label: modelLabel(entry.provider, entry.model),
+        previousLabel: currentModelLabel,
+      });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't change model", err));
     }
@@ -77,8 +106,8 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
 
   return (
     <ModelSwitchTrigger
-      label={currentModelLabel}
-      value={currentModelLabel}
+      label={displayedModelLabel}
+      value={displayedModelLabel}
       disabled={disabled}
       loadCatalog={loadCatalog}
       refreshKey={modelsRevision}
