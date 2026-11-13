@@ -131,7 +131,7 @@ packages do not count.
 | `TERM` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `TMPDIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 3 more |
 | `USER` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
-| `USERPROFILE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmdutil` |
+| `USERPROFILE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `envvars/userdirs` |
 | `WAYLAND_DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 
 ## Environment variables read outside the registry
