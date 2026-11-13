@@ -55,8 +55,8 @@ order:
   reached, so a session that needs a person is never behind "+N older", and
   it shows every row of the hub's tier, including one the rail files as
   archived by age: the tier never decays, and the header's count and Next
-  needs you walk the same rows. The two sections are read separately, so a
-  session in both shows from whichever copy the hub updated last.
+  needs you walk the same rows. The two sections are read separately; while the
+  needs-you section lists a session, its copy is the one the rail shows.
 - **Working** keeps the hub's Live order.
 - **Idle** is newest finished turn first.
 
@@ -90,7 +90,8 @@ when a session changes band.
 A row that changes band is a new row under its new fold. Two things keep
 that from costing the reader anything: while a dialog opened from a row's
 own menu is open (a rename in progress, a confirmation), the bands hold every
-row where it was, with its fresh facts, and settle when the dialog closes
+row where it was, with its fresh facts (or as it last was, if the sections
+stop supplying it), and settle when the dialog closes
 ([`holdLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts));
 and a row that had keyboard focus keeps it across the move. A Live row is
 one row whichever section or page supplied it, so Live's own page arriving

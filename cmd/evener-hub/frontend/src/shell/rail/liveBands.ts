@@ -20,7 +20,6 @@ import {
   type Band,
   type BoardState,
   hostLabeler,
-  hubTime,
   LIVE_BAND_ORDER,
   liveBands,
   usualPlace,
@@ -57,15 +56,13 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
   live: readonly Row[],
   needsYou: readonly Row[],
 ): RailLiveBands<Row> {
-  // The two sections are read separately, so one can be fresher than the
-  // other: a session in both is shown from whichever copy the hub updated
-  // last, so a question the needs-you read already knows about is not hidden
-  // behind an older Live copy.
+  // The two sections are read separately, so their copies of one session can
+  // disagree. The needs-you section is the hub's attention read: while it
+  // lists a session, its copy is the one shown, so the band, the header's
+  // count and Next needs you always tell the same story, and an older Live
+  // copy never hides a session that needs a person.
   const queued = new Map(needsYou.map((row) => [row.ref, row]));
-  const current = live.map((row) => {
-    const other = queued.get(row.ref);
-    return other && (hubTime(other.updated_at) ?? 0) > (hubTime(row.updated_at) ?? 0) ? other : row;
-  });
+  const current = live.map((row) => queued.get(row.ref) ?? row);
   const shared = liveBands<Row>(current, needsYou, () => true);
   const bands: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
   const placed = new Set<string>();
@@ -89,8 +86,8 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
 /** The bands to show while the reader is mid-interaction with a row (a dialog
  * opened from it): every row `previous` showed keeps its band and place, with
  * its fresh facts, so the row - and the dialog and draft it owns - is not
- * torn down by moving to another band. Rows that left are dropped and new
- * rows join the band they belong to. */
+ * torn down by moving to another band or by leaving the sections for a
+ * moment. New rows join the band they belong to. */
 export function holdLiveBands<Row extends NavigationSessionSummary>(
   previous: RailLiveBands<Row>,
   next: RailLiveBands<Row>,
@@ -101,10 +98,10 @@ export function holdLiveBands<Row extends NavigationSessionSummary>(
   const held: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
   for (const band of LIVE_BAND_ORDER) {
     for (const row of previous[band]) {
-      const now = fresh.get(row.session.ref);
-      if (!now) continue;
+      // A row the sections stopped supplying stays as it last was: the open
+      // dialog may be its own, and it leaves when the hold releases.
       shown.add(row.session.ref);
-      held[band].push(now);
+      held[band].push(fresh.get(row.session.ref) ?? row);
     }
   }
   for (const band of LIVE_BAND_ORDER) {

@@ -95,16 +95,24 @@ describe("railLiveBands", () => {
     expect(bands.working).toEqual([]);
   });
 
-  test("a fresher needs-you copy decides the band when Live's own copy is older", () => {
-    const stale = row("local:a", { state: "active", updated_at: at(1) });
+  test("the needs-you section's copy of a session decides its band, whatever Live's copy says", () => {
     const asking = row("local:a", { state: "awaiting", ask_pending: true, updated_at: at(5) });
-    const bands = railLiveBands([stale, row("local:b")], [asking]);
-    expect(refsOf(bands.needsYou)).toEqual(["local:a"]);
-    expect(bands.needsYou[0]?.state).toBe("question");
-    expect(bands.working).toEqual([]);
-    // The other way round, Live's copy is the newer one and stands.
-    const answered = row("local:a", { state: "active", updated_at: at(9) });
-    expect(refsOf(railLiveBands([answered], [asking]).working)).toEqual(["local:a"]);
+    for (const live of [
+      row("local:a", { state: "active", updated_at: at(1) }),
+      row("local:a", { state: "active", updated_at: at(9) }),
+    ]) {
+      const bands = railLiveBands([live, row("local:b")], [asking]);
+      expect(refsOf(bands.needsYou)).toEqual(["local:a"]);
+      expect(bands.needsYou[0]?.state).toBe("question");
+      expect(bands.working).toEqual([]);
+    }
+    // A failure the attention read reports with the timestamp Live's copy
+    // already had (the daemon died without another save) still shows.
+    const crashed = row("local:c", { state: "errored", updated_at: at(3) });
+    const retained = row("local:c", { state: "active", updated_at: at(3) });
+    expect(railLiveBands([retained], [crashed]).needsYou[0]?.state).toBe("failed");
+    // Once the section no longer lists it, Live's copy speaks again.
+    expect(refsOf(railLiveBands([retained], []).working)).toEqual(["local:c"]);
   });
 
   test("a needs-you session the rail files as archived still shows: the hub's tier never decays", () => {
@@ -123,7 +131,11 @@ describe("railLiveBands", () => {
     expect(refsOf(held.needsYou)).toEqual([]);
     expect(refsOf(held.working)).toEqual(["local:a", "local:new"]);
     expect(held.working[0]?.state).toBe("question");
-    expect(refsOf(held.idle)).toEqual(["local:b"]);
+    // A row the sections no longer supply stays, as it last was: the open
+    // dialog may be its own.
+    expect(refsOf(held.idle)).toEqual(["local:b", "local:gone"]);
+    // Releasing the hold drops it.
+    expect(liveBandRefs(after)).not.toContain("local:gone");
   });
 
   test("a live row the shared model bands nowhere rests at the end of Idle instead of leaving Live", () => {
