@@ -336,6 +336,114 @@ describe("disabled behavior and form safety", () => {
   });
 });
 
+describe("stacked detail", () => {
+  const detailed = [
+    { value: "agents", label: "Agents", detail: "1/9", accessibleLabel: "Agents, 1 of 9 active" },
+    { value: "jobs", label: "Jobs", detail: "2/4" },
+    { value: "about", label: "About" },
+  ];
+
+  test("renders the detail as its own element and keeps the accessible name", () => {
+    render(<SegmentedControl label="Kind" value="jobs" options={detailed} onChange={() => {}} />);
+    const agents = screen.getByRole("radio", { name: "Agents, 1 of 9 active" });
+    const spans = agents.querySelectorAll("span");
+    expect(spans).toHaveLength(2);
+    expect(spans[0]?.textContent).toBe("Agents");
+    expect(spans[1]?.textContent).toBe("1/9");
+    expect(screen.getByRole("radio", { name: "Jobs" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  });
+
+  test("applies the stacked shape to the track and every option only when a detail exists", () => {
+    const { unmount } = render(<SegmentedControl label="Kind" value="jobs" options={detailed} onChange={() => {}} />);
+    const stackedTrack = screen.getByRole("radiogroup");
+    const stackedClass = stackedTrack.className.split(" ").find((name) => name.includes("stacked"));
+    expect(stackedClass).toBeTruthy();
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio.className).toContain(stackedClass);
+      expect(radio.className).not.toMatch(/\b(sm|md)\b/);
+    }
+    unmount();
+    render(<SegmentedControl label="Kind" value="chat" options={OPTIONS} onChange={() => {}} />);
+    expect(screen.getByRole("radiogroup").className).not.toContain("stacked");
+    for (const radio of screen.getAllByRole("radio")) expect(radio.className).not.toContain("stacked");
+  });
+
+  test("stacked CSS gives the track pane corners and the thumb the concentric inner radius", () => {
+    const css = cssSource();
+    expect(css).toMatch(/\.track\.stacked\s*\{[^}]*border-radius:\s*var\(--radius-pane\)/s);
+    expect(css).toMatch(
+      /\.option\.stacked\s*\{[^}]*flex-direction:\s*column[^}]*block-size:\s*auto[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
+    );
+    expect(css).toMatch(
+      /\.optionDetail\s*\{[^}]*font-size:\s*min\(var\(--font-size-caption\),\s*calc\(var\(--font-size-caption\) \/ var\(--font-scale\)\)\)[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
+    );
+  });
+});
+
+describe("thumb", () => {
+  function thumbOf(group: HTMLElement): HTMLElement {
+    const thumb = group.querySelector('[aria-hidden="true"]');
+    if (!(thumb instanceof HTMLElement)) throw new Error("no thumb");
+    return thumb;
+  }
+
+  test("one hidden thumb follows the chosen option's position", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    const group = screen.getByRole("radiogroup");
+    const thumb = thumbOf(group);
+    expect(group.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
+    expect(thumb.style.getPropertyValue("--segmented-index")).toBe("2");
+    await user.click(screen.getByRole("radio", { name: "Activity" }));
+    expect(thumbOf(group)).toBe(thumb);
+    expect(thumb.style.getPropertyValue("--segmented-index")).toBe("3");
+    await user.click(screen.getByRole("radio", { name: "Chat" }));
+    expect(thumb.style.getPropertyValue("--segmented-index")).toBe("0");
+  });
+
+  test("dims with the group and under a disabled chosen option, and not otherwise", () => {
+    const { rerender } = render(
+      <SegmentedControl
+        label="Choice"
+        value="one"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two" },
+        ]}
+        onChange={() => {}}
+      />,
+    );
+    const thumb = () => thumbOf(screen.getByRole("radiogroup"));
+    expect(thumb().hasAttribute("data-disabled")).toBe(false);
+    rerender(
+      <SegmentedControl
+        label="Choice"
+        value="one"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two" },
+        ]}
+        onChange={() => {}}
+        disabled
+      />,
+    );
+    expect(thumb().hasAttribute("data-disabled")).toBe(true);
+    rerender(
+      <SegmentedControl
+        label="Choice"
+        value="one"
+        options={[
+          { value: "one", label: "One", disabled: true },
+          { value: "two", label: "Two" },
+        ]}
+        onChange={() => {}}
+      />,
+    );
+    expect(thumb().hasAttribute("data-disabled")).toBe(true);
+  });
+});
+
 describe("CSS contract", () => {
   test("uses the complete neutral track, option, density, responsive, and motion contract", () => {
     const css = cssSource();
@@ -346,7 +454,7 @@ describe("CSS contract", () => {
       /\.label\s*\{[^}]*color:\s*var\(--ink-hi\)[^}]*font-family:\s*var\(--font-sans\)[^}]*font-size:\s*var\(--font-size-ui\)[^}]*line-height:\s*var\(--line-height-body\)[^}]*font-weight:\s*var\(--font-weight-medium\)/s,
     );
     expect(css).toMatch(
-      /\.track\s*\{[^}]*display:\s*inline-grid[^}]*align-items:\s*stretch[^}]*box-sizing:\s*border-box[^}]*overflow:\s*visible[^}]*padding:\s*2px[^}]*gap:\s*2px[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-canvas\)[^}]*box-shadow:\s*var\(--shadow-inset-field\)/s,
+      /\.track\s*\{[^}]*--segmented-gap:\s*2px[^}]*position:\s*relative[^}]*display:\s*inline-grid[^}]*align-items:\s*stretch[^}]*box-sizing:\s*border-box[^}]*overflow:\s*visible[^}]*padding:\s*2px[^}]*gap:\s*var\(--segmented-gap\)[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-canvas\)[^}]*box-shadow:\s*var\(--shadow-inset-field\)/s,
     );
     expect(css).toMatch(
       /\.option\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-inline-size:\s*0[^}]*inline-size:\s*100%[^}]*border:\s*1px solid transparent[^}]*border-radius:\s*var\(--radius-pill\)[^}]*padding-block:\s*0[^}]*padding-inline:\s*var\(--space-1\)[^}]*background:\s*transparent[^}]*color:\s*var\(--ink-mid\)/s,
@@ -356,16 +464,19 @@ describe("CSS contract", () => {
       /\.option\s*\{[^}]*font-family:\s*var\(--font-sans\)[^}]*font-size:\s*var\(--font-size-ui\)[^}]*line-height:\s*var\(--line-height-body\)[^}]*font-weight:\s*var\(--font-weight-medium\)[^}]*text-align:\s*center[^}]*cursor:\s*pointer/s,
     );
     expect(css).toMatch(
-      /\.option\s*\{[^}]*transition:\s*background-color var\(--motion-duration-hover\) var\(--motion-easing-standard\),\s*border-color var\(--motion-duration-hover\) var\(--motion-easing-standard\),\s*color var\(--motion-duration-hover\) var\(--motion-easing-standard\),\s*box-shadow var\(--motion-duration-hover\) var\(--motion-easing-standard\)/s,
+      /\.option\s*\{[^}]*transition:\s*background-color var\(--motion-duration-hover\) var\(--motion-easing-standard\),\s*color var\(--motion-duration-hover\) var\(--motion-easing-standard\);/s,
     );
     expect(css).toMatch(
       /\.option:not\(\[aria-checked="true"\]\):hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--hover-1\)/s,
     );
     expect(css).toMatch(
-      /\.option\[aria-checked="true"\]\s*\{[^}]*border-color:\s*var\(--edge\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*color:\s*var\(--ink-hi\)[^}]*font-weight:\s*var\(--font-weight-semibold\)/s,
+      /\.option\[aria-checked="true"\]\s*\{[^}]*color:\s*var\(--ink-hi\)[^}]*font-weight:\s*var\(--font-weight-semibold\)/s,
     );
+    expect(css).not.toMatch(/\.option\[aria-checked="true"\]\s*\{[^}]*(?:background|box-shadow|border-color)\s*:/s);
     expect(css).toMatch(/\.option:focus-visible\s*\{[^}]*outline:\s*var\(--focus-ring\)[^}]*outline-offset:\s*2px/s);
-    expect(css).toMatch(/\.option:disabled\s*\{[^}]*cursor:\s*not-allowed[^}]*opacity:\s*0\.5/s);
+    expect(css).toMatch(
+      /\.option:disabled,\s*\.thumb\[data-disabled\]\s*\{[^}]*cursor:\s*not-allowed[^}]*opacity:\s*0\.5/s,
+    );
     expect(css.match(/opacity:\s*0\.5/g) ?? []).toHaveLength(1);
     expect(css).not.toMatch(/\.root\s*\{[^}]*opacity\s*:/s);
     expect(css).not.toMatch(/\.track\s*\{[^}]*opacity\s*:/s);
@@ -396,5 +507,23 @@ describe("CSS contract", () => {
     expect(css).not.toMatch(/min-inline-size:\s*var\(--tap-min\)/);
     expect(css).not.toMatch(/data-theme|--accent|flex-wrap|overflow-x\s*:\s*(auto|scroll)|margin-inline\s*:\s*-/);
     expect(css).not.toMatch(/transition:\s*all/);
+  });
+
+  // The Move recipe (docs/web-ui/motion.md): one raised thumb sits in the
+  // first option's grid cell and travels by whole steps of its own width plus
+  // the gap, so it needs no measurement; only its transform moves, on the
+  // hover budget, and only without reduced motion.
+  test("one thumb carries the raise and travels by transform alone", () => {
+    const css = cssSource();
+    expect(css).toMatch(
+      /\.thumb\s*\{[^}]*grid-row:\s*1 \/ 2[^}]*grid-column:\s*1 \/ 2[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*pointer-events:\s*none[^}]*transform:\s*translateX\(calc\(var\(--segmented-direction, 1\) \* var\(--segmented-index, 0\) \* \(100% \+ var\(--segmented-gap\)\)\)\)/s,
+    );
+    expect(css).toMatch(
+      /\.track\.stacked > \.thumb\s*\{[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{\s*\.thumb\s*\{\s*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\);\s*\}\s*\}/s,
+    );
+    expect(css.match(/transition:\s*transform/g) ?? []).toHaveLength(1);
   });
 });

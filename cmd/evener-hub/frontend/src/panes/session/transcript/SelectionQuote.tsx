@@ -37,6 +37,7 @@ import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../shell/installKeybindings";
 import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { usePresence } from "../../../widgets/internal/usePresence";
 import { clampToBounds, messageContentElement } from "./selectionQuoteLogic";
 import styles from "./selectionquote.module.css";
 
@@ -74,6 +75,11 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  // The bar floats out when the selection goes (the Float recipe) and keeps
+  // showing the selection and place it had while it leaves.
+  const { mounted, phase } = usePresence(selection !== null && position !== null, barRef);
+  const shownRef = useRef<{ selection: CapturedSelection; position: { x: number; y: number } } | null>(null);
+  if (selection && position) shownRef.current = { selection, position };
   // Read by the selection.quote action below without making `actions` an
   // effect dependency - every caller (Session.tsx included) passes a fresh
   // array literal each render, and re-registering the action on every render
@@ -197,7 +203,8 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!selection || !container) {
-      setPosition(null);
+      // Kept while a bar is leaving, so the next selection measures from it
+      // instead of from nothing; it is never shown without a selection.
       return;
     }
     const containerRect = container.getBoundingClientRect();
@@ -214,13 +221,17 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
     setPosition({ x: clamped.x + containerRect.left, y: clamped.y + containerRect.top });
   }, [selection, containerRef]);
 
-  if (!selection || !position) return null;
+  const shown = shownRef.current;
+  if (!mounted || shown === null) return null;
+  const closing = phase === "closing";
 
   return (
     <div
       ref={barRef}
       className={CLASS.bar}
-      style={{ left: `${position.x}px`, top: `${position.y}px` }}
+      data-motion={phase}
+      inert={closing}
+      style={{ left: `${shown.position.x}px`, top: `${shown.position.y}px` }}
       role="toolbar"
       aria-label="Selection actions"
       // See this component's own header comment: without this, the native
@@ -235,7 +246,8 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
           size="xs"
           type="button"
           onClick={() => {
-            action.onInvoke(selection.text);
+            if (closing) return;
+            action.onInvoke(shown.selection.text);
             setSelection(null);
           }}
         >

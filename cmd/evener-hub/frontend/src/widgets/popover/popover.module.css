@@ -10,32 +10,16 @@
 /* position: fixed (not absolute): the panel portals to document.body (see
  * index.tsx) and gets its top/left as an inline style, computed off the
  * trigger's own getBoundingClientRect() - so opening never reflows page
- * content and no clipping ancestor can cut it off. */
+ * content and no clipping ancestor can cut it off. It floats in and out (the
+ * Float recipe), growing from the trigger's corner: index.tsx sets the
+ * transform origin inline with the placement. */
 .panel {
+  composes: float from "../../styles/motion.module.css";
   position: fixed;
   z-index: var(--z-menu);
   background: var(--surface-1);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
-}
-
-@keyframes popoverFadeScale {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .panel {
-    animation: none;
-  }
 }
 
 /* stretchTrigger: the wrapper fills its container instead of hugging, for a

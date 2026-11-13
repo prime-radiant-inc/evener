@@ -1147,7 +1147,10 @@ test("the demoted summary line is readable text (--ink-mid), not the placeholder
 test("the chevron rotation and the body fade are declared with real motion", () => {
   const css = rowCss();
   expect(css).toMatch(/\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform/);
-  expect(css).toMatch(/\.body\s*\{[^}]*animation:\s*tool-body-in/);
+  // The body fades in by the shared reveal recipe, which owns the keyframes,
+  // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
+  expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/@keyframes/);
 });
 
 // The chevron SPAN is 1lh tall (first-line alignment) and so not square:
@@ -1163,8 +1166,10 @@ test("the open-state rotation turns the square svg, never the 1lh-tall span", ()
 test("the row's motion uses only existing motion tokens - no invented duration", () => {
   const css = rowCss();
   expect(css.match(/(?:transition|animation):[^;]*?\d+m?s/g)).toBe(null);
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toContain("var(--motion-easing-standard)");
+  // A chevron turning is the Move recipe: the hover duration, standard easing.
+  expect(css).toMatch(
+    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
 });
 
 test("all of the row's motion sits behind a prefers-reduced-motion gate", () => {

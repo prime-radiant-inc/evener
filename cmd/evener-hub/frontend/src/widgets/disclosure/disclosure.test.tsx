@@ -368,18 +368,23 @@ test("keeps the summary at the narrow-viewport tap floor", () => {
 test("the chevron rotation and the body fade are declared with real motion", () => {
   const css = motionCss();
   expect(css).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
-  expect(css).toMatch(/\.body\s*\{[^}]*animation:\s*disclosure-body-in/);
+  // The body fades in by the shared reveal recipe, which owns the keyframes,
+  // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
+  expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/@keyframes|\banimation:/);
 });
 
 test("every motion declaration uses an existing motion token - no invented duration", () => {
   const css = motionCss();
   const durations = css.match(/(?:transition|animation):[^;]*?(\d+m?s)/g);
   expect(durations).toBe(null); // no literal duration anywhere
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toContain("var(--motion-easing-standard)");
+  // A chevron turning is the Move recipe: the hover duration, standard easing.
+  expect(css).toMatch(
+    /\.chevron\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
 });
 
-test("the open/close motion (chevron rotation, body fade) sits inside a prefers-reduced-motion: no-preference gate", () => {
+test("the chevron rotation sits inside a prefers-reduced-motion: no-preference gate", () => {
   const css = motionCss();
   // The chevron/body open motion must live in the gated block, so a reader
   // who asked for less motion gets an instant open. Interactive-response
@@ -392,10 +397,8 @@ test("the open/close motion (chevron rotation, body fade) sits inside a prefers-
   const gated = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{([\s\S]*?)\n\}/.exec(css);
   expect(gated).not.toBeNull();
   expect(gated![1]).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
-  expect(gated![1]).toMatch(/\.body\s*\{[^}]*animation:\s*disclosure-body-in/);
   const outsideGate = css.replace(gated![0], "");
   expect(outsideGate).not.toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
-  expect(outsideGate).not.toMatch(/\banimation:\s*disclosure-body-in/);
 
   const transitions = outsideGate.match(/transition:\s*[^;]+;/g) ?? [];
   expect(transitions.length).toBeGreaterThan(0);
@@ -404,9 +407,14 @@ test("the open/close motion (chevron rotation, body fade) sits inside a prefers-
   }
 });
 
-test("the motion is a fade, not a slide or a bounce", () => {
-  const css = motionCss();
-  const keyframes = /@keyframes\s+disclosure-body-in\s*\{([\s\S]*?)\n\}/.exec(css);
+test("the body's reveal is a fade, not a slide or a bounce", () => {
+  const recipes = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../styles/motion.module.css"),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
+  const reveal = /\.bodyReveal\s*\{\s*animation:\s*(\w+)/.exec(recipes);
+  expect(reveal).not.toBeNull();
+  const keyframes = new RegExp(`@keyframes\\s+${reveal![1]}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(recipes);
   expect(keyframes).not.toBeNull();
   expect(keyframes![1]).toContain("opacity");
   expect(keyframes![1]).not.toContain("translate");

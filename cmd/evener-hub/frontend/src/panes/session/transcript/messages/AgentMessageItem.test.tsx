@@ -403,20 +403,12 @@ test("the terminal closer carries the neutral wash: token-only fill, no hardcode
 // cascade, so the caret contract is checked at the declaration level, the
 // same technique StreamingText.test.tsx uses for its own caret.
 
-test("the live stream keeps the blinking caret, as an inline bar at the end of the last markdown block (declaration-level)", () => {
+test("the live stream takes the shared caret recipe for the end of its last markdown block (declaration-level)", () => {
   const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
-  const caret = /\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{([^}]*)\}/.exec(css);
-  expect(caret).not.toBeNull();
-  expect(caret![1]).toContain("display: inline-block");
-  expect(caret![1]).toContain("background: currentColor");
-  expect(caret![1]).toContain("animation: streamingCaretBlink");
-});
-
-test("the stream caret's blink sits behind the reduced-motion gate, keeping the static bar (declaration-level)", () => {
-  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
-  const gate = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  expect(gate).not.toBeNull();
-  expect(gate![1]).toMatch(/\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{[^}]*animation:\s*none/);
+  const stream = /\.stream\s*\{([^}]*)\}/.exec(css);
+  expect(stream).not.toBeNull();
+  expect(stream![1]).toMatch(/composes:\s*caretLast from "(?:\.\.\/)+styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/@keyframes|\banimation\s*:/);
 });
 
 for (const live of [false, true]) {

@@ -209,3 +209,55 @@ test("a toast carries its kind and, when the caller names one, its reason", () =
     ["error", null],
   ]);
 });
+
+// jsdom runs no animations: stand in a running exit on whatever the layer
+// marks closing, and finish it by hand.
+test("a dismissed toast floats out in place before it leaves, on the unchanged dismissal clock", async () => {
+  vi.useFakeTimers();
+  let finishExit: () => void = () => {};
+  const finished = new Promise<void>((resolve) => {
+    finishExit = resolve;
+  });
+  const exit = {
+    playState: "running",
+    effect: { getComputedTiming: () => ({ endTime: 80 }) },
+    finished,
+  } as unknown as Animation;
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value(this: Element) {
+      return this.getAttribute("data-motion") === "closing" ? [exit] : [];
+    },
+  });
+  try {
+    render(<Toast />);
+    act(() => {
+      pushToast("info", "First", "first");
+      pushToast("info", "Second", "second");
+    });
+    const reasons = () =>
+      [...screen.getByRole("region").querySelectorAll<HTMLElement>("[data-reason]")].map((el) => [
+        el.dataset.reason,
+        el.dataset.motion,
+      ]);
+
+    advance(4999);
+    expect(reasons()).toEqual([
+      ["first", "open"],
+      ["second", "open"],
+    ]);
+    advance(1);
+    // Both left the queue at the same moment they always did; each stays
+    // where it was, leaving, until its exit has played.
+    expect(getToasts()).toEqual([]);
+    expect(reasons()).toEqual([
+      ["first", "closing"],
+      ["second", "closing"],
+    ]);
+
+    await act(async () => finishExit());
+    expect(reasons()).toEqual([]);
+  } finally {
+    delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
+  }
+});

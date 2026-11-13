@@ -52,17 +52,12 @@
 .copy {
   flex: none;
   opacity: 0.35;
+  transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .root:hover .copy,
 .copy:focus-within {
   opacity: 1;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .copy {
-    transition: opacity var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
 }
 
 /* Long lines WRAP; the block never scrolls horizontally - see the component's

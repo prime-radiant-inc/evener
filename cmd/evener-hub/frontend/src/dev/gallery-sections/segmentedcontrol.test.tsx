@@ -26,6 +26,9 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
     expect(intrinsic.group.className).not.toContain("fullWidth");
     expect(intrinsic.group.querySelectorAll('[role="radio"]')).toHaveLength(3);
 
+    const unequal = selected("Unequal labels", "All");
+    expect(unequal.group.querySelectorAll('[role="radio"]')).toHaveLength(3);
+
     const sixOption = selected("Six-option transcript detail", "Tools");
     expect(sixOption.group.className).toContain("fullWidth");
     expect(sixOption.group.querySelectorAll('[role="radio"]')).toHaveLength(6);
@@ -56,6 +59,10 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
 
     const keyboard = selected("Keyboard focus", "Intent");
     expect(keyboard.option.getAttribute("tabindex")).toBe("0");
+
+    const stacked = selected("Stacked detail", "Jobs, 2 of 201 running");
+    expect(stacked.group.className).toContain("stacked");
+    expect(stacked.option.querySelectorAll("span")).toHaveLength(2);
 
     const frame320 = pane.querySelector('[data-testid="segmentedcontrol-frame-320"]');
     const frame390 = pane.querySelector('[data-testid="segmentedcontrol-frame-390"]');

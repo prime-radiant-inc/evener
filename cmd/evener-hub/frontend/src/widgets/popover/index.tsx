@@ -8,11 +8,12 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { FocusScope } from "../focusscope";
+import { LayerFocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { usePortalDocument } from "../internal/usePortalDocument";
-import { computePopoverPosition, type PopoverPosition, TRIGGER_GAP } from "./computePosition";
+import { usePresence } from "../internal/usePresence";
+import { computePopoverPosition, type PopoverPosition, TRIGGER_GAP, transformOriginFor } from "./computePosition";
 import styles from "./popover.module.css";
 
 const CLASS = {
@@ -80,12 +81,17 @@ export function Popover({
   const triggerRef = useRef<HTMLSpanElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
+  const [origin, setOrigin] = useState<string | undefined>(undefined);
+  const { mounted, phase } = usePresence(open, panelRef);
+  // While the panel leaves it shows what it held when it closed.
+  const shownRef = useRef(children);
+  if (open) shownRef.current = children;
   // The document the trigger lives in. A Dockview popout is a separate window:
   // portaling into the opener's body would put the panel in the wrong one, and
   // listeners on the opener's window never see the popout's scroll, resize, or
   // outside click. The shared portal seam supplies it once the trigger exists
   // and follows a move while open.
-  const panelDocument = usePortalDocument(triggerRef, open);
+  const panelDocument = usePortalDocument(triggerRef, mounted);
   const panelWindow = panelDocument?.defaultView ?? null;
 
   // Measure the trigger and the panel's own natural size and set the actual
@@ -94,13 +100,15 @@ export function Popover({
   // complete before the browser's next paint, in the same commit as the
   // portal's mount: the panel is never visibly painted at the pre-measure
   // placeholder (and never visibility:hidden, which would make it unreachable
-  // to FocusScope's tabbable() scan - see Menu's own note). Closing clears the
-  // position so the next open re-measures from scratch.
+  // to FocusScope's tabbable() scan - see Menu's own note). A leaving panel
+  // keeps the placement it closed at; once it has gone the position clears so
+  // the next open re-measures from scratch.
   useLayoutEffect(() => {
-    if (!open) {
-      setPosition(null);
-      return;
-    }
+    if (!mounted) setPosition(null);
+  }, [mounted]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
     const triggerEl = triggerRef.current;
     const panelEl = panelRef.current;
     if (!triggerEl || !panelEl) return;
@@ -123,16 +131,17 @@ export function Popover({
       const viewport = panelWindow
         ? { width: panelWindow.innerWidth, height: panelWindow.innerHeight }
         : { width: window.innerWidth, height: window.innerHeight };
-      setPosition(
-        computePopoverPosition(
-          triggerEl.getBoundingClientRect(),
-          {
-            width: panelEl.offsetWidth,
-            height: panelEl.offsetHeight,
-          },
-          viewport,
-        ),
+      const triggerRect = triggerEl.getBoundingClientRect();
+      const placed = computePopoverPosition(
+        triggerRect,
+        {
+          width: panelEl.offsetWidth,
+          height: panelEl.offsetHeight,
+        },
+        viewport,
       );
+      setPosition(placed);
+      setOrigin(transformOriginFor(triggerRect, placed));
     }
     measure();
 
@@ -194,21 +203,27 @@ export function Popover({
   return (
     <span ref={triggerRef} className={`${CLASS.trigger} ${stretchTrigger ? CLASS.triggerStretch : ""}`}>
       {trigger}
-      {open &&
+      {mounted &&
         panelDocument !== null &&
         createPortal(
-          <FocusScope trap autoFocus={autoFocus}>
+          <LayerFocusScope trap autoFocus={autoFocus} released={phase === "closing"}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes on Escape; the panel is a portaled overlay container, not itself interactive */}
             <div
               ref={panelRef}
               className={CLASS.panel}
               data-testid={rest["data-testid"]}
-              style={position ? { top: position.top, left: position.left } : { top: TRIGGER_GAP, left: 0 }}
+              data-motion={phase}
+              inert={phase === "closing"}
+              style={
+                position
+                  ? { top: position.top, left: position.left, transformOrigin: origin }
+                  : { top: TRIGGER_GAP, left: 0 }
+              }
               onKeyDown={handlePanelKeyDown}
             >
-              {children}
+              {shownRef.current}
             </div>
-          </FocusScope>,
+          </LayerFocusScope>,
           panelDocument.body,
         )}
     </span>

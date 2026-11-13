@@ -1,10 +1,12 @@
-import { type KeyboardEvent, useId, useRef } from "react";
+import { type CSSProperties, type KeyboardEvent, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./segmentedcontrol.module.css";
 
 export interface SegmentedControlOption<T extends string = string> {
   value: T;
   label: string;
+  /** A quieter second line under the label (a count or fraction). Any option carrying one makes the whole control stacked. */
+  detail?: string;
   accessibleLabel?: string;
   disabled?: boolean;
 }
@@ -26,9 +28,12 @@ const CLASS = {
   root: requireClass(styles.root, "segmentedcontrol.module.css", "root"),
   label: requireClass(styles.label, "segmentedcontrol.module.css", "label"),
   track: requireClass(styles.track, "segmentedcontrol.module.css", "track"),
+  thumb: requireClass(styles.thumb, "segmentedcontrol.module.css", "thumb"),
   fullWidth: requireClass(styles.fullWidth, "segmentedcontrol.module.css", "fullWidth"),
   option: requireClass(styles.option, "segmentedcontrol.module.css", "option"),
   optionLabel: requireClass(styles.optionLabel, "segmentedcontrol.module.css", "optionLabel"),
+  optionDetail: requireClass(styles.optionDetail, "segmentedcontrol.module.css", "optionDetail"),
+  stacked: requireClass(styles.stacked, "segmentedcontrol.module.css", "stacked"),
   sm: requireClass(styles.sm, "segmentedcontrol.module.css", "sm"),
   md: requireClass(styles.md, "segmentedcontrol.module.css", "md"),
 };
@@ -49,6 +54,10 @@ function validateSegmentedControl<T extends string>(
     if (option.accessibleLabel !== undefined && option.accessibleLabel.trim() === "")
       throw new Error("SegmentedControl accessible labels must be non-empty");
   }
+}
+
+function hasDetail<T extends string>(option: SegmentedControlOption<T>): boolean {
+  return option.detail !== undefined && option.detail.trim() !== "";
 }
 
 function firstEnabledIndex<T extends string>(options: readonly SegmentedControlOption<T>[]): number {
@@ -103,7 +112,10 @@ export function SegmentedControl<T extends string = string>({
   } else if (selectedOption?.disabled) {
     tabbableIndex = firstEnabledIndex(options);
   }
-  const sizeClass = size === "sm" ? CLASS.sm : CLASS.md;
+  const stacked = options.some(hasDetail);
+  // A stacked option is content-height; the fixed one-line block size would clip its second row.
+  let sizeClass = size === "sm" ? CLASS.sm : CLASS.md;
+  if (stacked) sizeClass = CLASS.stacked;
 
   function choose(index: number) {
     const option = options[index];
@@ -158,9 +170,16 @@ export function SegmentedControl<T extends string = string>({
         aria-describedby={ariaDescribedby}
         aria-orientation="horizontal"
         aria-disabled={disabled ? "true" : undefined}
-        className={`${CLASS.track}${fullWidth ? ` ${CLASS.fullWidth}` : ""}`}
+        className={`${CLASS.track}${fullWidth ? ` ${CLASS.fullWidth}` : ""}${stacked ? ` ${CLASS.stacked}` : ""}`}
         style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
       >
+        {/* One thumb marks the choice and travels to it; the options paint over it. */}
+        <span
+          aria-hidden="true"
+          className={CLASS.thumb}
+          data-disabled={disabled || selectedOption?.disabled === true ? "" : undefined}
+          style={{ "--segmented-index": selectedIndex } as CSSProperties}
+        />
         {options.map((option, index) => (
           // biome-ignore lint/a11y/useSemanticElements: button-based radio is intentionally native-activatable and follows the ARIA radiogroup pattern.
           <button
@@ -179,6 +198,7 @@ export function SegmentedControl<T extends string = string>({
             onKeyDown={(event) => handleKeyDown(event, index)}
           >
             <span className={CLASS.optionLabel}>{option.label}</span>
+            {hasDetail(option) ? <span className={CLASS.optionDetail}>{option.detail}</span> : null}
           </button>
         ))}
       </div>

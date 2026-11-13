@@ -21,16 +21,16 @@
 // of its two states) simply renders no chip.
 
 import { ACTIONS, chordDisplayKeys, displayBindingFor, type KeySequence, serializeChord } from "@evener/appwire-client";
-import { Fragment, type ReactNode, useEffect } from "react";
+import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { usePresence } from "../../widgets/internal/usePresence";
 import { focusedSessionPaneId, focusedSessionRef } from "../focusedSession";
 import { installHoldHints, useHoldHintsStore } from "./holdHintsController";
 import styles from "./holdhints.module.css";
-import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 
 const CLASS = {
   root: requireClass(styles.root, "holdhints.module.css", "root"),
@@ -125,13 +125,16 @@ const ANCHORS: readonly AnchorSpec[] = [
 export function HoldHints() {
   const visible = useHoldHintsStore((s) => s.visible);
   const bindings = useStore(keybindingsRegistry, (s) => s.bindings);
-  const reducedMotion = usePrefersReducedMotion();
+  // The chips fade out on release (the Float recipe's text-only form); the
+  // layer stays mounted, re-anchored each render, until that fade has played.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { mounted, phase } = usePresence(visible, rootRef);
 
   // The detection listeners' whole lifetime is this mount (desktop-only, per
   // the file header), so a touch viewport never installs one.
   useEffect(() => installHoldHints(), []);
 
-  if (!visible) return null;
+  if (!mounted) return null;
 
   const chips: ReactNode[] = [];
   for (const spec of ANCHORS) {
@@ -168,12 +171,7 @@ export function HoldHints() {
   if (chips.length === 0) return null;
 
   return createPortal(
-    <div
-      className={CLASS.root}
-      data-hold-hints=""
-      data-reduced-motion={reducedMotion ? "" : undefined}
-      aria-hidden="true"
-    >
+    <div ref={rootRef} className={CLASS.root} data-hold-hints="" data-motion={phase} aria-hidden="true">
       {chips}
     </div>,
     document.body,

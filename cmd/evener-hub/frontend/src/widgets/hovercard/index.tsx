@@ -51,6 +51,8 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
   const gestureListenersRef = useRef<(() => void) | null>(null);
   const {
     visible,
+    mounted,
+    phase,
     wrapperRef,
     triggerProps,
     setBubbleRef,
@@ -240,7 +242,8 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
       {describedChild}
       <FloatingBubblePortal
         as="div"
-        show={visible}
+        show={mounted}
+        phase={phase}
         id={bubbleID}
         className={CLASS.bubble}
         style={bubbleStyle}

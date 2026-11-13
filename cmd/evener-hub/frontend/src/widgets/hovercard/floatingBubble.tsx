@@ -14,6 +14,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { ownerWindowOf } from "../internal/documentRealm";
+import { type MotionPhase, usePresence } from "../internal/usePresence";
 import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "../tooltip/computePosition";
 import { computeSideAnchorPosition, type SideAnchor } from "./computePosition";
 import { useFloatingLabel } from "./useFloatingLabel";
@@ -43,11 +44,16 @@ import { useFloatingLabel } from "./useFloatingLabel";
 
 export interface FloatingBubble {
   visible: boolean;
+  /** Render the bubble: while visible and for as long as it is leaving. */
+  mounted: boolean;
+  /** The bubble's data-motion: "closing" while it leaves. */
+  phase: MotionPhase;
   wrapperRef: ReturnType<typeof useFloatingLabel>["wrapperRef"];
   triggerProps: ReturnType<typeof useFloatingLabel>["triggerProps"];
   /** Attach to the portaled bubble, whichever element type it uses. */
   setBubbleRef: (element: HTMLElement | null) => void;
-  /** What the bubble renders with: the measured placement, or the placeholder. */
+  /** What the bubble renders with: the measured placement and the side it
+   * grows from, or the placeholder. */
   bubbleStyle: CSSProperties;
   /** The body of the document the wrapper lives in: the bubble's portal target. */
   bubbleContainer: HTMLElement;
@@ -67,7 +73,7 @@ export function useFloatingBubble(
   sideAnchor?: () => SideAnchor | null,
 ): FloatingBubble {
   const bubbleRef = useRef<HTMLElement | null>(null);
-  const [position, setPosition] = useState<TooltipPosition | null>(null);
+  const [position, setPosition] = useState<(TooltipPosition & { transformOrigin: string }) | null>(null);
   const bubbleID = useId();
 
   // offsetWidth/offsetHeight, not getBoundingClientRect(), for the bubble's own
@@ -88,11 +94,15 @@ export function useFloatingBubble(
     // the opener's window knows nothing about where that bubble can fit.
     const viewportWindow = ownerWindowOf(wrapperEl);
     const viewport = { width: viewportWindow.innerWidth, height: viewportWindow.innerHeight };
-    setPosition(
-      anchor
-        ? computeSideAnchorPosition(anchor, size, viewport)
-        : computeTooltipPosition(wrapperEl.getBoundingClientRect(), size, viewport),
-    );
+    if (anchor) {
+      setPosition({ ...computeSideAnchorPosition(anchor, size, viewport), transformOrigin: "left center" });
+      return;
+    }
+    const wrapperRect = wrapperEl.getBoundingClientRect();
+    const placed = computeTooltipPosition(wrapperRect, size, viewport);
+    // The edge facing the trigger: below it the bubble grows down from its
+    // top, flipped above it grows up from its bottom.
+    setPosition({ ...placed, transformOrigin: placed.top < wrapperRect.top ? "center bottom" : "center top" });
   }, [sideAnchor]);
 
   const { visible, ownerDocument, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
@@ -102,6 +112,7 @@ export function useFloatingBubble(
     // A side anchor follows its owning row as the sidebar is resized in place.
     observeAnchor: sideAnchor ? focusTarget : undefined,
   });
+  const { mounted, phase } = usePresence(visible, bubbleRef);
 
   useLayoutEffect(() => {
     if (!visible) return;
@@ -122,15 +133,18 @@ export function useFloatingBubble(
   // Measure the trigger and the bubble and place the bubble. A layout effect,
   // so the measure and the re-render its setPosition causes both complete
   // before the browser's next paint, in the same commit that mounts the portal:
-  // the bubble is never visibly painted at the pre-measure placeholder.
+  // the bubble is never visibly painted at the pre-measure placeholder. A
+  // leaving bubble keeps the placement it had; once gone, the next show
+  // measures from the placeholder again.
   // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate trigger - a document move has to re-measure against the new window
   useLayoutEffect(() => {
-    if (!visible) {
-      setPosition(null);
-      return;
-    }
+    if (!visible) return;
     measure();
   }, [measure, visible, ownerDocument]);
+
+  useLayoutEffect(() => {
+    if (!mounted) setPosition(null);
+  }, [mounted]);
 
   const setBubbleRef = useCallback((element: HTMLElement | null) => {
     bubbleRef.current = element;
@@ -138,6 +152,8 @@ export function useFloatingBubble(
 
   return {
     visible,
+    mounted,
+    phase,
     wrapperRef,
     triggerProps,
     setBubbleRef,
@@ -158,6 +174,8 @@ export interface FloatingBubblePortalProps {
   /** The bubble's element: the tooltip's inline span, the card's block div. */
   as: "div" | "span";
   show: boolean;
+  /** The bubble's data-motion; a closing bubble is inert. */
+  phase: MotionPhase;
   id: string;
   className: string;
   style: CSSProperties;
@@ -173,6 +191,7 @@ export interface FloatingBubblePortalProps {
 export function FloatingBubblePortal({
   as,
   show,
+  phase,
   id,
   className,
   style,
@@ -185,7 +204,16 @@ export function FloatingBubblePortal({
   return createPortal(
     createElement(
       as,
-      { ref: setRef, role: "tooltip", id, className, style, "data-long-press-enabled": longPressEnabled },
+      {
+        ref: setRef,
+        role: "tooltip",
+        id,
+        className,
+        style,
+        "data-motion": phase,
+        inert: phase === "closing",
+        "data-long-press-enabled": longPressEnabled,
+      },
       children,
     ),
     container ?? document.body,

@@ -117,6 +117,7 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
       title="Diagram"
       panelClassName={PANEL_CLASS}
       bodyClassName={CLASS.viewerBody}
+      motion="float"
       footer={
         <>
           <Button variant="quiet" size="sm" onClick={() => setShowSource((value) => !value)}>

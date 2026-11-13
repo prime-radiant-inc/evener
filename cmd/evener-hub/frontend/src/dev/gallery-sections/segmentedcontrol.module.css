@@ -20,7 +20,8 @@
 }
 
 .frame320,
-.frame390 {
+.frame390,
+.frameStacked {
   max-inline-size: 100%;
 }
 
@@ -30,4 +31,8 @@
 
 .frame390 {
   inline-size: 390px;
+}
+
+.frameStacked {
+  inline-size: 340px;
 }

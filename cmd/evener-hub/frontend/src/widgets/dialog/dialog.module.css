@@ -1,3 +1,6 @@
+/* The scrim's motion is its layer's: OverlayPanel adds .scrimFloat beside a
+ * Dialog and .scrimEdge beside a Sheet, so it fades on the same durations as
+ * the panel it dims. */
 .scrim {
   position: fixed;
   inset: 0;
@@ -7,6 +10,14 @@
   justify-content: center;
   padding: var(--space-4);
   z-index: var(--z-dialog);
+}
+
+.scrimFloat {
+  composes: fade from "../../styles/motion.module.css";
+}
+
+.scrimEdge {
+  composes: scrimSlide from "../../styles/motion.module.css";
 }
 
 /* Shared panel chassis - Dialog and Sheet (via OverlayPanel) both start
@@ -108,41 +119,22 @@
   }
 }
 
-/* --- dialog variant: centered, 120ms fade-scale ---------------------- */
-
-@keyframes dialogFadeScale {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
+/* --- dialog variant: centered, the Float recipe ---------------------- */
 
 .dialogVariant {
+  composes: float from "../../styles/motion.module.css";
   border-radius: var(--radius-pane);
   min-width: 320px;
   max-width: min(560px, calc(100vw - var(--space-8)));
   max-height: calc(100vh - var(--space-8));
-  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
-/* size="large" (kata b4xf): same centered fade-scale chassis as
+/* size="large" (kata b4xf): the same centered Float chassis as
  * .dialogVariant, just without its 560px cap - the content (an image lightbox)
  * is meant to fill almost the whole viewport, not sit in a form-sized box. */
 .dialogVariantLarge {
+  composes: float from "../../styles/motion.module.css";
   border-radius: var(--radius-pane);
   max-width: calc(100vw - var(--space-8));
   max-height: calc(100vh - var(--space-8));
-  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dialogVariant,
-  .dialogVariantLarge {
-    animation: none;
-  }
 }

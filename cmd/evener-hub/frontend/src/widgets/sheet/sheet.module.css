@@ -1,42 +1,15 @@
 /* Sheet reuses Dialog's scrim/header/title/body/footer/closeButton chrome
  * wholesale (see index.tsx, which composes styles.panel from
  * ../dialog/dialog.module.css with the variant classes below) - this file
- * only adds the two edge-anchored geometries and their slide-in motion.
+ * only adds the edge-anchored geometries, each composing the Slide recipe
+ * for the edge it lives on (in on the spatial budget, out on the spatial
+ * exit, back to the same edge).
  * Dialog centers via the scrim's flexbox; both variants here use
  * position: fixed to escape that centering and anchor to an edge instead.
  */
 
-@keyframes sheetInRight {
-  from {
-    transform: translateX(100%);
-  }
-
-  to {
-    transform: translateX(0);
-  }
-}
-
-@keyframes sheetInBottom {
-  from {
-    transform: translateY(100%);
-  }
-
-  to {
-    transform: translateY(0);
-  }
-}
-
-@keyframes sheetInLeft {
-  from {
-    transform: translateX(-100%);
-  }
-
-  to {
-    transform: translateX(0);
-  }
-}
-
 .right {
+  composes: slideRight from "../../styles/motion.module.css";
   position: fixed;
   top: 0;
   right: 0;
@@ -50,10 +23,10 @@
    * dialog; each edge variant redirects the same geometry toward its one
    * visible edge so the shadow actually reads. */
   box-shadow: -16px 0 40px var(--shadow-color);
-  animation: sheetInRight var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
 .bottom {
+  composes: slideBottom from "../../styles/motion.module.css";
   position: fixed;
   left: 0;
   bottom: 0;
@@ -64,10 +37,10 @@
   border-right: none;
   border-bottom: none;
   box-shadow: 0 -16px 40px var(--shadow-color);
-  animation: sheetInBottom var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
 .left {
+  composes: slideLeft from "../../styles/motion.module.css";
   position: fixed;
   top: 0;
   left: 0;
@@ -78,7 +51,6 @@
   border-left: none;
   border-bottom: none;
   box-shadow: 16px 0 40px var(--shadow-color);
-  animation: sheetInLeft var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
 /* 100vh is the large viewport while a phone's browser chrome is showing, which
@@ -100,18 +72,11 @@
   --sheet-inline-size: calc((24rem * 2) + var(--space-3) + (var(--space-3) * 2));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .right,
-  .bottom,
-  .left {
-    animation: none;
-  }
-}
-
 /* --- expandable bottom Sheet (Task 2) -------------------------------------
  * A bottom-anchored Sheet can opt into a peek/full geometry: a drag handle
  * at the top toggles or drags between a fixed peek height and full viewport
- * height. .expandableBottom animates the height transition; .expandableHeader
+ * height. .expandableBottom animates the height change on the Spatial
+ * budget (user-initiated geometry); .expandableHeader
  * stays pinned so it survives the body's scroll; .expandableBody gives the
  * inner scroll region a flex column that can actually shrink (min-height:
  * 0) so the content clips instead of overflowing the panel.
@@ -141,7 +106,7 @@
    * composed panelClassName and has equal (single-class) specificity, so
    * this later declaration wins. */
   max-height: 100vh;
-  transition: height var(--motion-duration-overlay) var(--motion-easing-standard);
+  transition: height var(--motion-duration-spatial) var(--motion-easing-standard);
 }
 
 .expandableHeader {
