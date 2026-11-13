@@ -382,6 +382,25 @@ test("enqueueIntent rejects a clientMutationId already held by the recovery stor
 	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
 });
 
+// Oracle: the cross-store uniqueness contract extends to the retained
+// consumed ids (#4674). A retained id whose clear failed is still spoken for:
+// a repeating id generator passing a new record under it would let the
+// retained record's next settle delete that new row as though the daemon had
+// consumed it, so the enqueue must reject outright and roll back.
+test("enqueueIntent rejects a clientMutationId a retained consumed record still holds and rolls back its sequence allocation", async () => {
+	await storage.retainConsumed(["mutation-held"]);
+	const repeatingIdStorage = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-held",
+		now: () => 1234,
+	});
+
+	await expect(repeatingIdStorage.enqueueIntent(intent("repeated payload", "local:b"))).rejects.toThrow();
+
+	expect(rawRow("mutation_outbox", "mutation-held")).toBeUndefined();
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+	expect(await storage.listRetainedConsumed()).toEqual(["mutation-held"]);
+});
+
 test("enqueueInterruptAndCancel rejects a clientMutationId already active elsewhere and rolls back the whole Stop write", async () => {
 	let nextId = "mutation-waiting";
 	const store = new MutationOutboxSQLite(port, { createMutationId: () => nextId, now: () => 1234 });

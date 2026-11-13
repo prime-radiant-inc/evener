@@ -1620,8 +1620,8 @@ function refuseWrites(db: SqliteDoubleDatabase): void {
 // node:sqlite's errcode for SQLITE_READONLY; expo-sqlite has no structured code.
 const SQLITE_READONLY = 8;
 
-async function readyRuntimeWithClient(createMutationId?: () => string) {
-	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
+async function readyRuntimeWithClient(createMutationId?: () => string, port: SqliteSync = openDatabase()) {
+	const runtime = new NativeMutationRuntime(port, { createMutationId });
 	const client = new FakeClient("ready");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	await runtime.start();
@@ -1762,12 +1762,7 @@ test("a drain's consumed messages left unsettled by a refused write settle on th
 test("a drain's consumed ids a quit caught before a read survive it and settle on the reload", async () => {
 	let nextId = 0;
 	const sharedDatabase = openDatabase();
-	const runtime = new NativeMutationRuntime(sharedDatabase, {
-		createMutationId: () => `mutation-${++nextId}`,
-	});
-	const client = new FakeClient("ready");
-	runtime.registerTarget("hub-1", "ref-1", client);
-	await runtime.start();
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`, sharedDatabase);
 	client.on("turn/queue", (params) => appliedReceipt(params));
 	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
@@ -1790,9 +1785,7 @@ test("a drain's consumed ids a quit caught before a read survive it and settle o
 	database!.exec("PRAGMA query_only = OFF");
 	await runtime.stop();
 
-	const reloaded = new NativeMutationRuntime(sharedDatabase, {
-		createMutationId: () => `reload-${++nextId}`,
-	});
+	const reloaded = new NativeMutationRuntime(sharedDatabase);
 	await reloaded.start();
 	expect(await reloaded.storage.getOptimistic("mutation-1")).toBeUndefined();
 	await reloaded.stop();
@@ -2013,6 +2006,27 @@ test("a stale failed start cannot clear a newer successful start", async () => {
 	// The runtime is still started, so this stop releases the acquired timer.
 	await runtime.stop();
 	expect(cleared).toEqual([1]);
+});
+
+test("a start racing a stop keeps the outbox it acquires", async () => {
+	const { runtime, intervals, cleared } = timerRecordingRuntime();
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	// A start that begins while a stop is in flight owns the outbox it
+	// acquires: the stop may release only what the earlier start acquired,
+	// never the newer start's, or the runtime reports itself started over an
+	// outbox whose timer and listeners are gone.
+	const stopping = runtime.stop();
+	const restarting = runtime.start();
+	await stopping;
+	await restarting;
+
+	expect(intervals).toHaveLength(2);
+	expect(cleared).toEqual([1]);
+	await runtime.stop();
+	expect(cleared).toEqual([1, 2]);
 });
 
 test("a concurrent start shares a failing attempt's rejection", async () => {

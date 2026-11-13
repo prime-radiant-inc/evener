@@ -85,9 +85,10 @@ export const TABLES = {
 
 // The direct fallback's cross-quit memory (#4674): a direct drain has no
 // outbox row to replay its receipt from, so the ids it consumed are retained
-// here until a settle deletes the rows they name. Unlike the record tables,
+// here until a settle deletes the rows they name, and a restart loads them to
+// settle rows no authoritative read can name again. Unlike the record tables,
 // a retained id names no record of its own - it is only the durable fact that
-// the daemon consumed the record that carries the id.
+// the daemon consumed whatever carries the id.
 const RETAINED_CONSUMED_TABLE = "mutation_retained_consumed";
 
 const COLUMNS = [
@@ -231,7 +232,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			this.db.execSync(
 				`CREATE TABLE IF NOT EXISTS ${RETAINED_CONSUMED_TABLE} (
-				 client_mutation_id TEXT PRIMARY KEY, retained_at INTEGER NOT NULL)`,
+				 client_mutation_id TEXT PRIMARY KEY)`,
 			);
 			// Each additive column below is the whole migration for databases from
 			// before it existed: ALTER TABLE has no IF NOT EXISTS, so
@@ -863,42 +864,38 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		});
 	}
 
-	// The direct fallback's retained consumed ids (#4674), a receipt ownership
-	// independent of outbox/optimistic settlement like the resends above: a
-	// direct drain's consumedClientMutationIds are written here the moment the
-	// receipt names them and at every later settle trigger, so the first write
-	// storage accepts makes them outlive the process. Idempotent by primary
-	// key, so a retry after a refused write re-inserts nothing.
+	// The direct fallback's retained consumed ids (#4674), a receipt
+	// ownership independent of outbox/optimistic settlement like the resends
+	// above. Idempotent by primary key, so a retry after a refused write
+	// re-inserts nothing.
 	async retainConsumed(clientMutationIds: readonly string[]): Promise<void> {
-		const ids = [...new Set(clientMutationIds)];
-		if (ids.length === 0) return;
+		if (clientMutationIds.length === 0) return;
 		this.transaction("mutation_retained_consumed_retain", () => {
-			for (const id of ids) {
-				this.db.runSync(
-					`INSERT OR IGNORE INTO ${RETAINED_CONSUMED_TABLE} (client_mutation_id, retained_at) VALUES (?, ?)`,
-					id,
-					this.#now(),
-				);
-			}
+			this.db.runSync(
+				`INSERT OR IGNORE INTO ${RETAINED_CONSUMED_TABLE} (client_mutation_id)
+				 VALUES ${clientMutationIds.map(() => "(?)").join(", ")}`,
+				...clientMutationIds,
+			);
 		});
 	}
 
 	async listRetainedConsumed(): Promise<string[]> {
 		const rows = this.db.getAllSync<{ client_mutation_id: string }>(
-			`SELECT client_mutation_id FROM ${RETAINED_CONSUMED_TABLE} ORDER BY retained_at, client_mutation_id`,
+			`SELECT client_mutation_id FROM ${RETAINED_CONSUMED_TABLE} ORDER BY client_mutation_id`,
 		);
 		return rows.map((row) => row.client_mutation_id);
 	}
 
 	// Retires the durable record once the settle succeeded; the ids name
-	// records that no longer exist, so a record a failed clear left behind is a
-	// no-op the next load settles again and clears.
+	// records that no longer exist, so a record a failed clear leaves behind
+	// is a no-op the next load settles again and clears.
 	async clearRetainedConsumed(clientMutationIds: readonly string[]): Promise<void> {
-		const ids = [...new Set(clientMutationIds)];
-		if (ids.length === 0) return;
+		if (clientMutationIds.length === 0) return;
 		this.db.runSync(
-			`DELETE FROM ${RETAINED_CONSUMED_TABLE} WHERE client_mutation_id IN (${ids.map(() => "?").join(", ")})`,
-			...ids,
+			`DELETE FROM ${RETAINED_CONSUMED_TABLE} WHERE client_mutation_id IN (${clientMutationIds
+				.map(() => "?")
+				.join(", ")})`,
+			...clientMutationIds,
 		);
 	}
 
@@ -1161,6 +1158,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			if (this.get(table, clientMutationId)) {
 				throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
 			}
+		}
+		// A retained consumed id stays spoken for until its clear settles: a
+		// fresh record repeating it would let the retained record's next
+		// settle delete the new row as though the daemon had consumed it
+		// (#4674). It has none of the record tables' columns, so the lookup
+		// is its own.
+		if (
+			this.db.getFirstSync(`SELECT 1 FROM ${RETAINED_CONSUMED_TABLE} WHERE client_mutation_id = ?`, clientMutationId)
+		) {
+			throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
 		}
 	}
 
