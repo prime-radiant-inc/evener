@@ -46,14 +46,14 @@ public final class WakeTrialLedger {
         mutated(); save()
     }
     public func record(_ result: WakeWordResult) {
-        guard running else { return }
+        guard running, result.score != nil || result.detected else { return }
         let index = attempts.count - 1
         if let score = result.score {
             attempts[index].lastScore = score
             attempts[index].scoredSamples += Int64(WakeWordSettings.embeddingStride)
         }
-        mutated()
         if result.detected { attempts[index].detections += 1; save() }
+        mutated()
     }
     public func dropped(_ samples: Int) {
         guard running else { return }
@@ -80,8 +80,10 @@ public final class WakeTrialLedger {
         revision += 1
         cachedJSON = nil
     }
-    /// The bridge payload, cached until the next mutation: a running trial's
-    /// twice-a-second publishes must not re-encode 256 attempts each (#5683).
+    /// The bridge payload, cached between mutations (#5683). Armed-quiet
+    /// snapshot builds read it with nothing mutating in between, so the cache
+    /// holds; while a trial runs, records mutate at inference rate and the
+    /// twice-a-second publishes re-encode no more often than main did.
     public var json: [[String: Any]] {
         if let cached = cachedJSON { return cached }
         let payload = encode(attempts)

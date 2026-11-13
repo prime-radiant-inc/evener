@@ -145,6 +145,28 @@ final class WakeTrialLedgerTests: XCTestCase {
         XCTAssertEqual(encodes, 2)
     }
 
+    func testWarmingRecordsDoNotBumpTheRevisionOrDropTheCache() throws {
+        var encodes = 0
+        let ledger = WakeTrialLedger(defaults: defaults, encode: { attempts in
+            encodes += 1
+            return attempts.map { ["id": $0.id] }
+        })
+        try start(ledger)
+        _ = ledger.json
+        XCTAssertEqual(encodes, 1)
+        let revision = ledger.revision
+        // The detector emits nil-score, not-detected results while its state
+        // recovers after a reset; those change nothing and dirty nothing (#5683).
+        ledger.record(WakeWordResult(state: .warming, score: nil, detected: false, sampleOffset: 1280))
+        XCTAssertEqual(ledger.revision, revision)
+        _ = ledger.json
+        XCTAssertEqual(encodes, 1)
+        ledger.record(WakeWordResult(state: .holdoff, score: 0.5, detected: false, sampleOffset: 2560))
+        XCTAssertEqual(ledger.revision, revision + 1)
+        _ = ledger.json
+        XCTAssertEqual(encodes, 2)
+    }
+
     func testEveryMutationBumpsTheRevisionAndReadsDoNot() throws {
         let ledger = WakeTrialLedger(defaults: defaults)
         XCTAssertEqual(ledger.revision, 0)

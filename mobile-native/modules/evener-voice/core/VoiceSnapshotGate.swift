@@ -27,32 +27,6 @@ public struct VoiceSnapshotFacts: Equatable {
 	public var detections: Int
 	public var wakeError: String
 	public var trialsRevision: Int
-	public init(
-		state: String, capturing: Bool, cloudMicrophone: Bool, route: String, speakerConsentRequired: Bool,
-		error: String, interpreted: String, custody: String, canonical: String, generated: String,
-		bindingId: String, wakeState: String, wakePhrase: String, wakeModelId: String,
-		wakeScore: Float?, lastDetectionScore: Float?, detections: Int, wakeError: String, trialsRevision: Int
-	) {
-		self.state = state
-		self.capturing = capturing
-		self.cloudMicrophone = cloudMicrophone
-		self.route = route
-		self.speakerConsentRequired = speakerConsentRequired
-		self.error = error
-		self.interpreted = interpreted
-		self.custody = custody
-		self.canonical = canonical
-		self.generated = generated
-		self.bindingId = bindingId
-		self.wakeState = wakeState
-		self.wakePhrase = wakePhrase
-		self.wakeModelId = wakeModelId
-		self.wakeScore = wakeScore
-		self.lastDetectionScore = lastDetectionScore
-		self.detections = detections
-		self.wakeError = wakeError
-		self.trialsRevision = trialsRevision
-	}
 }
 
 /// One coalescing publisher's diff gate (#5684): a freshly built snapshot is

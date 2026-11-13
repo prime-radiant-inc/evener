@@ -149,8 +149,13 @@ final class VoiceAudioDevice {
                     self.lastCaptureAt = ProcessInfo.processInfo.systemUptime * 1000
                     // The hub PCM conversion is pulled, not pushed (#5683): an
                     // armed-quiet block that captures nothing never converts to
-                    // 24 kHz and never builds PCM bytes. A conversion failure is
-                    // reported and pulls nil, which the controller drops.
+                    // 24 kHz and never builds PCM bytes. The pull stays pure - a
+                    // failed conversion stashes its code and pulls nil, which
+                    // the controller drops; the failure is reported only after
+                    // capture returns, because the failed handler re-enters the
+                    // controller (abort, pause, publish) and must not overlap
+                    // the mutating call that pulled.
+                    var pullFailed: String?
                     self.capture?({
                         do {
                             let input = try self.convert(copy, with: self.input24)
@@ -159,11 +164,12 @@ final class VoiceAudioDevice {
                             for i in pcm.indices { pcm[i] = Int16(max(-32768, min(32767, samples[i] * 32767))).littleEndian }
                             return pcm.withUnsafeBytes { Data($0) }
                         } catch {
-                            self.failed?((error as? VoiceFailure)?.code ?? "audio_processing_failed")
+                            pullFailed = self.failureCode(error)
                             return nil
                         }
                     }, speech, at)
-                } catch { self.failed?((error as? VoiceFailure)?.code ?? "audio_processing_failed") }
+                    if let code = pullFailed { self.failed?(code) }
+                } catch { self.failed?(self.failureCode(error)) }
             }
         }
         engine.prepare(); try engine.start()
@@ -204,7 +210,7 @@ final class VoiceAudioDevice {
     func reportProgress() {
         // An empty timeline owes no progress (#5683): skip the player render
         // clock queries that idle time would otherwise pay every 200 ms.
-        guard timeline.progressOutstanding else { return }
+        guard !timeline.isEmpty else { return }
         for (item, samples) in watermark() {
             if let (delivery, generation) = itemInfo[item] { played?(PlayedReceipt(delivery: delivery, generation: generation, item: item, samples: samples, complete: false)) }
         }
@@ -253,6 +259,9 @@ final class VoiceAudioDevice {
         outputOrigin += AVAudioFramePosition(buffer.frameLength)
         player.scheduleBuffer(buffer)
         player.play()
+    }
+    private func failureCode(_ error: Error) -> String {
+        (error as? VoiceFailure)?.code ?? "audio_processing_failed"
     }
     private func convert(_ source: AVAudioPCMBuffer, with converter: AVAudioConverter?) throws -> AVAudioPCMBuffer {
         guard let converter, let target = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: AVAudioFrameCount(ceil(Double(source.frameLength) * converter.outputFormat.sampleRate / source.format.sampleRate)) + 32) else { throw VoiceFailure("audio_converter_missing") }

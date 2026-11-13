@@ -121,7 +121,8 @@ public struct VoiceController {
     /// when this call pulls it, so an armed-quiet path that cannot consume
     /// audio never pays for the conversion that produced it. A nil pull means
     /// the device produced no block; it is dropped without touching turn
-    /// state, exactly as a failed block never reached capture before.
+    /// state, and the device reports the failure on its own channel once
+    /// this call returns.
     public mutating func capture(_ supply: () -> Data?, speech: Bool, at now: Double) -> [VoiceAction] {
         guard armed, state != .recovering else { return [] }
         guard active else {
@@ -270,11 +271,8 @@ public struct PlaybackTimeline {
     }
     public mutating func endDelivery() { deliveryEnded = true }
     public var allDrained: Bool { deliveryEnded && chunks.allSatisfy { completed.contains($0.item) } }
-    /// Whether progress reporting has anything to work with (#5683): the
-    /// periodic reporter asks the player for its render clock, real work
-    /// that idle time must not pay, so an empty timeline owes no report.
-    public var progressOutstanding: Bool {
-        !chunks.isEmpty
+    public var isEmpty: Bool {
+        chunks.isEmpty
     }
     public mutating func clear() { self = PlaybackTimeline() }
 }

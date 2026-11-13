@@ -10,8 +10,7 @@ public enum VoiceTickPolicy {
 	public static func intervalMilliseconds(state: VoiceState) -> Int {
 		switch state {
 		case .conversing, .speaking: 100
-		case .quiet, .recovering: 500
-		case .disarmed: 500
+		case .quiet, .recovering, .disarmed: 500
 		}
 	}
 }

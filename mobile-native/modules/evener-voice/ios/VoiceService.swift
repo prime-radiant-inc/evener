@@ -103,7 +103,7 @@ final class VoiceService {
                            wakeScore: wakeTrials.running ? wakeScore : nil, lastDetectionScore: lastWakeScore,
                            detections: wakeDetections, wakeError: wakeError, trialsRevision: wakeTrials.revision)
     }
-    private func state(from facts: VoiceSnapshotFacts) -> [String: Any] {
+    private func state(from facts: VoiceSnapshotFacts, trials: [[String: Any]]) -> [String: Any] {
         ["state": facts.state, "capturing": facts.capturing, "cloudMicrophone": facts.cloudMicrophone,
          "route": facts.route, "speakerConsentRequired": facts.speakerConsentRequired, "error": facts.error,
          "interpreted": facts.interpreted, "custody": facts.custody, "canonical": facts.canonical,
@@ -111,9 +111,9 @@ final class VoiceService {
          "wake": ["state": facts.wakeState, "phrase": facts.wakePhrase,
                   "modelId": facts.wakeModelId, "score": (facts.wakeScore as Any?) ?? NSNull(),
                   "lastDetectionScore": (facts.lastDetectionScore as Any?) ?? NSNull(), "detections": facts.detections,
-                  "error": facts.wakeError, "trials": wakeTrials.json]]
+                  "error": facts.wakeError, "trials": trials]]
     }
-    private func state() -> [String: Any] { state(from: snapshotFacts()) }
+    private func state() -> [String: Any] { state(from: snapshotFacts(), trials: wakeTrials.json) }
     private func publish() {
         if audio.setWakeListening(connected && audio.capturing && controller.state == .quiet) {
             wakeState = "warming"; wakeScore = nil
@@ -126,7 +126,7 @@ final class VoiceService {
         // Coalesce (#5684): a capture burst or a burst of socket messages that
         // changes nothing the JS side can see costs no bridge event.
         guard gate.shouldEmit(facts) else { return }
-        listener?(state(from: facts))
+        listener?(state(from: facts, trials: wakeTrials.json))
     }
     private func heardWake(_ result: WakeWordResult) {
         guard connected, controller.state == .quiet else { return }
