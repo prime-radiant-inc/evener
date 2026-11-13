@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -14,6 +15,14 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// sessionRowJobsMaxBytes bounds how deep into a jobs journal a sessions row
+// scans. The failures the row folds for are retired delegate activation
+// records, which are always among a journal's oldest events, so a head
+// window keeps everything the report exists to find while capping the
+// scan; a journal at or under the bound is read whole. Production never
+// assigns it; a test shrinks it to prove the bound.
+var sessionRowJobsMaxBytes int64 = 1 << 20
 
 // SessionRow is one session's forensic summary, as ListSessions enumerates for
 // a batch study: enough to triage many sessions without opening each one.
@@ -173,12 +182,26 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 	return err == nil && info.ModTime().Before(cutoff)
 }
 
+// scanSessionRowJobs reads a session's jobs journal bounded by
+// sessionRowJobsMaxBytes. jobstore reports ErrScanLimitExceeded alongside the
+// events decoded so far; the row keeps them, because the failures fold is a
+// summary of retired state, not an inventory that must be complete.
+func scanSessionRowJobs(ctx context.Context, path string) ([]jobstore.Event, error) {
+	events, err := jobstore.ScanEvents(ctx, path, jobstore.ScanLimits{MaxBytes: sessionRowJobsMaxBytes})
+	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) {
+		return nil, err
+	}
+	return events, nil
+}
+
 // sessionRow builds one SessionRow from a session's durable state: the
-// transcript (header + entries, for started/models/outcome), the transcript
-// file's own size and mtime (bytes/last-activity), the meta (turn count,
-// subagent/observer facts), and the jobs fold (delegate count).
+// transcript's header plus a bounded entry tail (started/models/parent and
+// the outcome hint), the transcript file's own size and mtime
+// (bytes/last-activity), the meta (turn count, subagent/observer facts), the
+// delegates journal (delegate count), and the jobs scan (legacy delegate
+// failures), bounded the same way.
 func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
+	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -186,7 +209,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("stat transcript %s: %w", paths.TranscriptPath, err)
 	}
-	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
+	events, err := scanSessionRowJobs(ctx, paths.JobsPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}

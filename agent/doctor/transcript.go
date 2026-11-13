@@ -1,6 +1,8 @@
 package doctor
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,7 +20,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-var openDoctorTranscriptFile = func(path string) (io.ReadCloser, error) {
+// sessionRowTranscriptTailBytes bounds how much of a transcript's entry tail
+// a sessions row reads. A row consumes only the header and the last assistant
+// turn's result-tool call, so the middle of a long transcript is never
+// decoded; a transcript at or under the bound is read whole, which keeps the
+// row identical to a full scan on every small transcript. Production never
+// assigns it; a test shrinks it to prove the bound.
+var sessionRowTranscriptTailBytes int64 = 1 << 20
+
+var openDoctorTranscriptFile = func(path string) (io.ReadSeekCloser, error) {
 	return os.Open(path)
 }
 
@@ -49,6 +59,75 @@ func loadRecordedTranscript(path string) (transcriptDoc, error) {
 
 func loadRecordedTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	return scanTranscriptContext(ctx, path, true)
+}
+
+// loadSessionRowTranscript reads only what a sessions row consumes: the
+// header, and the last assistant turn's entry from a bounded tail of
+// entries — the outcome hint's only input. A transcript at or under
+// sessionRowTranscriptTailBytes goes through the full scan unchanged, so a
+// small transcript keeps its exact summary and error shape. In the tail
+// window, compaction fold copies are skipped and an unterminated final tail
+// is tolerated, exactly as the full scan does; a corrupt complete line inside
+// the window still fails the read, so the unreadable-session contract holds
+// within the window.
+func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	if info.Size() <= sessionRowTranscriptTailBytes {
+		return loadRecordedTranscriptContext(ctx, path)
+	}
+	file, err := openDoctorTranscriptFile(path)
+	if err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	defer file.Close() //nolint:errcheck // read-only file
+	reader := bufio.NewReaderSize(file, 64*1024)
+	header, err := transcript.ReadHeader(ctx, reader, transcript.DefaultMaxLineBytes)
+	if err != nil {
+		return transcriptDoc{}, err
+	}
+	doc := transcriptDoc{Header: header}
+	// The window may begin mid-record; the record straddling the seek point
+	// began outside the window and is discarded without decoding.
+	if _, err := file.Seek(info.Size()-sessionRowTranscriptTailBytes, io.SeekStart); err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	reader.Reset(file)
+	if _, _, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes); err != nil {
+		return transcriptDoc{}, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return transcriptDoc{}, err
+		}
+		line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+		if err != nil {
+			return transcriptDoc{}, err
+		}
+		if !complete {
+			break // end of file, or a torn trailing write: not a record
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			return transcriptDoc{}, err
+		}
+		if entry.Turn.OriginalOrdinal != nil {
+			continue // compaction fold copy: the original appears earlier
+		}
+		// The row's only entries consumer is the outcome hint, which reads
+		// the last assistant turn; retaining just that entry keeps the
+		// window's decoded cost from piling up per session.
+		if entry.Turn.Kind == schema.TurnAssistant {
+			doc.Entries = []transcript.Entry{entry}
+		}
+	}
+	return doc, nil
 }
 
 func scanTranscriptContext(ctx context.Context, path string, skipFoldCopies bool) (transcriptDoc, error) {
