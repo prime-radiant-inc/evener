@@ -240,6 +240,75 @@ func TestSessionActivityContextDelegateNamesIncompleteThenRecovered(t *testing.T
 	}
 }
 
+// A nested delegate's ancestor row falls back to the parent descriptor's
+// Task for its Title when the descriptor's Description is empty, on both
+// the live and retained paths. A Task longer than the label bound is
+// truncated to it, like every other activity label.
+func TestSessionActivityContextAncestorTitleFallsBackToParentTask(t *testing.T) {
+	t.Parallel()
+	for _, task := range []string{"Parent task text, the descriptor's only identifying content", strings.Repeat("界", 220)} {
+		t.Run(task[:min(len(task), 24)], func(t *testing.T) {
+			t.Parallel()
+			want := task
+			if len([]rune(task)) > activityMaxLabelRunes {
+				want = strings.Repeat("界", 199) + "…"
+			}
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
+			at := time.Unix(100, 0).UTC()
+			parent := stableToolDescriptor(s, "dlg_taskparent", "")
+			parent.Name, parent.Description = "", ""
+			parent.Task = task
+			leaf := stableToolDescriptor(s, "dlg_taskleaf", "dlg_taskparent")
+			s.delegateController.mu.Lock()
+			_, err := s.delegateController.appendLocked(
+				delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_taskparent", TS: at, Created: &delegatestore.DelegateCreated{Descriptor: parent}},
+				delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_taskleaf", TS: at.Add(time.Second), Created: &delegatestore.DelegateCreated{Descriptor: leaf}},
+			)
+			s.delegateController.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			savePastActivityMetaWithTreeRevision(t, s.stateDir, leaf.ChildSessionID, "Leaf thread title", s.ID(), 0)
+			read := func(retained bool) appwire.SessionActivityContext {
+				t.Helper()
+				params := appwire.SessionActivityReadParams{Ref: encodeRef("", leaf.ChildSessionID)}
+				var summary appwire.SessionActivitySummary
+				var err error
+				if retained {
+					// Reconstruct from journals, never from the live controller's cached index.
+					key := s.stateDir + "\x00" + s.ID()
+					sessionActivityIndexes.Lock()
+					if cached := sessionActivityIndexes.entries[key]; cached != nil {
+						delete(sessionActivityIndexes.entries, key)
+						sessionActivityIndexes.order.Remove(cached.element)
+					}
+					sessionActivityIndexes.Unlock()
+					summary, err = LoadSessionActivitySummary(t.Context(), s.stateDir, leaf.ChildSessionID, params)
+				} else {
+					summary, err = s.ActivitySummary(t.Context(), params)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return summary.Context
+			}
+			for _, retained := range []bool{false, true} {
+				context := read(retained)
+				if !context.AncestryKnown || context.DelegateID != "dlg_taskleaf" || len(context.Ancestors) != 2 {
+					t.Fatalf("retained=%v lineage = %+v", retained, context)
+				}
+				ancestor := context.Ancestors[1]
+				if ancestor.SessionID != parent.ChildSessionID || ancestor.DelegateID != "dlg_taskparent" {
+					t.Fatalf("retained=%v ancestor row = %+v, want the parent delegate", retained, ancestor)
+				}
+				if ancestor.Title != want {
+					t.Errorf("retained=%v description-less ancestor Title = %q, want %q", retained, ancestor.Title, want)
+				}
+			}
+		})
+	}
+}
+
 func TestSessionActivityContextDelegateNamesRejectInvalidLineage(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2}))
