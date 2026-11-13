@@ -53,7 +53,7 @@
   --attention: #F68F3C; /* a human is needed — THE orange. Nothing else may be orange. */
   --alive: #3DBB72; /* agent working/streaming */
   --danger: #EE5C61; /* failure/destructive */
-  --accent: #3D9AFF; /* focus ring, selection, links */
+  --accent: #8A96FF; /* the brand indigo: focus ring, selection, links, the one primary action */
 
   /* -bg (15% into the pane surface) and -edge (40% into the hairline
    * border) companions for each hue above, so a "danger chip" or
@@ -74,11 +74,16 @@
    * to >=4.5:1 against --surface-2, --hover-1, AND the hue's own -bg tint
    * (chips/badges/toasts set -ink text on -bg fills) — accent and danger
    * needed brightening past the bare hue to clear their own tints here.
+   * --on-accent is the other direction: the text and glyphs that ride ON a
+   * solid --accent fill (the primary button, the agent's mark), >=4.5:1
+   * against --accent. In dark the accent is a light indigo, so it takes the
+   * page's own dark ground.
    */
   --attention-ink: #F68F3C;
   --alive-ink: #3DBB72;
   --danger-ink: #F17478;
-  --accent-ink: #459EFF;
+  --accent-ink: #96A1FF;
+  --on-accent: #111214;
 
   /* --- tooltip (inverted mini-palette, both themes near-black) --------- */
   --tooltip-bg: #111214;
@@ -304,7 +309,7 @@
   --attention: #F59E0B;
   --alive: #189A4D;
   --danger: #E3474C;
-  --accent: #0285FF;
+  --accent: #4F5BF5;
 
   --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
   --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
@@ -323,7 +328,9 @@
   --attention-ink: #9C4908;
   --alive-ink: #0F6E36;
   --danger-ink: #BD1B21;
-  --accent-ink: #005FBA;
+  --accent-ink: #3A44D6;
+  /* The light accent is deep enough to carry white. */
+  --on-accent: #FFFFFF;
 
   /* Tooltip stays inverted (near-black) in the light theme too. */
   --tooltip-bg: #25272B;

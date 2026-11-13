@@ -110,18 +110,18 @@ test("the tile uses the edge/surface/ink/radius tokens, not literals", () => {
   expect(declarations).toMatch(/border-radius:\s*var\(--radius-pill\)/);
 });
 
-// The agent's mark is the inverse of the page: its bars are drawn in the page
-// ground on an ink tile, so the pair keeps the page's own text contrast in
-// both themes.
-test("the agent tile inverts the page: ink fill, page-ground glyph", () => {
+// The agent's mark rides the brand accent: its bars are drawn in the
+// on-accent role on an accent tile, the pair the token contract holds to
+// 4.5:1 in both themes.
+test("the agent tile wears the accent: accent fill, on-accent glyph", () => {
   const rule = /\.agent\s*\{([^}]*)\}/.exec(tileCss());
   expect(rule).not.toBeNull();
   const declarations = rule![1]!;
-  expect(declarations).toMatch(/background:\s*var\(--ink-hi\)/);
-  expect(declarations).toMatch(/color:\s*var\(--surface-0\)/);
+  expect(declarations).toMatch(/background:\s*var\(--accent\)/);
+  expect(declarations).toMatch(/color:\s*var\(--on-accent\)/);
 });
 
-test("only the agent's tile carries the inverted treatment", () => {
+test("only the agent's tile carries the accent treatment", () => {
   const user = tileOf(render(<SpeakerAvatar speaker="user" />).container).className;
   cleanup();
   const agent = tileOf(render(<SpeakerAvatar speaker="agent" />).container).className;

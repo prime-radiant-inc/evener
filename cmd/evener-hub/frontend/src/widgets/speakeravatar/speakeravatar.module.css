@@ -14,11 +14,11 @@
   box-sizing: border-box;
 }
 
-/* The agent wears the evener mark: the inverse of the page (ink fill, page
- * colored bars), so it reads as the product speaking rather than as a second
- * person. */
+/* The agent wears the evener mark on the brand accent (accent fill,
+ * on-accent bars), so it reads as the product speaking rather than as a
+ * second person. */
 .agent {
-  color: var(--surface-0);
-  background: var(--ink-hi);
-  border-color: var(--ink-hi);
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
 }

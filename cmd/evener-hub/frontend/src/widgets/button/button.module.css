@@ -92,15 +92,21 @@
  */
 
 .primary {
-  /* The editorial action: ink on paper. Accent is spent on focus, links and
-   * selection, so the primary action earns its weight from contrast and
-   * placement rather than a blue fill. */
-  background: var(--ink-hi);
-  color: var(--surface-0);
+  /* The one primary action on a surface wears the brand accent, with the
+   * on-accent role for its label and glyph. Hover and pressed step the fill
+   * toward --ink-hi, which is AWAY from --on-accent in both themes (darker
+   * under white in light, lighter under the dark ink in dark), so each step
+   * only adds contrast. */
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .primary:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: color-mix(in oklab, var(--ink-hi) 86%, var(--surface-0));
+  background: color-mix(in oklab, var(--accent) 88%, var(--ink-hi));
+}
+
+.primary:active:not(:disabled):not([aria-disabled="true"]) {
+  background: color-mix(in oklab, var(--accent) 76%, var(--ink-hi));
 }
 
 /* The bordered common control: the hairline edge, surface fill and card lift

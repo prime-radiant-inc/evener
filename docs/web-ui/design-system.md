@@ -308,7 +308,8 @@ not establish reading comfort or usability. The accessibility gaps in §8 remain
 
 ## 1. Direction (the design law)
 
-**Reading before chrome.** Cool neutral paper/ink, not sepia decoration, with the rail one
+**Reading before chrome.** Cool neutral paper/ink with one indigo signature, not sepia
+decoration, with the rail one
 visible step from the page. Dark remains the
 default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
 flat, a field is visibly editable, and a floating layer retains a boundary and depth.
@@ -329,7 +330,8 @@ pane's existing scaffold marker, not a second layout prop. The layoutguard case
 hundreds of pixels left of the reading column.
 
 **Color is meaning.** Attention = a human/action is needed; alive = active work;
-danger = failure/destruction; accent = links, focus and selection. No decorative status
+danger = failure/destruction; accent = links, focus, selection and the one primary action
+on a surface. Accent is the brand hue, an indigo, and it is never a status. No decorative status
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
@@ -420,6 +422,9 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | Editable field `--field` | `#23272E` | `#F1F3F6` |
 | Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
 | High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#5C626D` |
+| Accent `--accent` | `#8A96FF` | `#4F5BF5` |
+| Accent as text `--accent-ink` | `#96A1FF` | `#3A44D6` |
+| On a solid accent fill `--on-accent` | `#111214` | `#FFFFFF` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
@@ -428,9 +433,18 @@ Readable secondary metadata uses medium ink; low ink stays placeholders, disable
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
 companions. Text uses `-ink`, never the bare hue. Light attention/alive/danger/accent text
-colors are `#9C4908` / `#0F6E36` / `#BD1B21` / `#005FBA`, darkened to preserve AA on their
+colors are `#9C4908` / `#0F6E36` / `#BD1B21` / `#3A44D6`, darkened to preserve AA on their
 own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
+
+Accent is the brand indigo. It carries focus, selection, links and the one primary action:
+the filled primary `Button` (which is also the composer's Send) and the agent's
+`SpeakerAvatar` tile are solid `--accent` with `--on-accent` content. `--on-accent` is the
+only ink that may sit on a solid accent fill; it turns with the theme because the accent
+does (white on the deep light indigo, the dark page ground on the pale dark one) and the
+contract holds the pair to ≥4.5:1 (light 5.06, dark 7.04) and the fill to ≥3:1 against the
+page, well and evidence grounds. The primary's hover and pressed fills mix the accent toward
+`--ink-hi`, which is away from `--on-accent` in both themes, so each state gains contrast.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
 Diff notation remains independent of semantic status. Dark add/delete stays `#16261B` /
@@ -440,8 +454,9 @@ The PWA manifest and HTML theme-color are synchronized to the dark page `#111214
 theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
 browser chrome does not stay dark.
 
-These values are the cool-neutral ruling, not a preference: no warm or beige ground may
-replace them. The rail stays one visible step from the page (`--surface-canvas` over
+The neutral grounds are the cool-neutral ruling, not a preference: no warm or beige ground
+may replace them. The accent is the one chromatic signature laid over them. The rail stays
+one visible step from the page (`--surface-canvas` over
 `--surface-0`), and the message slip keeps its own inset ground (`--surface-inset`).
 `token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
 `zscn-theme-flip-dark-surface` layoutguard case pin the palette; change them together
@@ -564,7 +579,7 @@ The prompt card is the composer's focus treatment: the card is the prompt surfac
 visible box, so it carries the focus affordance for the seamless textarea inside
 (`promptcard.module.css` `.card:focus-within`) with the ring on the card's own edge
 (`outline-offset: 0`) and the hairline set to `--accent` at the same time, so the composer
-reads as one blue line rather than a blue ring around a white card line.
+reads as one accent line rather than an accent ring around a white card line.
 
 Every `:focus-visible` element also carries `--focus-ring-scroll-margin` (6px: the ring width plus
 the largest positive outline-offset, with a sub-pixel scroll-rounding allowance). A keyboard
@@ -796,7 +811,8 @@ path-picker behavior in dated plans and legacy parity checklists.
 **The rule:** chroma is scarce and means something specific. `--attention`/`--alive`/`--danger`
 each carry exactly one meaning everywhere in the app (a human is needed / the agent is working /
 something failed); reaching for one outside a widget with a genuine matching state is a bug, not
-a style choice. `--accent` is different in kind, not degree — see below.
+a style choice. `--accent` is different in kind, not degree: it is the brand hue and the
+interaction hue (focus, selection, links, the one primary action), never a status — see below.
 
 **Enforcement:** `src/styles/token-contract.test.ts` reads every `.module.css` + `global.css`
 under `src/` directly off disk (`node:fs`, not Vite's `?raw` import — see the file's own header
@@ -822,7 +838,8 @@ six independent checks:
    widget earns a place on this list only when it has a state that genuinely needs one of the
    three hues — never for decoration. **`--accent` is deliberately exempt from this check
    entirely** — it's interaction chrome by definition (every interactive widget needs an accent
-   `:focus-visible` ring; accent also carries selection and links), so gating it would grow the
+   `:focus-visible` ring; accent also carries selection, links and the primary action's fill),
+   so gating it would grow the
    allowlist by one entry per interactive widget forever while protecting nothing. The
    color-is-attention thesis guards the three *attention-class* hues' meanings; focus/selection
    chrome was never the thing it was protecting.

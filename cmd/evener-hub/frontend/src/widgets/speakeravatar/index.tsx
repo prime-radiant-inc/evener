@@ -20,7 +20,7 @@
 // currentColor, 1.75 width), so the avatars read as the same family as the
 // tool-row icons they sit among. The user wears toolicon's "person". The
 // agent wears the evener mark, two level bars (an equals sign), on an
-// inverted tile: the product's own sign rather than a second person. Each
+// accent tile: the product's own sign rather than a second person. Each
 // glyph is currentColor inside a tile that sets its own ink, so no colour
 // literal appears here.
 

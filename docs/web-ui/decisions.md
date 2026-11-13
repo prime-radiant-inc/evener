@@ -5,6 +5,35 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-13 the accent becomes an indigo and the primary action wears it
+
+Jesse asked for a friendlier, more distinctive UI and lifted the earlier
+limits ("nothing is sacred"). The accent moves from utility blue to an
+indigo and becomes the product's one signature hue; the neutral grounds stay
+cool.
+
+- `--accent` is `#4F5BF5` light, `#8A96FF` dark; `--accent-ink` is `#3A44D6`
+  light, `#96A1FF` dark. The `-bg`, `-edge` and selection mixes are unchanged
+  formulas over the new hue. This supersedes the `#005FBA` accent ink in the
+  2026-11-11 entry.
+- A new shared role, `on-accent` (`--on-accent`), is the text and glyph color
+  on a solid accent fill: `#FFFFFF` light, `#111214` dark. The pair clears
+  4.5:1 in both themes (5.06 and 7.04).
+- Accent's meaning grows by one: focus, selection, links and now the one
+  primary action. The filled primary `Button` (so also the composer's Send)
+  and the agent's `SpeakerAvatar` tile moved from the ink/page inverse pair
+  to accent/on-accent. This replaces the "ink on paper" primary; the rule
+  that a route shows at most one filled primary stands, and matters more now
+  that the fill is chromatic.
+- The phone's `accent-fill` moved from `#0070E0` to `#4F5BF5` in both themes
+  so its filled actions stay the same hue as its links; white `on-fill`
+  still clears 4.5:1 on it.
+
+Alternatives considered: keeping the ink primary with an indigo used only
+for focus and links (the signature would then appear almost nowhere at
+rest), and one accent value for both themes (no single indigo clears 4.5:1
+as link text on the dark surfaces and also carries white).
+
 ## 2026-11-11 one palette for web and phone (#2439)
 
 The web and the iPhone app now render one palette,
