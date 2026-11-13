@@ -94,3 +94,53 @@ func TestRecordOnMissingOrClosedWriterIsNotRecorded(t *testing.T) {
 		t.Fatalf("closed writer, synced: %+v, %v", rec, err)
 	}
 }
+
+func TestRetractToBoundaryTakesBackTheLinesWrittenSinceIt(t *testing.T) {
+	w, path := newRecordWriter(t)
+	kept, err := w.Record(steeringTurn("kept"), RecordOptions{Door: DoorDurable})
+	if err != nil || !kept.Recorded {
+		t.Fatalf("kept = %+v, %v", kept, err)
+	}
+	boundary := w.CaptureCommitBoundary()
+	if boundary.length != kept.Offset+kept.Length || boundary.ordinal != kept.Ordinal+1 {
+		t.Fatalf("boundary = %+v, want the end of %+v", boundary, kept)
+	}
+	var spent int
+	for _, text := range []string{"transient", "transact", "retract"} {
+		rec, err := w.Record(steeringTurn(text), RecordOptions{Door: DoorDurable})
+		if err != nil || !rec.Recorded {
+			t.Fatalf("%s = %+v, %v", text, rec, err)
+		}
+		spent = rec.Seq
+	}
+	if removed, retractErr := w.RetractToBoundary(boundary); !removed || retractErr != nil {
+		t.Fatalf("retract = %v, %v", removed, retractErr)
+	}
+	if w.RecordedLength() != boundary.length {
+		t.Fatalf("recorded length after retract = %d, want the boundary %d", w.RecordedLength(), boundary.length)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != boundary.length {
+		t.Fatalf("file holds %d bytes after retract, want the boundary %d: the lines written since it must be gone", info.Size(), boundary.length)
+	}
+	// Retracting to the same boundary again removes nothing and reports it.
+	if removed, retractErr := w.RetractToBoundary(boundary); !removed || retractErr != nil {
+		t.Fatalf("second retract = %v, %v", removed, retractErr)
+	}
+	// The next append takes the boundary's ordinal back, so an entry's ordinal
+	// stays its index among the file's entry lines, and its offset is the
+	// boundary; the sequence numbers the retracted lines spent stay spent.
+	next, err := w.Record(steeringTurn("after retract"), RecordOptions{Door: DoorDurable})
+	if err != nil || !next.Recorded {
+		t.Fatalf("next = %+v, %v", next, err)
+	}
+	if next.Ordinal != boundary.ordinal || next.Offset != boundary.length {
+		t.Fatalf("next append = ordinal %d offset %d, want ordinal %d offset %d: the boundary state must be restored", next.Ordinal, next.Offset, boundary.ordinal, boundary.length)
+	}
+	if next.Seq <= spent {
+		t.Fatalf("next append reuses sequence number %d after %d was spent", next.Seq, spent)
+	}
+}

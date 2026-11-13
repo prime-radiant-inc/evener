@@ -106,6 +106,82 @@ func (w *Writer) RecordedLength() int64 {
 	return w.tail.recordedLength
 }
 
+// CommitBoundary is the append point a caller captured before writing, so it
+// can take the lines it wrote since back out. Opaque: only RetractToBoundary
+// consumes one.
+type CommitBoundary struct {
+	length  int64
+	ordinal uint64
+	turns   turnPlacement
+}
+
+// CaptureCommitBoundary records where this file's next entry would land: the
+// recorded length, the next entry ordinal and the placement state. A caller
+// that holds every writer on the file off for the whole transaction (the
+// session's transcript door does) can pass the boundary to RetractToBoundary
+// to take the transaction's own lines back out again. Nil-safe: a writer that
+// does not exist has nothing to retract.
+func (w *Writer) CaptureCommitBoundary() CommitBoundary {
+	if w == nil || w.tail == nil {
+		return CommitBoundary{}
+	}
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	return CommitBoundary{length: w.tail.recordedLength, ordinal: w.tail.nextOrdinal, turns: w.tail.turns}
+}
+
+// RetractToBoundary takes back out of the file every line written since b was
+// captured, restoring the recorded length, the next entry ordinal and the
+// placement state b captured. It is the rollback of a failed durable append,
+// initiated by the caller for lines that did land: the one use is a
+// transaction that must not leave a half-applied marker behind (#1158) — the
+// fold's compaction markers are what a resume anchors on to discard every
+// entry before them, so the fold takes its whole commit back out when the
+// staged copies the anchor would depend on could not all be written.
+//
+// removed reports whether the lines are gone, which only the truncate
+// decides, exactly as in an append's own rollback; err names a truncate, seek
+// or sync that failed after or while removing them. With removed set and err
+// non-nil the bytes are gone but the truncate may not be durable — the same
+// residual crash window an ordinary rollback leaves. The caller must hold
+// every writer on the file off between capture and retract (the session's
+// transcript door): a line some other writer appended in that span would be
+// taken out with the transaction's own. Sequence numbers stay spent, as in any
+// rollback: a reader in another process may have seen the lines.
+//
+// The state restore happens only when the lines are gone: a truncate that
+// failed leaves the file, the counters and the placement as they were. The
+// retracted lines' failure-counter observations stand (the count is monotone
+// by contract), and a writer the failed append poisoned stays poisoned — the
+// retract works regardless, because it only ever removes bytes.
+func (w *Writer) RetractToBoundary(b CommitBoundary) (removed bool, err error) {
+	if w == nil || w.tail == nil {
+		return true, nil // a writer that never existed recorded nothing to take out
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return false, errors.New("transcript writer is closed: cannot retract")
+	}
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	if w.tail.recordedLength < b.length || w.tail.nextOrdinal < b.ordinal {
+		// The file shrank below the boundary since it was captured: some other
+		// writer's rollback is in flight. Truncating would cut into lines the
+		// boundary never covered.
+		return false, fmt.Errorf("transcript shrank below the captured boundary (length %d < %d, ordinal %d < %d)", w.tail.recordedLength, b.length, w.tail.nextOrdinal, b.ordinal)
+	}
+	removed, err = w.rollbackAppendLocked(b.length)
+	if !removed {
+		return removed, err
+	}
+	w.tail.recordedLength = b.length
+	w.tail.nextOrdinal = b.ordinal
+	w.tail.turns = b.turns
+	w.dirty = err != nil // the truncate's own sync settled the shorter file
+	return removed, err
+}
+
 // OnRecorded installs fn as the file's recorded-entry hook, replacing any
 // earlier one; nil removes it. The hook belongs to the file, so it sees every
 // writer's appends in this process, not only this writer's.
