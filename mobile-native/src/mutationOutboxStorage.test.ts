@@ -251,6 +251,21 @@ test("instanceId round-trips through a reload and the recovery handoff", async (
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
 });
 
+test("retained consumed ids dedupe, survive a reload, and retire when cleared", async () => {
+	await storage.retainConsumed(["consumed-1", "consumed-2", "consumed-1"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-1", "consumed-2"]);
+
+	// A fresh adapter over the same database - what an app restart is - reads
+	// the ids back: the record, not the process, is the memory (#4674).
+	openStorage();
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-1", "consumed-2"]);
+
+	await storage.clearRetainedConsumed(["consumed-1"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual(["consumed-2"]);
+	await storage.clearRetainedConsumed(["consumed-2"]);
+	await expect(storage.listRetainedConsumed()).resolves.toEqual([]);
+});
+
 test("enqueueIntent persists an absent optimistic display as JSON null and reads it as undefined", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("without an optimistic display"),
@@ -365,6 +380,25 @@ test("enqueueIntent rejects a clientMutationId already held by the recovery stor
 	expect(rawRow("mutation_recovery", "mutation-shared")).toMatchObject({ recovery_kind: "rejected" });
 	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:b")).toHaveLength(0);
 	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+});
+
+// Oracle: the cross-store uniqueness contract extends to the retained
+// consumed ids (#4674). A retained id whose clear failed is still spoken for:
+// a repeating id generator passing a new record under it would let the
+// retained record's next settle delete that new row as though the daemon had
+// consumed it, so the enqueue must reject outright and roll back.
+test("enqueueIntent rejects a clientMutationId a retained consumed record still holds and rolls back its sequence allocation", async () => {
+	await storage.retainConsumed(["mutation-held"]);
+	const repeatingIdStorage = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-held",
+		now: () => 1234,
+	});
+
+	await expect(repeatingIdStorage.enqueueIntent(intent("repeated payload", "local:b"))).rejects.toThrow();
+
+	expect(rawRow("mutation_outbox", "mutation-held")).toBeUndefined();
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+	expect(await storage.listRetainedConsumed()).toEqual(["mutation-held"]);
 });
 
 test("enqueueInterruptAndCancel rejects a clientMutationId already active elsewhere and rolls back the whole Stop write", async () => {
