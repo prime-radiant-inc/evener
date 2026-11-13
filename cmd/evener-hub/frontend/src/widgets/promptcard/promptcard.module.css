@@ -14,8 +14,9 @@
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
+  border-radius: var(--radius-panel);
   background: var(--surface-1);
+  box-shadow: var(--shadow-raised);
 }
 
 /* While the card's height interpolates, its content is laid out at the new
@@ -38,11 +39,15 @@
  * affordance for the seamless textarea inside it (which draws no ring of its
  * own) - the same 2px accent outline every interactive control here uses.
  * The ring sits on the card's own edge and the hairline takes the accent too,
- * so the two read as one line instead of a card outline inside a focus ring. */
+ * so the two read as one line instead of a card outline inside a focus ring.
+ * The soft halo glows under that line, in front of the card's resting lift. */
 .card:focus-within {
   outline: var(--focus-ring);
   outline-offset: 0;
   border-color: var(--accent);
+  box-shadow:
+    var(--focus-halo),
+    var(--shadow-raised);
 }
 
 /* The author-level .card display:flex above outranks the UA stylesheet's

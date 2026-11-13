@@ -21,6 +21,25 @@
     color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
+/* The press: a held button gives a touch, then springs back on release.
+ * Transform only, so nothing around it reflows, and only for a reader who has
+ * not asked for less motion. A refused button does not respond, and the link
+ * variant is text, not a key to press. */
+@media (prefers-reduced-motion: no-preference) {
+  .button {
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      border-color var(--motion-duration-hover) var(--motion-easing-standard),
+      box-shadow var(--motion-duration-hover) var(--motion-easing-standard),
+      color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+
+  .button:not(.link):active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(0.97);
+  }
+}
+
 /* aria-disabled is a refusal that KEEPS focus where the keyboard put it (a
    native disabled control that holds focus drops it to <body>), so it carries
    the same look and the same non-response as :disabled - Button never styles
@@ -84,14 +103,14 @@
   background: color-mix(in oklab, var(--ink-hi) 86%, var(--surface-0));
 }
 
-/* The design language's bordered common control (2026-05-22 design language
- * §3.1's .btn-secondary, on the current token names): the resting border and
- * surface fill are what make a standing action read as a button where quiet
- * reads as bare text. Pressed drops the fill one step, matching the spec's
- * surface-ladder rule. */
+/* The bordered common control: the hairline edge, surface fill and card lift
+ * are what make a standing action read as a button where quiet reads as bare
+ * text. Hover and pressed drop the fill one step each down the surface
+ * ladder. */
 .secondary {
   background: var(--surface-1);
-  border-color: var(--edge-strong);
+  border-color: var(--edge);
+  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
 }
 

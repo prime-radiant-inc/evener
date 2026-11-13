@@ -1,4 +1,8 @@
+/* Clips to the rounded corners: the add/del line washes run edge to edge and
+ * would otherwise square off the first and last rows. Lines truncate rather
+ * than scroll (.content), so nothing reachable is clipped. */
 .root {
+  overflow: hidden;
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-0);

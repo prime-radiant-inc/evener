@@ -52,6 +52,20 @@
   background: var(--hover-1);
 }
 
+/* The press, as Button's: transform only, and gentler than a button's
+ * because a row is wide and the same ratio would move its ends much further. */
+@media (prefers-reduced-motion: no-preference) {
+  .interactive {
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+
+  .interactive:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(0.985);
+  }
+}
+
 /* Inset: rows sit flush in scrolling lists that would clip an outside ring. */
 .interactive:focus-visible {
   outline: var(--focus-ring);

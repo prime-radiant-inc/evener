@@ -12,9 +12,11 @@
  * is the one source, and token-contract.test.ts fails when a color declared
  * here drifts from it.
  *
- * Editorial instrument (2026-09-09): neutral paper/ink, reading serif and flat
- * structural surfaces. Supersedes Beautiful UI's aesthetic mandate, not its
- * interaction contracts or attribution: MIT, Copyright (c) 2026 Shane Levine,
+ * Soft instrument: neutral paper/ink, a reading serif, and mostly flat
+ * structure on a soft radius ladder. Depth is quiet and reserved for what the
+ * user acts on (--shadow-card, --shadow-raised) and for floating layers
+ * (--shadow-overlay). Interaction contracts and attribution carry over from
+ * Beautiful UI: MIT, Copyright (c) 2026 Shane Levine,
  * https://www.beautifului.dev — see LICENSES/beautiful-ui.txt.
  */
 
@@ -37,7 +39,7 @@
   --hover-2: #303034; /* pressed / selected */
   --field: #23272E; /* form-control background (sunken fields) */
   --edge: #333842; /* hairline borders */
-  --edge-strong: #4C535F; /* control borders, overlay rings */
+  --edge-strong: #4C535F; /* hovered/focused control borders, emphasis rules */
   --ink-hi: #F1F3F6; /* primary text */
   --ink-mid: #B2B7C0; /* secondary text */
   --ink-low: #9AA1AC; /* placeholders, disabled, timestamps — AA, token-contract */
@@ -175,11 +177,14 @@
   --speaker-gap: 10px; /* deliberately off the 4px grid: measured rhythm */
   --speaker-gutter: 34px;
 
-  --radius-chip: 3px; /* chips, badges, small tags */
-  --radius-control: 4px; /* buttons, inputs */
-  --radius-pane: 4px; /* panes, cards, dialogs */
-  --radius-panel: 8px; /* a floating disclosure card sitting INSIDE a pane */
-  --radius-pill: 999px; /* pill geometry: switch track */
+  /* The radius ladder: soft, not bubbly. Each step is the corner of one kind
+   * of object, so a nested box takes the step below its container. The page
+   * frame (PaneScaffold), tables and edge-docked sheets stay square. */
+  --radius-chip: 6px; /* keycaps, small inline tags, tight inner corners */
+  --radius-control: 8px; /* buttons, fields, rows, tooltips */
+  --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers, toasts */
+  --radius-panel: 16px; /* the largest surfaces: prompt card, docks */
+  --radius-pill: 999px; /* pill geometry: chips, badges, tracks, counters */
 
   /* --- focus ring ------------------------------------------------------
    * THE focus treatment: every :focus-visible (or :focus-within proxy) ring
@@ -220,23 +225,35 @@
   --z-toast: 1040; /* toasts top the app's own ladder */
 
   /* --- elevation -------------------------------------------------------
-   * Structure is flat. Floating layers retain a ring and soft shadow;
-   * fields retain their inset and explicit border. --shadow-card remains
-   * available for API compatibility, with no structural elevation.
+   * Structure is mostly flat; what the user acts on lifts slightly.
+   * --shadow-card is a hairline-soft lift for a surface that carries its own
+   * edge (cards, secondary buttons, selected rows). --shadow-raised adds a
+   * wide ambient under the one surface a view is built around (the prompt
+   * card). --shadow-overlay is a floating layer's whole boundary: an --edge
+   * ring plus a soft drop, so an overlay declares no second border.
+   * --shadow-inset-field is only a hint that a field is sunken; its border
+   * carries the boundary. --focus-halo is a soft accent glow laid UNDER a
+   * focused surface's accent hairline; it never replaces --focus-ring.
+   * Every shadow that carries a color is declared in both theme blocks.
    */
-  --shadow-card: none;
-  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
-  --shadow-inset-field: inset 0 1px 2px #00000066;
+  --shadow-card: 0 1px 2px #00000059;
+  --shadow-raised: 0 1px 2px #00000059, 0 8px 24px #00000066;
+  --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #00000073;
+  --shadow-inset-field: inset 0 1px 1px #00000033;
   --shadow-color: #00000057;
+  --focus-halo: 0 0 0 4px var(--accent-bg);
 
   /* --- motion ---------------------------------------------------------
    * The law is "no idle motion": nothing animates unless the user acted or
-   * the agent's state genuinely changed. Four budgets: attention onset (a
+   * the agent's state genuinely changed. Five budgets: attention onset (a
    * state crossing into needs-you), the 120ms fade-scale overlays
-   * (menu/dialog), 150ms hover/focus/press responses on interactive
-   * chrome (color/background/border/shadow only — transitions name their
-   * properties, never `all`), and the 240ms spatial budget for
-   * user-initiated geometry changes (the activity sidebar sliding in, a
+   * (menu/dialog, which may land with --motion-easing-pop's slight
+   * overshoot), 150ms hover/focus responses on interactive chrome
+   * (color/background/border/shadow only — transitions name their
+   * properties, never `all`), the 90ms press (a pressed button or row
+   * scales down a touch while held, transform only, and only under
+   * prefers-reduced-motion: no-preference), and the 240ms spatial budget
+   * for user-initiated geometry changes (the activity sidebar sliding in, a
    * zoom column opening). Data arriving never animates geometry. No
    * decorative idle pulses, no shimmer. The one continuous motion for agent
    * liveness is StatusDot's working spinner, gated by reduced motion
@@ -245,16 +262,19 @@
   --motion-duration-attention: 200ms;
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
+  --motion-duration-press: 90ms;
   --motion-duration-spatial: 240ms;
   /* one turn of StatusDot's continuous working spinner (agent liveness) */
   --motion-duration-activity: 800ms;
   --motion-easing-standard: ease-out;
+  --motion-easing-pop: cubic-bezier(0.2, 0.9, 0.3, 1.15);
 }
 
 /* Light theme: cool paper, neutral ink. Nested wrappers support the real
- * gallery's side-by-side comparison. Overlays retain a distinct surface;
- * structural cards rely on spacing/rules, not elevation. Semantic -ink
- * companions clear AA against surfaces and their own tinted backgrounds.
+ * gallery's side-by-side comparison. Shadows are ink-tinted and much fainter
+ * than dark's, because paper shows a shadow that a dark ground swallows.
+ * Semantic -ink companions clear AA against surfaces and their own tinted
+ * backgrounds.
  */
 :root[data-theme="light"],
 [data-theme="light"] {
@@ -336,10 +356,12 @@
   --ansi-bright-cyan: #0E7490;
   --ansi-bright-white: #17181A;
 
-  --shadow-card: none;
-  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000011;
-  --shadow-inset-field: inset 0 1px 2px #0000001F;
+  --shadow-card: 0 1px 2px #1A1D230F;
+  --shadow-raised: 0 1px 2px #1A1D230F, 0 8px 24px #1A1D230F;
+  --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #1A1D2324;
+  --shadow-inset-field: inset 0 1px 1px #1A1D230A;
   --shadow-color: #00000011;
+  --focus-halo: 0 0 0 4px var(--accent-bg);
 }
 
 /* --- font-size + phone-density preference application ------------------

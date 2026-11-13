@@ -13,7 +13,7 @@
 
 .line {
   height: var(--space-3);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
 }
 

@@ -1,7 +1,7 @@
-/* The speaker tile: a hairline-edged square whose border (not its fill) does
+/* The speaker tile: a hairline-edged circle whose border (not its fill) does
  * the separating work in the light theme, where --surface-2 equals --surface-1
  * - see the widget's own header. The glyph's hue is the tile's own ink, set
- * here so ToolIcon's currentColor resolves to --ink-mid without a literal. */
+ * here so the glyph's currentColor resolves to --ink-mid without a literal. */
 .tile {
   display: inline-flex;
   flex: none;
@@ -10,6 +10,15 @@
   color: var(--ink-mid);
   background: var(--surface-2);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   box-sizing: border-box;
+}
+
+/* The agent wears the evener mark: the inverse of the page (ink fill, page
+ * colored bars), so it reads as the product speaking rather than as a second
+ * person. */
+.agent {
+  color: var(--surface-0);
+  background: var(--ink-hi);
+  border-color: var(--ink-hi);
 }

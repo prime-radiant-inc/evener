@@ -127,7 +127,7 @@
   min-width: 320px;
   max-width: min(560px, calc(100vw - var(--space-8)));
   max-height: calc(100vh - var(--space-8));
-  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 /* size="large" (kata b4xf): same centered fade-scale chassis as
@@ -137,7 +137,7 @@
   border-radius: var(--radius-pane);
   max-width: calc(100vw - var(--space-8));
   max-height: calc(100vh - var(--space-8));
-  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @media (prefers-reduced-motion: reduce) {

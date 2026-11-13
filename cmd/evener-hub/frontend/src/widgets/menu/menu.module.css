@@ -13,7 +13,8 @@
   padding: 0 var(--space-4);
   border-radius: var(--radius-control);
   border: 1px solid var(--edge);
-  background: transparent;
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -25,21 +26,37 @@
   background: var(--hover-1);
 }
 
+/* The press, as Button's. */
+@media (prefers-reduced-motion: no-preference) {
+  .trigger {
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      transform var(--motion-duration-press) var(--motion-easing-standard);
+  }
+
+  .trigger:active {
+    transform: scale(0.97);
+  }
+}
+
 .trigger:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
 
 /* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
- * border at rest - border-color: transparent (not `border: none`) keeps
- * this pixel-identical in size to the default variant, the same convention
- * Button's own .quiet uses (widgets/button/button.module.css). Hover comes
- * for free from .trigger:hover above, which applies regardless of variant;
- * this adds the same surface-2 wash while OPEN, since a borderless trigger
- * otherwise has no persistent affordance left to show which one currently
- * owns an open popup. */
+ * border, fill or lift at rest - border-color: transparent (not
+ * `border: none`) keeps this pixel-identical in size to the default variant,
+ * the same convention Button's own .quiet uses
+ * (widgets/button/button.module.css). Hover comes for free from
+ * .trigger:hover above, which outranks this rule regardless of variant; this
+ * adds a pressed wash while OPEN, since a borderless trigger otherwise has no
+ * persistent affordance left to show which one currently owns an open
+ * popup. */
 .triggerQuiet {
   border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .triggerQuiet[aria-expanded="true"] {
@@ -73,12 +90,14 @@
   max-block-size: calc(100dvh - (2 * var(--space-2)));
   overflow-y: auto;
   margin: 0;
-  padding: var(--space-1) 0;
+  /* Items sit inset from the popup's edge and round their own wash, so no
+   * square hover corner meets the popup's rounded one. */
+  padding: var(--space-1);
   list-style: none;
   background: var(--surface-2);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: menuFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: menuFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @keyframes menuFadeScale {
@@ -119,7 +138,8 @@
 }
 
 .item {
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
@@ -168,10 +188,11 @@
 }
 
 /* Group rule between item clusters (SessionMenu's panes/organize/
- * destructive groups). --edge matches .popup's own border so the rule
- * reads as the popup's own hairline, not a new color. */
+ * destructive groups). --edge matches .popup's own ring so the rule reads as
+ * the popup's own hairline, not a new color; the negative inline margin
+ * carries it across the popup's inset to both edges. */
 .separator {
-  margin: var(--space-1) 0;
+  margin: var(--space-1) calc(-1 * var(--space-1));
   border-top: 1px solid var(--edge);
   list-style: none;
 }

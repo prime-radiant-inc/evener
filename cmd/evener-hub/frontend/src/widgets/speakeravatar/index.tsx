@@ -1,5 +1,5 @@
 // The transcript's speaker tile, rendered at exchange-boundary headers: a
-// small square tile carrying a glyph that names WHO is speaking (the user or
+// small round tile carrying a glyph that names WHO is speaking (the user or
 // the agent), so a long transcript's speaker turns are scannable as structure
 // rather than recoverable only by reading the message text.
 //
@@ -16,11 +16,13 @@
 // one theme and decorative in the other, and it is present in both so the
 // tile is one drawing.
 //
-// Both glyphs come from widgets/toolicon's grammar (16-grid, stroke
+// Both glyphs follow widgets/toolicon's grammar (16-grid, stroke
 // currentColor, 1.75 width), so the avatars read as the same family as the
-// tool-row icons they sit among: the user wears "person", the agent the
-// "skill" sparkle. The glyph is currentColor inside a tile that sets its own
-// ink (--ink-mid), so no colour literal appears here.
+// tool-row icons they sit among. The user wears toolicon's "person". The
+// agent wears the evener mark, two level bars (an equals sign), on an
+// inverted tile: the product's own sign rather than a second person. Each
+// glyph is currentColor inside a tile that sets its own ink, so no colour
+// literal appears here.
 
 import { requireClass } from "../internal/requireClass";
 import { ToolIcon } from "../toolicon";
@@ -28,13 +30,15 @@ import styles from "./speakeravatar.module.css";
 
 const CLASS = {
   tile: requireClass(styles.tile, "speakeravatar.module.css", "tile"),
+  agent: requireClass(styles.agent, "speakeravatar.module.css", "agent"),
 };
 
 export type SpeakerAvatarSpeaker = "user" | "agent";
 
 export interface SpeakerAvatarProps {
   speaker: SpeakerAvatarSpeaker;
-  /** Tile edge in px. Square by construction - see this widget's own test. */
+  /** Tile diameter in px. Width and height are always equal - see this
+   * widget's own test. */
   size?: number;
 }
 
@@ -55,13 +59,41 @@ function glyphSizeFor(tileSize: number): number {
   return Math.round(tileSize * 0.583);
 }
 
+// The evener mark on toolicon's 16-grid: two level bars, round-capped.
+function EvenerMark({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M3.5 5.75h9M3.5 10.25h9" />
+    </svg>
+  );
+}
+
 export function SpeakerAvatar({ speaker, size = DEFAULT_SIZE }: SpeakerAvatarProps) {
   return (
     // Decorative: the header row beside it already names the speaker in words
     // ("You", "Agent"), so exposing the tile would announce the same fact
     // twice.
-    <span className={CLASS.tile} style={{ width: size, height: size }} aria-hidden="true" data-testid="speaker-avatar">
-      <ToolIcon kind={speaker === "user" ? "person" : "skill"} size={glyphSizeFor(size)} />
+    <span
+      className={speaker === "agent" ? `${CLASS.tile} ${CLASS.agent}` : CLASS.tile}
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+      data-testid="speaker-avatar"
+    >
+      {speaker === "user" ? (
+        <ToolIcon kind="person" size={glyphSizeFor(size)} />
+      ) : (
+        <EvenerMark size={glyphSizeFor(size)} />
+      )}
     </span>
   );
 }

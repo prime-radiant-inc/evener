@@ -17,7 +17,7 @@
   background: var(--surface-1);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @keyframes popoverFadeScale {
