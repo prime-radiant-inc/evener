@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
 import { errorText, LOCAL_HOST } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
 import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   archivedListKey,
@@ -1020,7 +1020,9 @@ function NavigationRail({
     manifestError ??
     (resourceError ? errorText(resourceError) : null) ??
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
-  const displayed = nonEmpty(resources);
+  // A row the bands are holding for its open dialog keeps the tree mounted
+  // even when it was the last thing the sections supplied.
+  const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
   const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   const parentOwnsScroll = scrollOwner === "parent";
   return (

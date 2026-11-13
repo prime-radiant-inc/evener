@@ -93,11 +93,15 @@ async function mountRail(
   );
   const settled = async () => {
     await waitFor(() => {
-      const live = navigationStore
-        .getState()
-        .resources.get(keyID({ kind: "section", section: "live", offset: 0, limit: 50 }));
-      expect(live?.loadedRevision).toBe(revision);
-      expect(live?.loading).toBe(false);
+      const state = navigationStore.getState();
+      expect(state.manifest?.loadedRevision).toBe(revision);
+      // A section the manifest counts empty is never read at all.
+      for (const section of ["live", "needs_you"] as const) {
+        const resource = state.resources.get(keyID({ kind: "section", section, offset: 0, limit: 50 }));
+        if (!resource) continue;
+        expect(resource.loadedRevision).toBe(revision);
+        expect(resource.loading).toBe(false);
+      }
     });
   };
   const announce = async () => {
@@ -271,4 +275,19 @@ test("inside the phone's Sessions drawer, itself a modal, a session that starts 
   hub.needsYou = [hub.live[0] as NavigationSessionSummary];
   await announce();
   await waitFor(() => expect(rowsOf("needsYou")).toEqual(["local:a"]));
+});
+
+test("a rename survives its session being the only row and leaving the sections mid-edit", async () => {
+  const asking = session("only", { state: "awaiting", ask_pending: true, rename: true });
+  const { hub, announce } = await mountRail({ live: [], needsYou: [asking] });
+  fireEvent.click(within(rowFor("local:only")).getByRole("button", { name: /Actions for/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const draft = () => screen.getByRole("textbox") as HTMLInputElement;
+  fireEvent.change(draft(), { target: { value: "Half-typed name" } });
+
+  // Answered elsewhere: the section empties before anything else has loaded.
+  hub.needsYou = [];
+  await announce();
+  expect(draft().value).toBe("Half-typed name");
+  expect(rowFor("local:only")).toBeTruthy();
 });
