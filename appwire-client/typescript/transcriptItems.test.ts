@@ -36,6 +36,26 @@ test("entry item codec preserves omitted text, identity-only markers, and rich r
   expect(decodeTranscriptItem({ id: "bad" })).toBeUndefined();
 });
 
+// A recorded message carries the conversation inputs it speaks for. The cache
+// encoder spreads every key, so an unknown one reaches the allowlist and
+// rejects the whole write batch, which would strand cached history for any
+// session with recorded steering.
+test("the entry item codec round-trips recorded conversation input lineage", () => {
+  const recorded: ItemModel = {
+    id: "item-1",
+    turnId: "turn-1",
+    type: "userMessage",
+    text: "promoted message",
+    clientMutationId: "promotion-control",
+    conversationInputIds: ["client:original-queue"],
+  };
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(recorded));
+  expect(decoded?.conversationInputIds).toEqual(["client:original-queue"]);
+  expect(
+    decodeTranscriptItem({ ...encodeTranscriptItem(recorded), conversationInputIds: ["ok", 7] as unknown as string[] }),
+  ).toBeUndefined();
+});
+
 // szw1: reducer.ts's turn/started and turn/completed have no defense against
 // a duplicate turn id in model.turns. Both known causes of a live collision
 // (eptj, bz2z) are fixed server-side, so this is hardening against a defect

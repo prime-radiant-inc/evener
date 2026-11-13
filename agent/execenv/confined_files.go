@@ -18,7 +18,7 @@ func (e *LocalExecutionEnvironment) GrepConfinedFiles(ctx context.Context, patte
 		return "", errors.New("scope-relative search requires a confined environment")
 	}
 	defer layer.release()
-	return layer.grepNative(ctx, pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
+	return layer.grepConfinedNative(ctx, pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
 }
 
 // RemoveConfinedFile removes only an admitted regular file, without reading it.

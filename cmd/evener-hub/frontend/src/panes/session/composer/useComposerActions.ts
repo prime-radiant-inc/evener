@@ -11,10 +11,11 @@ import {
   useThreadsStore,
 } from "../../../stores/threads";
 import { useToasts } from "../../../widgets";
+import type { PendingActionContext } from "../pending/actionContext";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
 import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
-import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
+import { pendingTurnEntries, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
   useBlockedMutationEntries,
@@ -230,11 +231,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     // An interrupt is not a draft. It carries no input, so activating one
     // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
+    // turn/start -- a Stop becoming a message. pending stack renders it as a
     // failure with its reason instead.
     // Mount restoration is seat-owned: only a row this pane's durable
     // composer seat authored is a candidate, so a fresh pane never injects
-    // another pane's (or a legacy, ownerless) row. QueueStrip's explicit
+    // another pane's (or a legacy, ownerless) row. pending stack's explicit
     // Edit/Retry/Send-now still reach every row.
     // The entries arrive sorted ascending by intent sequence; a pane that
     // bounced more than one composition restores the NEWEST one - the user's
@@ -246,7 +247,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
       // An empty rejected drain is a notice, not a draft: activating it loads
       // an empty composer that the persistence effect immediately discards,
-      // so the click only flashes recovery state. The queue strip already
+      // so the click only flashes recovery state. The pending stack already
       // shows the refusal and its reason (lifecycle ruling 2026-11-09, issue
       // #1436).
       if (recoveredCompositionIsEmpty(recoveryComposerDraft(entry))) continue;
@@ -286,7 +287,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSelectionMeta,
     attachments.items.length,
   ]);
-  // QueueStrip captures this mount's payload and edit revision through
+  // pending stack captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
@@ -315,13 +316,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   // parks the cursor at the very end, and the textarea is refocused - same
   // as legacy's own ta.focus() call.
   //
-  // QueueStrip uses this behavior when a queued entry is moved back into
+  // pending stack uses this behavior when a queued entry is moved back into
   // the composer for editing.
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
   // parity (contracts-composer-queue-pending.md:122, parity-m5-
-  // composer.md:102) - dropped image attachments surface via QueueStrip's
+  // composer.md:102) - dropped image attachments surface via pending stack's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a
   // queued skill selection must survive the edit round-trip, not silently
@@ -368,7 +369,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   }
 
   async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
-    // QueueStrip already holds the shared operation lease for this callback.
+    // pending stack already holds the shared operation lease for this callback.
     if (!source.alive) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -385,13 +386,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
   }
 
-  // getComposerText is QueueStrip's own seam for reading this composer's
+  // getComposerText is pending stack's own seam for reading this composer's
   // CURRENT text/attachments/hasPending at the moment its drain affordance
   // is used - textRef.current (not the `text` state closure) for the
   // identical liveness reason textEditor.read() above reads it, and
   // toInputAttachments() for the same wire shape submitAction's own payload
   // already uses. `hasPending` mirrors this component's own attachments.
-  // hasPending so QueueStrip's "Steer queue now" button can block with the SAME
+  // hasPending so pending stack's "Steer queue now" button can block with the SAME
   // "still processing" toast this component's classic submit paths already
   // use, instead of silently sending a drain payload with a not-yet-encoded
   // image missing (toInputAttachments() itself only ever filters incomplete
@@ -399,7 +400,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
   // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
   // handleDrainSuccess can later tell whether the composer changed between
-  // THIS read and the drain actually resolving - QueueStrip only ever calls
+  // THIS read and the drain actually resolving - pending stack only ever calls
   // this once per handleDrain invocation, immediately before starting the
   // request, so the snapshot always reflects exactly what that drain sent.
   function getComposerText() {
@@ -424,16 +425,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   // submitAction wraps every method in submitWithPendingTracking (the wave's
   // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
   // submissions should wrap their threadsStore.send/.steer calls in
-  // submitWithPendingTracking the same way QueueStrip's own drain handler
+  // submitWithPendingTracking the same way pending stack's own drain handler
   // wraps drainAsSteer... that's what makes optimistic pending genuinely
-  // uniform across all four methods"), exactly mirroring QueueStrip.tsx's
+  // uniform across all four methods"), exactly mirroring pending stack.tsx's
   // own handleDrain shape.
   //
   // Toast/bookkeeping split, reconciled against pendingTurnsStore's own
   // documented contract (its submitWithPendingTracking doc comment: onFailure
   // is for toasting, "rethrowing so the caller's OWN catch can still run its
   // own non-toast bookkeeping"): the toast lives ENTIRELY inside onFailure
-  // (same as QueueStrip's own handleDrain), and the outer catch below only
+  // (same as pending stack's own handleDrain), and the outer catch below only
   // ever re-runs the isQueuedDrainPartial state-clearing (never a second
   // toast) - so a failure surfaces exactly once regardless of which branch
   // it takes. Before this reconciliation, both sides pushed a toast for the
@@ -770,9 +771,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     await submit(allowed.canQueue ? "queue" : "send");
   }
 
-  const queueProps: QueueStripProps = {
+  const pendingProps: PendingActionContext = {
     ref,
-    // The strip's drain presses submit as this pane, so its sends carry the
+    // The pending stack's drain presses submit as this pane, so its sends carry the
     // same seat the composer's own sends do.
     compositionOwnerId: source.compositionOwnerId,
     getComposerText,
@@ -793,6 +794,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     submitFromLiveState,
     submit,
     stop,
-    queueProps,
+    pendingProps,
   };
 }

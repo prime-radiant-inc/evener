@@ -9,6 +9,7 @@ import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
 import { openDocBeside } from "../panes/doc/openDoc";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
@@ -525,7 +526,7 @@ test("a real read-only Transcript filename opens from its exact pane, session an
   const sourceGroup = getDockviewApi()?.getPanel(sourceId)?.group.element;
   if (!sourceGroup) throw new Error("source group missing");
   act(() => workspaceStore.getState().focusPane(sessionId));
-  const link = within(sourceGroup).getByRole("link", { name: "docs/source.md:12" });
+  const link = await within(sourceGroup).findByRole("link", { name: "docs/source.md:12" });
   await userEvent.setup().click(link);
   await screen.findByText(/doc pane: docs\/source.md/);
   const documentPane = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
@@ -1193,6 +1194,9 @@ test("a session pane's tab title falls back to the navigation location title whe
     if (!(body instanceof HTMLElement)) throw new Error("session pane body not rendered");
     within(body).getByRole("status");
   });
+  // The pane's composer submission starts its own durable pending-turns read
+  // at mount; settle it here so its publication cannot land after the test.
+  await flushPendingTurnsProjectionForTests();
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Fix the flaky CI job");
 });
 

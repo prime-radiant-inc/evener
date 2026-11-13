@@ -95,7 +95,7 @@ afterEach(() => {
 // The former "reserves marked slots for T3/T4" test lived here, pinning the
 // two slots via source-text scraping (comments aren't queryable via the DOM,
 // and there was nothing else there yet to query). Now that the wave
-// integration has actually mounted <AskDock>/<QueueStrip> in those slots
+// integration has actually mounted <AskDock>/<pending stack> in those slots
 // (Composer.integration.test.tsx), a real behavioral DOM-order assertion
 // supersedes it - see that file's "the ask dock renders above the queue
 // strip when both are visible at once" test.

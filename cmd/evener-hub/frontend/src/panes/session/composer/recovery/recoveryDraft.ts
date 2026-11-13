@@ -61,7 +61,7 @@ export function compositionIsEmpty(parts: {
 
 // recoveredCompositionIsEmpty reports whether activating this draft would load
 // nothing into the composer. A rejected drain with no input is the shape that
-// matters: it is a notice (the queue strip shows the refusal and its reason),
+// matters: it is a notice (the pending stack shows the refusal and its reason),
 // not a draft, and auto-activating it only flashes an empty composer before
 // the persistence effect discards it again (lifecycle ruling 2026-11-09,
 // issue #1436).

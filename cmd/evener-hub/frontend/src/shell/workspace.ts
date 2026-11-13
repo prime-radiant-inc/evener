@@ -1036,7 +1036,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // validated seat already held by another restored pane is skipped, so
       // two live panes never share one. A pane with no validated entry mints
       // fresh - a mobile-shaped reconstruction restores nothing
-      // automatically, one tap in the queue strip.
+      // automatically, one tap in the pending stack.
       const usedSeats = new Set<string>();
       const conversations = panes.flatMap((pane) => {
         if (!isConversationPaneType(pane.type)) return [];

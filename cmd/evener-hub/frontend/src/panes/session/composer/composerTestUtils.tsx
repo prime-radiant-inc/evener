@@ -10,11 +10,15 @@ import { threadsStore } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
+import { PendingMessageStack } from "../pending/PendingMessageStack";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { Composer as ComposerView } from "./Composer";
+import { requestComposerFocus } from "./composerFocus";
+import { usePendingMessages } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { defaultCompositionOwner } from "./sourceState";
+import { useBuiltinSubmission } from "./useBuiltinSubmission";
 
 export function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -23,6 +27,29 @@ export function Composer(props: React.ComponentProps<typeof ComposerView>) {
     <ClientProvider client={client}>
       <ComposerView {...props} />
     </ClientProvider>
+  );
+}
+
+// The production composition without the transcript: one composer submission
+// and the one pending stack that reads its actions.
+export function ComposerWithPendingStack({
+  source,
+  ...props
+}: Omit<React.ComponentProps<typeof ComposerView>, "submission">) {
+  const submission = useBuiltinSubmission(source, props.paneId);
+  const messages = usePendingMessages(props.ref);
+  return (
+    <>
+      <PendingMessageStack
+        ref={props.ref}
+        messages={messages}
+        context={{
+          ...submission.actions.pendingProps,
+          focusComposer: () => requestComposerFocus(props.ref, props.paneId),
+        }}
+      />
+      <ComposerView source={source} submission={submission} {...props} />
+    </>
   );
 }
 
@@ -84,6 +111,7 @@ export async function mountComposerWithHandle(
     prepare?: (fake: FakeClient) => void;
     holdMountProjection?: boolean;
     source?: ReturnType<typeof createTestComposerSource>;
+    pendingStack?: boolean;
   } = {},
 ) {
   const fake = connectReadyFakeClient(options.prepare);
@@ -93,7 +121,11 @@ export async function mountComposerWithHandle(
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} source={source} focused={options.focused ?? false} />
+      {options.pendingStack === false ? (
+        <Composer ref={ref} source={source} focused={options.focused ?? false} />
+      ) : (
+        <ComposerWithPendingStack ref={ref} source={source} focused={options.focused ?? false} />
+      )}
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
@@ -298,7 +330,7 @@ export function textarea(): HTMLDivElement {
 
 // The composer's controls are addressed by their stable data-testid, not by
 // accessible name: two different buttons in this tree start with "Steer"
-// (this component's own and QueueStrip's "Steer queue now"), and the
+// (this component's own and the pending stack's "Steer queue now"), and the
 // submit button's own name tracks the send/queue routing and the keyboard
 // hint. The accessible names are still a real contract - see the dedicated
 // "spoken name" tests below - they just aren't how tests navigate.

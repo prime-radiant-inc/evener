@@ -336,9 +336,15 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
 
     case "thread/conversation-provenance/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      // The hub voice bridge consumes this control evidence. It carries no
-      // transcript change, so text clients keep their history and overlays.
-      return { ...model, lastFrameAt: now };
+      // No transcript change, but the state names inputs that ended before
+      // reaching canonical history (`retiredInputs`). That is the only durable
+      // evidence a pending row has that its message will never arrive, so a
+      // client rendering intent must keep it.
+      return {
+        ...model,
+        ...(n.params.provenance === null ? {} : { conversationProvenance: n.params.provenance }),
+        lastFrameAt: now,
+      };
     }
 
     case "thread/status/changed": {

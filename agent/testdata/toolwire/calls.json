@@ -658,7 +658,7 @@
       "turnId": "turn_1",
       "toolName": "grep",
       "callId": "call_grep",
-      "output": "tree.go:3:func settle() {}\ntree_test.go:3:func settleForTest() {}",
+      "output": "agent/tree.go:3:func settle() {}\nagent/tree_test.go:3:func settleForTest() {}",
       "status": "completed",
       "completedAt": 1790625602000
     },
