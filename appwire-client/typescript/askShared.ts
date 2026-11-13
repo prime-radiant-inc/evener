@@ -164,12 +164,14 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   // and the fence can keep a later sibling call pending even though its turn
   // is named (a scoped answer admits the pending set; a call appended after
   // admission survives — agent's TestAskFenceScopedAnswerPreservesPostAdmissionAppend).
-  // With answerable sibling calls in the same execution the reply could
-  // belong to any of them, so the linked path claims nothing rather than
-  // recap the wrong call. The shape fallback keeps its pre-link behavior.
+  // So the linked path must not guess WHICH sibling call a reply answered: a
+  // free-prose reply names no header, and a composed reply answering a
+  // header a sibling also asks could belong to either — both stay
+  // suppressed. A composed reply whose answered headers no sibling asks
+  // identify this call exactly, so header matching still runs for it.
   // (Exposing admission's call-level AskResolution on the wire would lift
-  // this guard; the link stays turn-granular until then.)
-  if (reply.answerToTurnIds !== undefined && askSiblingsShareTheTurn(items, item)) return undefined;
+  // this guard entirely; the link stays turn-granular until then.)
+  if (reply.answerToTurnIds !== undefined && linkedReplyNamesTheWrongSibling(items, item, reply)) return undefined;
   if (reply.text.startsWith("[answers]")) {
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
@@ -197,11 +199,21 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   return first !== "" ? ` — answered: ${first}${more ? " …" : ""}` : undefined;
 }
 
-// askSiblingsShareTheTurn reports whether another answerable ask call shares
-// item's execution turn - the population whose recap the turn-granular link
-// cannot disambiguate.
-function askSiblingsShareTheTurn(items: readonly ItemModel[], item: ItemModel): boolean {
-  return items.some((i) => i.id !== item.id && i.turnId === item.turnId && parseAskUserQuestions(i) !== undefined);
+// Whether a linked reply could belong to a sibling ask call of the same
+// execution turn: true when the reply is free prose (it names no header to
+// identify its call), or when it answers a header a sibling also asks (a
+// shared header cannot say which call it belongs to). A composed reply whose
+// answered headers no sibling asks identifies this call exactly.
+function linkedReplyNamesTheWrongSibling(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
+  const siblings = items.filter(
+    (i) => i.id !== item.id && i.turnId === item.turnId && parseAskUserQuestions(i) !== undefined,
+  );
+  if (siblings.length === 0) return false;
+  if (!reply.text.startsWith("[answers]")) return true;
+  const siblingHeaders = new Set(
+    siblings.flatMap((sibling) => (parseAskUserQuestions(sibling) ?? []).map((question) => question.header)),
+  );
+  return [...parseAskAnswerLines(reply.text).keys()].some((header) => siblingHeaders.has(header));
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item

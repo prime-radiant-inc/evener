@@ -412,15 +412,44 @@ test("a linked reply never guesses between same-execution ask calls", () => {
   // fence keeps a call appended after a scoped answer pending even though
   // it shares the answered call's turn (agent's
   // TestAskFenceScopedAnswerPreservesPostAdmissionAppend). With two
-  // answerable calls in one execution, the reply's turn link cannot say
-  // which call it resolved - the recap shows nothing rather than claim a
-  // specific one answered.
+  // answerable calls in one execution, a free-prose reply's turn link
+  // cannot say which call it resolved - the recap shows nothing rather
+  // than claim a specific one answered.
   const first = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_1" });
   const second = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_2" });
   const reply = userMessage({ text: "do the first thing", turnId: "turn_2", answerToTurnIds: ["turn_1"] });
   const model = turnsModel([first, second], [reply]);
   expect(answeredAskUserSuffix(model, first)).toBeUndefined();
   expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("a linked composed reply still recaps a sibling call it answers by a distinct header", () => {
+  // The dock composes ONE [answers] reply for the whole pending set, naming
+  // each answer by header: when sibling calls ask distinct headers, the
+  // reply identifies its calls exactly and must not be suppressed.
+  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
+  const beta = item({
+    argumentsJSON: askUserArgs([
+      { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_beta",
+  });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const model = turnsModel([alpha, beta], [reply]);
+  expect(answeredAskUserSuffix(model, alpha)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserSuffix(model, beta)).toBeUndefined();
+});
+
+test("a linked composed reply answering a header a sibling also asks recaps neither call", () => {
+  // Both calls ask "Deploy?": the shared header cannot say which call the
+  // reply answered, so neither claims it.
+  const alpha = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_alpha" });
+  const beta = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1", id: "ask_beta" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+  const model = turnsModel([alpha, beta], [reply]);
+  expect(answeredAskUserSuffix(model, alpha)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, beta)).toBeUndefined();
 });
 
 test("a free-prose recap carries only the reply's first line, with an ellipsis for the rest", () => {
