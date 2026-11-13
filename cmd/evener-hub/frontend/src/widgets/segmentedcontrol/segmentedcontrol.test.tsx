@@ -516,7 +516,7 @@ describe("CSS contract", () => {
   test("one thumb carries the raise and travels by transform alone", () => {
     const css = cssSource();
     expect(css).toMatch(
-      /\.thumb\s*\{[^}]*grid-row:\s*1[^}]*grid-column:\s*1[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*pointer-events:\s*none[^}]*transform:\s*translateX\(calc\(var\(--segmented-direction, 1\) \* var\(--segmented-index, 0\) \* \(100% \+ var\(--segmented-gap\)\)\)\)/s,
+      /\.thumb\s*\{[^}]*grid-row:\s*1 \/ 2[^}]*grid-column:\s*1 \/ 2[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*pointer-events:\s*none[^}]*transform:\s*translateX\(calc\(var\(--segmented-direction, 1\) \* var\(--segmented-index, 0\) \* \(100% \+ var\(--segmented-gap\)\)\)\)/s,
     );
     expect(css).toMatch(
       /\.track\.stacked > \.thumb\s*\{[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,

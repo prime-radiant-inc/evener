@@ -44,8 +44,10 @@
  * on the chosen option's cell at any width, font or theme without measuring.
  * --segmented-index is the chosen option's position, set by the widget. */
 .thumb {
-  grid-row: 1;
-  grid-column: 1;
+  /* Both lines are named: an absolutely positioned box's auto end line is the
+   * track's padding edge, not the next grid line. */
+  grid-row: 1 / 2;
+  grid-column: 1 / 2;
   position: absolute;
   inset: 0;
   box-sizing: border-box;
