@@ -49,24 +49,24 @@
   outline-offset: -2px;
 }
 
-.toggleLabel {
+.disclosureLabel {
   flex: 1;
   min-width: 0;
 }
 
-.toggleChevron {
+.disclosureChevron {
   display: inline-flex;
   flex: none;
   align-items: center;
   color: var(--ink-low);
 }
 
-.toggleChevron[data-open="true"] {
+.disclosureChevron[data-open="true"] {
   transform: rotate(90deg);
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .toggleChevron {
+  .disclosureChevron {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
   }
 }

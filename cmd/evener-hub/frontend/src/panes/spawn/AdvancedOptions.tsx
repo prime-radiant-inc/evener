@@ -57,8 +57,8 @@ const BOOLEAN_DEFAULT = "(default)";
 const CLASS = {
   root: requireClass(styles.root, "advancedOptions.module.css", "root"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
-  toggleLabel: requireClass(styles.toggleLabel, "advancedOptions.module.css", "toggleLabel"),
-  toggleChevron: requireClass(styles.toggleChevron, "advancedOptions.module.css", "toggleChevron"),
+  disclosureLabel: requireClass(styles.disclosureLabel, "advancedOptions.module.css", "disclosureLabel"),
+  disclosureChevron: requireClass(styles.disclosureChevron, "advancedOptions.module.css", "disclosureChevron"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
 };
 
@@ -222,8 +222,8 @@ export function AdvancedOptions({
   return (
     <section className={CLASS.root}>
       <button type="button" className={CLASS.toggle} aria-expanded={open} aria-controls={panelId} onClick={toggle}>
-        <span className={CLASS.toggleLabel}>Advanced options</span>
-        <span className={CLASS.toggleChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+        <span className={CLASS.disclosureLabel}>Advanced options</span>
+        <span className={CLASS.disclosureChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
           <Chevron />
         </span>
       </button>
