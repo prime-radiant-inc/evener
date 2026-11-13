@@ -41,6 +41,9 @@ type renderOpts struct {
 	headTailEvidenceFor *int
 	evidence            *transcriptEvidence
 	callNames           map[string]string
+	proseBudget         map[int]int
+	anyTruncated        *bool
+	singleTurn          bool
 }
 
 // effectiveResultToolName returns the result tool name to use.
@@ -158,6 +161,7 @@ func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, sta
 	if byteLimit > 0 && b.Len() > byteLimit {
 		return false
 	}
+	opt.singleTurn = len(entries) == 1
 	resultTool := effectiveResultToolName(opt)
 	idx := buildResultIndex(entries, startSeq)
 
@@ -593,7 +597,7 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 		TurnsRendered: rendered,
 		Range:         normalizeRange(rangeSpec),
 		ElidedTurns:   elided,
-		Truncated:     truncated || rendered < total,
+		Truncated:     truncated || rendered < total || strings.Contains(content, "characters elided from this oversized turn"),
 		FirstRendered: firstShown,
 		LastRendered:  lastShown,
 		Evidence:      evidence,
@@ -615,6 +619,23 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 			return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
 		}
 	}
+	if opt.fullResultFor == nil && len(content) > convBudgetChars {
+		return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
+	}
+	if renderedStart > start || renderedEnd < end {
+		for seq := start; seq <= end; seq++ {
+			if seq >= renderedStart && seq <= renderedEnd {
+				continue
+			}
+			if entries[seq].Turn.Kind == schema.TurnAssistant {
+				for _, rs := range inRangePairedResults(entries, seq, start, end) {
+					if rs >= renderedStart && rs <= renderedEnd {
+						return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
+					}
+				}
+			}
+		}
+	}
 	return content, meta
 }
 
@@ -625,6 +646,12 @@ const userRangeTooLarge = "requested range could not be delivered with complete 
 // stop selection of smaller turns farther into the requested range.
 func renderUserPrioritizedRange(header transcript.Header, entries []transcript.Entry, start, end int, rangeSpec string, opt renderOpts) (string, readMeta) {
 	selected := make([]bool, len(entries))
+	if opt.proseBudget == nil {
+		opt.proseBudget = make(map[int]int)
+	}
+	truncatedAny := false
+	opt.anyTruncated = &truncatedAny
+
 	content, evidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 	priority := rangePriority(start, end, rangeSpec)
 	meta := readMeta{TurnsTotal: len(entries), Range: normalizeRange(rangeSpec), LastRendered: -1, SelectedTurns: []int{}}
@@ -634,13 +661,32 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 		meta.RangeError = userRangeTooLarge
 		return "", meta
 	}
-	// Replace an omission with a complete user only when the full response fits.
-	// Each user is considered once, without searching for a preferred subset.
-	for _, users := range []bool{true, false} {
-		for _, seq := range priority {
-			if selected[seq] || (entries[seq].Turn.Kind == schema.TurnUserInput) != users {
+	// Pass 1: complete user turns.
+	for _, seq := range priority {
+		if selected[seq] || entries[seq].Turn.Kind != schema.TurnUserInput {
+			continue
+		}
+		selected[seq] = true
+		candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+		if len(candidate) <= convBudgetChars {
+			content, evidence = candidate, candidateEvidence
+		} else {
+			selected[seq] = false
+		}
+	}
+
+	// Pass 2: non-user turns.
+	for _, seq := range priority {
+		if selected[seq] || entries[seq].Turn.Kind == schema.TurnUserInput {
+			continue
+		}
+
+		if entries[seq].Turn.Kind == schema.TurnToolResults {
+			if _, hasAssistant := inRangeOwningAssistant(entries, seq, start, end); hasAssistant {
+				// Paired with an in-range assistant turn; selected/omitted together with it.
 				continue
 			}
+			// Orphan tool result: evaluate on its own.
 			selected[seq] = true
 			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
 			if len(candidate) <= convBudgetChars {
@@ -648,6 +694,82 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 			} else {
 				selected[seq] = false
 			}
+			continue
+		}
+
+		if entries[seq].Turn.Kind == schema.TurnAssistant {
+			hasToolCalls := len(toolCallIDs(entries[seq].Turn)) > 0
+			canTruncateInline := hasToolCalls || start == end
+			pairedResults := inRangePairedResults(entries, seq, start, end)
+			selected[seq] = true
+			for _, rs := range pairedResults {
+				selected[rs] = true
+			}
+			delete(opt.proseBudget, seq)
+
+			// Try whole (untruncated) first.
+			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			if len(candidate) <= convBudgetChars {
+				content, evidence = candidate, candidateEvidence
+				continue
+			}
+
+			if !canTruncateInline {
+				selected[seq] = false
+				for _, rs := range pairedResults {
+					selected[rs] = false
+				}
+				delete(opt.proseBudget, seq)
+				continue
+			}
+
+			// Try inline truncation.
+			opt.proseBudget[seq] = 0
+			candMin, _ := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			if len(candMin) > convBudgetChars {
+				selected[seq] = false
+				for _, rs := range pairedResults {
+					selected[rs] = false
+				}
+				delete(opt.proseBudget, seq)
+				continue
+			}
+
+			extraBytes := convBudgetChars - len(candMin)
+			extraRunes := extraBytes / utf8.UTFMax
+			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+			markerRunes := len([]rune(fmt.Sprintf("\n\n_… 0 characters elided from this oversized turn; %s …_\n\n", hint)))
+			opt.proseBudget[seq] = markerRunes + extraRunes
+
+			candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			for opt.proseBudget[seq] > 0 && len(candidate) > convBudgetChars {
+				overshoot := len(candidate) - convBudgetChars
+				step := max(1, (overshoot+utf8.UTFMax-1)/utf8.UTFMax)
+				opt.proseBudget[seq] -= step
+				if opt.proseBudget[seq] < 0 {
+					opt.proseBudget[seq] = 0
+				}
+				candidate, candidateEvidence = renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			}
+
+			if len(candidate) <= convBudgetChars {
+				content, evidence = candidate, candidateEvidence
+			} else {
+				selected[seq] = false
+				for _, rs := range pairedResults {
+					selected[rs] = false
+				}
+				delete(opt.proseBudget, seq)
+			}
+			continue
+		}
+
+		selected[seq] = true
+		candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+		if len(candidate) <= convBudgetChars {
+			content, evidence = candidate, candidateEvidence
+		} else {
+			selected[seq] = false
 		}
 	}
 	meta.Evidence = evidence
@@ -699,7 +821,7 @@ func renderUserPrioritizedRange(header transcript.Header, entries []transcript.E
 		}
 	}
 	truncated, content := applyHardCap(content)
-	meta.Truncated = truncated || meta.ElidedTurns > 0
+	meta.Truncated = truncated || meta.ElidedTurns > 0 || truncatedAny || strings.Contains(content, "characters elided from this oversized turn")
 	return content, meta
 }
 
@@ -738,6 +860,10 @@ func renderSelectedRange(header transcript.Header, entries []transcript.Entry, s
 	idx := buildResultIndex(entries[start:end+1], start)
 	for id, paired := range idx.byCallID {
 		if !selected[paired.ownerSeq] {
+			delete(idx.byCallID, id)
+			continue
+		}
+		if as, found := callOwnerSeq(entries, id); found && as >= start && as <= end && !selected[as] {
 			delete(idx.byCallID, id)
 		}
 	}
@@ -885,6 +1011,30 @@ func callOwnerSeq(entries []transcript.Entry, id string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func inRangeOwningAssistant(entries []transcript.Entry, seq, start, end int) (int, bool) {
+	if entries[seq].Turn.Kind != schema.TurnToolResults {
+		return 0, false
+	}
+	for _, id := range toolResultCallIDs(entries[seq].Turn) {
+		if as, found := callOwnerSeq(entries, id); found && as >= start && as <= end {
+			return as, true
+		}
+	}
+	return 0, false
+}
+
+func inRangePairedResults(entries []transcript.Entry, assistantSeq, start, end int) []int {
+	var res []int
+	for _, id := range toolCallIDs(entries[assistantSeq].Turn) {
+		if rs, found := resultSeqForCall(entries, id); found && rs >= start && rs <= end {
+			if !slices.Contains(res, rs) {
+				res = append(res, rs)
+			}
+		}
+	}
+	return res
 }
 
 // isFrontAnchored reports whether a range keeps its front (start:N or N-M) vs
@@ -1167,13 +1317,51 @@ func wantFullTurn(opt renderOpts, seq int) bool {
 // ID-paired cards under a single "**Tools**" block per spec §Tool Call
 // Condensation.
 func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultTool string, idx *resultIndex, opt renderOpts) {
-	wroteToolsHeader := false
+	prose := formatAssistantProse(t, resultTool, idx)
+	tools := formatAssistantTools(seq, t, resultTool, idx, opt)
+
+	hasToolCalls := len(toolCallIDs(t)) > 0
+	if !wantFullTurn(opt, seq) {
+		proseLimit := -1
+		if opt.proseBudget != nil {
+			if limit, ok := opt.proseBudget[seq]; ok {
+				proseLimit = limit
+			}
+		}
+		if proseLimit >= 0 {
+			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+			bounded := boundOversizedTurnEvidenceWithHint(prose, proseLimit, hint)
+			if bounded != prose {
+				prose = bounded
+				if opt.anyTruncated != nil {
+					*opt.anyTruncated = true
+				}
+			}
+		} else if len(prose) > convBudgetChars && (hasToolCalls || opt.singleTurn) {
+			hint := fmt.Sprintf("read_transcript(transcript_ref, expand_turn=%d)", seq)
+			maxRunes := max(0, (convBudgetChars-1000)/utf8.UTFMax)
+			bounded := boundOversizedTurnEvidenceWithHint(prose, maxRunes, hint)
+			if bounded != prose {
+				prose = bounded
+				if opt.anyTruncated != nil {
+					*opt.anyTruncated = true
+				}
+			}
+		}
+	}
+
+	b.WriteString(prose)
+	b.WriteString(tools)
+}
+
+func formatAssistantProse(t schema.Turn, resultTool string, idx *resultIndex) string {
+	var b strings.Builder
 	for i := range t.Message.Content {
 		p := &t.Message.Content[i]
 		switch p.Kind {
 		case llm.ContentThinking:
 			if p.Thinking != nil && p.Thinking.Text != "" {
-				fmt.Fprintf(b, "*(thinking)* %s\n\n", p.Thinking.Text)
+				fmt.Fprintf(&b, "*(thinking)* %s\n\n", p.Thinking.Text)
 			}
 
 		case llm.ContentRedThinking:
@@ -1190,29 +1378,37 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				continue
 			}
 			if p.ToolCall.Name == resultTool {
-				// Result tool: render its "message" argument as assistant text.
-				// Consume its mechanical result (the runtime persists an
-				// {"accepted":...} ack) so it does not surface as an orphan.
-				idx.consumed[p.ToolCall.ID] = true
-				paired, hasResult := idx.byCallID[p.ToolCall.ID]
-				// A runtime failure (IsError=true, PrevalOnly=false) executed
-				// and returned an error; its raw bytes are not the delivered
-				// message. The app thread (apptranscript.go:714-742) renders
-				// nothing for runtime failures — only PrevalOnly rejections
-				// surface raw bytes. Skip the render so the markdown matches.
-				if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
-					continue
+				if idx != nil {
+					idx.consumed[p.ToolCall.ID] = true
+					paired, hasResult := idx.byCallID[p.ToolCall.ID]
+					if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
+						continue
+					}
+					writeResultToolMessage(&b, p.ToolCall, hasResult && !paired.result.IsError)
+				} else {
+					writeResultToolMessage(&b, p.ToolCall, true)
 				}
-				writeResultToolMessage(b, p.ToolCall, hasResult && !paired.result.IsError)
-				continue
 			}
-			if !wroteToolsHeader {
-				b.WriteString("\n**Tools**\n")
-				wroteToolsHeader = true
-			}
-			writeToolCard(b, seq, p.ToolCall, idx, opt)
 		}
 	}
+	return b.String()
+}
+
+func formatAssistantTools(seq int, t schema.Turn, resultTool string, idx *resultIndex, opt renderOpts) string {
+	var b strings.Builder
+	wroteToolsHeader := false
+	for i := range t.Message.Content {
+		p := &t.Message.Content[i]
+		if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.Name == resultTool {
+			continue
+		}
+		if !wroteToolsHeader {
+			b.WriteString("\n**Tools**\n")
+			wroteToolsHeader = true
+		}
+		writeToolCard(&b, seq, p.ToolCall, idx, opt)
+	}
+	return b.String()
 }
 
 // writeToolCard renders one tool call as a condensed card with its paired result

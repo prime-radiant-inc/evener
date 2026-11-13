@@ -714,6 +714,10 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	if !strings.Contains(read.Description, "fixed 16 KiB") {
 		t.Errorf("read description does not explain fixed expansion pages: %q", read.Description)
 	}
+	refDescription := rp["transcript_ref"].(map[string]any)["description"].(string)
+	if !strings.Contains(refDescription, "current (default when omitted)") {
+		t.Errorf("transcript_ref description = %q, want default documented", refDescription)
+	}
 
 	outputMatch := rp["output_match"].(map[string]any)
 	outputMatchTypes, ok := outputMatch["type"].([]any)

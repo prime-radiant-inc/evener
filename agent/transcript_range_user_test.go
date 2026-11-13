@@ -139,11 +139,91 @@ func TestTranscriptRangePairsOnlySelectedResults(t *testing.T) {
 	if !strings.Contains(content, "u2-198b") || strings.Count(content, "r3-013f") != 1 {
 		t.Fatalf("user or retained result lost: meta=%+v", meta)
 	}
-	if got := transcriptHeadingTurns(t, content); !slices.Equal(got, []int{0, 2}) {
-		t.Fatalf("selected headings=%v, want [0 2]", got)
+	if got := transcriptHeadingTurns(t, content); !slices.Equal(got, []int{0, 1, 2}) {
+		t.Fatalf("selected headings=%v, want [0 1 2]", got)
 	}
-	if meta.TurnsRendered != 3 || meta.ElidedTurns != 1 {
-		t.Fatalf("selected result not counted honestly: %+v", meta)
+	if meta.TurnsRendered != 4 || meta.ElidedTurns != 0 || !meta.Truncated {
+		t.Fatalf("inline truncation not counted honestly: %+v", meta)
+	}
+	if !strings.Contains(content, "read_transcript(transcript_ref, expand_turn=1)") {
+		t.Fatalf("missing expand_turn=1 recovery notice in content:\n%s", content)
+	}
+	if strings.Contains(content, "Tool results without a shown call") {
+		t.Fatalf("paired result unexpectedly dumped as orphan:\n%s", content)
+	}
+}
+
+func TestTranscriptRangeSingleOversizedAssistant(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("a", 2*convBudgetChars)
+	entries := []transcript.Entry{
+		makeEntry(schema.NewTurn(schema.TurnAssistant, llm.Assistant(body))),
+	}
+	content, meta := renderTranscript(transcript.Header{}, entries, "0-0", renderOpts{})
+	if got := transcriptHeadingTurns(t, content); !slices.Equal(got, []int{0}) {
+		t.Fatalf("headings=%v, want [0]", got)
+	}
+	if meta.TurnsRendered != 1 || meta.ElidedTurns != 0 || !meta.Truncated {
+		t.Fatalf("accounting = %+v, want rendered=1 elided=0 truncated=true", meta)
+	}
+	if len(content) > convBudgetChars {
+		t.Fatalf("content len %d exceeds budget %d", len(content), convBudgetChars)
+	}
+	if !strings.Contains(content, "read_transcript(transcript_ref, expand_turn=0)") {
+		t.Fatalf("missing expand_turn=0 recovery notice in content:\n%s", content)
+	}
+}
+
+func TestTranscriptRangeOversizedAssistantWithPairedResultNoUsers(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		toolCallEntry(call("call-1", "exec_command", `{"command":"ls"}`)),
+		toolResultEntry(result("call-1", "exec_command", "output-file.go", false)),
+	}
+	entries[0].Turn.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentText, Text: strings.Repeat("x", 2*convBudgetChars)}}, entries[0].Turn.Message.Content...)
+	content, meta := renderTranscript(transcript.Header{}, entries, "0-1", renderOpts{})
+	if got := transcriptHeadingTurns(t, content); !slices.Equal(got, []int{0}) {
+		t.Fatalf("headings=%v, want [0]", got)
+	}
+	if meta.TurnsRendered != 2 || meta.ElidedTurns != 0 || !meta.Truncated {
+		t.Fatalf("accounting = %+v, want rendered=2 elided=0 truncated=true", meta)
+	}
+	if len(content) > convBudgetChars {
+		t.Fatalf("content len %d exceeds budget %d", len(content), convBudgetChars)
+	}
+	if !strings.Contains(content, "output-file.go") {
+		t.Fatalf("paired result lost from content:\n%s", content)
+	}
+	if strings.Contains(content, "Tool results without a shown call") {
+		t.Fatalf("paired result dumped as orphan:\n%s", content)
+	}
+	if !strings.Contains(content, "read_transcript(transcript_ref, expand_turn=0)") {
+		t.Fatalf("missing expand_turn=0 recovery notice in content:\n%s", content)
+	}
+}
+
+func TestTranscriptRangeOmittedAssistantOmitsPairedToolResults(t *testing.T) {
+	t.Parallel()
+	entries := make([]transcript.Entry, 40)
+	for i := range entries {
+		entries[i] = makeEntry(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("turn %d: %s", i, strings.Repeat("z", 2000)))))
+	}
+	entries[0] = toolCallEntry(call("old-call", "exec_command", `{"command":"pwd"}`))
+	entries[0].Turn.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentText, Text: strings.Repeat("z", 2000)}}, entries[0].Turn.Message.Content...)
+	entries[1] = toolResultEntry(result("old-call", "exec_command", "old-result-dir", false))
+
+	content, meta := renderTranscript(transcript.Header{}, entries, "last:40", renderOpts{})
+	if strings.Contains(content, "Tool results without a shown call") {
+		t.Fatalf("omitted in-range assistant stranded paired result:\n%s", content)
+	}
+	if strings.Contains(content, "old-result-dir") {
+		t.Fatalf("omitted in-range assistant result was unexpectedly shown:\n%s", content)
+	}
+	if len(content) > convBudgetChars {
+		t.Fatalf("content len %d exceeds budget %d", len(content), convBudgetChars)
+	}
+	if meta.ElidedTurns == 0 || !meta.Truncated {
+		t.Fatalf("expected elisions and truncation in 80KB range, got: %+v", meta)
 	}
 }
 

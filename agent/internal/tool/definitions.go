@@ -1260,7 +1260,7 @@ func DefReadTranscript() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
+				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current (default when omitted), job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
 				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
