@@ -48,7 +48,7 @@
   margin: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-body);
-  line-height: 1.6;
+  line-height: var(--line-height-body);
   font-variant-numeric: tabular-nums;
 }
 

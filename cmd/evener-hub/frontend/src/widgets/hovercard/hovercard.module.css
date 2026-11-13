@@ -23,7 +23,7 @@
   line-height: var(--line-height-body);
   white-space: normal;
   pointer-events: none;
-  animation: hovercardFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: hovercardFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @keyframes hovercardFadeScale {

@@ -551,7 +551,7 @@ test("the panel is an inset card with a boundary that cannot clip", () => {
   expect(root).toContain("border-radius: 0 0 var(--radius-panel)");
   expect(root).not.toContain("--shadow-overlay");
   expect(root).toContain("box-shadow:");
-  expect(root).toContain("var(--shadow-color)");
+  expect(root).toContain("var(--shadow-raised)");
   // The attach-to-header margin must not apply everywhere: only session
   // bodies have padding to cancel, so it is scoped to [data-pane-scaffold^="session:"]
   // and the cascade column's trigger geometry is asserted by the browser guard.

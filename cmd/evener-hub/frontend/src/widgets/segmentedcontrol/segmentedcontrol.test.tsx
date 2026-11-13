@@ -346,10 +346,10 @@ describe("CSS contract", () => {
       /\.label\s*\{[^}]*color:\s*var\(--ink-hi\)[^}]*font-family:\s*var\(--font-sans\)[^}]*font-size:\s*var\(--font-size-ui\)[^}]*line-height:\s*var\(--line-height-body\)[^}]*font-weight:\s*var\(--font-weight-medium\)/s,
     );
     expect(css).toMatch(
-      /\.track\s*\{[^}]*display:\s*inline-grid[^}]*align-items:\s*stretch[^}]*box-sizing:\s*border-box[^}]*overflow:\s*visible[^}]*padding:\s*2px[^}]*gap:\s*2px[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-control\)[^}]*background:\s*var\(--field\)[^}]*box-shadow:\s*var\(--shadow-inset-field\)/s,
+      /\.track\s*\{[^}]*display:\s*inline-grid[^}]*align-items:\s*stretch[^}]*box-sizing:\s*border-box[^}]*overflow:\s*visible[^}]*padding:\s*2px[^}]*gap:\s*2px[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-canvas\)[^}]*box-shadow:\s*var\(--shadow-inset-field\)/s,
     );
     expect(css).toMatch(
-      /\.option\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-inline-size:\s*0[^}]*inline-size:\s*100%[^}]*border:\s*0[^}]*border-radius:\s*var\(--radius-control\)[^}]*padding-block:\s*0[^}]*padding-inline:\s*var\(--space-1\)[^}]*background:\s*transparent[^}]*color:\s*var\(--ink-mid\)/s,
+      /\.option\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-inline-size:\s*0[^}]*inline-size:\s*100%[^}]*border:\s*1px solid transparent[^}]*border-radius:\s*var\(--radius-pill\)[^}]*padding-block:\s*0[^}]*padding-inline:\s*var\(--space-1\)[^}]*background:\s*transparent[^}]*color:\s*var\(--ink-mid\)/s,
     );
     expect(css).toMatch(/\.fullWidth\s*\{[^}]*inline-size:\s*100%/s);
     expect(css).toMatch(
@@ -362,7 +362,7 @@ describe("CSS contract", () => {
       /\.option:not\(\[aria-checked="true"\]\):hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--hover-1\)/s,
     );
     expect(css).toMatch(
-      /\.option\[aria-checked="true"\]\s*\{[^}]*background:\s*var\(--hover-2\)[^}]*color:\s*var\(--ink-hi\)[^}]*font-weight:\s*var\(--font-weight-semibold\)/s,
+      /\.option\[aria-checked="true"\]\s*\{[^}]*border-color:\s*var\(--edge\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*color:\s*var\(--ink-hi\)[^}]*font-weight:\s*var\(--font-weight-semibold\)/s,
     );
     expect(css).toMatch(/\.option:focus-visible\s*\{[^}]*outline:\s*var\(--focus-ring\)[^}]*outline-offset:\s*2px/s);
     expect(css).toMatch(/\.option:disabled\s*\{[^}]*cursor:\s*not-allowed[^}]*opacity:\s*0\.5/s);

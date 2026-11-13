@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>toolrun-corner-clip-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; gap: 32px; padding: 24px 12px; }
+  /* Stand-ins for a tool row, which this case cannot load: toolcallitem's
+   * stylesheet shares unhashed class names with the run's. They keep the three
+   * properties the run's own rules answer to - the row's block padding, a
+   * control that overhangs its line to the phone tap floor, and an evidence
+   * band that runs to the row's edges and inherits its lower corners. */
+  .standInRow { padding: var(--rhythm-item) var(--space-3); line-height: 20px; }
+  .standInOpen {
+    display: inline-block;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    margin-block: calc((20px - var(--tap-min)) / 2);
+    vertical-align: top;
+    border: 0;
+    padding: 0;
+    background: var(--hover-1);
+  }
+  .standInBand {
+    margin: var(--rhythm-item) calc(-1 * var(--space-3)) calc(-1 * var(--rhythm-item));
+    padding: var(--space-3);
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+    background: var(--surface-inset);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ToolRunGroup.tsx's render inside the wrapper TurnBlock.tsx gives a run
+     that is a whole card on its own:
+
+       <div class="toolRunSegment" data-tool-card="only">
+         <details class="group" open>
+           <summary class="summary"><span class="chevron">…</span><span class="label">…</span></summary>
+           <div class="body">{rows}</div>
+         </details>
+       </div>
+
+     The body is mounted only while the run is open. -->
+<main class="fixtures">
+  <div class="toolRunSegment" data-tool-card="only">
+    <details class="group" id="closed" data-testid="tool-run">
+      <summary class="summary" id="closed-summary"><span class="chevron" aria-hidden="true" data-open="false"></span><span class="label">Read 2 files</span></summary>
+    </details>
+  </div>
+  <div class="toolRunSegment" data-tool-card="only">
+    <details class="group" id="open" data-testid="tool-run" open>
+      <summary class="summary" id="open-summary"><span class="chevron" aria-hidden="true" data-open="true"></span><span class="label">Read 2 files</span></summary>
+      <div class="body">
+        <div class="standInRow">Read a.go</div>
+        <div class="standInRow">Read b.go <button type="button" class="standInOpen" id="open-control" aria-label="Open b.go beside"></button></div>
+      </div>
+    </details>
+  </div>
+  <div class="toolRunSegment" data-tool-card="only">
+    <details class="group" id="banded" data-testid="tool-run" open>
+      <summary class="summary"><span class="chevron" aria-hidden="true" data-open="true"></span><span class="label">Read 2 files</span></summary>
+      <div class="body">
+        <div class="standInRow">Read a.go</div>
+        <div class="standInRow">Read b.go<div class="standInBand" id="band">evidence</div></div>
+      </div>
+    </details>
+  </div>
+</main>
+<script>
+window.measure = () => {
+  const name = (el) => (el ? `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}` : "nothing");
+  const owns = (target, hit) => hit !== null && (hit === target || target.contains(hit));
+  const radius = (el) => parseFloat(getComputedStyle(el).borderBottomLeftRadius);
+  const cornerOwned = (el) => {
+    const r = el.getBoundingClientRect();
+    return owns(el, document.elementFromPoint(r.left + 0.5, r.bottom - 0.5));
+  };
+  const control = document.getElementById("open-control");
+  const o = control.getBoundingClientRect();
+  const bottomHit = document.elementFromPoint(o.left + o.width / 2, o.bottom - 1);
+  const band = document.getElementById("band");
+  const banded = document.getElementById("banded");
+  const b = band.getBoundingClientRect();
+  const g = banded.getBoundingClientRect();
+  return {
+    cardRadius: radius(document.getElementById("closed")),
+    controlHeight: o.height,
+    controlBottomReachesControl: owns(control, bottomHit),
+    controlBottomHit: name(bottomHit),
+    closedSummaryCornerPainted: cornerOwned(document.getElementById("closed-summary")),
+    openSummaryRadius: radius(document.getElementById("open-summary")),
+    bandReachesCardEdge: Math.abs(b.bottom - (g.bottom - 1)) <= 0.5 && Math.abs(b.left - (g.left + 1)) <= 0.5,
+    bandCornerPainted: cornerOwned(band),
+  };
+};
+</script>
+</body>
+</html>

@@ -17,7 +17,7 @@
   background: var(--surface-1);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @keyframes popoverFadeScale {
@@ -35,15 +35,6 @@
 @media (prefers-reduced-motion: reduce) {
   .panel {
     animation: none;
-  }
-}
-
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. */
-@supports (corner-shape: squircle) {
-  .panel {
-    corner-shape: squircle;
   }
 }
 

@@ -1,24 +1,17 @@
-/* One tool call. The vertical rhythm is the associativity cue (Jesse's
- * review call): a call's own lines sit TIGHT (the row's row-gap below) and
- * separate calls sit LOOSE (this padding, 2x8px between calls) - before
- * this, both gaps measured the same 8px and a run of calls read as one
- * undifferentiated list. The intent-only row below is the one exception:
- * at the "intent" level every call is a single rationale line, so the loose
- * step reads as one airy list instead of a grouping cue, and that shape
- * halves the step (Jesse's density call, 2026-09-20). */
+/* One tool call: a row of a tool card (styles/surface.module.css owns the
+ * card and the insets every row of one reads). The
+ * row owns its whole inset, including the seat column its kind icon sits in,
+ * so it lays out the same wherever a card holds it and at every width: the
+ * icon's slot pulls one --speaker-gutter left into the padding reserved here
+ * (see .rowIconSlot), and the row's text lands one gutter in from the card's
+ * inset. A call's own lines sit TIGHT (the row's row-gap below); separate
+ * calls are separated by the card's hairline divider plus this padding. */
 .call {
+  composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
-  padding: var(--rhythm-item) 0;
-}
-
-/* The intent-only presentation (ToolCallItem's data-intent-only: one
- * rationale line, no summary line, no status line, no body). Halving the
- * padding halves the gap between collapsed rows; opening any disclosure
- * drops the attribute and restores the full rhythm above, so expansion is
- * the visual boundary between rows with more to show and rows without. */
-.call[data-intent-only="true"] {
-  padding: var(--space-1) 0;
+  padding: var(--tool-card-row-pad) var(--tool-card-inset);
+  padding-left: calc(var(--tool-card-inset) + var(--speaker-gutter));
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
@@ -153,14 +146,10 @@
 
 /* A summary-less two-level row renders its intent as a BARE line while the
  * body trigger shares it - the delegate row's shape when it has no trailing
- * affordance (issue #1253). The line is not the .intent alone: the rail icon
- * and status siblings lead it, and below the 700px breakpoint the .rowIcon's
- * negative-gutter pull does not apply, so the icon contributes its full outer
- * width (24px slot + 2px margin-right + one column-gap = 34px, one
- * --speaker-gutter) to the line. A max-width on the bare .intent would begin
- * AFTER that icon and leave it unbounded, so the line sums 100% + 34px and flex
- * line-breaking wraps the body trigger to its own line (roborev). Bound the
- * WHOLE line - icon through intent - in one flex item instead. Same intent as
+ * affordance (issue #1253). The line is not the .intent alone: the seat icon
+ * and status siblings lead it. Bound the WHOLE line - icon through intent -
+ * in one flex item, so nothing that leads the intent sits outside the
+ * reservation and wraps the body trigger to its own line. Same intent as
  * the wrapper rules above: it shrinks to its text and leaves room for the body
  * trigger, never grows to fill the line and spring the chevron to the far edge.
  * The reservation is the body trigger's own width: the 14px chevron on desktop,
@@ -372,41 +361,48 @@
   line-height: var(--line-height-title);
 }
 
-/* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
- * call: icons out of the text, into the gutter - the kind is ambient
- * context, not content). The glyph is seated by the shared icon-rail seat
- * (styles/railseat.module.css) - the avatar-column slot geometry is
- * composed, not restated here, so this row's seat cannot drift from the
- * notification head's status glyph or the Loader's rail row. The line-height
- * override below is this row's one seat rule of its own.
+/* The tool-KIND glyph, in the row's seat column beside the rationale line:
+ * the kind is context for the call, so it stays out of the text. The glyph
+ * box is the shared icon-rail seat (styles/railseat.module.css): the
+ * avatar-column slot geometry is composed, not restated here, so the seat's
+ * arithmetic (slot + margin + column gap = one --speaker-gutter) is the same
+ * one the notification head's status glyph uses. The seat alone, without the
+ * rail's ambient strength: the slot's --field ground is what sets the glyph
+ * back from the text, and half opacity would only fade it into that ground.
  *
- * The gutter PULL belongs to .rowIconSlot instead: the pull has to ride the
- * row's flex item, and that is the slot now that a failed call hangs its
- * cross off the icon's corner. */
+ * Positioned, so the glyph paints after that ground (a positioned
+ * pseudo-element that precedes it in tree order) rather than under it. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
+  position: relative;
 }
 
-/* The kind icon's positioning context: the row's first flex item, carrying
- * the breakpoint-gated gutter pull, with the failure cross (Jesse, 2026-10-20)
- * absolutely pinned to its bottom-right corner. A clean row renders the slot
- * with only the seat inside it, so success costs no extra column. */
+/* The kind icon's slot: the row's first flex item. It carries the pull into
+ * the seat column .call reserves (the column is the row's own, so the pull
+ * holds at every width), paints the field seat behind the glyph, and is the
+ * positioning context the failure cross (Jesse, 2026-10-20) pins to. The
+ * slot's layout box stays one line tall, so the icon pins to the row's first
+ * line and a second line sits tight beneath the first; the seat's overhang
+ * above and below a one-line row fits inside .call's padding. A clean row
+ * renders the slot with only the seat inside it, so success costs no extra
+ * column. */
 .rowIconSlot {
-  composes: gutterPull from "../../../styles/railseat.module.css";
+  composes: columnPull from "../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: fieldSeatBehind from "../../../styles/surface.module.css";
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
    * to the GLYPH's corner rather than the seat's. Two spellings of one number
    * (this stylesheet and the component constant) are unavoidable across the
    * CSS/TS boundary; toolRowGrammar.test.ts pins them equal. */
   --tool-row-icon-size: 14px;
-  position: relative;
   display: inline-flex;
   flex: none;
   align-self: flex-start;
 }
 
 /* The failure cross's overlay seat on the icon: pinned to the ICON's
- * bottom-right corner, outside the 50%-opacity seat (see ToolRow's
+ * bottom-right corner, outside the aria-hidden seat (see ToolRow's
  * failureNode - the danger tone must read at full strength). Decorative to
  * pointer input: the row's own triggers own every click.
  *
@@ -703,12 +699,23 @@
   z-index: var(--z-raised);
 }
 
-/* Flat evidence wrapper; native renderers own useful output boundaries.
+/* The evidence band: an inset ground running edge to edge inside the card
+ * under the row it belongs to, closed off by one hairline above. It bleeds
+ * through .call's own padding to the card's edges and takes the card's lower
+ * corners when it is the last thing in it, so the band never draws a card of
+ * its own inside the card. Native renderers keep their own output boundaries.
  * Size is deliberately not declared: the Markdown widget composes with its
  * host (1em fallback), so a renderer's text inherits the ambient body step
  * (see widgets/markdown). */
 .body {
-  margin-top: var(--space-1);
+  margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
+    calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
+  padding: var(--tool-card-inset);
+  border-top: 1px solid var(--edge);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+  background: var(--surface-inset);
+  min-width: 0;
 }
 
 @media (prefers-reduced-motion: no-preference) {

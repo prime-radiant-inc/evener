@@ -6,6 +6,7 @@
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "panes/session/transcript/turnblock.module.css",
+    "styles/surface.module.css",
     "panes/spawn/spawn.module.css",
     "panes/settings/settings.module.css"
   ],

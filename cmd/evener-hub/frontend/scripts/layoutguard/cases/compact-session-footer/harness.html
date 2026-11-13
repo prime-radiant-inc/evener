@@ -116,6 +116,17 @@ function box(el) {
   };
 }
 
+// The block-axis framing an element puts around its content: its computed
+// padding and border, top and bottom. Measured, so the assertion follows the
+// card's tokens instead of restating their arithmetic.
+function blockFraming(el) {
+  const style = getComputedStyle(el);
+  return ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce(
+    (sum, property) => sum + Number.parseFloat(style[property]),
+    0,
+  );
+}
+
 function visibleBox(el) {
   return getComputedStyle(el).display === "none"
     ? { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0, clientWidth: 0, scrollWidth: 0 }
@@ -162,6 +173,7 @@ window.measure = function () {
         fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
       shortModel: fixture.dataset.shortModel === "true",
       card: box(card),
+      cardFraming: blockFraming(card),
       field: box(field),
       controls: box(controls),
       leading: box(leading),

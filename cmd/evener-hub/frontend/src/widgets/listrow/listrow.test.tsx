@@ -280,7 +280,9 @@ test("the collection row is a framed surface; the plain row is not", () => {
 });
 
 test("an interactive row washes on hover and rings inset on keyboard focus", () => {
-  expect(rule('.interactive:hover:not(:disabled):not([aria-disabled="true"])')).toContain("background: var(--hover-1)");
+  expect(rule('.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current])')).toContain(
+    "background: var(--hover-1)",
+  );
   const focus = rule(".interactive:focus-visible");
   expect(focus).toContain("outline: var(--focus-ring)");
   expect(focus).toContain("outline-offset: -2px");
@@ -329,4 +331,25 @@ test("an aria-disabled interactive row is styled like a disabled one", () => {
   const disabledRules = [...css.matchAll(/([^{}]*:disabled[^{}]*)\{/g)].map((m) => m[1] ?? "");
   expect(disabledRules.length).toBeGreaterThan(0);
   for (const selector of disabledRules) expect(selector).toContain('[aria-disabled="true"]');
+});
+
+test("the current row is the one selectable-row lift, and only an interactive row can wear it", () => {
+  render(
+    <>
+      <ListRow variant="plain" label="Appearance" onSelect={() => {}} aria-current="page" />
+      <ListRow variant="plain" label="Storage" onSelect={() => {}} />
+      <ListRow variant="plain" label="Read only" />
+    </>,
+  );
+  const current = screen.getByRole("button", { name: "Appearance" });
+  const other = screen.getByRole("button", { name: "Storage" });
+  expect(current.getAttribute("aria-current")).toBe("page");
+  expect(other.hasAttribute("aria-current")).toBe(false);
+  // Both wear the same classes: the state is the ARIA, which the shared
+  // recipe keys on, not a second class a caller could forget.
+  expect(current.className).toBe(other.className);
+  const shared = readModuleCss(import.meta.url, "../internal/selectableRow.module.css");
+  const selector = /\.selectableRow:is\(([^{]*)\)\s*\{/.exec(shared)?.[1] ?? "";
+  expect(selector).toContain("[aria-current]");
+  expect(screen.getByText("Read only").closest("div")?.className).not.toBe(current.className);
 });

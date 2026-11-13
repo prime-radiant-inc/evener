@@ -59,7 +59,7 @@
   bottom: 0;
   width: 100vw;
   max-height: min(480px, 100vh);
-  border-radius: 0;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   border-left: none;
   border-right: none;
   border-bottom: none;
