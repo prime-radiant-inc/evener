@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -324,5 +326,91 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	}
 	if !appwire.ConversationOutputEligible(state, output) {
 		t.Fatalf("the reply after the withheld fold is not eligible for voice output: state=%+v output=%+v", state, output)
+	}
+}
+
+// TestWithheldFoldReEmitsNotesContextOnTheNextRequest pins the projection side
+// of a withheld fold: the in-memory fold stands, so the NOTES_CONTEXT turn the
+// fold folded away is gone from what the model sees, and the notes projection's
+// change gate must forget the last projected block — the next model request
+// re-emits the current notes rather than staying silent on state the model can
+// no longer see. The marker's event and naming stay suppressed (the retract
+// took the announcing record back out); the resets are fold-dependent, so they
+// run.
+func TestWithheldFoldReEmitsNotesContextOnTheNextRequest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "withhold-notes-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-withhold-notes-summary\n[END SUMMARY]")}
+	}, withStateDir(dir))
+	if err := s.Rename("Withheld fold notes fixture"); err != nil {
+		t.Fatal(err)
+	}
+	// Project the notes first, so the NOTES_CONTEXT turn lands early and the
+	// fold folds it away with the rest of the pre-fold span.
+	if _, changed := s.setAgentNote("opaque-withheld-fold-note"); !changed {
+		t.Fatal("note set not reported as change")
+	}
+	s.maybeAppendNotesContext()
+	const inputs = 20
+	for i := range inputs {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("opaque-withhold-notes-input-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &foldTailFaultFS{Fs: afero.NewOsFs()}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	s.attachTranscript(writer, nil)
+	var faultArmed bool
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			if faultArmed {
+				return // a later request's empty publication must not re-arm the fault
+			}
+			faultArmed = true
+			fs.arm(2) // the first staged copy lands, the second fails
+		}
+	})
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("only %d sync(s) since arming, want the first staged copy to land before the second failed: the fault hit the wrong write", n)
+	}
+	for _, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatal("the withheld fold published a compaction marker whose staged retained-tail copy write failed")
+		}
+	}
+	// The fold really took the projected NOTES_CONTEXT turn out of the live
+	// history: only a re-emitted projection can carry the note to the model.
+	for _, turn := range currentHistory(t, s) {
+		if turn.Kind == schema.TurnNotesContext {
+			t.Fatal("the folded history still holds the NOTES_CONTEXT turn: the fold did not take it, and the re-emit oracle below would prove nothing")
+		}
+	}
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	found := false
+	for _, m := range req.Messages {
+		if strings.Contains(m.Text(), "opaque-withheld-fold-note") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the request after the withheld fold omits the notes the fold projected away: the change gate must forget the last projected block so the next request re-emits it")
 	}
 }

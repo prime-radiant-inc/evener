@@ -1154,16 +1154,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.emit(ccd)
 		}
 		for i, turn := range pendingCompactionTurns {
-			if commit.markerWithheld {
-				// A record the transcript never received announces nothing and
-				// triggers nothing: its event, the session namer and the
-				// task-list steering all describe a marker the retract took
-				// back out. The write error, if the marker's own write was
-				// the one that failed, still reports.
-				s.reportCompactionTranscriptAppend(compactionTurnWriteErrs[i])
-				continue
-			}
-			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
+			// A withheld marker announces nothing — no event, no session
+			// naming — but the fold-dependent effects still run inside
+			// handleCompactionTurnEffects: the in-memory fold stands.
+			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision, commit.markerWithheld)
 		}
 		if !commit.markerWithheld {
 			s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
