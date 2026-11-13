@@ -352,7 +352,8 @@ test("a node outside the selectable set omits aria-selected entirely", () => {
 test("declares the selected-row lift on aria-selected, using tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "tree.module.css"), "utf8");
-  const selected = /\.row\[aria-selected="true"\],\s*\.row\[aria-selected="true"\]:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const selected =
+    /\.row\[aria-selected="true"\],\s*\.row\[aria-selected="true"\]:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(selected).toContain("background: var(--surface-1)");
   expect(selected).toContain("box-shadow: var(--shadow-card)");
   // The pressed wash must come first, or it would repaint a selected row.

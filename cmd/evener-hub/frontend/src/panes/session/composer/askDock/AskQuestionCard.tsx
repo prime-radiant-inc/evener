@@ -195,7 +195,7 @@ export function AskQuestionCard({
             onChange={() => {
               if (!freeActive) activateFree();
             }}
-          />
+          />{" "}
           <span id={freeLabelId}>Something else…</span>
         </label>
       </div>

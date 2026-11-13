@@ -170,7 +170,7 @@ billing, or live model behavior. Native verification remains deferred.
 ## Review the task and permissions, then Start
 
 Before selecting **Start**, confirm the directory, task, and chosen model are
-still the ones you intended. Review **Effective access** near Start. It reports
+still the ones you intended. Review **Effective access** under the task card. It reports
 the resolved launch setting, including an Advanced sandbox override when one is
 set. Use **Change** to reach the control that owns that value.
 

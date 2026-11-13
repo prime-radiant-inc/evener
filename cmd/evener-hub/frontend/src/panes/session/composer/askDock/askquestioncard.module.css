@@ -118,8 +118,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* The same inline inset an option row takes, so its control lines up. */
-  padding-inline: var(--space-2);
+  /* The same box an option row takes - its padding and its transparent
+   * edge - so this row's control lines up under theirs and keeps their
+   * rhythm. */
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
 }
 
 .textInput {
