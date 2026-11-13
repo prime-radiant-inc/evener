@@ -49,7 +49,9 @@ export default function assert(measurements) {
       expectContained(m.field, m.card, "folded field");
       expectBefore(m.field, m.controls, "field → controls");
       expectSameRow(m.field, "folded field");
-      if (m.card.height > m.controls.height + tolerance + 12) {
+      // The folded card's framing is its own --space-2 inset above and below
+      // the control row plus its two hairlines (8 + 8 + 1 + 1).
+      if (m.card.height > m.controls.height + tolerance + 18) {
         fail("folded card is taller than one control row plus its framing");
       }
     } else {

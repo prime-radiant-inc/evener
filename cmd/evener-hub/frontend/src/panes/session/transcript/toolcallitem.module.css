@@ -147,14 +147,10 @@
 
 /* A summary-less two-level row renders its intent as a BARE line while the
  * body trigger shares it - the delegate row's shape when it has no trailing
- * affordance (issue #1253). The line is not the .intent alone: the rail icon
- * and status siblings lead it, and below the 700px breakpoint the .rowIcon's
- * negative-gutter pull does not apply, so the icon contributes its full outer
- * width (24px slot + 2px margin-right + one column-gap = 34px, one
- * --speaker-gutter) to the line. A max-width on the bare .intent would begin
- * AFTER that icon and leave it unbounded, so the line sums 100% + 34px and flex
- * line-breaking wraps the body trigger to its own line (roborev). Bound the
- * WHOLE line - icon through intent - in one flex item instead. Same intent as
+ * affordance (issue #1253). The line is not the .intent alone: the seat icon
+ * and status siblings lead it. Bound the WHOLE line - icon through intent -
+ * in one flex item, so nothing that leads the intent sits outside the
+ * reservation and wraps the body trigger to its own line. Same intent as
  * the wrapper rules above: it shrinks to its text and leaves room for the body
  * trigger, never grows to fill the line and spring the chevron to the far edge.
  * The reservation is the body trigger's own width: the 14px chevron on desktop,
@@ -366,17 +362,17 @@
   line-height: var(--line-height-title);
 }
 
-/* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
- * call: icons out of the text, into the gutter - the kind is ambient
- * context, not content). The glyph is seated by the shared icon-rail seat
- * (styles/railseat.module.css) - the avatar-column slot geometry is
- * composed, not restated here, so this row's seat cannot drift from the
- * notification head's status glyph or the Loader's rail row. The line-height
- * override below is this row's one seat rule of its own.
+/* The tool-KIND glyph, in the row's seat column beside the rationale line:
+ * the kind is ambient context, not content, so it stays out of the text. The
+ * glyph box is the shared icon-rail seat (styles/railseat.module.css) - the
+ * avatar-column slot geometry is composed, not restated here, so the seat's
+ * arithmetic (slot + margin + column gap = one --speaker-gutter) is the same
+ * one the notification head's status glyph uses. The line-height override
+ * below and the strength are this row's own seat rules.
  *
- * The gutter PULL belongs to .rowIconSlot instead: the pull has to ride the
- * row's flex item, and that is the slot now that a failed call hangs its
- * cross off the icon's corner. */
+ * The PULL into the seat column belongs to .rowIconSlot: it has to ride the
+ * row's flex item, and that is the slot, since a failed call hangs its cross
+ * off the icon's corner. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
   /* Full strength: the seat's own --field ground (see .rowIconSlot::before)
@@ -386,7 +382,7 @@
 }
 
 /* The kind icon's positioning context: the row's first flex item, carrying
- * the breakpoint-gated gutter pull, with the failure cross (Jesse, 2026-10-20)
+ * the pull into the seat column, with the failure cross (Jesse, 2026-10-20)
  * absolutely pinned to its bottom-right corner. A clean row renders the slot
  * with only the seat inside it, so success costs no extra column. */
 .rowIconSlot {
@@ -427,7 +423,7 @@
 }
 
 /* The failure cross's overlay seat on the icon: pinned to the ICON's
- * bottom-right corner, outside the 50%-opacity seat (see ToolRow's
+ * bottom-right corner, outside the aria-hidden seat (see ToolRow's
  * failureNode - the danger tone must read at full strength). Decorative to
  * pointer input: the row's own triggers own every click.
  *

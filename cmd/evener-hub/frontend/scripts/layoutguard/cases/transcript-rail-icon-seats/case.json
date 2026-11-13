@@ -1,6 +1,6 @@
 {
   "name": "transcript-rail-icon-seats",
-  "description": "transcript rail: the live thinking row's bulb, the content-free thinking row's Loader grid, and the notification head's status glyph all seat in one avatar column - above 700px every slot starts at the turn's left edge with its row's text at the content edge and a 10px speaker gap (the same seat ToolRow's kind icon occupies), and below it every slot leads its line inline with the text one full gutter later; no seat ever escapes the turn's box",
+  "description": "transcript rail: the live thinking row's bulb, the content-free thinking row's Loader grid, and the notification head's status glyph all seat in one avatar column - above 700px every slot starts at the turn's left edge with its row's text at the content edge and a 10px speaker gap (ToolRow's kind icon composes the same seat box but sits in its tool card's own column, covered by toolrow-failure-badge-corner), and below it every slot leads its line inline with the text one full gutter later; no seat ever escapes the turn's box",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

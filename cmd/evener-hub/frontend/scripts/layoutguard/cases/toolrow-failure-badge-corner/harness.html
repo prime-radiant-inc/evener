@@ -52,13 +52,13 @@ const INTENT = "Checking whether the hub already serves session artifacts over H
 
 function rowHtml(id, failed) {
   return `
-    <div class="row" id="row-${id}" data-intent="true">
+    <div class="call" id="call-${id}"><div class="row" id="row-${id}" data-intent="true">
       <span class="rowIconSlot" id="slot-${id}">
         <span class="rowIcon" id="seat-${id}" aria-hidden="true">${ICON_SVG}</span>
         ${failed ? `<span class="failureBadge" id="badge-${id}">${FAILURE_SVG}</span>` : ""}
       </span>
       <span class="intent" id="intent-${id}">${INTENT}</span>
-    </div>`;
+    </div></div>`;
 }
 
 function frameDocument(width) {
@@ -69,9 +69,10 @@ function frameDocument(width) {
       *, *::before, *::after { box-sizing: border-box; transition: none !important; }
       html, body { margin: 0; background: var(--surface-0); color: var(--ink-hi); }
       body { padding: 16px; font-family: var(--font-sans); font-size: var(--font-size-body); line-height: var(--line-height-body); }
-      /* Production reserves the rail gutter at/above 700px (turnblock.module.css
-       * .runContent), which the slot's negative pull hangs into; below it there
-       * is no gutter and the slot leads its line inline. */
+      /* Production indents run rows by the rail gutter at/above 700px
+       * (turnblock.module.css .runContent). The tool row (.call) reserves its
+       * own seat column inside that, at every width, and the slot's pull
+       * lands in it. */
       .railBox { box-sizing: border-box; }
       @media (min-width: 700px) {
         .railBox { padding-left: var(--speaker-gutter); }
@@ -127,6 +128,7 @@ window.measure = async () => {
       badgePosition: style.position,
       intentLeft: box(doc.getElementById("intent-failed")).left,
       cleanIntentLeft: box(doc.getElementById("intent-clean")).left,
+      callLeft: box(doc.getElementById("call-failed")).left,
       rowLeft: box(doc.getElementById("row-failed")).left,
       cleanRowLeft: box(doc.getElementById("row-clean")).left,
     };

@@ -1,4 +1,4 @@
-/* The delegate status notice. State hues are a token-contract semantic exception. */
+/* Rail × Quote card. State hues are a token-contract semantic exception. */
 
 .lifecycle {
   display: flex;
@@ -19,31 +19,22 @@
   color: var(--danger-ink);
 }
 
-/* The delegate's current state, as one small notice inside the tool card's
- * evidence band: the structural surface and a hairline at rest. A running
- * delegate takes the alive wash and edge (agent work in progress), a failed
- * one the danger wash and edge; the status word and glyph beside them carry
- * the same fact in text and shape, so the hue is never the only signal. */
 .card {
   display: flex;
   flex-direction: column;
   min-width: 0;
   max-width: 100%;
   gap: var(--rhythm-line);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-left: 2px solid var(--edge-strong);
+  border-radius: 0; /* square corners are the design, not an omission */
 }
 
 .card[data-kind="running"] {
-  border-color: var(--alive-edge);
-  background: var(--alive-bg);
+  border-left-color: var(--alive);
 }
-
 .card[data-kind="failed"] {
-  border-color: var(--danger-edge);
-  background: var(--danger-bg);
+  border-left-color: var(--danger);
 }
 
 .quote {
