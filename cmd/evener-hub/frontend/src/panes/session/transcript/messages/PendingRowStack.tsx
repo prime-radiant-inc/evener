@@ -818,7 +818,17 @@ export function PendingRowStack({
           return (
             <li key={record.clientMutationId} data-kind="orphaned">
               <UserMessageView
-                item={{ id: record.clientMutationId, turnId: "", type: "userMessage", text: recordPreview(record) }}
+                item={{
+                  id: record.clientMutationId,
+                  turnId: "",
+                  type: "userMessage",
+                  text: recordPreview(record),
+                  // The merged projection's recovery row is built from the
+                  // family's own input, so the gallery survives the refusal.
+                  ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
+                    ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
+                    : {}),
+                }}
                 opensExchange={false}
                 provisional="Destination deleted"
                 footer={
@@ -848,6 +858,11 @@ export function PendingRowStack({
                   : record.method === "turn/cancelQueued"
                     ? "Couldn't remove this message from the queue"
                     : recordPreview(record),
+                // The refused row keeps the gallery too: the projection's
+                // recovery row holds the family input's image bytes.
+                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
+                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
+                  : {}),
               }}
               opensExchange={false}
               provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
