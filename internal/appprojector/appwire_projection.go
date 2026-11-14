@@ -481,7 +481,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 	// the read row.
 	out := appwire.EvenerDelegateInfo{
 		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
-		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
+		ChildSessionID: data.ChildSessionID, ChildRef: data.ChildRef, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
 		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
 		Reason: activitybound.Truncate(data.Reason, activitybound.MaxDelegateProseRunes), Error: activitybound.Truncate(data.Error, activitybound.MaxDelegateProseRunes),
 		Terminal: data.Terminal, Resumable: data.Resumable, NeedsAttention: data.NeedsAttention,

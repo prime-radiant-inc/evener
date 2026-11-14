@@ -867,20 +867,25 @@ type EvenerDelegateInfo struct {
 	LogicalOwnerSessionID string `json:"logicalOwnerSessionId,omitempty"`
 	RootSessionID         string `json:"rootSessionId"`
 	ChildSessionID        string `json:"childSessionId"`
-	TranscriptRef         string `json:"transcriptRef"`
-	ParentDelegateID      string `json:"parentDelegateId,omitempty"`
-	Type                  string `json:"type"`
-	Lifecycle             string `json:"lifecycle"`
-	Phase                 string `json:"phase"`
-	Status                string `json:"status"`
-	Outcome               string `json:"outcome,omitempty"`
-	Reason                string `json:"reason,omitempty"`
-	Error                 string `json:"error,omitempty"`
-	Terminal              bool   `json:"terminal,omitempty"`
-	Resumable             bool   `json:"resumable"`
-	NeedsAttention        bool   `json:"needsAttention"`
-	NotResumableReason    string `json:"notResumableReason,omitempty"`
-	ProjectionRevision    uint64 `json:"projectionRevision"`
+	// ChildRef is the same owner-qualified child ref the read row's ChildRef
+	// carries: the frame names its row's identity directly, so a client can
+	// match it to a loaded row without reading the collection. Absent from
+	// older producers, whose frames a client reconciles with one read.
+	ChildRef           string `json:"childRef,omitempty"`
+	TranscriptRef      string `json:"transcriptRef"`
+	ParentDelegateID   string `json:"parentDelegateId,omitempty"`
+	Type               string `json:"type"`
+	Lifecycle          string `json:"lifecycle"`
+	Phase              string `json:"phase"`
+	Status             string `json:"status"`
+	Outcome            string `json:"outcome,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Terminal           bool   `json:"terminal,omitempty"`
+	Resumable          bool   `json:"resumable"`
+	NeedsAttention     bool   `json:"needsAttention"`
+	NotResumableReason string `json:"notResumableReason,omitempty"`
+	ProjectionRevision uint64 `json:"projectionRevision"`
 	// ReportPreview is the settled current run's reported text, capped at 4096
 	// Unicode code points including an ellipsis when truncated. Absent while the
 	// run is open, for an error-only or unreported outcome, and for a prior
